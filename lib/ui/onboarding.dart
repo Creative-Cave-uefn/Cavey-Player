@@ -165,7 +165,22 @@ class HubScreen extends StatefulWidget {
 class _HubScreenState extends State<HubScreen> {
   final _link = TextEditingController();
   bool _busy = false;
+  bool _searching = true;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _search());
+  }
+
+  /// Сначала пробуем найти общую библиотеку сами — тогда ссылка не нужна
+  Future<void> _search() async {
+    if (!mounted) return;
+    setState(() => _searching = true);
+    final found = await Services.of(context).lib.autoJoin();
+    if (!found && mounted) setState(() => _searching = false);
+  }
 
   Future<void> _run(Future<void> Function() fn) async {
     setState(() {
@@ -185,6 +200,18 @@ class _HubScreenState extends State<HubScreen> {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final me = app.accounts.primary!;
+    if (_searching) {
+      return _Frame(children: [
+        const Wordmark(size: 30),
+        const SizedBox(height: 32),
+        Text('Ищу общую библиотеку', style: display(22)),
+        const SizedBox(height: 12),
+        const Text('Проверяю, не поделились ли с вами папкой Cave Player на Google Диске.',
+            style: TextStyle(color: C.muted, height: 1.5)),
+        const SizedBox(height: 24),
+        const LinearProgressIndicator(),
+      ]);
+    }
     return _Frame(width: 560, children: [
       const Wordmark(size: 30),
       const SizedBox(height: 32),
@@ -192,7 +219,8 @@ class _HubScreenState extends State<HubScreen> {
       const SizedBox(height: 10),
       Text(
         'Общая библиотека — это папка «Cave Player» на Google Диске, где хранятся общие плейлисты и лайки. '
-        'Её создаёт кто-то один, остальные подключаются по ссылке. Вы вошли как ${me.email}.',
+        'Её создаёт кто-то один, остальные подключаются сами, как только с ними поделятся папкой. '
+        'Вы вошли как ${me.email}, и с этой почтой общей библиотеки пока не нашлось.',
         style: const TextStyle(color: C.muted, height: 1.5),
       ),
       Align(
@@ -205,6 +233,14 @@ class _HubScreenState extends State<HubScreen> {
                     await app.accounts.setPrimary(acc.email);
                   }),
           child: const Text('Войти заново или другим аккаунтом'),
+        ),
+      ),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton.icon(
+          onPressed: _busy ? null : _search,
+          icon: const Icon(Icons.refresh_rounded, size: 18),
+          label: const Text('Поискать ещё раз'),
         ),
       ),
       const SizedBox(height: 16),

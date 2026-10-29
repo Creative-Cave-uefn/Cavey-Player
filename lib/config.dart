@@ -5,3 +5,14 @@
 
 const kGoogleClientId = String.fromEnvironment('GOOGLE_CLIENT_ID');
 const kGoogleClientSecret = String.fromEnvironment('GOOGLE_CLIENT_SECRET');
+
+// Версия приложения. Задаётся при сборке в GitHub Actions; в сборке для
+// разработки её нет, и тогда автообновление выключено.
+const kAppVersion = String.fromEnvironment('APP_VERSION');
+
+// Публичный репозиторий, куда сборка выкладывает установщики новых версий
+const kReleasesRepo = 'Creative-Cave-uefn/cave-player-releases';
+
+// Папка общей библиотеки по умолчанию (необязательно): ID папки «Cave Player»
+// на Диске. Если не задана, приложение само ищет доступную библиотеку.
+const kDefaultLibraryId = String.fromEnvironment('CAVE_LIBRARY_ID');

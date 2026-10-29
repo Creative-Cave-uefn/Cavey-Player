@@ -191,6 +191,38 @@ class DriveApi {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
+  /// Файлы library.json, которые видит аккаунт (свои и расшаренные), новые первыми
+  Future<List<Map<String, dynamic>>> findLibraries(String email) async {
+    final res = await send(
+      email,
+      'GET',
+      api('files', {
+        'q': "name = 'library.json' and trashed = false",
+        'fields': 'files(id,parents,modifiedTime)',
+        'orderBy': 'modifiedTime desc',
+        'pageSize': '20',
+        'corpora': 'allDrives',
+        'includeItemsFromAllDrives': 'true',
+      }),
+    );
+    final j = jsonDecode(res.body) as Map<String, dynamic>;
+    return [for (final f in (j['files'] as List? ?? const [])) (f as Map).cast<String, dynamic>()];
+  }
+
+  /// Даёт другому человеку доступ к файлу или папке. Google сам пришлёт ему письмо.
+  Future<void> share(String email, String fileId, String withEmail, {String role = 'writer', String? message}) async {
+    await send(
+      email,
+      'POST',
+      api('files/$fileId/permissions', {
+        'sendNotificationEmail': 'true',
+        if (message != null) 'emailMessage': message,
+      }),
+      headers: {'Content-Type': 'application/json; charset=utf-8'},
+      body: utf8.encode(jsonEncode({'role': role, 'type': 'user', 'emailAddress': withEmail})),
+    );
+  }
+
   /// Перезаписывает содержимое файла. Возвращает новый modifiedTime.
   Future<String> updateFile(String email, String id, String content, {String mime = 'application/json'}) async {
     final res = await send(

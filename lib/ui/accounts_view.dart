@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/updater.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -37,7 +38,9 @@ class _AccountsPageState extends State<AccountsPage> {
         final accounts = app.accounts;
         final primary = accounts.primary?.email;
         return ListView(padding: const EdgeInsets.fromLTRB(36, 34, 36, 40), children: [
-          Text('Аккаунты', style: display(36, weight: FontWeight.w700)),
+          Text('Настройки', style: display(36, weight: FontWeight.w700)),
+          const SizedBox(height: 28),
+          Text('Аккаунты', style: display(20)),
           const SizedBox(height: 10),
           const Text(
             'Можно подключить несколько аккаунтов Google. Cave Player сам выберет, через какой открывать каждую папку. '
@@ -122,6 +125,8 @@ class _AccountsPageState extends State<AccountsPage> {
           ]),
           if (_error != null)
             Padding(padding: const EdgeInsets.only(top: 12), child: Text(_error!, style: const TextStyle(color: C.danger))),
+          const SizedBox(height: 44),
+          const _UpdatesSection(),
           if (!app.keysBuiltIn) ...[
             const SizedBox(height: 44),
             Text('Ключ приложения Google', style: display(20)),
@@ -153,6 +158,57 @@ class _AccountsPageState extends State<AccountsPage> {
               ),
             ),
           ],
+        ]);
+      },
+    );
+  }
+}
+
+class _UpdatesSection extends StatelessWidget {
+  const _UpdatesSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final up = Services.of(context).updater;
+    return ListenableBuilder(
+      listenable: up,
+      builder: (context, _) {
+        final last = up.lastCheck;
+        final status = switch (up.state) {
+          UpdateState.checking => 'Проверяю…',
+          UpdateState.downloading => 'Скачиваю версию ${up.latest} (${(up.progress * 100).round()}%)',
+          UpdateState.ready => 'Версия ${up.latest} скачана и готова к установке',
+          UpdateState.upToDate => 'У вас последняя версия',
+          UpdateState.error => up.error ?? 'Не получилось проверить',
+          UpdateState.idle => 'Обновления проверяются сами раз в 4 часа',
+        };
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Обновления', style: display(20)),
+          const SizedBox(height: 10),
+          Text('Установлена версия ${up.currentVersion}', style: const TextStyle(color: C.muted, fontSize: 15)),
+          const SizedBox(height: 6),
+          Text(
+            last == null ? status : '$status. Проверено в ${TimeOfDay.fromDateTime(last).format(context)}.',
+            style: TextStyle(color: up.state == UpdateState.error ? C.danger : C.faint, fontSize: 13, height: 1.45),
+          ),
+          if (up.state == UpdateState.downloading) ...[
+            const SizedBox(height: 10),
+            SizedBox(width: 320, child: LinearProgressIndicator(value: up.progress)),
+          ],
+          const SizedBox(height: 16),
+          Wrap(spacing: 12, runSpacing: 10, children: [
+            if (up.state == UpdateState.ready)
+              FilledButton.icon(
+                onPressed: up.installNow,
+                icon: const Icon(Icons.system_update_alt_rounded, size: 18),
+                label: const Text('Перезапустить и обновить'),
+              ),
+            OutlinedButton.icon(
+              onPressed: up.state == UpdateState.checking || up.state == UpdateState.downloading ? null : up.check,
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('Проверить обновления'),
+            ),
+          ]),
         ]);
       },
     );

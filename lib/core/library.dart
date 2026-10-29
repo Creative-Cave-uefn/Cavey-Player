@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import '../config.dart';
 import 'auth.dart';
 import 'drive.dart';
 import 'models.dart';
@@ -213,6 +214,65 @@ class LibraryController extends ChangeNotifier {
     }
     throw LibraryException('Ни у одного подключённого аккаунта нет доступа к этой папке. '
         'Проверьте, что друг поделился ею с вашей почтой.');
+  }
+
+  /// Ищет общую библиотеку сам: сначала папку из настроек сборки, потом любую
+  /// library.json на Дисках подключённых аккаунтов. Так друзьям не нужна ссылка.
+  Future<bool> autoJoin() async {
+    if (hasHub || accounts.accounts.isEmpty) return hasHub;
+    if (kDefaultLibraryId.isNotEmpty) {
+      try {
+        await joinHub(kDefaultLibraryId);
+        return true;
+      } catch (_) {
+        // к папке по умолчанию нет доступа — поищем другие
+      }
+    }
+    final folders = <String>[];
+    for (final a in accounts.accounts) {
+      try {
+        for (final f in await drive.findLibraries(a.email)) {
+          final parents = f['parents'];
+          if (parents is List && parents.isNotEmpty && !folders.contains('${parents.first}')) {
+            folders.add('${parents.first}');
+          }
+        }
+      } catch (_) {
+        // этот аккаунт не смог поискать — пробуем остальные
+      }
+    }
+    for (final id in folders) {
+      try {
+        await joinHub(id);
+        return true;
+      } catch (_) {
+        continue;
+      }
+    }
+    return false;
+  }
+
+  /// Приглашает друга: доступ редактора к общей папке и ко всем папкам с музыкой,
+  /// которыми этот аккаунт может делиться. Возвращает папки, которые не удалось расшарить.
+  Future<List<String>> invite(String friendEmail) async {
+    final email = friendEmail.trim().toLowerCase();
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email)) {
+      throw LibraryException('Это не похоже на адрес почты');
+    }
+    const note = 'Приглашаю в нашу общую музыкальную библиотеку Cave Player. '
+        'Установи Cave Player и войди через Google с этой почтой — библиотека подключится сама.';
+    await _withHub((me) => drive.share(me, settings.hubId!, email, message: note));
+    final failed = <String>[];
+    for (final s in data.sources) {
+      if (s.id == settings.hubId) continue;
+      try {
+        final who = await accessFor(s.id);
+        await drive.share(who, s.id, email, role: 'reader');
+      } catch (_) {
+        failed.add(s.name);
+      }
+    }
+    return failed;
   }
 
   Future<void> leaveHub() async {

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
+import '../core/updater.dart';
 import 'accounts_view.dart';
 import 'albums_view.dart';
 import 'player_bar.dart';
@@ -203,11 +204,12 @@ class _Sidebar extends StatelessWidget {
                 trailing: lib.scan.running
                     ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
                     : null),
-            item(Icons.manage_accounts_outlined, 'Аккаунты', const Nav('accounts'),
+            item(Icons.settings_outlined, 'Настройки', const Nav('accounts'),
                 trailing: app.accounts.accounts.any((a) => a.needsSignIn)
                     ? const Icon(Icons.error_outline_rounded, size: 16, color: C.danger)
                     : null),
             _SyncLine(compact: compact),
+            _UpdateLine(compact: compact),
             const SizedBox(height: 10),
           ]);
         },
@@ -222,6 +224,45 @@ class _Sidebar extends StatelessWidget {
     if (name == null || name.isEmpty) return;
     final id = app.lib.createPlaylist(name);
     nav.go(Nav('playlist', id));
+  }
+}
+
+/// Готовое обновление: жёлтая плашка внизу боковой панели
+class _UpdateLine extends StatelessWidget {
+  final bool compact;
+  const _UpdateLine({required this.compact});
+
+  @override
+  Widget build(BuildContext context) {
+    final up = Services.of(context).updater;
+    return ListenableBuilder(
+      listenable: up,
+      builder: (context, _) {
+        if (up.state == UpdateState.downloading && !compact) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(22, 10, 16, 0),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Скачиваю версию ${up.latest ?? ''}', style: const TextStyle(fontSize: 12, color: C.faint)),
+              const SizedBox(height: 6),
+              LinearProgressIndicator(value: up.progress),
+            ]),
+          );
+        }
+        if (up.state != UpdateState.ready) return const SizedBox.shrink();
+        final button = FilledButton(
+          style: FilledButton.styleFrom(
+            padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 14, vertical: 10),
+            textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          onPressed: up.installNow,
+          child: compact ? const Icon(Icons.system_update_alt_rounded, size: 18) : Text('Обновить до ${up.latest}'),
+        );
+        return Padding(
+          padding: EdgeInsets.fromLTRB(compact ? 10 : 16, 12, compact ? 10 : 16, 0),
+          child: Tooltip(message: 'Перезапустить Cave Player с новой версией', child: button),
+        );
+      },
+    );
   }
 }
 

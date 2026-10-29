@@ -26,6 +26,20 @@ class AllTracksPage extends StatelessWidget {
               : '${countTracks(tracks.length)} в $albums ${plural(albums, 'альбоме', 'альбомах', 'альбомах')}',
           tracks: tracks,
           compact: compact,
+          actions: [
+            Tooltip(
+              message: lib.scan.running
+                  ? (lib.scan.total > 0 ? '${lib.scan.text}: ${lib.scan.done} из ${lib.scan.total}' : lib.scan.text)
+                  : 'Проверить папки на новые треки',
+              child: OutlinedButton.icon(
+                onPressed: lib.scan.running || lib.data.sources.isEmpty ? null : () => lib.scanAll(),
+                icon: lib.scan.running
+                    ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.sync_rounded, size: 18),
+                label: Text(lib.scan.running ? 'Обновляю…' : 'Обновить'),
+              ),
+            ),
+          ],
           empty: lib.scan.running
               ? EmptyState(
                   icon: Icons.downloading_rounded,

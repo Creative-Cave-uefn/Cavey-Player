@@ -1,8 +1,13 @@
 ﻿; Установщик Cave Player (Inno Setup 6). Собирается в GitHub Actions после flutter build windows.
+#ifndef MyVersion
+  #define MyVersion "0.0.0"
+#endif
+
 [Setup]
 AppId={{806F3744-0035-43B4-B655-A423BF019A3B}
 AppName=Cave Player
-AppVersion=0.1.0
+AppVersion={#MyVersion}
+VersionInfoVersion={#MyVersion}
 AppPublisher=Creative Cave
 DefaultDirName={localappdata}\Programs\Cave Player
 DisableProgramGroupPage=yes
@@ -16,6 +21,8 @@ SolidCompression=yes
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 WizardStyle=modern
+CloseApplications=force
+RestartApplications=no
 
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
@@ -32,3 +39,5 @@ Name: "{autodesktop}\Cave Player"; Filename: "{app}\cave_player.exe"; Tasks: des
 
 [Run]
 Filename: "{app}\cave_player.exe"; Description: "{cm:LaunchProgram,Cave Player}"; Flags: nowait postinstall skipifsilent
+; При тихой установке (автообновление) снова открываем приложение
+Filename: "{app}\cave_player.exe"; Flags: nowait; Check: WizardSilent

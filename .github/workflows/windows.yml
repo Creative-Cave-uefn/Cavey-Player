@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Номер версии растёт с каждой сборкой: по нему приложение понимает, что вышло обновление
+      APP_VERSION: 0.2.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v5
 
@@ -66,6 +69,9 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         run: |
           flutter build windows --release `
+            --build-name $env:APP_VERSION --build-number ${{ github.run_number }} `
+            "--dart-define=APP_VERSION=$env:APP_VERSION" `
+            "--dart-define=CAVE_LIBRARY_ID=${{ vars.CAVE_LIBRARY_ID }}" `
             "--dart-define=GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID" `
             "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET"
 
@@ -76,10 +82,31 @@ jobs:
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/CavePlayer-portable.zip
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
-          & $iscc installer/cave_player.iss
+          & $iscc "/DMyVersion=$env:APP_VERSION" installer/cave_player.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: actions/upload-artifact@v4
         with:
           name: CavePlayer-Windows
           path: dist/*
+
+      # Обновление для приложений друзей: релиз в публичном репозитории cave-player-releases
+      - name: Опубликовать обновление
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          NOTES: ${{ github.event.head_commit.message }}
+        run: |
+          if (-not $env:GH_TOKEN) {
+            Write-Output "::notice::Секрет RELEASES_TOKEN не задан, обновление не опубликовано"
+            exit 0
+          }
+          $notes = if ($env:NOTES) { $env:NOTES } else { "Cave Player $env:APP_VERSION" }
+          gh release create "v$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
+            --repo Creative-Cave-uefn/cave-player-releases `
+            --title "Cave Player $env:APP_VERSION" --notes $notes
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::Не получилось опубликовать релиз. Проверьте RELEASES_TOKEN и репозиторий cave-player-releases"
+            exit 1
+          }

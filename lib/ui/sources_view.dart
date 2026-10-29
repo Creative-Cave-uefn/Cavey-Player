@@ -16,6 +16,33 @@ class SourcesPage extends StatefulWidget {
 class _SourcesPageState extends State<SourcesPage> {
   final _link = TextEditingController();
   bool _adding = false;
+  final _friend = TextEditingController();
+  bool _inviting = false;
+  String? _inviteResult;
+  bool _inviteFailed = false;
+
+  Future<void> _invite() async {
+    final app = Services.of(context);
+    final email = _friend.text.trim();
+    setState(() {
+      _inviting = true;
+      _inviteResult = null;
+    });
+    try {
+      final failed = await app.lib.invite(email);
+      _friend.clear();
+      _inviteFailed = false;
+      _inviteResult = failed.isEmpty
+          ? 'Готово: $email получит письмо от Google со ссылкой.'
+          : 'Доступ к общей папке выдан. Не получилось поделиться папками: ${failed.join(', ')}. '
+              'Попросите их владельцев пригласить $email.';
+    } catch (e) {
+      _inviteFailed = true;
+      _inviteResult = '$e';
+    } finally {
+      if (mounted) setState(() => _inviting = false);
+    }
+  }
   String? _error;
 
   Future<void> _add() async {
@@ -131,11 +158,43 @@ class _SourcesPageState extends State<SourcesPage> {
           Text('Пригласить друзей', style: display(20)),
           const SizedBox(height: 10),
           const Text(
-            'Плейлисты и лайки хранятся в папке «Cave Player». Откройте её на Диске, нажмите «Поделиться», '
-            'добавьте почты друзей с правами редактора и отправьте им эту ссылку.',
+            'Введите почту друга: Cave Player откроет ему общую папку и папки с музыкой, а Google пришлёт письмо. '
+            'Друг установит Cave Player, войдёт с этой почтой, и библиотека подключится сама.',
             style: TextStyle(color: C.muted, height: 1.5),
           ),
           const SizedBox(height: 14),
+          _Panel(children: [
+            Row(children: [
+              Expanded(
+                child: TextField(
+                  controller: _friend,
+                  enabled: !_inviting,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(
+                    hintText: 'Почта друга',
+                    prefixIcon: Icon(Icons.mail_outline_rounded, size: 18),
+                  ),
+                  onSubmitted: (_) => _invite(),
+                ),
+              ),
+              const SizedBox(width: 12),
+              FilledButton(onPressed: _inviting ? null : _invite, child: const Text('Пригласить')),
+            ]),
+            if (_inviteResult != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(_inviteResult!,
+                    style: TextStyle(color: _inviteFailed ? C.danger : C.muted, height: 1.4)),
+              ),
+            const SizedBox(height: 10),
+            const Text(
+              'Пока приложение Google в режиме тестирования, почту друга нужно ещё добавить в Test users в Google Cloud.',
+              style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          const Text('Или отправьте ссылку на общую папку сами:', style: TextStyle(color: C.faint, fontSize: 13)),
+          const SizedBox(height: 8),
           _Panel(children: [
             Row(children: [
               const Icon(Icons.folder_rounded, color: C.accent),

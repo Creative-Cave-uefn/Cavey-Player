@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'config.dart';
@@ -7,6 +9,7 @@ import 'core/drive.dart';
 import 'core/library.dart';
 import 'core/player.dart';
 import 'core/store.dart';
+import 'core/updater.dart';
 import 'ui/onboarding.dart';
 import 'ui/shell.dart';
 import 'ui/theme.dart';
@@ -19,14 +22,18 @@ class AppServices {
   final LibraryController lib;
   final PlayerController player;
   final CoverService covers;
+  final Updater updater;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
 
-  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.keysBuiltIn);
+  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.keysBuiltIn);
 
   static Future<AppServices> create() async {
     final store = await AppStore.open();
+    final updater = Updater(store);
+    // Скачанное в прошлый раз обновление ставим до запуска интерфейса
+    if (await updater.installPendingOnStart()) exit(0);
     final settings = Settings.fromJson(await store.readJson('settings.json'));
     final builtIn = kGoogleClientId.isNotEmpty && kGoogleClientSecret.isNotEmpty;
     if (builtIn) {
@@ -42,7 +49,8 @@ class AppServices {
     final player = PlayerController(lib, accounts, settings);
     accounts.addListener(lib.saveSettings);
     await lib.start();
-    return AppServices._(store, settings, accounts, drive, lib, player, covers, builtIn);
+    updater.start();
+    return AppServices._(store, settings, accounts, drive, lib, player, covers, updater, builtIn);
   }
 }
 
