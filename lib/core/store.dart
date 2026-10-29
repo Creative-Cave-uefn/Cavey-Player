@@ -53,6 +53,7 @@ class Settings {
   Map<String, String> sourceAccess = {};
   double volume = 80;
   String? lastScan;
+  String? hubSourceChecked;
 
   Map<String, dynamic> toJson() => {
         'clientId': clientId,
@@ -64,6 +65,7 @@ class Settings {
         'sourceAccess': sourceAccess,
         'volume': volume,
         'lastScan': lastScan,
+        'hubSourceChecked': hubSourceChecked,
       };
 
   static Settings fromJson(dynamic j) {
@@ -79,6 +81,7 @@ class Settings {
     if (sa is Map) s.sourceAccess = sa.map((k, v) => MapEntry('$k', '$v'));
     s.volume = ((j['volume'] as num?) ?? 80).toDouble();
     s.lastScan = j['lastScan'] as String?;
+    s.hubSourceChecked = j['hubSourceChecked'] as String?;
     return s;
   }
 }

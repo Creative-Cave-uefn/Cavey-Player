@@ -90,6 +90,7 @@ class LibraryController extends ChangeNotifier {
     () async {
       try {
         await reload();
+        await _ensureHubSource();
         if (_pending.isNotEmpty) _scheduleFlush();
         await scanAll(quiet: true);
       } catch (e) {
@@ -107,6 +108,27 @@ class LibraryController extends ChangeNotifier {
   }
 
   // ---------- общая папка «Cave Player» ----------
+
+  /// Музыку естественно класть прямо в общую папку, поэтому она тоже сканируется.
+  /// Добавляем её в источники один раз на этом компьютере: если её потом
+  /// уберут из списка, сами не возвращаем.
+  Future<void> _ensureHubSource() async {
+    final hub = settings.hubId;
+    if (hub == null || settings.hubSourceChecked == hub) return;
+    if (!data.sources.any((s) => s.id == hub)) {
+      commit({
+        'op': 'addSource',
+        'source': Source(
+          id: hub,
+          name: 'Cave Player',
+          addedBy: me ?? settings.hubEmail ?? '',
+          addedAt: DateTime.now().millisecondsSinceEpoch,
+        ).toJson(),
+      });
+    }
+    settings.hubSourceChecked = hub;
+    await saveSettings();
+  }
 
   /// Выполняет действие от имени аккаунта, у которого есть доступ к общей папке.
   Future<T> _withHub<T>(Future<T> Function(String email) fn) async {
@@ -319,7 +341,6 @@ class LibraryController extends ChangeNotifier {
     final id = parseDriveId(input);
     if (id == null) throw LibraryException('Это не похоже на ссылку на папку Google Диска');
     if (data.sources.any((s) => s.id == id)) throw LibraryException('Эта папка уже в библиотеке');
-    if (id == settings.hubId) throw LibraryException('Это сама папка «Cave Player». Добавьте папку с музыкой.');
     final email = await accessFor(id, recheck: true);
     final meta = await drive.getFile(email, id, fields: 'id,name,mimeType');
     if (meta['mimeType'] != 'application/vnd.google-apps.folder') {

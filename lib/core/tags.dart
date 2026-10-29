@@ -32,7 +32,7 @@ class TrackTags {
   });
 }
 
-final RegExp audioExt = RegExp(r'\.(mp3|flac|ogg|oga|opus|m4a|mp4|aac|wav)$', caseSensitive: false);
+final RegExp audioExt = RegExp(r'\.(mp3|flac|ogg|oga|opus|m4a|mp4|aac|wav|webm|weba|mka|wma|aiff?|ape|wv)$', caseSensitive: false);
 final RegExp coverName = RegExp(r'^(cover|folder|front|album|обложка)\.(jpe?g|png|webp)$', caseSensitive: false);
 
 // ---------- декодирование строк ----------
