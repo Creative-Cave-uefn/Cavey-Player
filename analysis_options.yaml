@@ -1,0 +1,6 @@
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # Интерфейс на русском: в строках часто кавычки-ёлочки и апострофы
+    prefer_single_quotes: false

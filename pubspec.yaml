@@ -1,0 +1,26 @@
+name: polka
+description: Общая музыкальная полка для своих — музыка играет прямо с Google Дисков.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  media_kit: ^1.1.11
+  media_kit_libs_audio: ^1.0.5
+  http: ^1.2.2
+  crypto: ^3.0.5
+  path_provider: ^2.1.4
+  url_launcher: ^6.3.0
+  google_fonts: ^6.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
