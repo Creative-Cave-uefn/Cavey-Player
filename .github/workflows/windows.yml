@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: subosito/flutter-action@v2
         with:
@@ -31,11 +31,33 @@ jobs:
 
       - run: flutter pub get
 
+      # Ошибки дублируются аннотациями, чтобы их было видно на странице сборки без открытия логов
       - name: Проверка кода
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        shell: pwsh
+        run: |
+          $out = flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1 | Out-String
+          Write-Output $out
+          $errs = @($out -split "`n" | Where-Object { $_ -match '^\s*error - ' } | ForEach-Object { $_.Trim() })
+          for ($i = 0; $i -lt $errs.Count -and $i -lt 30; $i++) {
+            $kind = @('error', 'warning', 'notice')[[math]::Floor($i / 10)]
+            Write-Output "::${kind}::$($errs[$i])"
+          }
+          if ($errs.Count -gt 0) { exit 1 }
 
       - name: Тесты
-        run: flutter test
+        shell: pwsh
+        run: |
+          $out = flutter test --reporter expanded 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Output $out
+          if ($code -ne 0) {
+            $lines = @($out -split "`n" | Where-Object { $_ -match 'Error|Expected|Actual|\[E\]|failed' } | Select-Object -First 30)
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              $kind = @('error', 'warning', 'notice')[[math]::Floor($i / 10)]
+              Write-Output "::${kind}::$($lines[$i].Trim())"
+            }
+            exit $code
+          }
 
       - name: Сборка
         shell: pwsh
