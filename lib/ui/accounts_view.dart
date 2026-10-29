@@ -84,7 +84,9 @@ class _AccountsPageState extends State<AccountsPage> {
                   tooltip: 'Действия',
                   icon: const Icon(Icons.more_horiz_rounded),
                   onSelected: (v) async {
-                    if (v == 'primary') {
+                    if (v == 'relogin') {
+                      await _signIn(hint: a.email);
+                    } else if (v == 'primary') {
                       await accounts.setPrimary(a.email);
                     } else if (v == 'remove') {
                       final ok = await confirm(context,
@@ -95,6 +97,7 @@ class _AccountsPageState extends State<AccountsPage> {
                     }
                   },
                   itemBuilder: (_) => [
+                    const PopupMenuItem(value: 'relogin', child: Text('Войти заново')),
                     if (a.email != primary) const PopupMenuItem(value: 'primary', child: Text('Сделать основным')),
                     const PopupMenuItem(value: 'remove', child: Text('Отключить аккаунт')),
                   ],

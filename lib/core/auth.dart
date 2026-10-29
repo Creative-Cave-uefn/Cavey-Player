@@ -49,12 +49,11 @@ class Account {
 }
 
 class AccountManager extends ChangeNotifier {
-  static const scopes = [
-    'openid',
-    'email',
-    'profile',
-    'https://www.googleapis.com/auth/drive',
-  ];
+  static const driveScope = 'https://www.googleapis.com/auth/drive';
+  static const scopes = ['openid', 'email', 'profile', driveScope];
+
+  static const noDriveAccess = 'Google не дал Полке доступ к Диску. Войдите ещё раз и на странице разрешений '
+      'отметьте галочку про Google Диск (или «Выбрать все»).';
 
   final AppStore store;
   final Settings settings;
@@ -167,6 +166,10 @@ class AccountManager extends ChangeNotifier {
         'grant_type': 'authorization_code',
         'code_verifier': verifier,
       });
+      final granted = ((tok['scope'] as String?) ?? '').split(' ');
+      if (!granted.contains(driveScope)) {
+        throw AuthException(noDriveAccess);
+      }
       final access = tok['access_token'] as String;
       final refresh = tok['refresh_token'] as String?;
       final info = await _userInfo(access);

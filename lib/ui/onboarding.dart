@@ -144,6 +144,11 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
             const Expanded(child: Text('Продолжите вход в открывшемся браузере', style: TextStyle(color: C.muted))),
             TextButton(onPressed: app.accounts.cancelSignIn, child: const Text('Отменить')),
           ]),
+        const SizedBox(height: 14),
+        const Text(
+          'Google спросит разрешения. Обязательно отметьте доступ к Google Диску, иначе Полка не увидит музыку.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
+        ),
         _ErrorText(_error),
       ]),
     );
@@ -190,7 +195,19 @@ class _HubScreenState extends State<HubScreen> {
         'Её создаёт кто-то один, остальные подключаются по ссылке. Вы вошли как ${me.email}.',
         style: const TextStyle(color: C.muted, height: 1.5),
       ),
-      const SizedBox(height: 28),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TextButton(
+          onPressed: _busy || app.accounts.signingIn
+              ? null
+              : () => _run(() async {
+                    final acc = await app.accounts.signIn(loginHint: me.email);
+                    await app.accounts.setPrimary(acc.email);
+                  }),
+          child: const Text('Войти заново или другим аккаунтом'),
+        ),
+      ),
+      const SizedBox(height: 16),
       _Option(
         title: 'Подключиться к полке друга',
         text: 'Попросите ссылку на папку «Полка». Друг должен поделиться ею с вашей почтой с правами редактора.',

@@ -14,9 +14,12 @@ class DriveException implements Exception {
   final String message;
   DriveException(this.status, this.message);
   bool get notFound => status == 404;
-  bool get forbidden => status == 403;
+  bool get forbidden => status == 403 && !insufficientScope;
+  bool get insufficientScope => status == 403 && message.toLowerCase().contains('insufficient');
   @override
-  String toString() => 'Google Диск ответил $status: $message';
+  String toString() => insufficientScope
+      ? 'У Полки нет доступа к Google Диску: при входе не отметили галочку про Диск. Нажмите «Войти заново» и отметьте её.'
+      : 'Google Диск ответил $status: $message';
 }
 
 class DriveFile {
