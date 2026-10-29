@@ -7,7 +7,8 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Flutter 3.27 знает только Visual Studio 2022, она есть на образе windows-2022
+    runs-on: windows-2022
     env:
       # Номер версии растёт с каждой сборкой: по нему приложение понимает, что вышло обновление
       APP_VERSION: 0.2.${{ github.run_number }}
