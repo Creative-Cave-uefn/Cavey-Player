@@ -109,7 +109,9 @@ class PlayerController extends ChangeNotifier {
       // Сохранённый трек играет с диска, остальные — потоком с Google Диска
       final local = cache.fileFor(t.id);
       Media media;
-      if (cache.has(t.id) && local.existsSync()) {
+      final fromDisk = cache.has(t.id) && local.existsSync();
+      AppLog.info('Включаю «${t.title}» ${fromDisk ? 'с компьютера' : 'с Google Диска'}');
+      if (fromDisk) {
         media = Media(local.path);
       } else {
         final email = await lib.accessFor(t.source);

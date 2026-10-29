@@ -5,6 +5,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
+import '../core/log.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
 import 'albums_view.dart';
@@ -87,6 +88,7 @@ class _ShellState extends State<Shell> {
             onDragEntered: (_) => setState(() => _dragging = true),
             onDragExited: (_) => setState(() => _dragging = false),
             onDragDone: (detail) {
+              AppLog.info('Перетащили в окно: ${detail.files.length}');
               setState(() => _dragging = false);
               uploadPaths(context, [for (final f in detail.files) f.path]);
             },

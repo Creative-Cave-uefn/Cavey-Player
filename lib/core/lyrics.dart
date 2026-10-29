@@ -64,6 +64,9 @@ class Lyrics {
   }
 }
 
+/// LRCLIB не отвечает (нет сети или сервис перегружен) — это не то же самое, что «текста нет»
+class LyricsUnavailable implements Exception {}
+
 class LyricsService {
   final Directory dir;
   final Map<String, Lyrics?> _mem = {};
@@ -74,6 +77,7 @@ class LyricsService {
 
   Future<Lyrics?> forTrack(Track t, Duration duration) {
     if (_mem.containsKey(t.id)) return Future.value(_mem[t.id]);
+    // Ошибку сети не запоминаем: в следующий раз попробуем снова
     return _inflight[t.id] ??= _load(t, duration).then((l) {
       _mem[t.id] = l;
       return l;
@@ -101,7 +105,7 @@ class LyricsService {
       found = await _fetch(t, duration);
     } catch (e) {
       AppLog.warn('LRCLIB не ответил для «${t.title}»', e);
-      return null; // без сети — не запоминаем, попробуем в следующий раз
+      throw LyricsUnavailable();
     }
     try {
       await f.writeAsString(jsonEncode(found ?? {'none': true, 'at': DateTime.now().toIso8601String()}));

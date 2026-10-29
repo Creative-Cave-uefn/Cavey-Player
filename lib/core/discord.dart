@@ -54,6 +54,7 @@ class DiscordPresence {
     if (connected) return true;
     final next = _nextTry;
     if (next != null && DateTime.now().isBefore(next)) return false;
+    AppLog.info('Discord: подключаюсь');
     _bind();
     for (var i = 0; i < 10; i++) {
       final pipeName = '${r'\\.\pipe\discord-ipc-'}$i'.toNativeUtf16();
@@ -68,6 +69,7 @@ class DiscordPresence {
       }
     }
     // Discord не запущен — пробуем снова через минуту
+    AppLog.info('Discord не найден, попробую позже');
     _nextTry = DateTime.now().add(const Duration(minutes: 1));
     return false;
   }
@@ -146,6 +148,7 @@ class DiscordPresence {
           'assets': {'large_text': _cut(track.displayAlbum)},
         };
       }
+      AppLog.info(show ? 'Discord: показываю «${track.title}»' : 'Discord: убираю статус');
       if (_send(1, {'cmd': 'SET_ACTIVITY', 'args': args, 'nonce': nonce})) _lastKey = key;
     } catch (e) {
       AppLog.warn('Discord', e);

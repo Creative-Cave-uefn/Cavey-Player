@@ -112,6 +112,12 @@ class SocialController extends ChangeNotifier {
   bool _writing = false;
   bool _dirty = false;
 
+  /// Для раздела «Компания»: когда статусы обновлялись и что пошло не так
+  DateTime? lastPoll;
+  DateTime? lastWrite;
+  String? pollError;
+  bool _loggedPoll = false;
+
   /// С кем слушаем вместе
   String? following;
   bool _syncing = false;
@@ -208,7 +214,10 @@ class SocialController extends ChangeNotifier {
     if (!lib.hasHub || m == null || !_dirty) return;
     if (!_loadedMine) {
       await poll(); // сначала подтягиваем свой файл, чтобы не затереть историю с другого компьютера
-      if (!_loadedMine) return;
+      if (!_loadedMine) {
+        _markDirty();
+        return;
+      }
     }
     if (_writing) {
       _markDirty();
@@ -229,6 +238,8 @@ class SocialController extends ChangeNotifier {
           _fileModified[id] = await drive.updateFile(email, id, body);
         }
       });
+      if (lastWrite == null) AppLog.info('Статус сохранён в cave-data');
+      lastWrite = DateTime.now();
       _refreshMe();
     } catch (e) {
       _dirty = true;
@@ -244,11 +255,24 @@ class SocialController extends ChangeNotifier {
     if (!lib.hasHub || me == null || _polling) return;
     _polling = true;
     try {
-      final folder = await lib.dataFolder();
-      final files = await lib.withHub((email) => drive.listChildren(email, folder));
-      for (final f in files) {
-        if (!f.name.startsWith('user-') || !f.name.endsWith('.json')) continue;
-        final email = f.name.substring(5, f.name.length - 5);
+      final main = await lib.dataFolder();
+      // Читаем все папки cave-data и для каждого друга берём самый свежий файл
+      final latest = <String, DriveFile>{};
+      for (final folder in {main, ...lib.dataFolders}) {
+        final files = await lib.withHub((email) => drive.listChildren(email, folder));
+        for (final f in files) {
+          if (!f.name.startsWith('user-') || !f.name.endsWith('.json')) continue;
+          final email = f.name.substring(5, f.name.length - 5);
+          final prev = latest[email];
+          // Свой файл предпочитаем в основной папке, чтобы писать туда же
+          final better = prev == null ||
+              (email == me ? folder == main && prev.modifiedTime.compareTo(f.modifiedTime) <= 0 : f.modifiedTime.compareTo(prev.modifiedTime) > 0);
+          if (better) latest[email] = f;
+        }
+      }
+      for (final entry in latest.entries) {
+        final email = entry.key;
+        final f = entry.value;
         if (email == me) {
           _myFileId ??= f.id;
           if (_loadedMine) continue;
@@ -257,13 +281,21 @@ class SocialController extends ChangeNotifier {
         await _load(f.id, email);
         _fileModified[f.id] = f.modifiedTime;
       }
+      lastPoll = DateTime.now();
+      pollError = null;
+      if (!_loggedPoll) {
+        _loggedPoll = true;
+        AppLog.info('Статусы друзей: файлов ${latest.length}, папок cave-data ${lib.dataFolders.length}');
+      }
       if (!_loadedMine) {
         _loadedMine = true;
         _refreshMe();
       }
       notifyListeners();
     } catch (e) {
+      pollError = '$e';
       AppLog.warn('Не удалось обновить статусы друзей', e);
+      notifyListeners();
     } finally {
       _polling = false;
     }

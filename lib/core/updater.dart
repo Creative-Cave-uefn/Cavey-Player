@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../config.dart';
+import 'log.dart';
 import 'store.dart';
 
 enum UpdateState { idle, checking, downloading, ready, upToDate, error }
@@ -94,6 +95,7 @@ class Updater extends ChangeNotifier {
       final j = jsonDecode(res.body) as Map<String, dynamic>;
       final tag = ((j['tag_name'] as String?) ?? '').replaceFirst(RegExp(r'^v'), '');
       latest = tag;
+      AppLog.info('Обновления: последняя версия ${tag.isEmpty ? '?' : tag}, у меня $kAppVersion');
       if (tag.isEmpty || !isNewer(tag, kAppVersion)) {
         state = UpdateState.upToDate;
         notifyListeners();

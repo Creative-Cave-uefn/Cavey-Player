@@ -305,18 +305,29 @@ class LibraryController extends ChangeNotifier {
   // ---------- служебная папка cave-data внутри общей папки ----------
 
   String? _dataFolderId;
+  Future<String>? _dataFolderFuture;
 
-  /// Папка для журналов, статусов «сейчас слушаю» и ленты событий
-  Future<String> dataFolder() => _withHub((email) async {
-        final cached = _dataFolderId;
-        if (cached != null) return cached;
-        final found = (await drive.listChildren(email, settings.hubId!, nameEquals: dataFolderName))
-            .where((f) => f.isFolder)
-            .toList();
-        final id = found.isNotEmpty ? found.first.id : await drive.createFolder(email, dataFolderName, parent: settings.hubId);
-        _dataFolderId = id;
-        return id;
-      });
+  /// Все папки cave-data: из-за одновременного создания в старых версиях их могло стать несколько
+  List<String> dataFolders = const [];
+
+  /// Папка для журналов, статусов «сейчас слушаю» и ленты событий.
+  /// Ищется и создаётся один раз; если папок несколько, всегда берём самую старую,
+  /// чтобы все компьютеры писали в одну и ту же.
+  Future<String> dataFolder() {
+    final cached = _dataFolderId;
+    if (cached != null) return Future.value(cached);
+    return _dataFolderFuture ??= _withHub((email) async {
+      final found = (await drive.listChildren(email, settings.hubId!, nameEquals: dataFolderName))
+          .where((f) => f.isFolder)
+          .toList()
+        ..sort((a, b) => a.createdTime.compareTo(b.createdTime));
+      final id = found.isNotEmpty ? found.first.id : await drive.createFolder(email, dataFolderName, parent: settings.hubId);
+      dataFolders = found.isNotEmpty ? [for (final f in found) f.id] : [id];
+      if (found.length > 1) AppLog.warn('Найдено несколько папок cave-data: ${found.length}, используем самую старую');
+      _dataFolderId = id;
+      return id;
+    }).whenComplete(() => _dataFolderFuture = null);
+  }
 
   static const dataFolderName = 'cave-data';
 
@@ -340,6 +351,7 @@ class LibraryController extends ChangeNotifier {
     _pending.clear();
     _libModified = null;
     _dataFolderId = null;
+    dataFolders = const [];
     await saveSettings();
     await _saveLocal();
     _changed();

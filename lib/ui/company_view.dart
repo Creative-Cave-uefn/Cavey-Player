@@ -40,6 +40,16 @@ class CompanyPage extends StatelessWidget {
               style: TextStyle(color: C.muted, fontSize: 15)),
           const SizedBox(height: 32),
           Text('Сейчас слушают', style: display(20)),
+          const SizedBox(height: 6),
+          Text(
+            social.pollError != null
+                ? 'Не получилось обновить статусы: ${social.pollError}'
+                : social.lastPoll == null
+                    ? 'Загружаю статусы друзей…'
+                    : 'Обновляется раз в 15 секунд, последний раз в ${TimeOfDay.fromDateTime(social.lastPoll!).format(context)}. '
+                        'Друзей с Cave Player: ${social.friends.length}.',
+            style: TextStyle(color: social.pollError != null ? C.danger : C.faint, fontSize: 13),
+          ),
           const SizedBox(height: 14),
           if (now.isEmpty)
             const Text('Сейчас никто ничего не слушает.', style: TextStyle(color: C.faint))

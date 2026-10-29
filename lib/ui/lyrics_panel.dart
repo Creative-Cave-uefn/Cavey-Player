@@ -105,6 +105,9 @@ class _LyricsBodyState extends State<_LyricsBody> {
             child: Align(alignment: Alignment.topLeft, child: SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))),
           );
         }
+        if (snap.hasError) {
+          return const _Note('База текстов LRCLIB сейчас не отвечает. Откройте панель позже, попробую снова.');
+        }
         final ly = snap.data;
         if (ly == null) return const _Note('Текст этой песни не нашёлся в базе LRCLIB.');
         if (ly.instrumental) return const _Note('Это инструментальная композиция, слов нет.');
