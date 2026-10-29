@@ -7,6 +7,9 @@ on:
 
 jobs:
   build:
+    # Право публиковать релизы в этом же репозитории встроенным токеном
+    permissions:
+      contents: write
     # Flutter 3.27 знает только Visual Studio 2022, она есть на образе windows-2022
     runs-on: windows-2022
     env:
@@ -104,6 +107,20 @@ jobs:
         with:
           name: CavePlayer-Windows
           path: dist/*
+
+      # Релиз в этом же репозитории: токен не нужен. Приложения видят его, если репозиторий публичный
+      - name: Опубликовать релиз здесь
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ github.event.head_commit.message }}
+        run: |
+          $notes = if ($env:NOTES) { $env:NOTES } else { "Cave Player $env:APP_VERSION" }
+          gh release create "v$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
+            --repo ${{ github.repository }} --target ${{ github.sha }} `
+            --title "Cave Player $env:APP_VERSION" --notes $notes
+          if ($LASTEXITCODE -ne 0) { Write-Output "::warning::Не получилось создать релиз в этом репозитории" }
 
       # Обновление для приложений друзей: релиз в публичном репозитории cave-player-releases
       - name: Опубликовать обновление

@@ -81,21 +81,39 @@ class Updater extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      final res = await http.get(
-        Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases/latest'),
-        headers: {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer/$kAppVersion'},
-      );
+      // Смотрим все места, где могут лежать релизы, и берём самую свежую версию с установщиком
+      Map<String, dynamic>? j;
+      var tag = '';
+      var reachable = 0;
+      for (final repo in kReleasesRepos) {
+        final res = await http.get(
+          Uri.parse('https://api.github.com/repos/$repo/releases/latest'),
+          headers: {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer/$kAppVersion'},
+        );
+        // 404 — репозитория нет, он приватный или релизов ещё нет
+        if (res.statusCode == 404) continue;
+        if (res.statusCode != 200) {
+          AppLog.warn('Обновления: $repo ответил ${res.statusCode}');
+          continue;
+        }
+        reachable++;
+        final r = jsonDecode(res.body) as Map<String, dynamic>;
+        final t = ((r['tag_name'] as String?) ?? '').replaceFirst(RegExp(r'^v'), '');
+        final hasAsset = (r['assets'] as List? ?? const []).any((a) => a is Map && a['name'] == _assetName);
+        if (hasAsset && (tag.isEmpty || isNewer(t, tag))) {
+          tag = t;
+          j = r;
+        }
+      }
       lastCheck = DateTime.now();
-      if (res.statusCode == 404) {
-        state = UpdateState.upToDate; // релизов ещё нет
+      if (j == null) {
+        state = UpdateState.upToDate; // опубликованных обновлений пока нет
+        AppLog.info('Обновления: доступных релизов нет (проверено мест: $reachable из ${kReleasesRepos.length})');
         notifyListeners();
         return;
       }
-      if (res.statusCode != 200) throw Exception('GitHub ответил ${res.statusCode}');
-      final j = jsonDecode(res.body) as Map<String, dynamic>;
-      final tag = ((j['tag_name'] as String?) ?? '').replaceFirst(RegExp(r'^v'), '');
       latest = tag;
-      AppLog.info('Обновления: последняя версия ${tag.isEmpty ? '?' : tag}, у меня $kAppVersion');
+      AppLog.info('Обновления: последняя версия $tag, у меня $kAppVersion');
       if (tag.isEmpty || !isNewer(tag, kAppVersion)) {
         state = UpdateState.upToDate;
         notifyListeners();
