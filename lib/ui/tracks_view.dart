@@ -71,7 +71,7 @@ class LikedPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     return ListenableBuilder(
-      listenable: app.lib,
+      listenable: Listenable.merge([app.lib, app.cache]),
       builder: (context, _) {
         final tracks = app.lib.liked;
         return TracksPage(
@@ -79,6 +79,13 @@ class LikedPage extends StatelessWidget {
           subtitle: tracks.isEmpty ? null : countTracks(tracks.length),
           tracks: tracks,
           compact: compact,
+          actions: [
+            OfflineButton(
+              on: app.settings.offlineLiked,
+              tracks: tracks,
+              onChanged: app.cache.setLikedOffline,
+            ),
+          ],
           empty: const EmptyState(
             icon: Icons.favorite_border_rounded,
             title: 'Пока ничего',
@@ -129,7 +136,7 @@ class PlaylistPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     return ListenableBuilder(
-      listenable: app.lib,
+      listenable: Listenable.merge([app.lib, app.cache]),
       builder: (context, _) {
         final lib = app.lib;
         final p = lib.playlist(playlistId);
@@ -144,6 +151,11 @@ class PlaylistPage extends StatelessWidget {
           playlistId: playlistId,
           compact: compact,
           actions: [
+            OfflineButton(
+              on: app.cache.isPlaylistOffline(playlistId),
+              tracks: tracks,
+              onChanged: (v) => app.cache.setPlaylistOffline(playlistId, v),
+            ),
             PopupMenuButton<String>(
               tooltip: 'Ещё',
               icon: const Icon(Icons.more_horiz_rounded),
@@ -301,7 +313,7 @@ class _TracksPageState extends State<TracksPage> {
     }
 
     return ListenableBuilder(
-      listenable: app.player,
+      listenable: Listenable.merge([app.player, app.cache]),
       builder: (context, _) {
         final currentId = app.player.current?.id;
         return CustomScrollView(slivers: [
@@ -326,6 +338,7 @@ class _TracksPageState extends State<TracksPage> {
                   playing: app.player.playing,
                   compact: widget.compact,
                   playlistId: widget.playlistId,
+                  cached: app.cache.has(visible[i].id),
                   onPlay: () => app.player.playTracks(visible, i),
                 ),
                 childCount: visible.length,
@@ -347,6 +360,7 @@ class TrackRow extends StatelessWidget {
   final bool compact;
   final String? playlistId;
   final VoidCallback onPlay;
+  final bool cached;
 
   const TrackRow({
     super.key,
@@ -357,6 +371,7 @@ class TrackRow extends StatelessWidget {
     required this.playing,
     required this.compact,
     required this.onPlay,
+    this.cached = false,
     this.playlistId,
   });
 
@@ -383,10 +398,22 @@ class TrackRow extends StatelessWidget {
           Expanded(
             flex: 5,
             child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(track.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: titleColor, fontSize: 15, fontWeight: FontWeight.w500)),
+              Row(children: [
+                Flexible(
+                  child: Text(track.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: titleColor, fontSize: 15, fontWeight: FontWeight.w500)),
+                ),
+                if (cached)
+                  const Padding(
+                    padding: EdgeInsets.only(left: 6),
+                    child: Tooltip(
+                      message: 'Сохранён на компьютере, играет без интернета',
+                      child: Icon(Icons.download_done_rounded, size: 14, color: C.faint),
+                    ),
+                  ),
+              ]),
               const SizedBox(height: 3),
               Text(track.displayArtist,
                   maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
@@ -533,5 +560,37 @@ Future<void> addToPlaylistDialog(BuildContext context, List<String> trackIds) as
   } else {
     lib.addToPlaylist(choice, trackIds);
     lib.messages.add('Добавлено в «${lib.playlist(choice)?.name ?? 'плейлист'}»');
+  }
+}
+
+/// «Сохранить офлайн» для Любимого и плейлистов: показывает, сколько уже скачано
+class OfflineButton extends StatelessWidget {
+  final bool on;
+  final List<Track> tracks;
+  final ValueChanged<bool> onChanged;
+  const OfflineButton({super.key, required this.on, required this.tracks, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final cache = Services.of(context).cache;
+    return ListenableBuilder(
+      listenable: cache,
+      builder: (context, _) {
+        final done = cache.countCached(tracks);
+        final all = tracks.length;
+        final label = !on
+            ? 'Сохранить офлайн'
+            : (done < all ? 'Сохраняю офлайн: $done из $all' : 'Сохранено офлайн');
+        return Tooltip(
+          message: on ? 'Нажмите, чтобы не хранить эти треки на компьютере' : 'Треки скачаются и будут играть без интернета',
+          child: OutlinedButton.icon(
+            style: on ? OutlinedButton.styleFrom(foregroundColor: C.accent, side: const BorderSide(color: C.accent)) : null,
+            onPressed: () => onChanged(!on),
+            icon: Icon(on ? Icons.download_done_rounded : Icons.download_rounded, size: 18),
+            label: Text(label),
+          ),
+        );
+      },
+    );
   }
 }

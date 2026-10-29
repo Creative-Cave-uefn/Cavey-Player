@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart' show Media, Player;
 
+import 'audio_cache.dart';
 import 'auth.dart';
 import 'drive.dart';
 import 'library.dart';
+import 'log.dart';
 import 'models.dart';
 import 'store.dart';
 
@@ -17,7 +19,11 @@ class PlayerController extends ChangeNotifier {
   final LibraryController lib;
   final AccountManager accounts;
   final Settings settings;
+  final AudioCache cache;
   final Player _p = Player();
+
+  /// Панель с текстом песни открыта
+  final ValueNotifier<bool> lyricsOpen = ValueNotifier(false);
   final List<StreamSubscription<dynamic>> _subs = [];
 
   /// Позиция меняется часто, поэтому отдельно — чтобы не перерисовывать всё окно
@@ -34,7 +40,7 @@ class PlayerController extends ChangeNotifier {
   int index = -1;
   DateTime? _openedAt;
 
-  PlayerController(this.lib, this.accounts, this.settings) {
+  PlayerController(this.lib, this.accounts, this.settings, this.cache) {
     _subs.add(_p.stream.position.listen((d) => position.value = d));
     _subs.add(_p.stream.duration.listen((d) {
       duration = d;
@@ -53,6 +59,7 @@ class PlayerController extends ChangeNotifier {
     }));
     _subs.add(_p.stream.error.listen((e) {
       error = e;
+      AppLog.warn('Плеер: ${current?.title ?? ''}', e);
       notifyListeners();
     }));
     unawaited(_p.setVolume(settings.volume));
@@ -99,12 +106,18 @@ class PlayerController extends ChangeNotifier {
     duration = Duration.zero;
     notifyListeners();
     try {
-      final email = await lib.accessFor(t.source);
-      final token = await accounts.token(email);
-      await _p.open(
-        Media(DriveApi.mediaUrl(t.id).toString(), httpHeaders: {'Authorization': 'Bearer $token'}),
-        play: at == null && play,
-      );
+      // Сохранённый трек играет с диска, остальные — потоком с Google Диска
+      final local = cache.fileFor(t.id);
+      Media media;
+      if (cache.has(t.id) && local.existsSync()) {
+        media = Media(local.path);
+      } else {
+        final email = await lib.accessFor(t.source);
+        final token = await accounts.token(email);
+        media = Media(DriveApi.mediaUrl(t.id).toString(), httpHeaders: {'Authorization': 'Bearer $token'});
+      }
+      cache.touch(t);
+      await _p.open(media, play: at == null && play);
       _openedAt = DateTime.now();
       if (at != null) {
         await _p.stream.duration
@@ -115,7 +128,10 @@ class PlayerController extends ChangeNotifier {
       }
     } catch (e) {
       error = '$e';
-      lib.messages.add('Не получилось включить «${t.title}»: $e');
+      AppLog.warn('Не получилось включить «${t.title}»', e);
+      lib.messages.add(cache.has(t.id)
+          ? 'Не получилось включить «${t.title}»: $e'
+          : 'Не получилось включить «${t.title}». Если нет интернета, играют только сохранённые треки.');
       notifyListeners();
     }
   }
@@ -210,6 +226,7 @@ class PlayerController extends ChangeNotifier {
     }
     _p.dispose();
     position.dispose();
+    lyricsOpen.dispose();
     super.dispose();
   }
 }

@@ -84,7 +84,17 @@ class PlayerBar extends StatelessWidget {
             _Progress(player: p),
           ]);
 
+          final lyricsButton = ValueListenableBuilder<bool>(
+            valueListenable: p.lyricsOpen,
+            builder: (context, open, _) => IconButton(
+              tooltip: open ? 'Скрыть текст песни' : 'Текст песни',
+              onPressed: () => p.lyricsOpen.value = !open,
+              icon: Icon(Icons.lyrics_outlined, color: open ? C.accent : C.muted),
+            ),
+          );
+
           final right = Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            lyricsButton,
             IconButton(
               tooltip: 'Очередь',
               onPressed: t == null ? null : () => _showQueue(context),
@@ -106,6 +116,7 @@ class PlayerBar extends StatelessWidget {
             return Row(children: [
               Expanded(flex: 4, child: nowPlaying),
               Expanded(flex: 5, child: controls),
+              lyricsButton,
             ]);
           }
           return Row(children: [

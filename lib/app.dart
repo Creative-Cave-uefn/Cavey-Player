@@ -3,10 +3,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'config.dart';
+import 'core/audio_cache.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/drive.dart';
 import 'core/library.dart';
+import 'core/lyrics.dart';
 import 'core/player.dart';
 import 'core/store.dart';
 import 'core/updater.dart';
@@ -23,11 +25,13 @@ class AppServices {
   final PlayerController player;
   final CoverService covers;
   final Updater updater;
+  final AudioCache cache;
+  final LyricsService lyrics;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
 
-  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.keysBuiltIn);
+  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.keysBuiltIn);
 
   static Future<AppServices> create() async {
     final store = await AppStore.open();
@@ -46,11 +50,14 @@ class AppServices {
     final drive = DriveApi(accounts);
     final lib = LibraryController(store, settings, accounts, drive);
     final covers = CoverService(drive, lib, store.sub('covers'));
-    final player = PlayerController(lib, accounts, settings);
+    final cache = AudioCache(store.sub('audio'), drive, lib, settings);
+    final player = PlayerController(lib, accounts, settings, cache);
+    final lyrics = LyricsService(store.sub('lyrics'));
     accounts.addListener(lib.saveSettings);
     await lib.start();
     updater.start();
-    return AppServices._(store, settings, accounts, drive, lib, player, covers, updater, builtIn);
+    await cache.init();
+    return AppServices._(store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, builtIn);
   }
 }
 

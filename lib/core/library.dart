@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../config.dart';
 import 'auth.dart';
+import 'log.dart';
 import 'drive.dart';
 import 'models.dart';
 import 'store.dart';
@@ -275,6 +276,32 @@ class LibraryController extends ChangeNotifier {
     return failed;
   }
 
+  // ---------- служебная папка cave-data внутри общей папки ----------
+
+  String? _dataFolderId;
+
+  /// Папка для журналов, статусов «сейчас слушаю» и ленты событий
+  Future<String> dataFolder() => _withHub((email) async {
+        final cached = _dataFolderId;
+        if (cached != null) return cached;
+        final found = (await drive.listChildren(email, settings.hubId!, nameEquals: dataFolderName))
+            .where((f) => f.isFolder)
+            .toList();
+        final id = found.isNotEmpty ? found.first.id : await drive.createFolder(email, dataFolderName, parent: settings.hubId);
+        _dataFolderId = id;
+        return id;
+      });
+
+  static const dataFolderName = 'cave-data';
+
+  /// Кладёт журнал в общую папку, чтобы его мог посмотреть тот, кто чинит приложение
+  Future<void> uploadLog(String text) async {
+    final folder = await dataFolder();
+    final who = (me ?? 'unknown').split('@').first;
+    final ts = DateTime.now().toIso8601String().split('.').first.replaceAll(':', '-');
+    await _withHub((e) => drive.createFile(e, folder, 'log-$who-$ts.txt', text, mime: 'text/plain'));
+  }
+
   Future<void> leaveHub() async {
     _pollTimer?.cancel();
     _scanTimer?.cancel();
@@ -286,6 +313,7 @@ class LibraryController extends ChangeNotifier {
     data = LibraryData();
     _pending.clear();
     _libModified = null;
+    _dataFolderId = null;
     await saveSettings();
     await _saveLocal();
     _changed();
@@ -437,6 +465,7 @@ class LibraryController extends ChangeNotifier {
         try {
           added += await _scanSource(s);
         } catch (e) {
+          AppLog.warn('Сканирование «${s.name}»', e);
           messages.add('Не получилось обновить «${s.name}»: $e');
         }
       }
@@ -550,6 +579,7 @@ class LibraryController extends ChangeNotifier {
       final children = await drive.listChildren(email, folder);
       for (final c in children) {
         if (c.isFolder) {
+          if (c.name == dataFolderName && folder == settings.hubId) continue; // служебная папка
           if (depth < 10) queue.add((c.id, path.isEmpty ? c.name : '$path/${c.name}', depth + 1));
         } else if (audioExt.hasMatch(c.name) || c.mimeType.startsWith('audio/')) {
           found.add(_Found(c, folder, path));
@@ -694,6 +724,7 @@ class LibraryController extends ChangeNotifier {
   String firstNameOf(String email) => nameOf(email).split(' ').first;
 
   void _report(Object e) {
+    AppLog.warn('Синхронизация', e);
     syncError = '$e';
     messages.add('$e');
     notifyListeners();

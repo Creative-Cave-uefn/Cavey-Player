@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
+import '../core/log.dart';
 import '../core/updater.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -127,6 +130,10 @@ class _AccountsPageState extends State<AccountsPage> {
             Padding(padding: const EdgeInsets.only(top: 12), child: Text(_error!, style: const TextStyle(color: C.danger))),
           const SizedBox(height: 44),
           const _UpdatesSection(),
+          const SizedBox(height: 44),
+          const _CacheSection(),
+          const SizedBox(height: 44),
+          const _LogSection(),
           if (!app.keysBuiltIn) ...[
             const SizedBox(height: 44),
             Text('Ключ приложения Google', style: display(20)),
@@ -212,5 +219,124 @@ class _UpdatesSection extends StatelessWidget {
         ]);
       },
     );
+  }
+}
+
+String _size(int bytes) {
+  if (bytes >= 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} ГБ';
+  return '${(bytes / (1024 * 1024)).round()} МБ';
+}
+
+class _CacheSection extends StatelessWidget {
+  const _CacheSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final cache = Services.of(context).cache;
+    const limits = [1024, 2048, 5120, 10240, 20480];
+    return ListenableBuilder(
+      listenable: cache,
+      builder: (context, _) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Кэш и офлайн', style: display(20)),
+        const SizedBox(height: 10),
+        const Text(
+          'Прослушанные треки сохраняются на компьютере и в следующий раз играют сразу, даже без интернета. '
+          'Любимое и плейлисты можно сохранить целиком кнопкой «Сохранить офлайн» на их странице.',
+          style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
+        ),
+        const SizedBox(height: 16),
+        Wrap(spacing: 16, runSpacing: 12, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          Text('Занято ${_size(cache.sizeBytes)}', style: const TextStyle(fontSize: 15)),
+          Row(mainAxisSize: MainAxisSize.min, children: [
+            const Text('Предел:', style: TextStyle(color: C.muted)),
+            const SizedBox(width: 10),
+            DropdownButton<int>(
+              value: limits.contains(cache.settings.cacheLimitMb) ? cache.settings.cacheLimitMb : 2048,
+              dropdownColor: C.raised,
+              underline: const SizedBox.shrink(),
+              items: [for (final l in limits) DropdownMenuItem(value: l, child: Text(_size(l * 1024 * 1024)))],
+              onChanged: (v) {
+                if (v != null) cache.setLimit(v);
+              },
+            ),
+          ]),
+          OutlinedButton(
+            onPressed: () async {
+              final ok = await confirm(context,
+                  title: 'Очистить кэш?',
+                  text: 'Удалятся сохранённые треки, кроме отмеченных «Сохранить офлайн». Музыка на Диске не пострадает.',
+                  action: 'Очистить');
+              if (ok) await cache.clear();
+            },
+            child: const Text('Очистить кэш'),
+          ),
+        ]),
+        if (cache.pending > 0) ...[
+          const SizedBox(height: 8),
+          Text('Скачивается в фоне: ${countTracks(cache.pending)}', style: const TextStyle(color: C.faint, fontSize: 13)),
+        ],
+      ]),
+    );
+  }
+}
+
+class _LogSection extends StatefulWidget {
+  const _LogSection();
+  @override
+  State<_LogSection> createState() => _LogSectionState();
+}
+
+class _LogSectionState extends State<_LogSection> {
+  bool _sending = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final errors = AppLog.recentErrors();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Журнал ошибок', style: display(20)),
+      const SizedBox(height: 10),
+      Text(
+        errors == 0
+            ? 'За последние три дня ошибок не было.'
+            : 'За последние три дня: ${errors} ${plural(errors, 'ошибка', 'ошибки', 'ошибок')}. '
+                'Если что-то сломалось, отправьте журнал: он попадёт в общую папку, в cave-data.',
+        style: const TextStyle(color: C.muted, fontSize: 15, height: 1.5),
+      ),
+      const SizedBox(height: 16),
+      Wrap(spacing: 12, runSpacing: 10, children: [
+        OutlinedButton.icon(
+          onPressed: _sending
+              ? null
+              : () async {
+                  setState(() => _sending = true);
+                  try {
+                    await app.lib.uploadLog(AppLog.tail(2000));
+                    app.lib.messages.add('Журнал отправлен в общую папку, в cave-data');
+                  } catch (e) {
+                    app.lib.messages.add('Не получилось отправить журнал: $e');
+                  } finally {
+                    if (mounted) setState(() => _sending = false);
+                  }
+                },
+          icon: const Icon(Icons.upload_file_rounded, size: 18),
+          label: Text(_sending ? 'Отправляю…' : 'Отправить журнал'),
+        ),
+        OutlinedButton.icon(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: AppLog.tail()));
+            app.lib.messages.add('Журнал скопирован');
+          },
+          icon: const Icon(Icons.copy_rounded, size: 18),
+          label: const Text('Скопировать'),
+        ),
+        if (AppLog.dir != null)
+          OutlinedButton.icon(
+            onPressed: () => launchUrl(Uri.file(AppLog.dir!.path)),
+            icon: const Icon(Icons.folder_open_rounded, size: 18),
+            label: const Text('Открыть папку'),
+          ),
+      ]),
+    ]);
   }
 }

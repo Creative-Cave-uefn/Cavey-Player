@@ -2,6 +2,7 @@
 // конкретного аккаунта: разные папки могут быть доступны разным аккаунтам.
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -151,6 +152,38 @@ class DriveApi {
   Future<Uint8List> readRange(String email, String id, int start, int endInclusive) async {
     final res = await send(email, 'GET', mediaUrl(id), headers: {'Range': 'bytes=$start-$endInclusive'});
     return res.bodyBytes;
+  }
+
+  /// Скачивает файл целиком на диск по частям, не держа его в памяти
+  Future<void> downloadToFile(String email, String id, File target, {void Function(int got, int total)? onProgress}) async {
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final token = await accounts.token(email, force: attempt == 1);
+      final req = http.Request('GET', mediaUrl(id))..headers['Authorization'] = 'Bearer $token';
+      final res = await _http.send(req);
+      if (res.statusCode == 401 && attempt == 0) {
+        await res.stream.drain<void>();
+        continue;
+      }
+      if (res.statusCode >= 400) {
+        final body = await http.Response.fromStream(res);
+        throw DriveException(res.statusCode, _errorText(body));
+      }
+      final part = File('${target.path}.part');
+      final sink = part.openWrite();
+      var got = 0;
+      try {
+        await for (final chunk in res.stream) {
+          sink.add(chunk);
+          got += chunk.length;
+          onProgress?.call(got, res.contentLength ?? 0);
+        }
+      } finally {
+        await sink.close();
+      }
+      if (await target.exists()) await target.delete();
+      await part.rename(target.path);
+      return;
+    }
   }
 
   Future<Uint8List> download(String email, String id) async {

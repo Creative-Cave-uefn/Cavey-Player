@@ -54,6 +54,10 @@ class Settings {
   double volume = 80;
   String? lastScan;
   String? hubSourceChecked;
+  int cacheLimitMb = 2048;
+  bool offlineLiked = false;
+  Set<String> offlinePlaylists = {};
+  bool discord = true;
 
   Map<String, dynamic> toJson() => {
         'clientId': clientId,
@@ -66,6 +70,10 @@ class Settings {
         'volume': volume,
         'lastScan': lastScan,
         'hubSourceChecked': hubSourceChecked,
+        'cacheLimitMb': cacheLimitMb,
+        'offlineLiked': offlineLiked,
+        'offlinePlaylists': offlinePlaylists.toList(),
+        'discord': discord,
       };
 
   static Settings fromJson(dynamic j) {
@@ -82,6 +90,10 @@ class Settings {
     s.volume = ((j['volume'] as num?) ?? 80).toDouble();
     s.lastScan = j['lastScan'] as String?;
     s.hubSourceChecked = j['hubSourceChecked'] as String?;
+    s.cacheLimitMb = (j['cacheLimitMb'] as num?)?.toInt() ?? 2048;
+    s.offlineLiked = j['offlineLiked'] == true;
+    s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
+    s.discord = j['discord'] != false;
     return s;
   }
 }

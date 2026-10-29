@@ -7,6 +7,7 @@ import '../app.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
 import 'albums_view.dart';
+import 'lyrics_panel.dart';
 import 'player_bar.dart';
 import 'sources_view.dart';
 import 'theme.dart';
@@ -90,6 +91,10 @@ class _ShellState extends State<Shell> {
                         valueListenable: _nav,
                         builder: (context, nav, _) => _content(nav, compact),
                       ),
+                    ),
+                    ValueListenableBuilder<bool>(
+                      valueListenable: app.player.lyricsOpen,
+                      builder: (context, open, _) => open ? const LyricsPanel() : const SizedBox.shrink(),
                     ),
                   ]),
                 ),
