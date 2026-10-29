@@ -8,6 +8,7 @@ import '../app.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
 import 'albums_view.dart';
+import 'company_view.dart';
 import 'library_views.dart';
 import 'lyrics_panel.dart';
 import 'player_bar.dart';
@@ -131,6 +132,8 @@ class _ShellState extends State<Shell> {
         return LikedPage(key: const ValueKey('liked'), compact: compact);
       case 'playlist':
         return PlaylistPage(key: ValueKey('pl:${nav.id}'), playlistId: nav.id!, compact: compact);
+      case 'company':
+        return CompanyPage(key: const ValueKey('company'), compact: compact);
       case 'artists':
         return ArtistsPage(key: const ValueKey('artists'), compact: compact);
       case 'artist':
@@ -185,6 +188,8 @@ class _Sidebar extends StatelessWidget {
             item(Icons.mic_none_rounded, 'Исполнители', const Nav('artists')),
             item(Icons.schedule_rounded, 'Недавно добавленные', const Nav('recent')),
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
+            item(Icons.groups_outlined, 'Компания', const Nav('company')),
+            NowListeningSidebar(compact: compact),
             const SizedBox(height: 18),
             if (!compact)
               Padding(

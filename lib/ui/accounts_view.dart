@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
+import '../config.dart';
 import '../core/log.dart';
 import '../core/updater.dart';
 import 'theme.dart';
@@ -130,6 +131,8 @@ class _AccountsPageState extends State<AccountsPage> {
             Padding(padding: const EdgeInsets.only(top: 12), child: Text(_error!, style: const TextStyle(color: C.danger))),
           const SizedBox(height: 44),
           const _UpdatesSection(),
+          const SizedBox(height: 44),
+          const _DiscordSection(),
           const SizedBox(height: 44),
           const _CacheSection(),
           const SizedBox(height: 44),
@@ -337,6 +340,46 @@ class _LogSectionState extends State<_LogSection> {
             label: const Text('Открыть папку'),
           ),
       ]),
+    ]);
+  }
+}
+
+class _DiscordSection extends StatefulWidget {
+  const _DiscordSection();
+  @override
+  State<_DiscordSection> createState() => _DiscordSectionState();
+}
+
+class _DiscordSectionState extends State<_DiscordSection> {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Статус в Discord', style: display(20)),
+      const SizedBox(height: 10),
+      if (kDiscordClientId.isEmpty)
+        const Text(
+          'В этой сборке статус в Discord выключен: не задан ID приложения Discord (переменная DISCORD_CLIENT_ID в сборке).',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
+        )
+      else
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: app.settings.discord,
+          activeColor: C.accent,
+          title: const Text('Показывать в Discord, что я слушаю'),
+          subtitle: const Text('Друзья в Discord увидят название трека и исполнителя, пока музыка играет.',
+              style: TextStyle(color: C.faint, fontSize: 13)),
+          onChanged: (v) async {
+            setState(() => app.settings.discord = v);
+            await app.lib.saveSettings();
+            app.discord.update(app.player.current,
+                playing: app.player.playing,
+                position: app.player.position.value,
+                duration: app.player.duration,
+                enabled: v);
+          },
+        ),
     ]);
   }
 }

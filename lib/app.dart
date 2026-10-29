@@ -6,10 +6,12 @@ import 'config.dart';
 import 'core/audio_cache.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
+import 'core/discord.dart';
 import 'core/drive.dart';
 import 'core/library.dart';
 import 'core/lyrics.dart';
 import 'core/player.dart';
+import 'core/social.dart';
 import 'core/store.dart';
 import 'core/updater.dart';
 import 'ui/onboarding.dart';
@@ -27,11 +29,13 @@ class AppServices {
   final Updater updater;
   final AudioCache cache;
   final LyricsService lyrics;
+  final SocialController social;
+  final DiscordPresence discord;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
 
-  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.keysBuiltIn);
+  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.discord, this.keysBuiltIn);
 
   static Future<AppServices> create() async {
     final store = await AppStore.open();
@@ -57,7 +61,22 @@ class AppServices {
     await lib.start();
     updater.start();
     await cache.init();
-    return AppServices._(store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, builtIn);
+    final social = SocialController(lib, drive, player)..start();
+    final discord = DiscordPresence();
+    void showInDiscord() => discord.update(
+          player.current,
+          playing: player.playing,
+          position: player.position.value,
+          duration: player.duration,
+          enabled: settings.discord,
+        );
+    player.addListener(showInDiscord);
+    player.onUserAction = () {
+      social.onUserAction();
+      showInDiscord();
+    };
+    return AppServices._(
+        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, builtIn);
   }
 }
 

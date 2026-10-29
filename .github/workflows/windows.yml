@@ -72,6 +72,7 @@ jobs:
             --build-name $env:APP_VERSION --build-number ${{ github.run_number }} `
             "--dart-define=APP_VERSION=$env:APP_VERSION" `
             "--dart-define=CAVE_LIBRARY_ID=${{ vars.CAVE_LIBRARY_ID }}" `
+            "--dart-define=DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}" `
             "--dart-define=GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID" `
             "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET"
 

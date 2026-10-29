@@ -296,6 +296,12 @@ class LibraryController extends ChangeNotifier {
     return failed;
   }
 
+  /// Для соседних модулей: выполнить запрос от аккаунта с доступом к общей папке
+  Future<T> withHub<T>(Future<T> Function(String email) fn) => _withHub(fn);
+
+  /// События для ленты: загрузки, новые плейлисты, лайки
+  void Function(Map<String, dynamic> event)? onEvent;
+
   // ---------- служебная папка cave-data внутри общей папки ----------
 
   String? _dataFolderId;
@@ -584,6 +590,10 @@ class LibraryController extends ChangeNotifier {
     });
     if (batch.isNotEmpty) commit({'op': 'upsertTracks', 'tracks': batch});
 
+    // Свои новые файлы, загруженные мимо приложения, тоже попадают в ленту
+    final mine = toParse.where((f) => existing[f.file.id] == null && f.file.ownerEmail == me).length;
+    if (mine > 0) onEvent?.call({'k': 'upload', 'n': mine, 'folder': s.name});
+
     final removed = existing.keys.where((id) => !seen.contains(id)).toList();
     if (removed.isNotEmpty) commit({'op': 'removeTracks', 'ids': removed});
     return toParse.where((f) => existing[f.file.id] == null).length;
@@ -631,7 +641,9 @@ class LibraryController extends ChangeNotifier {
   void toggleLike(String trackId) {
     final m = me;
     if (m == null) return;
-    commit({'op': 'like', 'id': trackId, 'email': m, 'on': !isLiked(trackId)});
+    final on = !isLiked(trackId);
+    commit({'op': 'like', 'id': trackId, 'email': m, 'on': on});
+    if (on) onEvent?.call({'k': 'like', 'track': trackId});
   }
 
   String createPlaylist(String name, [List<String> items = const []]) {
@@ -646,6 +658,7 @@ class LibraryController extends ChangeNotifier {
         items: List.of(items),
       ).toJson(),
     });
+    onEvent?.call({'k': 'playlist', 'id': id, 'name': name});
     return id;
   }
 
@@ -857,6 +870,7 @@ class LibraryController extends ChangeNotifier {
       final ok = upload.done;
       if (ok > 0) {
         onUploaded?.call(ok, source?.name ?? 'Cave Player');
+        onEvent?.call({'k': 'upload', 'n': ok, 'folder': source?.name ?? 'Cave Player'});
       }
       messages.add(upload.failed == 0
           ? 'Загружено: ${ok} ${ok == 1 ? 'трек' : 'треков'}'

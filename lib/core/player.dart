@@ -181,9 +181,22 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     await _p.playOrPause();
+    onUserAction?.call();
   }
 
-  Future<void> seek(Duration d) => _p.seek(d);
+  Future<void> seek(Duration d) async {
+    await _p.seek(d);
+    onUserAction?.call();
+  }
+
+  Future<void> pause() => _p.pause();
+  Future<void> play() => _p.play();
+
+  /// Перемотка или пауза пользователем — чтобы друзья, слушающие вместе, сразу это увидели
+  void Function()? onUserAction;
+
+  /// Время, когда трек был открыт (для подсчёта прослушиваний)
+  DateTime? get openedAt => _openedAt;
 
   Future<void> setVolume(double v, {bool save = false}) async {
     settings.volume = v;

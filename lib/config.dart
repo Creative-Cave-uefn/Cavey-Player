@@ -16,3 +16,7 @@ const kReleasesRepo = 'Creative-Cave-uefn/cave-player-releases';
 // Папка общей библиотеки по умолчанию (необязательно): ID папки «Cave Player»
 // на Диске. Если не задана, приложение само ищет доступную библиотеку.
 const kDefaultLibraryId = String.fromEnvironment('CAVE_LIBRARY_ID');
+
+// ID приложения в Discord Developer Portal для статуса «Слушает в Cave Player».
+// Без него статус в Discord просто не показывается.
+const kDiscordClientId = String.fromEnvironment('DISCORD_CLIENT_ID');
