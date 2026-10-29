@@ -14,9 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Версия Flutter закреплена: в свежих версиях движок под Windows вылетает
+      # (access violation в flutter_windows.dll, см. историю коммитов)
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: 3.27.4
           cache: true
 
       # Папку windows/ генерирует сам Flutter; если вы уже закоммитили свою, она останется как есть
