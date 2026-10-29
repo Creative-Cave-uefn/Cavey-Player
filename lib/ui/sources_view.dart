@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
 import '../core/drive.dart';
+import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -154,6 +155,17 @@ class _SourcesPageState extends State<SourcesPage> {
                     ),
             ),
           ]),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => NavScope.of(context).go(const Nav('duplicates')),
+              icon: const Icon(Icons.content_copy_rounded, size: 16),
+              label: Text(lib.duplicates.isEmpty
+                  ? 'Дубликатов нет'
+                  : 'Дубликаты: ${lib.duplicates.length} ${plural(lib.duplicates.length, 'группа', 'группы', 'групп')}'),
+            ),
+          ),
           const SizedBox(height: 44),
           Text('Пригласить друзей', style: display(20)),
           const SizedBox(height: 10),

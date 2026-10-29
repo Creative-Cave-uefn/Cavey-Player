@@ -29,6 +29,7 @@ class DriveFile {
   final String mimeType;
   final int size;
   final String modifiedTime;
+  final String createdTime;
   final String ownerEmail;
   final String ownerName;
 
@@ -38,6 +39,7 @@ class DriveFile {
         mimeType = (j['mimeType'] as String?) ?? '',
         size = int.tryParse('${j['size'] ?? 0}') ?? 0,
         modifiedTime = (j['modifiedTime'] as String?) ?? '',
+        createdTime = (j['createdTime'] as String?) ?? '',
         ownerEmail = _person(j)['emailAddress'] ?? '',
         ownerName = _person(j)['displayName'] ?? '';
 
@@ -54,7 +56,7 @@ class DriveFile {
     return const {};
   }
 
-  static const fields = 'id,name,mimeType,size,modifiedTime,owners(emailAddress,displayName),lastModifyingUser(emailAddress,displayName)';
+  static const fields = 'id,name,mimeType,size,modifiedTime,createdTime,owners(emailAddress,displayName),lastModifyingUser(emailAddress,displayName)';
 }
 
 /// Достаёт ID папки или файла из ссылки Google Диска (или возвращает строку как есть).
@@ -222,6 +224,45 @@ class DriveApi {
       body: utf8.encode(body),
     );
     return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  /// Загружает файл с компьютера в папку на Диске (возобновляемая загрузка, подходит для больших файлов)
+  Future<DriveFile> uploadFile(String email, String parent, File file, {void Function(double progress)? onProgress}) async {
+    final name = file.uri.pathSegments.where((s) => s.isNotEmpty).last;
+    final length = await file.length();
+    final start = await send(
+      email,
+      'POST',
+      upload('files', {'uploadType': 'resumable', 'fields': DriveFile.fields}),
+      headers: {
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Length': '$length',
+      },
+      body: utf8.encode(jsonEncode({'name': name, 'parents': [parent]})),
+    );
+    final location = start.headers['location'];
+    if (location == null) throw DriveException(500, 'Диск не дал адрес для загрузки');
+    final token = await accounts.token(email);
+    final req = http.StreamedRequest('PUT', Uri.parse(location))
+      ..headers['Authorization'] = 'Bearer $token'
+      ..contentLength = length;
+    final response = _http.send(req);
+    var sent = 0;
+    await for (final chunk in file.openRead()) {
+      req.sink.add(chunk);
+      sent += chunk.length;
+      if (length > 0) onProgress?.call(sent / length);
+    }
+    req.sink.close();
+    final res = await http.Response.fromStream(await response);
+    if (res.statusCode != 200 && res.statusCode != 201) throw DriveException(res.statusCode, _errorText(res));
+    return DriveFile.fromJson(jsonDecode(res.body) as Map);
+  }
+
+  /// Перемещает файл в корзину Диска
+  Future<void> trash(String email, String id) async {
+    await send(email, 'PATCH', api('files/$id'),
+        headers: {'Content-Type': 'application/json; charset=utf-8'}, body: utf8.encode(jsonEncode({'trashed': true})));
   }
 
   /// Файлы library.json, которые видит аккаунт (свои и расшаренные), новые первыми

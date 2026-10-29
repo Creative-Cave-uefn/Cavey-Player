@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
 import 'albums_view.dart';
+import 'library_views.dart';
 import 'lyrics_panel.dart';
 import 'player_bar.dart';
 import 'sources_view.dart';
@@ -43,6 +45,7 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   final _nav = NavController();
   StreamSubscription<String>? _msgs;
+  bool _dragging = false;
 
   @override
   void didChangeDependencies() {
@@ -79,7 +82,15 @@ class _ShellState extends State<Shell> {
         },
         child: Focus(
           autofocus: true,
-          child: Scaffold(
+          child: DropTarget(
+            onDragEntered: (_) => setState(() => _dragging = true),
+            onDragExited: (_) => setState(() => _dragging = false),
+            onDragDone: (detail) {
+              setState(() => _dragging = false);
+              uploadPaths(context, [for (final f in detail.files) f.path]);
+            },
+            child: Stack(children: [
+          Scaffold(
             body: LayoutBuilder(builder: (context, box) {
               final compact = box.maxWidth < 860;
               return Column(children: [
@@ -102,6 +113,9 @@ class _ShellState extends State<Shell> {
               ]);
             }),
           ),
+              if (_dragging) const Positioned.fill(child: IgnorePointer(child: _DropOverlay())),
+            ]),
+          ),
         ),
       ),
     );
@@ -117,6 +131,14 @@ class _ShellState extends State<Shell> {
         return LikedPage(key: const ValueKey('liked'), compact: compact);
       case 'playlist':
         return PlaylistPage(key: ValueKey('pl:${nav.id}'), playlistId: nav.id!, compact: compact);
+      case 'artists':
+        return ArtistsPage(key: const ValueKey('artists'), compact: compact);
+      case 'artist':
+        return ArtistPage(key: ValueKey('artist:${nav.id}'), artistKey: nav.id!, compact: compact);
+      case 'recent':
+        return RecentPage(key: const ValueKey('recent'), compact: compact);
+      case 'duplicates':
+        return const DuplicatesPage(key: ValueKey('duplicates'));
       case 'sources':
         return const SourcesPage(key: ValueKey('sources'));
       case 'accounts':
@@ -160,6 +182,8 @@ class _Sidebar extends StatelessWidget {
             ),
             item(Icons.library_music_outlined, 'Все треки', const Nav('all')),
             item(Icons.album_outlined, 'Альбомы', const Nav('albums')),
+            item(Icons.mic_none_rounded, 'Исполнители', const Nav('artists')),
+            item(Icons.schedule_rounded, 'Недавно добавленные', const Nav('recent')),
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
             const SizedBox(height: 18),
             if (!compact)
@@ -214,6 +238,7 @@ class _Sidebar extends StatelessWidget {
                     ? const Icon(Icons.error_outline_rounded, size: 16, color: C.danger)
                     : null),
             _SyncLine(compact: compact),
+            UploadLine(compact: compact),
             _UpdateLine(compact: compact),
             const SizedBox(height: 10),
           ]);
@@ -357,6 +382,34 @@ class _NavItem extends StatelessWidget {
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 10, vertical: 1),
       child: compact ? Tooltip(message: label, child: body) : body,
+    );
+  }
+}
+
+/// Подсказка, когда над окном тащат файлы
+class _DropOverlay extends StatelessWidget {
+  const _DropOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: C.bg.withValues(alpha: 0.86),
+      alignment: Alignment.center,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 40),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: C.accent, width: 2),
+        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.upload_rounded, size: 44, color: C.accent),
+          const SizedBox(height: 16),
+          Text('Отпустите, чтобы загрузить', style: display(22)),
+          const SizedBox(height: 8),
+          const Text('Музыка уйдёт на Google Диск и появится в библиотеке у всех',
+              style: TextStyle(color: C.muted)),
+        ]),
+      ),
     );
   }
 }

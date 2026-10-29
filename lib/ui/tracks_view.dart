@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/models.dart';
+import 'library_views.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -27,6 +28,11 @@ class AllTracksPage extends StatelessWidget {
           tracks: tracks,
           compact: compact,
           actions: [
+            OutlinedButton.icon(
+              onPressed: lib.data.sources.isEmpty || lib.upload.running ? null : () => pickAndUpload(context),
+              icon: const Icon(Icons.upload_rounded, size: 18),
+              label: const Text('Загрузить'),
+            ),
             Tooltip(
               message: lib.scan.running
                   ? (lib.scan.total > 0 ? '${lib.scan.text}: ${lib.scan.done} из ${lib.scan.total}' : lib.scan.text)
@@ -224,20 +230,97 @@ class TracksPage extends StatefulWidget {
 class _TracksPageState extends State<TracksPage> {
   final _search = TextEditingController();
   String _query = '';
+  String _sort = ''; // пусто — порядок как есть
+  bool _desc = false;
 
-  List<Track> get _visible {
+  List<Track> _visible(String Function(String) nameOf) {
     final q = _query.trim().toLowerCase();
-    if (q.isEmpty) return widget.tracks;
-    return widget.tracks
-        .where((t) =>
-            t.title.toLowerCase().contains(q) || t.artist.toLowerCase().contains(q) || t.album.toLowerCase().contains(q))
-        .toList();
+    var list = q.isEmpty
+        ? widget.tracks
+        : widget.tracks
+            .where((t) =>
+                t.title.toLowerCase().contains(q) || t.artist.toLowerCase().contains(q) || t.album.toLowerCase().contains(q))
+            .toList();
+    if (_sort.isEmpty) return list;
+    int byText(String a, String b) => a.toLowerCase().compareTo(b.toLowerCase());
+    int byNo(Track a, Track b) => (a.no ?? 9999).compareTo(b.no ?? 9999);
+    String when(Track t) => t.added.isNotEmpty ? t.added : t.modified;
+    final cmp = switch (_sort) {
+      'title' => (Track a, Track b) => byText(a.title, b.title),
+      'artist' => (Track a, Track b) {
+          final r = byText(a.displayArtist, b.displayArtist);
+          if (r != 0) return r;
+          final r2 = byText(a.displayAlbum, b.displayAlbum);
+          return r2 != 0 ? r2 : byNo(a, b);
+        },
+      'album' => (Track a, Track b) {
+          final r = byText(a.displayAlbum, b.displayAlbum);
+          return r != 0 ? r : byNo(a, b);
+        },
+      'by' => (Track a, Track b) => byText(nameOf(a.by), nameOf(b.by)),
+      _ => (Track a, Track b) => when(a).compareTo(when(b)),
+    };
+    list = List.of(list)..sort(cmp);
+    return _desc ? list.reversed.toList() : list;
+  }
+
+  void _setSort(String key) => setState(() {
+        if (_sort == key) {
+          if (_desc == (key == 'added')) {
+            _desc = !_desc;
+          } else {
+            _sort = ''; // третий клик — вернуть исходный порядок
+            _desc = false;
+          }
+        } else {
+          _sort = key;
+          _desc = key == 'added'; // новые сверху
+        }
+      });
+
+  Widget _sortHeader(bool compact) {
+    Widget label(String key, String text) {
+      final active = _sort == key;
+      return InkWell(
+        borderRadius: BorderRadius.circular(4),
+        onTap: () => _setSort(key),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Text(text, style: TextStyle(fontSize: 12, color: active ? C.text : C.faint, fontWeight: FontWeight.w500)),
+            if (active)
+              Icon(_desc ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded, size: 13, color: C.accent),
+          ]),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
+      height: 32,
+      child: Row(children: [
+        const SizedBox(width: 28, child: Text('#', style: TextStyle(fontSize: 12, color: C.faint))),
+        const SizedBox(width: 62),
+        Expanded(
+          flex: 5,
+          child: Row(children: [label('title', 'Название'), const SizedBox(width: 14), label('artist', 'Исполнитель')]),
+        ),
+        if (!compact) ...[
+          const SizedBox(width: 16),
+          Expanded(flex: 3, child: Align(alignment: Alignment.centerLeft, child: label('album', 'Альбом'))),
+          const SizedBox(width: 16),
+          Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: label('by', 'Загрузил(а)'))),
+        ],
+        SizedBox(width: 88, child: Align(alignment: Alignment.centerRight, child: label('added', 'Новые'))),
+      ]),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final visible = _visible;
+    final visible = _visible(app.lib.firstNameOf);
     final pad = widget.compact ? 20.0 : 36.0;
 
     final header = Padding(
@@ -324,6 +407,11 @@ class _TracksPageState extends State<TracksPage> {
                 padding: EdgeInsets.symmetric(horizontal: pad, vertical: 24),
                 child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
               ),
+            ),
+          if (visible.isNotEmpty)
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(pad - 12, 0, pad - 12, 4),
+              sliver: SliverToBoxAdapter(child: _sortHeader(widget.compact)),
             ),
           SliverPadding(
             padding: EdgeInsets.fromLTRB(pad - 12, 0, pad - 12, 24),
@@ -509,6 +597,13 @@ class TrackMenu extends StatelessWidget {
             app.lib.removeFromPlaylist(playlistId!, track.id);
           case 'album':
             NavScope.of(context).go(Nav('album', track.albumKey));
+          case 'artist':
+            NavScope.of(context).go(Nav('artist', track.displayArtist.toLowerCase()));
+          case 'edit':
+            await editTrackDialog(context, track);
+          case 'hide':
+            app.lib.hideTrack(track.id, true);
+            app.lib.messages.add('«${track.title}» скрыт из библиотеки у всех. Вернуть можно в разделе «Дубликаты».');
         }
       },
       itemBuilder: (_) => [
@@ -516,6 +611,10 @@ class TrackMenu extends StatelessWidget {
         const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
         if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
         const PopupMenuItem(value: 'album', child: Text('Открыть альбом')),
+        const PopupMenuItem(value: 'artist', child: Text('Открыть исполнителя')),
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'edit', child: Text('Изменить название…')),
+        const PopupMenuItem(value: 'hide', child: Text('Скрыть из библиотеки')),
       ],
     );
   }

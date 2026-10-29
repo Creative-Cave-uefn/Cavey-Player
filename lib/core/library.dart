@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
@@ -27,6 +29,24 @@ class Album {
   Album(this.key, this.title, this.artist, this.tracks);
   Track get coverTrack => tracks.firstWhere((t) => t.hasCover, orElse: () => tracks.first);
   String get year => tracks.map((t) => t.year).firstWhere((y) => y.isNotEmpty, orElse: () => '');
+}
+
+class Artist {
+  final String key;
+  final String name;
+  final List<Track> tracks;
+  Artist(this.key, this.name, this.tracks);
+  int get albums => tracks.map((t) => t.albumKey).toSet().length;
+  Track get coverTrack => tracks.firstWhere((t) => t.hasCover, orElse: () => tracks.first);
+}
+
+class UploadStatus {
+  bool running = false;
+  int total = 0;
+  int done = 0;
+  int failed = 0;
+  String current = '';
+  double fileProgress = 0;
 }
 
 class ScanStatus {
@@ -552,6 +572,7 @@ class LibraryController extends ChangeNotifier {
         size: f.file.size,
         by: f.file.ownerEmail,
         path: f.path,
+        added: f.file.createdTime,
       ).toJson();
       scan.done++;
       if (batch.length >= 100) {
@@ -647,6 +668,7 @@ class LibraryController extends ChangeNotifier {
   int _cachedVersion = -1;
   List<Track> _all = const [];
   List<Album> _albums = const [];
+  List<Artist> _artists = const [];
 
   void _changed() {
     _version++;
@@ -656,12 +678,18 @@ class LibraryController extends ChangeNotifier {
   void _rebuild() {
     if (_cachedVersion == _version) return;
     _cachedVersion = _version;
-    final all = data.tracks.values.toList()..sort(_compare);
+    final all = data.tracks.values.where((t) => !data.hidden.contains(t.id)).toList()..sort(_compare);
     _all = all;
     final byAlbum = <String, List<Track>>{};
     for (final t in all) {
       byAlbum.putIfAbsent(t.albumKey, () => []).add(t);
     }
+    final byArtist = <String, List<Track>>{};
+    for (final t in all) {
+      byArtist.putIfAbsent(t.displayArtist.toLowerCase(), () => []).add(t);
+    }
+    _artists = [for (final e in byArtist.entries) Artist(e.key, e.value.first.displayArtist, e.value)]
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     _albums = byAlbum.entries.map((e) {
       final t = e.value.first;
       final artists = e.value.map((x) => x.albumArtist.isNotEmpty ? x.albumArtist : x.artist).toSet();
@@ -705,6 +733,156 @@ class LibraryController extends ChangeNotifier {
   Album? albumOf(Track t) => album(t.albumKey);
 
   List<Track> get liked => allTracks.where((t) => isLiked(t.id)).toList();
+
+  /// Исполнители по алфавиту
+  List<Artist> get artists {
+    _rebuild();
+    return _artists;
+  }
+
+  Artist? artist(String key) {
+    for (final a in artists) {
+      if (a.key == key) return a;
+    }
+    return null;
+  }
+
+  /// Последние добавленные на Диск треки, новые сверху
+  List<Track> get recent {
+    final list = List.of(allTracks);
+    String when(Track t) => t.added.isNotEmpty ? t.added : t.modified;
+    list.sort((a, b) => when(b).compareTo(when(a)));
+    return list.length > 300 ? list.sublist(0, 300) : list;
+  }
+
+  /// Группы похожих треков: одинаковые исполнитель и название без мусора вроде «(Official Video)»
+  List<List<Track>> get duplicates {
+    final groups = <String, List<Track>>{};
+    for (final t in allTracks) {
+      final k = '${_norm(t.artist)}|${_norm(t.title)}';
+      if (k == '|') continue;
+      groups.putIfAbsent(k, () => []).add(t);
+    }
+    return groups.values.where((g) => g.length > 1).toList()
+      ..sort((a, b) => a.first.title.toLowerCase().compareTo(b.first.title.toLowerCase()));
+  }
+
+  static String _norm(String s) => s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[\(\[][^\)\]]*(official|video|audio|lyrics|клип|remaster|hq|hd)[^\)\]]*[\)\]]'), '')
+      .replaceAll('ё', 'е')
+      .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
+      .trim();
+
+  // ---------- правка, скрытие, удаление ----------
+
+  void editTrack(String id, {required String title, required String artist, required String album}) =>
+      commit({'op': 'editTrack', 'id': id, 'fields': {'t': title, 'a': artist, 'al': album}});
+
+  void hideTrack(String id, bool hide) => commit({'op': 'hideTrack', 'id': id, 'on': hide});
+
+  /// Отправляет файл в корзину Диска (можно восстановить оттуда 30 дней) и убирает из библиотеки
+  Future<void> trashTrack(Track t) async {
+    final email = await accessFor(t.source);
+    await drive.trash(email, t.id);
+    commit({'op': 'removeTracks', 'ids': [t.id]});
+  }
+
+  // ---------- загрузка файлов на Диск ----------
+
+  final UploadStatus upload = UploadStatus();
+
+  /// Загружает аудиофайлы с компьютера в папку библиотеки и сразу добавляет их в список
+  Future<void> uploadFiles(List<String> paths, String folderId) async {
+    final files = paths.where((p) => audioExt.hasMatch(p)).toList();
+    if (files.isEmpty) {
+      messages.add('Среди выбранных файлов нет музыки');
+      return;
+    }
+    if (upload.running) {
+      messages.add('Дождитесь окончания текущей загрузки');
+      return;
+    }
+    upload
+      ..running = true
+      ..total = files.length
+      ..done = 0
+      ..failed = 0;
+    notifyListeners();
+    final source = data.sources.where((s) => s.id == folderId).firstOrNull;
+    try {
+      final email = await accessFor(folderId);
+      for (final path in files) {
+        final file = File(path);
+        final name = file.uri.pathSegments.last;
+        upload
+          ..current = name
+          ..fileProgress = 0;
+        notifyListeners();
+        try {
+          final head = await _readHead(file);
+          final tags = parseTags(head, name);
+          final f = await drive.uploadFile(email, folderId, file, onProgress: (p) {
+            upload.fileProgress = p;
+            notifyListeners();
+          });
+          commit({
+            'op': 'upsertTracks',
+            'tracks': {
+              f.id: Track(
+                id: f.id,
+                source: folderId,
+                title: tags.title,
+                artist: tags.artist,
+                album: tags.album,
+                albumArtist: tags.albumArtist,
+                no: tags.track,
+                year: tags.year,
+                pic: tags.pic,
+                cover: null,
+                modified: f.modifiedTime,
+                size: f.size,
+                by: me ?? email,
+                path: '',
+                added: f.createdTime,
+              ).toJson(),
+            },
+          });
+          upload.done++;
+        } catch (e) {
+          upload.failed++;
+          AppLog.warn('Не удалось загрузить $name', e);
+        }
+      }
+      final ok = upload.done;
+      if (ok > 0) {
+        onUploaded?.call(ok, source?.name ?? 'Cave Player');
+      }
+      messages.add(upload.failed == 0
+          ? 'Загружено: ${ok} ${ok == 1 ? 'трек' : 'треков'}'
+          : 'Загружено ${upload.done}, не получилось ${upload.failed}. Подробности в журнале ошибок.');
+    } catch (e) {
+      messages.add('Не получилось загрузить: $e');
+    } finally {
+      upload
+        ..running = false
+        ..current = '';
+      notifyListeners();
+    }
+  }
+
+  /// Вызывается после удачной загрузки — для ленты событий
+  void Function(int count, String folderName)? onUploaded;
+
+  static Future<Uint8List> _readHead(File f) async {
+    final raf = await f.open();
+    try {
+      final len = await raf.length();
+      return await raf.read(len < 131072 ? len : 131072);
+    } finally {
+      await raf.close();
+    }
+  }
 
   List<Track> playlistTracks(String id) {
     final p = playlist(id);

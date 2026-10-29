@@ -36,6 +36,7 @@ class Track {
   final int size;
   final String by; // кто загрузил файл на Диск
   final String path; // папки внутри источника
+  final String added; // когда файл появился на Диске
 
   Track({
     required this.id,
@@ -52,6 +53,7 @@ class Track {
     required this.size,
     required this.by,
     required this.path,
+    this.added = '',
   });
 
   String get displayArtist => artist.isNotEmpty ? artist : 'Неизвестный исполнитель';
@@ -74,6 +76,7 @@ class Track {
         'sz': size,
         if (by.isNotEmpty) 'by': by,
         if (path.isNotEmpty) 'path': path,
+        if (added.isNotEmpty) 'ca': added,
       };
 
   static Track fromJson(String id, Map j) {
@@ -95,6 +98,7 @@ class Track {
       size: (j['sz'] as num?)?.toInt() ?? 0,
       by: (j['by'] as String?) ?? '',
       path: (j['path'] as String?) ?? '',
+      added: (j['ca'] as String?) ?? '',
     );
   }
 }
@@ -123,6 +127,8 @@ class LibraryData {
   final List<Playlist> playlists = [];
   final Map<String, Set<String>> likes = {}; // trackId → кто лайкнул
   final Map<String, String> members = {}; // email → имя
+  final Map<String, Map<String, String>> edits = {}; // ручные правки тегов
+  final Set<String> hidden = {}; // скрытые треки (например, дубликаты)
 
   Map<String, dynamic> toJson() => {
         'v': 1,
@@ -131,6 +137,8 @@ class LibraryData {
         'playlists': playlists.map((p) => p.toJson()).toList(),
         'likes': likes.map((k, v) => MapEntry(k, v.toList())),
         'members': members,
+        'edits': edits,
+        'hidden': hidden.toList(),
       };
 
   static LibraryData fromJson(dynamic j) {
@@ -156,6 +164,18 @@ class LibraryData {
     }
     final m = j['members'];
     if (m is Map) m.forEach((k, v) => d.members['$k'] = '$v');
+    final e = j['edits'];
+    if (e is Map) {
+      e.forEach((k, v) {
+        if (v is Map) d.edits['$k'] = v.map((a, b) => MapEntry('$a', '$b'));
+      });
+    }
+    for (final h in (j['hidden'] as List? ?? const [])) {
+      d.hidden.add('$h');
+    }
+    for (final id in d.edits.keys) {
+      d._overlay(id);
+    }
     return d;
   }
 
@@ -180,7 +200,10 @@ class LibraryData {
           tracks.removeWhere((_, t) => t.source == id);
         }
       case 'upsertTracks':
-        (op['tracks'] as Map).forEach((k, v) => tracks['$k'] = Track.fromJson('$k', v as Map));
+        (op['tracks'] as Map).forEach((k, v) {
+          tracks['$k'] = Track.fromJson('$k', v as Map);
+          _overlay('$k');
+        });
       case 'removeTracks':
         for (final id in (op['ids'] as List)) {
           tracks.remove(id);
@@ -210,6 +233,19 @@ class LibraryData {
         for (final p in playlists) {
           if (p.id == op['id']) p.items.remove(op['track']);
         }
+      case 'editTrack':
+        {
+          final id = op['id'] as String;
+          final fields = (op['fields'] as Map).map((k, v) => MapEntry('$k', '$v'));
+          edits[id] = {...?edits[id], ...fields};
+          _overlay(id);
+        }
+      case 'hideTrack':
+        if (op['on'] == true) {
+          hidden.add(op['id'] as String);
+        } else {
+          hidden.remove(op['id']);
+        }
       case 'like':
         {
           final id = op['id'] as String;
@@ -223,5 +259,23 @@ class LibraryData {
           if (set.isEmpty) likes.remove(id);
         }
     }
+  }
+
+  /// Накладывает ручные правки (название, исполнитель, альбом) поверх тегов файла
+  void _overlay(String id) {
+    final t = tracks[id];
+    final e = edits[id];
+    if (t == null || e == null) return;
+    final j = t.toJson();
+    for (final entry in {'t': 't', 'a': 'a', 'al': 'al'}.entries) {
+      final v = e[entry.key];
+      if (v == null) continue;
+      if (v.isEmpty && entry.key != 't') {
+        j.remove(entry.value);
+      } else if (v.isNotEmpty) {
+        j[entry.value] = v;
+      }
+    }
+    tracks[id] = Track.fromJson(id, j);
   }
 }
