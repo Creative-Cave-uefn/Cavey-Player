@@ -71,13 +71,23 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         run: |
-          flutter build windows --release `
+          $out = flutter build windows --release `
             --build-name $env:APP_VERSION --build-number ${{ github.run_number }} `
             "--dart-define=APP_VERSION=$env:APP_VERSION" `
             "--dart-define=CAVE_LIBRARY_ID=${{ vars.CAVE_LIBRARY_ID }}" `
             "--dart-define=DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}" `
             "--dart-define=GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID" `
-            "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET"
+            "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET" 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Output $out
+          if ($code -ne 0) {
+            $lines = @($out -split "`n" | Where-Object { $_ -match 'Error|error|requires|version solving|Because ' } | Select-Object -First 30)
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              $kind = @('error', 'warning', 'notice')[[math]::Floor($i / 10)]
+              Write-Output "::${kind}::$($lines[$i].Trim())"
+            }
+            exit $code
+          }
 
       - name: Установщик и портативная версия
         shell: pwsh
