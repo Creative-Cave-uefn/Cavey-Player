@@ -2,8 +2,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:polka/core/models.dart';
-import 'package:polka/core/tags.dart';
+import 'package:cave_player/core/models.dart';
+import 'package:cave_player/core/tags.dart';
 
 Uint8List head(String name) {
   final b = File('test/fixtures/$name').readAsBytesSync();

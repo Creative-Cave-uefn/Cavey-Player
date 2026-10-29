@@ -7,5 +7,5 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
   final app = await AppServices.create();
-  runApp(PolkaApp(app: app));
+  runApp(CavePlayerApp(app: app));
 }

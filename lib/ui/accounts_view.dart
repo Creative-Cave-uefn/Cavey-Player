@@ -40,7 +40,7 @@ class _AccountsPageState extends State<AccountsPage> {
           Text('Аккаунты', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
           const Text(
-            'Можно подключить несколько аккаунтов Google. Полка сама выберет, через какой открывать каждую папку. '
+            'Можно подключить несколько аккаунтов Google. Cave Player сам выберет, через какой открывать каждую папку. '
             'Лайки и плейлисты подписываются основным аккаунтом.',
             style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),

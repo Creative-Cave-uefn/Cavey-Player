@@ -22,25 +22,26 @@ String formatDuration(Duration d) {
   return h > 0 ? '$h:${m.toString().padLeft(2, '0')}:$ss' : '$m:$ss';
 }
 
-/// Название «Полка» с жёлтой полочкой под ним
+/// Название с жёлтой полочкой под ним
 class Wordmark extends StatelessWidget {
   final double size;
   const Wordmark({super.key, this.size = 22});
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Полка', style: display(size, weight: FontWeight.w700, height: 1)),
-        SizedBox(height: size * 0.18),
-        Container(
-          width: size * 3.6,
-          height: size * 0.16,
-          decoration: BoxDecoration(color: C.accent, borderRadius: BorderRadius.circular(2)),
-        ),
-      ],
+    return IntrinsicWidth(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Cave Player', maxLines: 1, style: display(size, weight: FontWeight.w700, height: 1)),
+          SizedBox(height: size * 0.18),
+          Container(
+            height: size * 0.16,
+            decoration: BoxDecoration(color: C.accent, borderRadius: BorderRadius.circular(2)),
+          ),
+        ],
+      ),
     );
   }
 }

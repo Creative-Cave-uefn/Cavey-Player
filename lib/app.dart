@@ -56,16 +56,16 @@ class Services extends InheritedWidget {
   bool updateShouldNotify(Services oldWidget) => oldWidget.app != app;
 }
 
-class PolkaApp extends StatelessWidget {
+class CavePlayerApp extends StatelessWidget {
   final AppServices app;
-  const PolkaApp({super.key, required this.app});
+  const CavePlayerApp({super.key, required this.app});
 
   @override
   Widget build(BuildContext context) {
     return Services(
       app: app,
       child: MaterialApp(
-        title: 'Полка',
+        title: 'Cave Player',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
         home: ListenableBuilder(

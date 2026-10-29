@@ -149,7 +149,7 @@ class _Sidebar extends StatelessWidget {
             Padding(
               padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 26, 0, 22),
               child: compact
-                  ? Center(child: Text('П', style: display(24, weight: FontWeight.w700, color: C.accent)))
+                  ? Center(child: Text('C', style: display(24, weight: FontWeight.w700, color: C.accent)))
                   : const Align(alignment: Alignment.centerLeft, child: Wordmark()),
             ),
             item(Icons.library_music_outlined, 'Все треки', const Nav('all')),

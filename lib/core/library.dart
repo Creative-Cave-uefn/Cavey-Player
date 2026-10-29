@@ -106,9 +106,9 @@ class LibraryController extends ChangeNotifier {
     super.dispose();
   }
 
-  // ---------- общая папка «Полка» ----------
+  // ---------- общая папка «Cave Player» ----------
 
-  /// Выполняет действие от имени аккаунта, у которого есть доступ к «Полке».
+  /// Выполняет действие от имени аккаунта, у которого есть доступ к общей папке.
   Future<T> _withHub<T>(Future<T> Function(String email) fn) async {
     final cached = settings.hubEmail;
     if (cached != null && accounts.byEmail(cached) != null) {
@@ -130,12 +130,12 @@ class LibraryController extends ChangeNotifier {
       await saveSettings();
       return fn(a.email);
     }
-    throw LibraryException('Ни у одного подключённого аккаунта нет доступа к папке «Полка». '
+    throw LibraryException('Ни у одного подключённого аккаунта нет доступа к папке «Cave Player». '
         'Попросите друга поделиться ею с вами.');
   }
 
   Future<void> createHub(String email) async {
-    final folder = await drive.createFolder(email, 'Полка');
+    final folder = await drive.createFolder(email, 'Cave Player');
     final fresh = LibraryData();
     final acc = accounts.byEmail(email);
     if (acc != null) fresh.members[email] = acc.name;
@@ -165,7 +165,7 @@ class LibraryController extends ChangeNotifier {
         rethrow;
       }
       if (meta['mimeType'] != 'application/vnd.google-apps.folder') {
-        throw LibraryException('По ссылке файл, а нужна папка «Полка»');
+        throw LibraryException('По ссылке файл, а нужна папка «Cave Player»');
       }
       final found = await drive.listChildren(a.email, id, nameEquals: 'library.json');
       String libId;
@@ -319,7 +319,7 @@ class LibraryController extends ChangeNotifier {
     final id = parseDriveId(input);
     if (id == null) throw LibraryException('Это не похоже на ссылку на папку Google Диска');
     if (data.sources.any((s) => s.id == id)) throw LibraryException('Эта папка уже в библиотеке');
-    if (id == settings.hubId) throw LibraryException('Это сама папка «Полка». Добавьте папку с музыкой.');
+    if (id == settings.hubId) throw LibraryException('Это сама папка «Cave Player». Добавьте папку с музыкой.');
     final email = await accessFor(id, recheck: true);
     final meta = await drive.getFile(email, id, fields: 'id,name,mimeType');
     if (meta['mimeType'] != 'application/vnd.google-apps.folder') {

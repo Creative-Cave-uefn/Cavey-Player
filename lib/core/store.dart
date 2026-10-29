@@ -10,7 +10,7 @@ class AppStore {
 
   static Future<AppStore> open() async {
     final base = await getApplicationSupportDirectory();
-    final d = Directory('${base.path}${Platform.pathSeparator}polka');
+    final d = Directory('${base.path}${Platform.pathSeparator}cave_player');
     await d.create(recursive: true);
     return AppStore._(d);
   }

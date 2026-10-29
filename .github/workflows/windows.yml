@@ -20,12 +20,12 @@ jobs:
       - name: Подготовить проект Windows
         shell: pwsh
         run: |
-          flutter create --platforms=windows --project-name polka --org app.polka .
+          flutter create --platforms=windows --project-name cave_player --org app.caveplayer .
           Remove-Item test/widget_test.dart -ErrorAction SilentlyContinue
           Copy-Item assets/app_icon.ico windows/runner/resources/app_icon.ico -Force
           $main = 'windows/runner/main.cpp'
           (Get-Content $main) `
-            -replace 'L"polka"', 'L"Polka"' `
+            -replace 'L"cave_player"', 'L"Cave Player"' `
             -replace 'Win32Window::Size size\(1280, 720\)', 'Win32Window::Size size(1240, 800)' |
             Set-Content $main
 
@@ -73,13 +73,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/Polka-portable.zip
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/CavePlayer-portable.zip
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
-          & $iscc installer/polka.iss
+          & $iscc installer/cave_player.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Polka-Windows
+          name: CavePlayer-Windows
           path: dist/*

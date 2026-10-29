@@ -1,5 +1,5 @@
-name: polka
-description: Общая музыкальная полка для своих — музыка играет прямо с Google Дисков.
+name: cave_player
+description: Общая музыкальная библиотека для своих — музыка играет прямо с Google Дисков.
 publish_to: none
 version: 0.1.0+1
 

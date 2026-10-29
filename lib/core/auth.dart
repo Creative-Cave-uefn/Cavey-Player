@@ -52,7 +52,7 @@ class AccountManager extends ChangeNotifier {
   static const driveScope = 'https://www.googleapis.com/auth/drive';
   static const scopes = ['openid', 'email', 'profile', driveScope];
 
-  static const noDriveAccess = 'Google не дал Полке доступ к Диску. Войдите ещё раз и на странице разрешений '
+  static const noDriveAccess = 'Google не дал Cave Player доступ к Диску. Войдите ещё раз и на странице разрешений '
       'отметьте галочку про Google Диск (или «Выбрать все»).';
 
   final AppStore store;
@@ -277,8 +277,8 @@ class AccountManager extends ChangeNotifier {
   }
 
   static String _resultPage(bool ok) => '''<!doctype html><meta charset="utf-8">
-<title>Полка</title>
+<title>Cave Player</title>
 <body style="margin:0;height:100vh;display:grid;place-items:center;background:#12162A;color:#EDE9E1;font:18px system-ui,sans-serif">
 <div style="text-align:center"><div style="font-size:40px;margin-bottom:12px">${ok ? '✓' : '✕'}</div>
-${ok ? 'Вход выполнен. Вернитесь в Полку, это окно можно закрыть.' : 'Вход не удался. Вернитесь в Полку и попробуйте ещё раз.'}</div></body>''';
+${ok ? 'Вход выполнен. Вернитесь в Cave Player, это окно можно закрыть.' : 'Вход не удался. Вернитесь в Cave Player и попробуйте ещё раз.'}</div></body>''';
 }

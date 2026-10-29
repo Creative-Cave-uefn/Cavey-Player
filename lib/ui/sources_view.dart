@@ -131,7 +131,7 @@ class _SourcesPageState extends State<SourcesPage> {
           Text('Пригласить друзей', style: display(20)),
           const SizedBox(height: 10),
           const Text(
-            'Плейлисты и лайки хранятся в папке «Полка». Откройте её на Диске, нажмите «Поделиться», '
+            'Плейлисты и лайки хранятся в папке «Cave Player». Откройте её на Диске, нажмите «Поделиться», '
             'добавьте почты друзей с правами редактора и отправьте им эту ссылку.',
             style: TextStyle(color: C.muted, height: 1.5),
           ),
@@ -164,12 +164,12 @@ class _SourcesPageState extends State<SourcesPage> {
               style: TextButton.styleFrom(foregroundColor: C.danger),
               onPressed: () async {
                 final ok = await confirm(context,
-                    title: 'Отключиться от этой полки?',
+                    title: 'Отключиться от этой библиотеки?',
                     text: 'Библиотека пропадёт с этого компьютера. На Диске всё останется, подключиться снова можно по ссылке.',
                     action: 'Отключиться');
                 if (ok) await lib.leaveHub();
               },
-              child: const Text('Отключиться от этой полки'),
+              child: const Text('Отключиться от этой библиотеки'),
             ),
           ),
         ]);

@@ -18,7 +18,7 @@ class DriveException implements Exception {
   bool get insufficientScope => status == 403 && message.toLowerCase().contains('insufficient');
   @override
   String toString() => insufficientScope
-      ? 'У Полки нет доступа к Google Диску: при входе не отметили галочку про Диск. Нажмите «Войти заново» и отметьте её.'
+      ? 'У Cave Player нет доступа к Google Диску: при входе не отметили галочку про Диск. Нажмите «Войти заново» и отметьте её.'
       : 'Google Диск ответил $status: $message';
 }
 
@@ -172,7 +172,7 @@ class DriveApi {
   /// Создаёт текстовый файл в папке. Возвращает {id, modifiedTime}.
   Future<Map<String, dynamic>> createFile(String email, String parent, String name, String content,
       {String mime = 'application/json'}) async {
-    const boundary = 'polka-boundary-7f3a9c';
+    const boundary = 'cave-player-boundary-7f3a9c';
     final meta = jsonEncode({'name': name, 'parents': [parent], 'mimeType': mime});
     final body = '--$boundary\r\n'
         'Content-Type: application/json; charset=UTF-8\r\n\r\n'

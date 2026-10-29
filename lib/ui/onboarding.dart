@@ -75,7 +75,7 @@ class _SetupScreenState extends State<SetupScreen> {
       Text('Ключ для входа через Google', style: display(20)),
       const SizedBox(height: 10),
       const Text(
-        'Полка входит в Google от имени вашего приложения в Google Cloud. '
+        'Cave Player входит в Google от имени вашего приложения в Google Cloud. '
         'Создайте его по инструкции из README (раздел «Ключи Google») и вставьте сюда оба значения. '
         'Это нужно сделать один раз.',
         style: TextStyle(color: C.muted, height: 1.5),
@@ -126,7 +126,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
         Text('Общая музыка для своих', style: display(26)),
         const SizedBox(height: 14),
         const Text(
-          'Музыка лежит в ваших папках на Google Диске. Полка собирает её в одну библиотеку '
+          'Музыка лежит в ваших папках на Google Диске. Cave Player собирает её в одну библиотеку '
           'с общими плейлистами и лайками и играет прямо с Диска, ничего не скачивая.',
           style: TextStyle(color: C.muted, fontSize: 16, height: 1.55),
         ),
@@ -146,7 +146,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
           ]),
         const SizedBox(height: 14),
         const Text(
-          'Google спросит разрешения. Обязательно отметьте доступ к Google Диску, иначе Полка не увидит музыку.',
+          'Google спросит разрешения. Обязательно отметьте доступ к Google Диску, иначе Cave Player не увидит музыку.',
           style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
         ),
         _ErrorText(_error),
@@ -155,7 +155,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   }
 }
 
-/// Создать свою «Полку» или подключиться к полке друга
+/// Создать общую библиотеку или подключиться к библиотеке друга
 class HubScreen extends StatefulWidget {
   const HubScreen({super.key});
   @override
@@ -188,10 +188,10 @@ class _HubScreenState extends State<HubScreen> {
     return _Frame(width: 560, children: [
       const Wordmark(size: 30),
       const SizedBox(height: 32),
-      Text('Где будет ваша полка?', style: display(24)),
+      Text('Где будет общая библиотека?', style: display(24)),
       const SizedBox(height: 10),
       Text(
-        'Полка — это папка на Google Диске, где хранятся общие плейлисты и лайки. '
+        'Общая библиотека — это папка «Cave Player» на Google Диске, где хранятся общие плейлисты и лайки. '
         'Её создаёт кто-то один, остальные подключаются по ссылке. Вы вошли как ${me.email}.',
         style: const TextStyle(color: C.muted, height: 1.5),
       ),
@@ -209,8 +209,8 @@ class _HubScreenState extends State<HubScreen> {
       ),
       const SizedBox(height: 16),
       _Option(
-        title: 'Подключиться к полке друга',
-        text: 'Попросите ссылку на папку «Полка». Друг должен поделиться ею с вашей почтой с правами редактора.',
+        title: 'Подключиться к библиотеке друга',
+        text: 'Попросите ссылку на папку «Cave Player». Друг должен поделиться ею с вашей почтой с правами редактора.',
         child: Row(children: [
           Expanded(
             child: TextField(
@@ -229,13 +229,13 @@ class _HubScreenState extends State<HubScreen> {
       ),
       const SizedBox(height: 14),
       _Option(
-        title: 'Создать новую полку',
-        text: 'На вашем Диске появится папка «Полка». Потом поделитесь ею с друзьями.',
+        title: 'Создать общую библиотеку',
+        text: 'На вашем Диске появится папка «Cave Player». Потом поделитесь ею с друзьями.',
         child: Align(
           alignment: Alignment.centerLeft,
           child: OutlinedButton(
             onPressed: _busy ? null : () => _run(() => app.lib.createHub(me.email)),
-            child: const Text('Создать полку'),
+            child: const Text('Создать библиотеку'),
           ),
         ),
       ),
