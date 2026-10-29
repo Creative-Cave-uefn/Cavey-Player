@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:media_kit/media_kit.dart';
+import 'package:media_kit/media_kit.dart' show Media, Player;
 
 import 'auth.dart';
 import 'drive.dart';
@@ -9,7 +9,7 @@ import 'library.dart';
 import 'models.dart';
 import 'store.dart';
 
-enum RepeatMode { off, all, one }
+enum RepeatSetting { off, all, one }
 
 /// Очередь и воспроизведение. Звук идёт потоком прямо с Google Диска:
 /// плеер (libmpv) сам запрашивает нужные куски файла с токеном в заголовке.
@@ -26,7 +26,7 @@ class PlayerController extends ChangeNotifier {
   bool playing = false;
   bool buffering = false;
   bool shuffle = false;
-  RepeatMode repeat = RepeatMode.off;
+  RepeatSetting repeat = RepeatSetting.off;
   String? error;
 
   List<String> _origin = [];
@@ -121,7 +121,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _onCompleted() {
-    if (repeat == RepeatMode.one) {
+    if (repeat == RepeatSetting.one) {
       unawaited(_open());
     } else {
       unawaited(next(auto: true));
@@ -132,7 +132,7 @@ class PlayerController extends ChangeNotifier {
     if (queue.isEmpty) return;
     if (index + 1 < queue.length) {
       index++;
-    } else if (repeat == RepeatMode.all) {
+    } else if (repeat == RepeatSetting.all) {
       index = 0;
     } else {
       if (!auto) await _p.seek(duration);
@@ -199,7 +199,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   void cycleRepeat() {
-    repeat = RepeatMode.values[(repeat.index + 1) % RepeatMode.values.length];
+    repeat = RepeatSetting.values[(repeat.index + 1) % RepeatSetting.values.length];
     notifyListeners();
   }
 

@@ -70,14 +70,14 @@ class PlayerBar extends StatelessWidget {
               ),
               IconButton(
                 tooltip: switch (p.repeat) {
-                  RepeatMode.off => 'Повторять всё',
-                  RepeatMode.all => 'Повторять трек',
-                  RepeatMode.one => 'Не повторять',
+                  RepeatSetting.off => 'Повторять всё',
+                  RepeatSetting.all => 'Повторять трек',
+                  RepeatSetting.one => 'Не повторять',
                 },
                 onPressed: p.cycleRepeat,
                 icon: Icon(
-                  p.repeat == RepeatMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
-                  color: p.repeat == RepeatMode.off ? C.muted : C.accent,
+                  p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+                  color: p.repeat == RepeatSetting.off ? C.muted : C.accent,
                 ),
               ),
             ]),
