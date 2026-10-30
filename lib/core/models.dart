@@ -177,6 +177,21 @@ class LibraryData {
   final Map<String, Map<String, String>> edits = {}; // ручные правки тегов
   final Set<String> hidden = {}; // скрытые треки (например, дубликаты)
 
+  /// Объединённые дубликаты: id скрытой копии → id той, что осталась.
+  /// По нему старые ссылки (лайки, плейлисты, прослушивания) ведут на оставшуюся копию
+  final Map<String, String> merged = {};
+
+  /// Куда ведёт id после объединений (цепочки тоже)
+  String resolve(String id) {
+    var cur = id;
+    for (var i = 0; i < 10; i++) {
+      final next = merged[cur];
+      if (next == null || next == cur) return cur;
+      cur = next;
+    }
+    return cur;
+  }
+
   Map<String, dynamic> toJson() => {
         'v': 1,
         'sources': sources.map((s) => s.toJson()).toList(),
@@ -186,6 +201,7 @@ class LibraryData {
         'members': members,
         'edits': edits,
         'hidden': hidden.toList(),
+        if (merged.isNotEmpty) 'merged': merged,
       };
 
   static LibraryData fromJson(dynamic j) {
@@ -220,6 +236,8 @@ class LibraryData {
     for (final h in (j['hidden'] as List? ?? const [])) {
       d.hidden.add('$h');
     }
+    final mg = j['merged'];
+    if (mg is Map) mg.forEach((k, v) => d.merged['$k'] = '$v');
     for (final id in d.edits.keys) {
       d._overlay(id);
     }
@@ -272,7 +290,8 @@ class LibraryData {
         for (final p in playlists) {
           if (p.id == op['id']) {
             for (final t in (op['items'] as List)) {
-              if (!p.items.contains(t)) p.items.add('$t');
+              final id = resolve('$t');
+              if (!p.items.contains(id)) p.items.add(id);
             }
           }
         }
@@ -281,7 +300,7 @@ class LibraryData {
         // чтобы одновременные правки друзей не перемешали плейлист
         for (final p in playlists) {
           if (p.id != op['id']) continue;
-          final track = op['track'] as String;
+          final track = resolve(op['track'] as String);
           if (!p.items.remove(track)) continue;
           final after = op['after'] as String?;
           final at = after == null ? 0 : p.items.indexOf(after) + 1;
@@ -289,7 +308,45 @@ class LibraryData {
         }
       case 'removeFromPlaylist':
         for (final p in playlists) {
-          if (p.id == op['id']) p.items.remove(op['track']);
+          if (p.id == op['id']) {
+            p.items.remove(op['track']);
+            p.items.remove(resolve(op['track'] as String));
+          }
+        }
+      case 'mergeTracks':
+        // Дубликаты в одну копию без потерь: лайки и места в плейлистах переходят
+        // на оставшуюся, остальные скрываются и запоминаются как её псевдонимы
+        {
+          final keep = resolve(op['keep'] as String);
+          for (final raw in (op['drop'] as List)) {
+            final d = '$raw';
+            if (d == keep || (merged.containsKey(d) && resolve(d) == keep)) continue;
+            merged[d] = keep;
+            final who = likes.remove(d);
+            if (who != null && who.isNotEmpty) likes.putIfAbsent(keep, () => <String>{}).addAll(who);
+            for (final p in playlists) {
+              final i = p.items.indexOf(d);
+              if (i < 0) continue;
+              if (p.items.contains(keep)) {
+                p.items.removeAt(i);
+              } else {
+                p.items[i] = keep;
+              }
+            }
+            final e = edits[d];
+            if (e != null && edits[keep] == null) {
+              edits[keep] = Map.of(e);
+              _overlay(keep);
+            }
+            hidden.add(d);
+          }
+        }
+      case 'unmergeTrack':
+        // Вернуть копию отдельным треком (лайки и плейлисты остаются на той, куда перешли)
+        {
+          final id = op['id'] as String;
+          merged.remove(id);
+          hidden.remove(id);
         }
       case 'editTrack':
         {
@@ -315,7 +372,7 @@ class LibraryData {
         }
       case 'like':
         {
-          final id = op['id'] as String;
+          final id = resolve(op['id'] as String);
           final who = op['email'] as String;
           final set = likes.putIfAbsent(id, () => <String>{});
           if (op['on'] == true) {

@@ -45,6 +45,12 @@ class YouTube {
   final void Function(String) log;
   YouTube(this.tools, this.temp, this.log);
 
+  /// Уникальная часть имени временного файла. Одних микросекунд мало: часы Windows
+  /// тикают грубо, и параллельные загрузки альбома получали одно и то же имя —
+  /// одна удаляла файл со списком скачанного, пока другая его ждала
+  static int _seq = 0;
+  static String unique() => '${DateTime.now().microsecondsSinceEpoch}-${_seq++}';
+
   /// Строки yt-dlp в журнал, кроме промежуточных процентов
   void _stream(String line) {
     if (_progressRe.hasMatch(line) && !line.contains('100%')) return;
@@ -120,7 +126,7 @@ class YouTube {
 
   /// Скачивает аудио в mp3. Возвращает скачанные файлы.
   Future<List<Entry>> download(String template, String target, {bool playlist = false, bool embedThumb = true}) async {
-    final info = File('${temp.path}${Platform.pathSeparator}info-${DateTime.now().microsecondsSinceEpoch}.txt');
+    final info = File('${temp.path}${Platform.pathSeparator}info-${unique()}.txt');
     await info.writeAsString('');
     final args = [
       ...tools.jsArgs,
@@ -140,10 +146,20 @@ class YouTube {
     ];
     await Tools.run(tools.ytdlp.path, args, onLine: _stream);
     final entries = <Entry>[];
-    for (final line in await info.readAsLines()) {
+    final lines = await info.exists() ? await info.readAsLines() : const <String>[];
+    for (final line in lines) {
       final p = line.split('\t');
       if (p.length >= 3 && p[0].isNotEmpty && File(p[0]).existsSync()) {
         entries.add(Entry(p[0], p[1], p[2], p.length > 3 ? p[3] : ''));
+      }
+    }
+    // Список не записался — берём mp3, которые появились в папке загрузки
+    if (entries.isEmpty && !playlist) {
+      final dir = File(template).parent;
+      if (dir.path != temp.path && await dir.exists()) {
+        await for (final f in dir.list()) {
+          if (f is File && f.path.toLowerCase().endsWith('.mp3')) entries.add(Entry(f.path, '', '', ''));
+        }
       }
     }
     try {

@@ -108,14 +108,15 @@ class PlayerController extends ChangeNotifier {
     final s = settings.session;
     if (s == null) return;
     try {
-      final q = [for (final x in (s['queue'] as List? ?? const [])) '$x'].where((id) => lib.data.tracks[id] != null).toList();
+      String fix(Object? x) => lib.data.resolve('$x'); // копию могли объединить с другой
+      final q = [for (final x in (s['queue'] as List? ?? const [])) fix(x)].where((id) => lib.data.tracks[id] != null).toList();
       if (q.isEmpty) return;
-      final curId = s['current'] as String?;
+      final curId = s['current'] == null ? null : fix(s['current']);
       var i = curId == null ? -1 : q.indexOf(curId);
       if (i < 0) i = ((s['index'] as num?)?.toInt() ?? 0).clamp(0, q.length - 1);
       queue = q;
       index = i;
-      _origin = [for (final x in (s['origin'] as List? ?? const [])) '$x'].where((id) => lib.data.tracks[id] != null).toList();
+      _origin = [for (final x in (s['origin'] as List? ?? const [])) fix(x)].where((id) => lib.data.tracks[id] != null).toList();
       if (_origin.isEmpty) _origin = List.of(queue);
       shuffle = s['shuffle'] == true;
       repeat = RepeatSetting.values.firstWhere((r) => r.name == s['repeat'], orElse: () => RepeatSetting.off);

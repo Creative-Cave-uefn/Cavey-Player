@@ -46,6 +46,7 @@ class UploadStatus {
   int total = 0;
   int done = 0;
   int failed = 0;
+  int skipped = 0; // уже были в библиотеке
   String current = '';
   double fileProgress = 0;
 }
@@ -518,9 +519,12 @@ class LibraryController extends ChangeNotifier {
       }
       settings.lastScan = DateTime.now().toIso8601String();
       await saveSettings();
+      // Один и тот же файл в разных папках — объединяем сами, без потерь
+      final merged = mergeExactCopies();
       if (!quiet || added > 0) {
         messages.add(added > 0 ? 'Новых треков: $added' : 'Новых треков нет');
       }
+      if (merged > 0) messages.add('Одинаковые файлы объединены: $merged');
     } finally {
       scan
         ..running = false
@@ -800,21 +804,90 @@ class LibraryController extends ChangeNotifier {
     return list.length > 300 ? list.sublist(0, 300) : list;
   }
 
-  /// Группы похожих треков: одинаковые исполнитель и название без мусора вроде «(Official Video)»
+  /// Ключ «одна и та же песня»: первый исполнитель и название без мусора вроде
+  /// «(Official Video)», «(feat. …)», «Remastered». Ремиксы и live остаются разными
+  static String dupKey(String artist, String title) {
+    final first = splitArtists(artist).firstOrNull ?? '';
+    final k = '${_norm(first)}|${_norm(title)}';
+    return k == '|' ? '' : k;
+  }
+
+  /// Группы похожих треков (одна и та же песня в нескольких копиях)
   List<List<Track>> get duplicates {
     final groups = <String, List<Track>>{};
     for (final t in allTracks) {
-      final k = '${_norm(t.artist)}|${_norm(t.title)}';
-      if (k == '|') continue;
+      final k = dupKey(t.artist, t.title);
+      if (k.isEmpty) continue;
       groups.putIfAbsent(k, () => []).add(t);
     }
     return groups.values.where((g) => g.length > 1).toList()
       ..sort((a, b) => a.first.title.toLowerCase().compareTo(b.first.title.toLowerCase()));
   }
 
+  /// Такая песня уже есть в библиотеке (видимая копия) — чтобы не качать и не загружать её снова
+  Track? existing(String artist, String title) {
+    final k = dupKey(artist, title);
+    if (k.isEmpty) return null;
+    if (_dupVersion != _version) {
+      _dupVersion = _version;
+      _dupIndex = {};
+      for (final t in allTracks) {
+        final tk = dupKey(t.artist, t.title);
+        if (tk.isNotEmpty) _dupIndex.putIfAbsent(tk, () => t);
+      }
+    }
+    return _dupIndex[k];
+  }
+
+  Map<String, Track> _dupIndex = {};
+  int _dupVersion = -1;
+
+  /// Какую копию оставить: самый большой файл (обычно лучшее качество), при равенстве — более раннюю
+  static Track bestOf(List<Track> copies) {
+    final list = List.of(copies)
+      ..sort((a, b) {
+        final r = b.size.compareTo(a.size);
+        if (r != 0) return r;
+        final ra = a.added.isNotEmpty ? a.added : a.modified;
+        final rb = b.added.isNotEmpty ? b.added : b.modified;
+        final r2 = ra.compareTo(rb);
+        return r2 != 0 ? r2 : a.id.compareTo(b.id);
+      });
+    return list.first;
+  }
+
+  /// Объединяет копии в [keep]: лайки и места в плейлистах переходят на неё, остальные скрываются
+  void mergeTracks(String keep, Iterable<String> drop) {
+    final ids = [for (final d in drop) if (d != keep) d];
+    if (ids.isEmpty) return;
+    commit({'op': 'mergeTracks', 'keep': keep, 'drop': ids});
+  }
+
+  /// Вернуть объединённую копию отдельным треком
+  void unmergeTrack(String id) => commit({'op': 'unmergeTrack', 'id': id});
+
+  /// Точные копии (та же песня и тот же размер файла — один и тот же файл в разных папках)
+  /// объединяем сами. Выбор однозначный, поэтому у всех друзей остаётся одна и та же копия.
+  int mergeExactCopies() {
+    var n = 0;
+    for (final g in duplicates) {
+      final bySize = <int, List<Track>>{};
+      for (final t in g) {
+        if (t.size > 0) bySize.putIfAbsent(t.size, () => []).add(t);
+      }
+      for (final same in bySize.values.where((l) => l.length > 1)) {
+        final keep = bestOf(same);
+        mergeTracks(keep.id, same.map((t) => t.id));
+        n += same.length - 1;
+      }
+    }
+    if (n > 0) AppLog.info('Дубликаты: объединено точных копий $n');
+    return n;
+  }
+
   static String _norm(String s) => s
       .toLowerCase()
-      .replaceAll(RegExp(r'[\(\[][^\)\]]*(official|video|audio|lyrics|клип|remaster|hq|hd)[^\)\]]*[\)\]]'), '')
+      .replaceAll(RegExp(r'[\(\[][^\)\]]*(official|video|audio|lyrics|клип|remaster|hq|hd|feat|ft\.|prod\.|при уч)[^\)\]]*[\)\]]'), '')
       .replaceAll('ё', 'е')
       .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
       .trim();
@@ -996,7 +1069,8 @@ class LibraryController extends ChangeNotifier {
       ..running = true
       ..total = files.length
       ..done = 0
-      ..failed = 0;
+      ..failed = 0
+      ..skipped = 0;
     notifyListeners();
     final source = data.sources.where((s) => s.id == folderId).firstOrNull;
     try {
@@ -1009,6 +1083,14 @@ class LibraryController extends ChangeNotifier {
           ..fileProgress = 0;
         notifyListeners();
         try {
+          // Такая песня уже есть — не загружаем вторую копию
+          final tags = parseTags(await _readHead(file), name);
+          final same = existing(tags.artist, tags.title);
+          if (same != null) {
+            upload.skipped++;
+            AppLog.info('Уже есть в библиотеке, не загружаю: $name');
+            continue;
+          }
           await uploadOne(file, sourceId: folderId, folderId: folderId, email: email, onProgress: (p) {
             upload.fileProgress = p;
             notifyListeners();
@@ -1024,9 +1106,10 @@ class LibraryController extends ChangeNotifier {
         onUploaded?.call(ok, source?.name ?? 'Cave Player');
         onEvent?.call({'k': 'upload', 'n': ok, 'folder': source?.name ?? 'Cave Player'});
       }
+      final skipped = upload.skipped == 0 ? '' : ', уже были в библиотеке: ${upload.skipped}';
       messages.add(upload.failed == 0
-          ? 'Загружено: ${ok} ${ok == 1 ? 'трек' : 'треков'}'
-          : 'Загружено ${upload.done}, не получилось ${upload.failed}. Подробности в журнале ошибок.');
+          ? 'Загружено: $ok ${ok == 1 ? 'трек' : 'треков'}$skipped'
+          : 'Загружено ${upload.done}, не получилось ${upload.failed}$skipped. Подробности в журнале ошибок.');
     } catch (e) {
       messages.add('Не получилось загрузить: $e');
     } finally {

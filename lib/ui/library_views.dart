@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/library.dart';
+import '../core/log.dart';
 import '../core/models.dart';
 import '../core/tags.dart';
 import 'cover_picker.dart';
@@ -239,8 +240,83 @@ class RecentPage extends StatelessWidget {
 
 // ---------- дубликаты ----------
 
-class DuplicatesPage extends StatelessWidget {
+class DuplicatesPage extends StatefulWidget {
   const DuplicatesPage({super.key});
+  @override
+  State<DuplicatesPage> createState() => _DuplicatesPageState();
+}
+
+class _DuplicatesPageState extends State<DuplicatesPage> {
+  /// Какую копию оставить в каждой группе (ключ — id первой копии группы)
+  final Map<String, String> _keep = {};
+
+  String _keepOf(List<Track> g) {
+    final chosen = _keep[g.first.id];
+    if (chosen != null && g.any((t) => t.id == chosen)) return chosen;
+    return LibraryController.bestOf(g).id;
+  }
+
+  Future<void> _merge(List<List<Track>> groups) async {
+    final app = Services.of(context);
+    final lib = app.lib;
+    final mine = <Track>[];
+    for (final g in groups) {
+      final keep = _keepOf(g);
+      mine.addAll(g.where((t) => t.id != keep && t.by == lib.me));
+    }
+    var trash = false;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: Text(groups.length == 1 ? 'Объединить копии?' : 'Объединить ${groups.length} групп?', style: display(18)),
+          content: SizedBox(
+            width: 420,
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text(
+                'Останется выбранная копия. Лайки всех друзей и места в плейлистах перейдут на неё, '
+                'прослушивания будут считаться вместе. Остальные копии скроются из библиотеки у всех, '
+                'их можно вернуть ниже.',
+                style: TextStyle(color: C.muted, height: 1.45),
+              ),
+              if (mine.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: trash,
+                  onChanged: (v) => setD(() => trash = v ?? false),
+                  title: Text('Отправить мои лишние копии в корзину Диска (${mine.length})'),
+                  subtitle: const Text('Освободит место; из корзины можно восстановить 30 дней',
+                      style: TextStyle(color: C.faint, fontSize: 12)),
+                ),
+              ],
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Объединить')),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+    for (final g in groups) {
+      final keep = _keepOf(g);
+      lib.mergeTracks(keep, g.map((t) => t.id));
+    }
+    var trashed = 0;
+    if (trash) {
+      for (final t in mine) {
+        try {
+          await lib.trashTrack(t);
+          trashed++;
+        } catch (e) {
+          AppLog.warn('Не получилось удалить копию «${t.title}»', e);
+        }
+      }
+    }
+    lib.messages.add(trashed > 0 ? 'Объединено, в корзину: $trashed' : 'Объединено');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -250,37 +326,76 @@ class DuplicatesPage extends StatelessWidget {
       builder: (context, _) {
         final lib = app.lib;
         final groups = lib.duplicates;
+        final merged = [
+          for (final e in lib.data.merged.entries)
+            if (lib.data.tracks[e.key] != null && lib.data.hidden.contains(e.key)) e.key
+        ];
+        String folder(Track t) => lib.data.sources.where((s) => s.id == t.source).map((s) => s.name).firstOrNull ?? 'папке';
+        int inPlaylists(Track t) => lib.data.playlists.where((p) => p.items.contains(t.id)).length;
         return ListView(padding: const EdgeInsets.fromLTRB(36, 34, 36, 40), children: [
           Text('Дубликаты', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
           const Text(
-            'Треки с одинаковыми исполнителем и названием. Лишнюю копию можно скрыть из библиотеки у всех, '
-            'а свою — ещё и отправить в корзину Диска (оттуда её можно восстановить 30 дней).',
+            'Одна и та же песня в нескольких копиях. Выберите, какую оставить, и объедините: '
+            'лайки и плейлисты перейдут на неё, ничего не потеряется. Одинаковые файлы в разных папках '
+            'объединяются сами. Песни, которые уже есть в библиотеке, загрузчик и загрузка с компьютера пропускают.',
             style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 18),
           if (groups.isEmpty)
-            const Text('Дубликатов не нашлось.', style: TextStyle(color: C.muted)),
+            const Text('Дубликатов не нашлось.', style: TextStyle(color: C.muted))
+          else
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.icon(
+                onPressed: () => _merge(groups),
+                icon: const Icon(Icons.merge_rounded, size: 18),
+                label: Text('Объединить все (${groups.length})'),
+              ),
+            ),
           for (final g in groups) ...[
             Padding(
-              padding: const EdgeInsets.only(top: 18, bottom: 6),
-              child: Text('${g.first.displayArtist} — ${g.first.title}',
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+              padding: const EdgeInsets.only(top: 22, bottom: 6),
+              child: Row(children: [
+                Expanded(
+                  child: Text('${g.first.displayArtist} — ${g.first.title}',
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                ),
+                TextButton.icon(
+                  onPressed: () => _merge([g]),
+                  icon: const Icon(Icons.merge_rounded, size: 18),
+                  label: const Text('Объединить'),
+                ),
+              ]),
             ),
             for (final t in g)
               Container(
-                padding: const EdgeInsets.symmetric(vertical: 8),
+                padding: const EdgeInsets.symmetric(vertical: 6),
                 decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
                 child: Row(children: [
+                  Radio<String>(
+                    value: t.id,
+                    groupValue: _keepOf(g),
+                    onChanged: (v) => setState(() => _keep[g.first.id] = v!),
+                  ),
                   CoverImage(track: t, size: 36, radius: 4),
                   const SizedBox(width: 14),
                   Expanded(
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(t.displayAlbum, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      Text(
+                        '${t.displayAlbum}${t.id == _keepOf(g) ? '  · останется' : ''}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: t.id == _keepOf(g) ? C.accent : C.text),
+                      ),
                       const SizedBox(height: 2),
                       Text(
-                        '${(t.size / (1024 * 1024)).toStringAsFixed(1)} МБ, '
-                        'в «${lib.data.sources.where((s) => s.id == t.source).map((s) => s.name).firstOrNull ?? 'папке'}»',
+                        [
+                          '${(t.size / (1024 * 1024)).toStringAsFixed(1)} МБ',
+                          'в «${folder(t)}»',
+                          if ((lib.data.likes[t.id]?.length ?? 0) > 0) 'лайков: ${lib.data.likes[t.id]!.length}',
+                          if (inPlaylists(t) > 0) 'в плейлистах: ${inPlaylists(t)}',
+                        ].join(', '),
                         style: const TextStyle(color: C.faint, fontSize: 12),
                       ),
                     ]),
@@ -288,41 +403,47 @@ class DuplicatesPage extends StatelessWidget {
                   FriendTag(t.by),
                   const SizedBox(width: 12),
                   TextButton(onPressed: () => app.player.playTracks([t], 0), child: const Text('Послушать')),
-                  TextButton(
-                    style: TextButton.styleFrom(foregroundColor: C.muted),
-                    onPressed: () => lib.hideTrack(t.id, true),
-                    child: const Text('Скрыть'),
-                  ),
-                  if (t.by == lib.me)
-                    TextButton(
-                      style: TextButton.styleFrom(foregroundColor: C.danger),
-                      onPressed: () async {
-                        final ok = await confirm(context,
-                            title: 'Удалить файл?',
-                            text: '«${t.title}» уйдёт в корзину вашего Google Диска и пропадёт из библиотеки у всех.',
-                            action: 'В корзину');
-                        if (!ok) return;
-                        try {
-                          await lib.trashTrack(t);
-                        } catch (e) {
-                          lib.messages.add('Не получилось удалить: $e');
-                        }
-                      },
-                      child: const Text('В корзину'),
-                    ),
                 ]),
               ),
           ],
-          if (lib.data.hidden.isNotEmpty) ...[
+          if (merged.isNotEmpty) ...[
+            const SizedBox(height: 36),
+            Text('Объединённые копии: ${merged.length}', style: display(17)),
+            const SizedBox(height: 6),
+            const Text('Скрыты из библиотеки, их лайки и плейлисты перешли на оставшуюся копию.',
+                style: TextStyle(color: C.faint, fontSize: 13)),
+            const SizedBox(height: 8),
+            for (final id in merged.take(200))
+              Builder(builder: (context) {
+                final t = lib.data.tracks[id]!;
+                final into = lib.data.tracks[lib.data.resolve(id)];
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(children: [
+                    Expanded(
+                      child: Text(
+                        '${t.displayArtist} — ${t.title}  ·  ${(t.size / (1024 * 1024)).toStringAsFixed(1)} МБ в «${folder(t)}»'
+                        '${into == null ? '' : '  →  ${(into.size / (1024 * 1024)).toStringAsFixed(1)} МБ в «${folder(into)}»'}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: C.muted, fontSize: 13),
+                      ),
+                    ),
+                    TextButton(onPressed: () => lib.unmergeTrack(id), child: const Text('Вернуть отдельно')),
+                  ]),
+                );
+              }),
+          ],
+          if (lib.data.hidden.length > merged.length) ...[
             const SizedBox(height: 32),
-            Text('Скрытые треки: ${lib.data.hidden.length}', style: const TextStyle(color: C.muted)),
+            Text('Скрытые треки: ${lib.data.hidden.length - merged.length}', style: const TextStyle(color: C.muted)),
             const SizedBox(height: 8),
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton(
                 onPressed: () {
                   for (final id in List.of(lib.data.hidden)) {
-                    lib.hideTrack(id, false);
+                    if (!lib.data.merged.containsKey(id)) lib.hideTrack(id, false);
                   }
                 },
                 child: const Text('Вернуть все скрытые'),
@@ -333,7 +454,6 @@ class DuplicatesPage extends StatelessWidget {
       },
     );
   }
-
 }
 
 // ---------- загрузка ----------
