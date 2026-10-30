@@ -154,7 +154,7 @@ class WaveEngine {
     final pool = [for (final t in x.tracks) if (!x.taste.disliked.contains(t.id)) t];
     if (pool.isEmpty || n <= 0) return const [];
     // Не повторяем последние треки; в маленькой библиотеке — только самые свежие
-    final window = min(recent.length, max(0, pool.length - n) ~/ 2 + min(pool.length ~/ 2, 60));
+    final int window = min(recent.length, max(0, pool.length - n) ~/ 2 + min<int>(pool.length ~/ 2, 60));
     final avoid = recent.sublist(recent.length - min(window, recent.length)).toSet();
     var cands = [for (final t in pool) if (!avoid.contains(t.id)) t];
     if (cands.isEmpty) cands = pool;
