@@ -106,13 +106,12 @@ class _SectionChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ActionChip(
-      avatar: Icon(icon, size: 18, color: C.accent),
-      label: Text(label),
+    // Как соседние кнопки «Вперемешку» и «Обновить»: стеклянная, с обводкой. ActionChip в теме Material 3
+    // подставлял свой плотный тёмно-синий цвет и выбивался из стиля
+    return OutlinedButton.icon(
       onPressed: () => NavScope.of(context).go(target),
-      backgroundColor: C.surface,
-      side: const BorderSide(color: C.line),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      icon: Icon(icon, size: 18, color: C.accent),
+      label: Text(label),
     );
   }
 }

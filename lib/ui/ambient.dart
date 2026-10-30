@@ -174,8 +174,8 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
     final p = _player;
     if (p == null) return;
     final bpm = _bpm;
-    final tempo = bpm == null ? 0.8 : (bpm / 110).clamp(0.45, 1.9).toDouble();
-    final target = p.playing ? tempo : tempo * 0.35;
+    final tempo = bpm == null ? 1.0 : (bpm / 105).clamp(0.55, 2.2).toDouble();
+    final target = p.playing ? tempo : tempo * 0.4;
     _speed += (target - _speed) * math.min(1.0, dt * 0.8); // скорость меняется плавно
     _clock.value += math.min(dt, 0.1) * _speed;
   }
@@ -573,11 +573,14 @@ class _LivingPainter extends CustomPainter {
       canvas.restore();
     }
 
-    // Основа: закрывает всё окно с запасом даже повёрнутая
-    layer(base, t * 0.07, Offset(math.sin(t * 0.21) * w * 0.06, math.cos(t * 0.17) * h * 0.06), 1.9, 0.85);
-    // Пятна: восьмёрки (у y частота вдвое больше, чем у x) с разными периодами и направлениями
-    layer(blob, -t * 0.13 + 1.3, Offset(math.sin(t * 0.29 + 1) * w * 0.28, math.sin(t * 0.58 + 2) * h * 0.22), 1.1, 0.7);
-    layer(blob, t * 0.19 + 2.6, Offset(math.cos(t * 0.23 + 3) * w * 0.3, math.sin(t * 0.46) * h * 0.26), 0.85, 0.55);
+    // «Дыхание»: слои плавно увеличиваются и уменьшаются — фон живой даже там, где цвета почти одинаковые
+    double breathe(double speed, double phase) => 1 + 0.12 * math.sin(t * speed + phase);
+    // Основа: закрывает всё окно с запасом даже повёрнутая; вращается заметно, а не еле-еле
+    layer(base, t * 0.16, Offset(math.sin(t * 0.33) * w * 0.1, math.cos(t * 0.27) * h * 0.1), 2.0 * breathe(0.4, 0), 0.9);
+    // Пятна: восьмёрки (у y частота вдвое больше, чем у x) с разными периодами и направлениями — широко, через всё окно
+    layer(blob, -t * 0.27 + 1.3, Offset(math.sin(t * 0.45 + 1) * w * 0.38, math.sin(t * 0.9 + 2) * h * 0.3), 1.2 * breathe(0.55, 1), 0.8);
+    layer(blob, t * 0.35 + 2.6, Offset(math.cos(t * 0.38 + 3) * w * 0.4, math.sin(t * 0.76) * h * 0.34), 0.95 * breathe(0.7, 2), 0.65);
+    layer(blob, t * 0.22 + 4.1, Offset(math.sin(t * 0.31 + 4) * w * 0.3, math.cos(t * 0.62 + 1) * h * 0.36), 0.75 * breathe(0.5, 3), 0.5);
   }
 
   @override

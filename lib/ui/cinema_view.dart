@@ -166,7 +166,7 @@ class _NowPanel extends StatelessWidget {
           ),
           _Round(
             tooltip: liked ? 'Убрать из любимого' : 'В любимое',
-            icon: liked ? Icons.star_rounded : Icons.star_border_rounded,
+            icon: liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
             color: liked ? C.accent : C.text,
             onTap: () => app.lib.toggleLike(t.id),
           ),
