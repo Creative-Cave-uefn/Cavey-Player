@@ -359,7 +359,8 @@ class SocialController extends ChangeNotifier {
     for (final m in members.values) {
       m.plays.forEach((day, tracks) {
         if (day.compareTo(since) < 0) return;
-        tracks.forEach((id, n) {
+        tracks.forEach((raw, n) {
+          final id = lib.data.resolve(raw); // объединённые копии считаем вместе
           plays[id] = (plays[id] ?? 0) + n;
           who.putIfAbsent(id, () => {}).add(m.email);
         });

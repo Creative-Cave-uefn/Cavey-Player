@@ -28,6 +28,7 @@ class DownloadJob {
   int total = 0;
   int done = 0;
   int failed = 0;
+  int skipped = 0; // уже были в библиотеке
   final List<String> log = [];
   final List<String> failedNames = [];
   DownloadJob(this.input, this.sourceId, this.folderName) : title = input;
@@ -212,6 +213,13 @@ class DownloadService extends ChangeNotifier {
 
   Future<bool> _sourceTrack(DownloadJob job, YouTube yt, Directory temp, TrackMeta meta,
       {required String folderId, required String path, File? cover, String prefix = ''}) async {
+    // Такая песня уже есть в библиотеке — второй копии не нужно
+    final same = lib.existing(meta.artist, meta.title);
+    if (same != null) {
+      yt.log('Уже есть в библиотеке: ${same.displayArtist} — ${same.title}, пропускаю');
+      job.skipped++;
+      return true;
+    }
     final cands = await yt.ranked(meta);
     if (cands.isEmpty) {
       job.failed++;
@@ -260,7 +268,7 @@ class DownloadService extends ChangeNotifier {
       log('[${i + 1}/${metas.length}] ${ok ? 'OK' : 'ОШИБКА'}: ${m.label}');
     });
     _summary(job, log);
-    return job.done > 0;
+    return job.done + job.skipped > 0;
   }
 
   Future<bool> _playlist(DownloadJob job, YouTube yt, Directory temp, String url, void Function(String) log) async {
@@ -299,7 +307,7 @@ class DownloadService extends ChangeNotifier {
       log('[${i + 1}/${items.length}] ${ok ? 'OK' : 'ОШИБКА'}: ${e['title'] ?? e['id']}');
     });
     _summary(job, log);
-    return job.done > 0;
+    return job.done + job.skipped > 0;
   }
 
   /// Просто текст: лучший вариант с YouTube
@@ -345,7 +353,8 @@ class DownloadService extends ChangeNotifier {
   }
 
   void _summary(DownloadJob job, void Function(String) log) {
-    log('Готово: скачано ${job.done} из ${job.total}.');
+    log('Готово: скачано ${job.done} из ${job.total}'
+        '${job.skipped > 0 ? ', уже были в библиотеке: ${job.skipped}' : ''}.');
     if (job.failedNames.isNotEmpty) {
       log('Не удалось скачать:');
       for (final n in job.failedNames) {
