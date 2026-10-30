@@ -103,18 +103,20 @@ class ProfileLayout extends StatelessWidget {
     Widget page(Color? tint) {
       final top = (tint ?? C.raised).withValues(alpha: 0.85);
       return Stack(children: [
-        Positioned.fill(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [top, C.bg], stops: const [0.0, 0.75]),
+        if (bannerFileId != null)
+          Positioned.fill(child: Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId!)))
+        else
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [top, C.bg], stops: const [0.0, 0.75]),
+              ),
             ),
           ),
-        ),
         CustomScrollView(slivers: [
-          if (bannerFileId != null) SliverToBoxAdapter(child: _Banner(fileId: bannerFileId!)),
           SliverToBoxAdapter(
             child: Padding(
-              padding: EdgeInsets.fromLTRB(pad, bannerFileId != null ? 12 : 56, pad, 0),
+              padding: EdgeInsets.fromLTRB(pad, 56, pad, 0),
               child: Column(children: [
                 SizedBox.square(dimension: photo, child: ClipOval(child: avatar)),
                 const SizedBox(height: 26),
@@ -157,7 +159,7 @@ class ProfileLayout extends StatelessWidget {
   }
 }
 
-/// Баннер профиля: картинка 3:1 на всю ширину, низ плавно прозрачный
+/// Баннер профиля вместо градиента: немного затемнён и размыт, чтобы текст поверх читался; низ плавно уходит в фон
 class _Banner extends StatelessWidget {
   final String fileId;
   const _Banner({required this.fileId});
@@ -166,24 +168,32 @@ class _Banner extends StatelessWidget {
   Widget build(BuildContext context) {
     final covers = Services.of(context).covers;
     return LayoutBuilder(builder: (context, box) {
-      final h = (box.maxWidth / 3).clamp(120.0, 340.0).toDouble();
+      final h = (box.maxWidth / 3).clamp(300.0, 620.0).toDouble();
       return ShaderMask(
         blendMode: BlendMode.dstIn,
         shaderCallback: (r) => const LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [Colors.white, Colors.white, Colors.transparent],
-          stops: [0.0, 0.55, 1.0],
+          stops: [0.0, 0.6, 1.0],
         ).createShader(r),
         child: SizedBox(
           width: box.maxWidth,
           height: h,
-          child: FutureBuilder<Uint8List?>(
-            future: covers.forFile(fileId),
-            initialData: covers.peekFile(fileId),
-            builder: (context, snap) => snap.data == null
-                ? const SizedBox.shrink()
-                : Image.memory(snap.data!, fit: BoxFit.cover, gaplessPlayback: true),
+          child: ClipRect(
+            child: Stack(fit: StackFit.expand, children: [
+              ImageFiltered(
+                imageFilter: ui.ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+                child: FutureBuilder<Uint8List?>(
+                  future: covers.forFile(fileId),
+                  initialData: covers.peekFile(fileId),
+                  builder: (context, snap) => snap.data == null
+                      ? const SizedBox.shrink()
+                      : Image.memory(snap.data!, fit: BoxFit.cover, gaplessPlayback: true),
+                ),
+              ),
+              ColoredBox(color: Colors.black.withValues(alpha: 0.45)),
+            ]),
           ),
         ),
       );

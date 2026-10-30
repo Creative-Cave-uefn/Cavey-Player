@@ -66,6 +66,11 @@ class LibraryController extends ChangeNotifier {
 
   LibraryData data = LibraryData();
   final List<Map<String, dynamic>> _pending = [];
+
+  /// Недавно сохранённые правки полей (setMeta). Если другой клиент в то же время переписал library.json
+  /// со старой копией, наша правка (например, ник) пропадёт; здесь мы это замечаем и сохраняем её заново
+  final List<(Map<String, dynamic>, DateTime)> _recentMeta = [];
+  int _flushGen = 0;
   String? _libModified;
   bool _flushing = false;
   Timer? _flushTimer;
@@ -376,9 +381,12 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> reload() async {
     if (!hasHub) return;
+    final gen = _flushGen;
     await _withHub((email) async {
       final meta = await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime');
       final latest = await _downloadLatest(email);
+      // Пока скачивали, мы сами сохранили правки: скачанная копия уже старая, её не берём
+      if (_flushing || gen != _flushGen) return;
       for (final op in _pending) {
         latest.apply(op);
       }
@@ -386,8 +394,33 @@ class LibraryController extends ChangeNotifier {
       _libModified = meta['modifiedTime'] as String?;
     });
     syncError = null;
+    _reassertRecentMeta();
     await _saveLocal();
     _changed();
+  }
+
+  /// Правки полей за последние минуты, которых нет в скачанной копии, сохраняем ещё раз
+  void _reassertRecentMeta() {
+    final cutoff = DateTime.now().subtract(const Duration(minutes: 3));
+    _recentMeta.removeWhere((r) => r.$2.isBefore(cutoff));
+    if (_recentMeta.isEmpty) return;
+    final want = <String, Map<String, String>>{};
+    for (final r in _recentMeta) {
+      (r.$1['meta'] as Map).forEach((id, fields) {
+        want['$id'] = {...?want['$id'], ...(fields as Map).map((a, b) => MapEntry('$a', '$b'))};
+      });
+    }
+    final lost = <String, Map<String, String>>{};
+    want.forEach((id, fields) {
+      fields.forEach((k, v) {
+        if ((data.edits[id]?[k] ?? '') != v) lost.putIfAbsent(id, () => {})[k] = v;
+      });
+    });
+    if (lost.isNotEmpty) {
+      AppLog.info('Правки пропали из скачанной копии, сохраняю заново: ${lost.length}');
+      // Повторное сохранение само в «недавние» не попадает, иначе при спорной правке двух людей мы бы бесконечно переписывали друг друга
+      commit({'op': 'setMeta', 'meta': lost, 're': true});
+    }
   }
 
   Future<void> _poll() async {
@@ -438,6 +471,11 @@ class LibraryController extends ChangeNotifier {
         }
         data = latest;
         _libModified = modified;
+        _flushGen++;
+        final now = DateTime.now();
+        for (final op in batch) {
+          if (op['op'] == 'setMeta' && op['re'] != true) _recentMeta.add((op, now));
+        }
       });
       syncError = null;
       await store.writeJson('pending_ops.json', _pending);
