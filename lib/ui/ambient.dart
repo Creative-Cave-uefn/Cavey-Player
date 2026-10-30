@@ -40,6 +40,59 @@ class AmbientScope {
     _owner = null;
     override.value = null;
   }
+
+  /// Цветное свечение, которое просит страница (шапка «Любимого», профиль без баннера).
+  /// Рисуется на всём окне, а не внутри страницы — поэтому без обрезанных краёв
+  static final ValueNotifier<Color?> glow = ValueNotifier(null);
+  static Object? _glowOwner;
+
+  static void claimGlow(Object owner, Color? color) {
+    _glowOwner = owner;
+    glow.value = color;
+  }
+
+  static void releaseGlow(Object owner) {
+    if (!identical(_glowOwner, owner)) return;
+    _glowOwner = null;
+    glow.value = null;
+  }
+}
+
+/// Ставится на страницу: пока она открыта, по всему окну мягко светится [color]. Сам ничего не рисует
+class AmbientGlow extends StatefulWidget {
+  final Color? color;
+  const AmbientGlow({super.key, required this.color});
+
+  @override
+  State<AmbientGlow> createState() => _AmbientGlowState();
+}
+
+class _AmbientGlowState extends State<AmbientGlow> {
+  void _claim() => WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) AmbientScope.claimGlow(this, widget.color);
+      });
+
+  @override
+  void initState() {
+    super.initState();
+    _claim();
+  }
+
+  @override
+  void didUpdateWidget(covariant AmbientGlow old) {
+    super.didUpdateWidget(old);
+    if (old.color != widget.color) _claim();
+  }
+
+  @override
+  void dispose() {
+    final me = this;
+    WidgetsBinding.instance.addPostFrameCallback((_) => AmbientScope.releaseGlow(me));
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
 }
 
 /// Оборачивает страницу профиля: пока она на экране, фон окна красит её [source]
@@ -270,8 +323,31 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
                   opacity: const AlwaysStoppedAnimation(0.8),
                 ),
         ),
-        // Затемнение ровным цветом, а не градиентом: на тёмных градиентах были видны ступеньки
-        const ColoredBox(color: Color(0x94000000)),
+        // Затемнение: снизу темнее — там плеер. Переход по плавной кривой, без ступенек
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                for (var i = 0; i <= 16; i++)
+                  Color.lerp(const Color(0x80000000), const Color(0xA8000000), () {
+                    final t = i / 16;
+                    return t * t * (3 - 2 * t);
+                  }())!,
+              ],
+              stops: smoothFadeStops(),
+            ),
+          ),
+        ),
+        // Свечение страницы — на всё окно, плавно появляется и исчезает
+        ValueListenableBuilder<Color?>(
+          valueListenable: AmbientScope.glow,
+          builder: (context, c, _) => AnimatedSwitcher(
+            duration: const Duration(milliseconds: 700),
+            child: c == null ? const SizedBox.expand(key: ValueKey('no-glow')) : SmoothGlow(key: ValueKey(c), color: c),
+          ),
+        ),
       ]),
     );
   }
@@ -331,4 +407,62 @@ class Glass extends StatelessWidget {
         ),
         child: child,
       );
+}
+
+/// Плавный градиент без «лесенки»: прозрачность меняется не по прямой, а по S-кривой
+/// и разбита на много шагов — нет резких переломов, которые глаз ловит как полосы
+List<Color> smoothFadeColors(Color c, {int steps = 16}) => [
+      for (var i = 0; i <= steps; i++)
+        () {
+          final t = i / steps;
+          final e = 1 - t * t * (3 - 2 * t); // smoothstep: мягкий вход и мягкий выход
+          return c.withValues(alpha: c.a * e);
+        }(),
+    ];
+
+List<double> smoothFadeStops({int steps = 16}) => [for (var i = 0; i <= steps; i++) i / steps];
+
+/// Цветное свечение сверху страницы (шапка «Любимого», профили): плавно уходит в прозрачность
+/// и медленно «дышит» — центр света неспешно смещается влево-вправо
+class SmoothGlow extends StatefulWidget {
+  final Color color;
+  const SmoothGlow({super.key, required this.color});
+
+  @override
+  State<SmoothGlow> createState() => _SmoothGlowState();
+}
+
+class _SmoothGlowState extends State<SmoothGlow> with SingleTickerProviderStateMixin {
+  late final AnimationController _anim = AnimationController(vsync: this, duration: const Duration(seconds: 16))
+    ..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = smoothFadeColors(widget.color);
+    final stops = smoothFadeStops();
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: _anim,
+        builder: (context, _) {
+          final v = Curves.easeInOutSine.transform(_anim.value);
+          return DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(
+                center: Alignment(-0.5 + v, -1.1),
+                radius: 1.6,
+                colors: colors,
+                stops: stops,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
 }

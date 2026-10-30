@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../app.dart';
 import '../core/models.dart';
 import 'albums_view.dart';
+import 'ambient.dart';
 import 'cover_picker.dart';
 import 'download_view.dart';
 import 'library_views.dart';
@@ -740,9 +741,9 @@ class _TracksPageState extends State<TracksPage> {
     final hero = widget.heroColor;
     final heroHeader = hero == null
         ? null
-        // Своей цветной заливки у шапки нет: она рисовалась только внутри страницы и была видна прямоугольником.
-        // Цвет даёт общий фон окна — от обложки текущего трека
         : Stack(children: [
+            // Свечение цветом шапки: плавно уходит в прозрачность и медленно «дышит»
+            AmbientGlow(color: hero.withValues(alpha: 0.45)),
             SizedBox(
               width: double.infinity,
               child: Padding(

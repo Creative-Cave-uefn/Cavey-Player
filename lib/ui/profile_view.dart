@@ -161,9 +161,12 @@ class _ProfileLayoutState extends State<ProfileLayout> {
     final pad = compact ? 20.0 : 40.0;
     final photo = compact ? 160.0 : 220.0;
     Widget page(Color? tint) {
-      // Фон окна уже окрашен профилем целиком — своей дымки внутри страницы нет (её края были видны)
       return Stack(children: [
-        if (bannerFileId != null) _backdrop(Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId))),
+        if (bannerFileId != null)
+          _backdrop(Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId)))
+        else
+          // Свечение цветом профиля — на всё окно, плавное, медленно «дышит»
+          AmbientGlow(color: tint?.withValues(alpha: 0.4)),
         CustomScrollView(controller: _scroll, slivers: [
           SliverToBoxAdapter(
             child: Padding(
