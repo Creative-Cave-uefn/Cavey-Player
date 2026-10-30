@@ -7,7 +7,10 @@ import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/log.dart';
+import '../core/desktop_notify.dart';
 import '../core/media_keys.dart';
+import '../core/notices.dart';
+import '../core/share_link.dart';
 import '../core/models.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
@@ -85,6 +88,10 @@ class _ShellState extends State<Shell> {
   StreamSubscription<String>? _msgs;
   bool _dragging = false;
   String? _toast;
+  String? _toastActionLabel;
+  VoidCallback? _toastAction;
+  StreamSubscription<Notice>? _notices;
+  ValueNotifier<String?>? _linkSource;
   Timer? _toastTimer;
 
   @override
@@ -93,12 +100,64 @@ class _ShellState extends State<Shell> {
     _msgs ??= Services.of(context).lib.messages.stream.listen((m) {
       if (!mounted) return;
       // Своя плашка вместо SnackBar: маленькая, по центру и над плеером, ничего не перекрывает
-      setState(() => _toast = m);
-      _toastTimer?.cancel();
-      _toastTimer = Timer(const Duration(seconds: 4), () {
-        if (mounted) setState(() => _toast = null);
-      });
+      _showToast(m);
     });
+    _notices ??= Services.of(context).social.noticeStream.stream.listen(_onNotice);
+    if (_linkSource == null) {
+      _linkSource = Services.of(context).incomingLink..addListener(_onLink);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _onLink()); // ссылка, с которой запустили программу
+    }
+  }
+
+  void _showToast(String text, {String? actionLabel, VoidCallback? action, Duration time = const Duration(seconds: 4)}) {
+    setState(() {
+      _toast = text;
+      _toastActionLabel = actionLabel;
+      _toastAction = action;
+    });
+    _toastTimer?.cancel();
+    _toastTimer = Timer(time, () {
+      if (mounted) {
+        setState(() {
+          _toast = null;
+          _toastAction = null;
+        });
+      }
+    });
+  }
+
+  /// Открыли ссылку caveplayer://track/…: переходим к альбому трека и включаем его
+  void _onLink() {
+    if (!mounted) return;
+    final app = Services.of(context);
+    final link = app.incomingLink.value;
+    if (link == null) return;
+    app.incomingLink.value = null;
+    final id = trackIdFromLink(link);
+    final track = id == null ? null : app.lib.data.tracks[app.lib.data.resolve(id)];
+    if (track == null) {
+      _showToast('Этого трека нет в вашей библиотеке');
+      return;
+    }
+    _nav.go(Nav('album', track.albumKey));
+    unawaited(app.player.playTracks([track], 0));
+  }
+
+  /// Уведомление «Вам»: в окне — плашка (с кнопкой «Слушать», если с вами поделились), в трее — уведомление Windows
+  Future<void> _onNotice(Notice n) async {
+    final app = Services.of(context);
+    final text = app.social.noticeLine(n);
+    if (await windowIsHidden()) {
+      unawaited(desktopToast(text));
+      return;
+    }
+    if (!mounted) return;
+    final track = app.lib.data.tracks[app.lib.data.resolve(n.trackIds.first)];
+    final listen = n.kind == NoticeKind.share && track != null;
+    _showToast(text,
+        actionLabel: listen ? 'Слушать' : null,
+        action: listen ? () => app.player.playTracks([track], 0) : null,
+        time: listen ? const Duration(seconds: 9) : const Duration(seconds: 5));
   }
 
   /// Зажатая правая кнопка + движение: ← предыдущий, → следующий, ↑ ↓ громкость
@@ -124,6 +183,8 @@ class _ShellState extends State<Shell> {
   void dispose() {
     _toastTimer?.cancel();
     _msgs?.cancel();
+    _notices?.cancel();
+    _linkSource?.removeListener(_onLink);
     _nav.dispose();
     super.dispose();
   }
@@ -211,10 +272,13 @@ class _ShellState extends State<Shell> {
                   // Над плеером, а если открыта панель выбора треков — выше неё
                   builder: (context, bar, child) => Padding(padding: EdgeInsets.only(bottom: bar ? 92 + 84 : 92 + 14), child: child),
                   child: IgnorePointer(
+                    ignoring: _toastAction == null,
                     child: Center(
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 160),
-                        child: _toast == null ? const SizedBox.shrink(key: ValueKey('none')) : _ToastCard(_toast!, key: ValueKey(_toast)),
+                        child: _toast == null
+                            ? const SizedBox.shrink(key: ValueKey('none'))
+                            : _ToastCard(_toast!, key: ValueKey(_toast), actionLabel: _toastActionLabel, onAction: _toastAction),
                       ),
                     ),
                   ),
@@ -343,7 +407,9 @@ class _ShellState extends State<Shell> {
 /// Небольшое уведомление по центру над плеером
 class _ToastCard extends StatelessWidget {
   final String text;
-  const _ToastCard(this.text, {super.key});
+  final String? actionLabel;
+  final VoidCallback? onAction;
+  const _ToastCard(this.text, {super.key, this.actionLabel, this.onAction});
 
   @override
   Widget build(BuildContext context) {
@@ -360,11 +426,19 @@ class _ToastCard extends StatelessWidget {
           border: Border.all(color: C.line),
           boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 14, offset: Offset(0, 4))],
         ),
-        child: Text(text,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: C.text, fontSize: 16, fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Flexible(
+            child: Text(text,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: C.text, fontSize: 16, fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
+          ),
+          if (actionLabel != null && onAction != null) ...[
+            const SizedBox(width: 14),
+            FilledButton(onPressed: onAction, child: Text(actionLabel!)),
+          ],
+        ]),
       ),
       ),
     );

@@ -95,6 +95,7 @@ class Settings {
   bool trayOnClose = true; // крестик прячет окно в трей, музыка играет дальше
   bool trayAsked = false; // уже спрашивали, что делать по крестику
   bool globalMediaKeys = true; // медиаклавиши работают и когда окно не активно
+  String? noticeSeen; // время последнего показанного уведомления «Вам» (ISO)
   int crossfadeSec = 3; // плавный переход между треками, секунд (0 — выключен)
   bool artistsDesc = false; // «Исполнители» сортируются Я–А
   bool albumsDesc = false; // «Альбомы» сортируются Я–А
@@ -129,6 +130,7 @@ class Settings {
         'trayAsked': trayAsked,
         'globalMediaKeys': globalMediaKeys,
         'crossfadeSec': crossfadeSec,
+        'noticeSeen': noticeSeen,
         'artistsDesc': artistsDesc,
         'albumsDesc': albumsDesc,
         'view': view,
@@ -159,7 +161,8 @@ class Settings {
     s.trayOnClose = j['trayOnClose'] != false;
     s.trayAsked = j['trayAsked'] == true;
     s.globalMediaKeys = j['globalMediaKeys'] != false;
-    s.crossfadeSec = ((j['crossfadeSec'] as num?)?.toInt() ?? 3).clamp(0, 10);
+    s.noticeSeen = j['noticeSeen'] as String?;
+    s.crossfadeSec = ((j['crossfadeSec'] as num?)?.toInt() ?? 3).clamp(0, 10).toInt();
     s.artistsDesc = j['artistsDesc'] == true;
     s.albumsDesc = j['albumsDesc'] == true;
     final vw = j['view'];

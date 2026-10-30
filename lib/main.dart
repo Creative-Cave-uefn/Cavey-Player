@@ -10,13 +10,15 @@ import 'app.dart';
 import 'core/window_style.dart';
 import 'ui/smooth_scroll.dart';
 import 'core/log.dart';
+import 'core/share_link.dart';
 import 'core/single_instance.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> args) async {
   runZonedGuarded(() async {
     CaveBinding.ensureInitialized();
     // Уже запущена другая копия (возможно, спрятанная в трее) — показываем её и выходим
-    if (!claimSingleInstance()) exit(0);
+    final link = linkFromArgs(args);
+    if (!claimSingleInstance(link: link)) exit(0);
     await AppLog.init();
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
@@ -34,6 +36,7 @@ Future<void> main() async {
       AppLog.warn('Окно: управление не запустилось', e);
     }
     final app = await AppServices.create();
+    if (link != null) app.incomingLink.value = link;
     runApp(CavePlayerApp(app: app));
   }, (error, stack) => AppLog.error('Необработанная ошибка', error, stack));
 }

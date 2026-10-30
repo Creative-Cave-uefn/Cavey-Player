@@ -17,6 +17,7 @@ class DownloadPage extends StatefulWidget {
 class _DownloadPageState extends State<DownloadPage> {
   final _input = TextEditingController();
   String? _target;
+  bool _makePlaylist = true;
 
   @override
   void initState() {
@@ -31,7 +32,7 @@ class _DownloadPageState extends State<DownloadPage> {
     final app = Services.of(context);
     final target = _target ?? app.settings.hubId;
     if (target == null || _input.text.trim().isEmpty) return;
-    app.downloads.enqueue(_input.text, target);
+    app.downloads.enqueue(_input.text, target, makePlaylist: _makePlaylist);
     _input.clear();
   }
 
@@ -60,7 +61,8 @@ class _DownloadPageState extends State<DownloadPage> {
           const Text(
             'Ссылка на трек, альбом или плейлист из YouTube, YouTube Music, Яндекс Музыки или Spotify — '
             'или просто «Исполнитель - Название». Cave Player найдёт лучшую версию, подпишет теги и обложку '
-            'и положит файл на Google Диск: он сразу появится в библиотеке у всех.',
+            'и положит файл на Google Диск: он сразу появится в библиотеке у всех. '
+            'Плейлисты Spotify: без ключа доступны первые 100 треков.',
             style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
           const SizedBox(height: 24),
@@ -110,6 +112,30 @@ class _DownloadPageState extends State<DownloadPage> {
                   ),
                 const Text('Альбомы и плейлисты — в отдельную подпапку.', style: TextStyle(color: C.faint, fontSize: 13)),
               ]),
+              const SizedBox(height: 6),
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () => setState(() => _makePlaylist = !_makePlaylist),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: Checkbox(
+                        value: _makePlaylist,
+                        activeColor: C.accent,
+                        checkColor: C.accentInk,
+                        onChanged: (v) => setState(() => _makePlaylist = v ?? true),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Flexible(
+                      child: Text('Сделать плейлист в Cave Player (для ссылок на плейлисты)', style: TextStyle(color: C.muted)),
+                    ),
+                  ]),
+                ),
+              ),
             ]),
           ),
           const SizedBox(height: 14),

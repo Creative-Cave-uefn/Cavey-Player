@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import '../config.dart';
 import 'auth.dart';
 import 'log.dart';
+import 'notices.dart' show maxAddedTracksInEvent;
 import 'drive.dart';
 import 'models.dart';
 import 'store.dart';
@@ -917,13 +918,39 @@ class LibraryController extends ChangeNotifier {
       ).toJson(),
     });
     onEvent?.call({'k': 'playlist', 'id': id, 'name': name});
+    _announceAdded(id, items);
     return id;
+  }
+
+  /// Сообщаем друзьям, что в плейлист добавлены их треки (они получат уведомление). Названием плейлиста делимся,
+  /// только если он открытый: приватный остаётся приватным.
+  void _announceAdded(String playlistId, List<String> items) {
+    final m = me;
+    final others = [
+      for (final x in items)
+        if (data.tracks[x] != null && data.tracks[x]!.by.isNotEmpty && data.tracks[x]!.by != m) x
+    ];
+    if (others.isEmpty) return;
+    final p = playlist(playlistId);
+    onEvent?.call({
+      'k': 'addpl',
+      'tracks': others.take(maxAddedTracksInEvent).toList(),
+      if (p != null && isPlaylistPublic(playlistId)) 'name': p.name,
+    });
+  }
+
+  /// Поделиться треком с друзьями внутри приложения
+  void shareTrack(String trackId, List<String> to, {String note = ''}) {
+    if (to.isEmpty) return;
+    onEvent?.call({'k': 'share', 'to': to, 'track': trackId, if (note.trim().isNotEmpty) 'note': note.trim()});
   }
 
   void renamePlaylist(String id, String name) => commit({'op': 'renamePlaylist', 'id': id, 'name': name});
   void deletePlaylist(String id) => commit({'op': 'deletePlaylist', 'id': id});
-  void addToPlaylist(String id, List<String> items) =>
-      commit({'op': 'addToPlaylist', 'id': id, 'items': items, 'at': DateTime.now().millisecondsSinceEpoch});
+  void addToPlaylist(String id, List<String> items) {
+    commit({'op': 'addToPlaylist', 'id': id, 'items': items, 'at': DateTime.now().millisecondsSinceEpoch});
+    _announceAdded(id, items);
+  }
 
   /// Когда трек добавлен в плейлист (мс). У старых записей даты нет, берём дату создания плейлиста
   int playlistAddedAt(Playlist p, String trackId) => int.tryParse(data.edits['pl:${p.id}']?['t:$trackId'] ?? '') ?? p.createdAt;

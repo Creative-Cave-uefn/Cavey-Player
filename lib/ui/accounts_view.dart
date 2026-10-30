@@ -135,6 +135,8 @@ class _AccountsPageState extends State<AccountsPage> {
           const SizedBox(height: 44),
           const _DiscordSection(),
           const SizedBox(height: 44),
+          const _PlaybackSection(),
+          const SizedBox(height: 44),
           const _TraySection(),
           const SizedBox(height: 44),
           const _CacheSection(),
@@ -506,6 +508,47 @@ class _LogSectionState extends State<_LogSection> {
             icon: const Icon(Icons.folder_open_rounded, size: 18),
             label: const Text('Открыть папку'),
           ),
+      ]),
+    ]);
+  }
+}
+
+class _PlaybackSection extends StatefulWidget {
+  const _PlaybackSection();
+  @override
+  State<_PlaybackSection> createState() => _PlaybackSectionState();
+}
+
+class _PlaybackSectionState extends State<_PlaybackSection> {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final sec = app.settings.crossfadeSec;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Плавный переход', style: display(20)),
+      const SizedBox(height: 6),
+      const Text(
+        'Конец трека затихает, а следующий в это время нарастает. Не работает, если вы сами переключили трек, '
+        'перемотали в конец или слушаете вместе с другом, а также на коротких треках.',
+        style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+      ),
+      const SizedBox(height: 4),
+      Row(children: [
+        Expanded(
+          child: Slider(
+            value: sec.toDouble(),
+            min: 0,
+            max: 10,
+            divisions: 10,
+            label: sec == 0 ? 'Выключено' : '$sec с',
+            onChanged: (v) => setState(() => app.settings.crossfadeSec = v.round()),
+            onChangeEnd: (_) => app.lib.saveSettings(),
+          ),
+        ),
+        SizedBox(
+          width: 90,
+          child: Text(sec == 0 ? 'Выключено' : '$sec с', textAlign: TextAlign.right, style: const TextStyle(color: C.muted)),
+        ),
       ]),
     ]);
   }

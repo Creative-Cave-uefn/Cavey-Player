@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/notices.dart';
 import '../core/social.dart';
 import 'shell.dart';
 import 'theme.dart';
@@ -33,11 +34,21 @@ class CompanyPage extends StatelessWidget {
         final now = social.listeningNow;
         final chart = social.chart();
         final feed = social.feed;
+        final notices = social.notices.take(8).toList();
         return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Text('Компания', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
           const Text('Что слушают друзья, что у вас в чарте и что нового в библиотеке.',
               style: TextStyle(color: C.muted, fontSize: 15)),
+          if (notices.isNotEmpty) ...[
+            const SizedBox(height: 32),
+            Text('Вам', style: display(20)),
+            const SizedBox(height: 6),
+            const Text('Кто добавил ваши загрузки в любимое и плейлисты и кто поделился с вами треками.',
+                style: TextStyle(color: C.faint, fontSize: 13)),
+            const SizedBox(height: 10),
+            for (final n in notices) _NoticeRow(notice: n),
+          ],
           const SizedBox(height: 32),
           Text('Участники', style: display(20)),
           const SizedBox(height: 6),
@@ -196,6 +207,48 @@ class _ChartRow extends StatelessWidget {
   }
 }
 
+class _NoticeRow extends StatelessWidget {
+  final Notice notice;
+  const _NoticeRow({required this.notice});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final track = app.lib.data.tracks[app.lib.data.resolve(notice.trackIds.first)];
+    final icon = switch (notice.kind) {
+      NoticeKind.like => Icons.favorite_rounded,
+      NoticeKind.addToPlaylist => Icons.playlist_add_rounded,
+      NoticeKind.share => Icons.share_rounded,
+    };
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: track == null ? null : () => NavScope.of(context).go(Nav('album', track.albumKey)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
+        child: Row(children: [
+          Icon(icon, size: 18, color: friendColor(notice.from)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(app.social.noticeLine(notice), style: const TextStyle(height: 1.35)),
+              if (notice.note != null) Text('«${notice.note}»', style: const TextStyle(color: C.muted, fontSize: 13)),
+            ]),
+          ),
+          const SizedBox(width: 12),
+          Text(timeAgo(notice.at), style: const TextStyle(color: C.faint, fontSize: 12)),
+          if (track != null)
+            IconButton(
+              tooltip: 'Слушать',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.play_arrow_rounded, color: C.accent),
+              onPressed: () => app.player.playTracks([track], 0),
+            ),
+        ]),
+      ),
+    );
+  }
+}
+
 class _FeedRow extends StatelessWidget {
   final FeedEvent event;
   const _FeedRow({required this.event});
@@ -226,6 +279,24 @@ class _FeedRow extends StatelessWidget {
         text = '$who нравится «${t.title}» — ${t.displayArtist}';
         icon = Icons.favorite_rounded;
         onTap = () => app.player.playTracks([t], 0);
+      case 'share':
+        final t = lib.data.tracks[lib.data.resolve('${d['track']}')];
+        if (t == null) return const SizedBox.shrink();
+        final to = [for (final x in (d['to'] as List? ?? const [])) '$x'];
+        final whom = to.length == 1 ? lib.firstNameOf(to.first) : 'друзьями (${to.length})';
+        text = '$who поделился(ась) «${t.title}» — ${t.displayArtist} с $whom';
+        icon = Icons.share_rounded;
+        onTap = () => app.player.playTracks([t], 0);
+      case 'addpl':
+        // В ленте только открытые плейлисты: у них в событии есть название
+        final name = d['name'];
+        final first = (d['tracks'] as List? ?? const []).isEmpty ? null : lib.data.tracks[lib.data.resolve('${(d['tracks'] as List).first}')];
+        if (name is! String || name.isEmpty || first == null) return const SizedBox.shrink();
+        final n = (d['tracks'] as List).length;
+        text = n == 1
+            ? '$who добавил(а) «${first.title}» в плейлист «$name»'
+            : '$who добавил(а) в плейлист «$name» треков: $n';
+        icon = Icons.playlist_add_rounded;
       default:
         return const SizedBox.shrink();
     }

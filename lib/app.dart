@@ -23,6 +23,7 @@ import 'core/single_instance.dart';
 import 'core/taskbar.dart';
 import 'core/tray.dart';
 import 'core/media_keys.dart';
+import 'core/share_link.dart';
 import 'core/updater.dart';
 import 'core/window_style.dart';
 import 'ui/onboarding.dart';
@@ -53,6 +54,9 @@ class AppServices {
   late final WebInfoService web;
   late final PreviewPlayer preview;
   late final MediaKeys mediaKeys;
+
+  /// Ссылка caveplayer://track/…, пришедшая при запуске или от второй копии; окно её обрабатывает и очищает
+  final ValueNotifier<String?> incomingLink = ValueNotifier(null);
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
@@ -102,6 +106,8 @@ class AppServices {
           enabled: settings.discord,
         );
     player.addListener(showInDiscord);
+    // Слушаем вместе с другом: переходы идут по его трекам, плавный переход мешал бы синхронизации
+    player.crossfadeBlocked = () => social.following != null;
     player.onUserAction = () {
       social.onUserAction();
       showInDiscord();
@@ -127,7 +133,11 @@ class AppServices {
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
     // Ярлык на панели задач запускает вторую копию; она просит первую показать окно
-    listenForSecondLaunch(() => unawaited(tray.showWindow()));
+    listenForSecondLaunch(() {
+      unawaited(tray.showWindow());
+      final link = takePendingLink();
+      if (link != null) app.incomingLink.value = link;
+    });
     // Кнопки «Назад / Пауза / Дальше» в превью на панели задач живут до выхода из приложения
     unawaited(TaskbarController(player).start());
     return app;

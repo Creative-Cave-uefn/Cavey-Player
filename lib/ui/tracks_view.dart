@@ -10,6 +10,7 @@ import 'cover_picker.dart';
 import 'download_view.dart';
 import 'library_views.dart';
 import 'shell.dart';
+import 'share_dialog.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
