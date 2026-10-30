@@ -199,7 +199,10 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
     final app = Services.of(context);
     final t = app.player.current;
     if (t == null) return null;
-    return AmbientSource(app.covers.keyOf(t), bytes: () => app.covers.forTrack(t));
+    // Маленькая копия (160 px) — та же, что в списке и в плеере: она уже в памяти, фон меняется сразу.
+    // Раньше бралась полная обложка: её качали с Диска заново, и при быстрой смене треков фон не успевал
+    final covers = app.covers;
+    return AmbientSource(covers.keyOf(t), bytes: () async => covers.peek(t, px: 160) ?? await covers.forTrack(t, px: 160));
   }
 
   Future<void> _sync() async {
@@ -229,12 +232,14 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
           if (link != null && link.isNotEmpty) img = await _blurred(await _fromUrl(link));
         }
       } catch (_) {}
-      if (!mounted || seq != _seq) return;
-      if (img != null) {
+      // Готовую картинку запоминаем, даже если трек уже сменился: вернёмся к нему — фон появится сразу
+      if (img != null && !_cache.containsKey(s.key)) {
         _cache[s.key] = img;
         _order.add(s.key);
-        // Держим несколько последних: назад-вперёд без пересчёта
-        if (_order.length > 12) _cache.remove(_order.removeAt(0));
+        if (_order.length > 24) _cache.remove(_order.removeAt(0));
+      }
+      if (!mounted || seq != _seq) return;
+      if (img != null) {
         setState(() {
           _image = img;
           _color = null;
@@ -308,7 +313,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
       child: Stack(fit: StackFit.expand, children: [
         const ColoredBox(color: C.bg),
         AnimatedSwitcher(
-          duration: const Duration(milliseconds: 1200),
+          duration: const Duration(milliseconds: 600),
           switchInCurve: Curves.easeOut,
           switchOutCurve: Curves.easeIn,
           layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
