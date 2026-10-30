@@ -11,6 +11,7 @@ import '../core/models.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
 import 'albums_view.dart';
+import 'cinema_view.dart';
 import 'company_view.dart';
 import 'download_view.dart';
 import 'library_views.dart';
@@ -85,6 +86,51 @@ class _ShellState extends State<Shell> {
   String? _toast;
   Timer? _toastTimer;
 
+  // ---------- кинотеатр и волна: панели прячутся ----------
+
+  bool _peekSide = false, _peekBar = false;
+  bool _inSide = false, _inBar = false;
+  Timer? _hideSide, _hideBar;
+
+  /// Где панели уезжают: кинотеатр всегда, волна — пока играет
+  bool _immersive(Nav nav) {
+    if (nav.kind == 'cinema') return Services.of(context).player.current != null;
+    return nav.kind == 'wave' && Services.of(context).wave.active;
+  }
+
+  /// Мышь у края: показываем панель; если в неё так и не зашли — прячем через пару секунд
+  void _reveal({required bool side}) {
+    setState(() => side ? _peekSide = true : _peekBar = true);
+    _scheduleHide(side: side, after: const Duration(milliseconds: 1800));
+  }
+
+  void _hover({required bool side, required bool inside}) {
+    if (side) {
+      _inSide = inside;
+    } else {
+      _inBar = inside;
+    }
+    if (inside) {
+      (side ? _hideSide : _hideBar)?.cancel();
+    } else {
+      _scheduleHide(side: side, after: const Duration(milliseconds: 600));
+    }
+  }
+
+  void _scheduleHide({required bool side, required Duration after}) {
+    final t = Timer(after, () {
+      if (!mounted || (side ? _inSide : _inBar)) return;
+      setState(() => side ? _peekSide = false : _peekBar = false);
+    });
+    if (side) {
+      _hideSide?.cancel();
+      _hideSide = t;
+    } else {
+      _hideBar?.cancel();
+      _hideBar = t;
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -102,6 +148,8 @@ class _ShellState extends State<Shell> {
   @override
   void dispose() {
     _toastTimer?.cancel();
+    _hideSide?.cancel();
+    _hideBar?.cancel();
     _msgs?.cancel();
     _nav.dispose();
     super.dispose();
@@ -135,48 +183,96 @@ class _ShellState extends State<Shell> {
             backgroundColor: Colors.transparent,
             body: LayoutBuilder(builder: (context, box) {
               final compact = box.maxWidth < 860;
-              // Стекло: боковая панель плавает слева, справа содержимое и капсула плеера под ним
-              return Row(children: [
-                Padding(padding: const EdgeInsets.fromLTRB(12, 12, 0, 12), child: _Sidebar(compact: compact)),
-                Expanded(
-                  child: Column(children: [
-                Expanded(
-                  child: Row(children: [
-                    Expanded(
-                      child: ValueListenableBuilder<Nav>(
-                        valueListenable: _nav,
-                        builder: (context, nav, _) => Stack(children: [
-                          Positioned.fill(child: _content(nav, compact)),
-                          Positioned(
-                            top: 10,
-                            left: compact ? 16 : 28,
-                            child: Row(children: [
-                              _HistoryButton(
-                                icon: Icons.chevron_left_rounded,
-                                tooltip: 'Назад (Alt+←)',
-                                onPressed: _nav.canBack ? _nav.back : null,
-                              ),
-                              const SizedBox(width: 6),
-                              _HistoryButton(
-                                icon: Icons.chevron_right_rounded,
-                                tooltip: 'Вперёд (Alt+→)',
-                                onPressed: _nav.canForward ? _nav.forward : null,
-                              ),
-                            ]),
+              final sideW = (compact ? 72.0 : 240.0) + 12;
+              const barH = 88.0;
+              const dur = Duration(milliseconds: 320);
+              const curve = Curves.easeOutCubic;
+              // Стекло: боковая панель плавает слева, капсула плеера внизу. В кинотеатре и в играющей волне
+              // обе уезжают за край и возвращаются, когда к краю подводишь мышь
+              return AnimatedBuilder(
+                animation: Listenable.merge([_nav, app.wave]),
+                builder: (context, _) {
+                  final nav = _nav.value;
+                  final immersive = _immersive(nav);
+                  if (!immersive && (_peekSide || _peekBar)) {
+                    _peekSide = false;
+                    _peekBar = false;
+                  }
+                  final showSide = !immersive || _peekSide;
+                  final showBar = !immersive || _peekBar;
+                  return Stack(children: [
+                    AnimatedPositioned(
+                      duration: dur,
+                      curve: curve,
+                      left: immersive ? 0 : sideW,
+                      top: 0,
+                      right: 0,
+                      bottom: immersive ? 0 : barH,
+                      child: Row(children: [
+                        Expanded(
+                          child: Stack(children: [
+                            Positioned.fill(child: _content(nav, compact)),
+                            Positioned(
+                              top: 4,
+                              left: compact ? 16 : 28,
+                              child: Row(children: [
+                                _HistoryButton(
+                                  icon: Icons.chevron_left_rounded,
+                                  tooltip: 'Назад (Alt+←)',
+                                  onPressed: _nav.canBack ? _nav.back : null,
+                                ),
+                                const SizedBox(width: 6),
+                                _HistoryButton(
+                                  icon: Icons.chevron_right_rounded,
+                                  tooltip: 'Вперёд (Alt+→)',
+                                  onPressed: _nav.canForward ? _nav.forward : null,
+                                ),
+                              ]),
+                            ),
+                          ]),
+                        ),
+                        // В кинотеатре текст и так на половине экрана
+                        if (nav.kind != 'cinema')
+                          ValueListenableBuilder<bool>(
+                            valueListenable: app.player.lyricsOpen,
+                            builder: (context, open, _) => open ? const LyricsPanel() : const SizedBox.shrink(),
                           ),
-                        ]),
+                      ]),
+                    ),
+                    if (immersive) ...[
+                      // Узкие полосы у края: навёл — панель выезжает
+                      Positioned(left: 0, top: 0, bottom: 0, width: 12, child: MouseRegion(onEnter: (_) => _reveal(side: true))),
+                      Positioned(left: 0, right: 0, bottom: 0, height: 14, child: MouseRegion(onEnter: (_) => _reveal(side: false))),
+                    ],
+                    AnimatedPositioned(
+                      duration: dur,
+                      curve: curve,
+                      left: showSide ? 0 : -sideW - 24,
+                      top: 0,
+                      bottom: 0,
+                      width: sideW,
+                      child: MouseRegion(
+                        onEnter: (_) => _hover(side: true, inside: true),
+                        onExit: (_) => _hover(side: true, inside: false),
+                        child: Padding(padding: const EdgeInsets.fromLTRB(12, 0, 0, 12), child: _Sidebar(compact: compact)),
                       ),
                     ),
-                    ValueListenableBuilder<bool>(
-                      valueListenable: app.player.lyricsOpen,
-                      builder: (context, open, _) => open ? const LyricsPanel() : const SizedBox.shrink(),
+                    AnimatedPositioned(
+                      duration: dur,
+                      curve: curve,
+                      left: immersive ? 0 : sideW,
+                      right: 0,
+                      bottom: showBar ? 0 : -barH - 12,
+                      height: barH,
+                      child: MouseRegion(
+                        onEnter: (_) => _hover(side: false, inside: true),
+                        onExit: (_) => _hover(side: false, inside: false),
+                        child: PlayerBar(compact: compact),
+                      ),
                     ),
-                  ]),
-                ),
-                PlayerBar(compact: compact),
-                  ]),
-                ),
-              ]);
+                  ]);
+                },
+              );
             }),
           ),
               Positioned(
@@ -224,6 +320,7 @@ class _ShellState extends State<Shell> {
     final repeat = e is KeyRepeatEvent;
 
     void Function()? action;
+    if (k == LogicalKeyboardKey.escape && !repeat && _nav.value.kind == 'cinema') action = _nav.back;
     // Медиаклавиши и сочетания с Ctrl работают всегда
     if (k == LogicalKeyboardKey.mediaPlayPause && !repeat) action = p.toggle;
     if (k == LogicalKeyboardKey.mediaTrackNext && !repeat) action = p.next;
@@ -286,6 +383,8 @@ class _ShellState extends State<Shell> {
         return UserTracksPage(key: ValueKey('${nav.kind}:${nav.id}'), email: nav.id!, uploads: nav.kind == 'userUploads', compact: compact);
       case 'recent':
         return RecentPage(key: const ValueKey('recent'), compact: compact);
+      case 'cinema':
+        return CinemaPage(key: const ValueKey('cinema'), compact: compact);
       case 'wave':
         return WavePage(key: const ValueKey('wave'), compact: compact);
       case 'new':

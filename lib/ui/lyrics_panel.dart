@@ -41,7 +41,7 @@ class LyricsPanel extends StatelessWidget {
             Expanded(
               child: t == null
                   ? const _Note('Включите трек, и здесь появится его текст.')
-                  : _LyricsBody(key: ValueKey(t.id), track: t),
+                  : LyricsBody(key: ValueKey(t.id), track: t),
             ),
           ]);
         },
@@ -67,14 +67,16 @@ class _Note extends StatelessWidget {
       );
 }
 
-class _LyricsBody extends StatefulWidget {
+/// Текст песни. [big] — крупно, для режима кинотеатра
+class LyricsBody extends StatefulWidget {
   final Track track;
-  const _LyricsBody({super.key, required this.track});
+  final bool big;
+  const LyricsBody({super.key, required this.track, this.big = false});
   @override
-  State<_LyricsBody> createState() => _LyricsBodyState();
+  State<LyricsBody> createState() => _LyricsBodyState();
 }
 
-class _LyricsBodyState extends State<_LyricsBody> {
+class _LyricsBodyState extends State<LyricsBody> {
   PlayerController? _player;
   LyricsService? _lyrics;
   Lyrics? _synced;
@@ -216,7 +218,7 @@ class _LyricsBodyState extends State<_LyricsBody> {
         for (final l in ly.lines)
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
-            child: Text(l.text, style: const TextStyle(color: C.muted, fontSize: 15, height: 1.5)),
+            child: Text(l.text, style: TextStyle(color: C.muted, fontSize: widget.big ? 24 : 15, height: 1.5, fontWeight: widget.big ? FontWeight.w600 : null)),
           ),
         _again(),
       ]);
@@ -240,14 +242,15 @@ class _LyricsBodyState extends State<_LyricsBody> {
                 app.player.seek(ly.lines[i].at!);
               },
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: widget.big ? 10 : 6),
                 child: AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 200),
+                  duration: const Duration(milliseconds: 250),
                   style: TextStyle(
-                    fontSize: 19,
-                    height: 1.35,
-                    fontWeight: FontWeight.w600,
-                    color: i == idx ? C.text : (i < idx ? C.faint : C.muted),
+                    fontSize: widget.big ? 34 : 19,
+                    height: widget.big ? 1.25 : 1.35,
+                    fontWeight: widget.big ? FontWeight.w700 : FontWeight.w600,
+                    letterSpacing: widget.big ? -0.4 : null,
+                    color: i == idx ? C.text : (i < idx ? (widget.big ? const Color(0x4DFFFFFF) : C.faint) : (widget.big ? const Color(0x80FFFFFF) : C.muted)),
                   ),
                   child: Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
                 ),

@@ -133,11 +133,19 @@ class _CoverImageState extends State<CoverImage> {
     final key = id != null ? 'cv_$id' : (t == null ? null : svc.keyOf(t));
     final px = _wantPx;
     final bucket = CoverService.bucketFor(px);
-    if (key == _key && bucket == _px) return;
+    final wantsNow = id != null || (t != null && svc.wants(t));
+    if (key == _key && bucket == _px) {
+      // Тот же трек, но у него появилась обложка (досканировали, нашли cover.jpg) — сразу просим её,
+      // а не ждём, пока виджет пересоздадут сменой вкладки
+      final became = wantsNow && !_wants;
+      _wants = wantsNow;
+      if (became && _bytes == null) _request();
+      return;
+    }
     final sameKey = key == _key;
     _key = key;
     _px = bucket;
-    _wants = id != null || (t != null && svc.wants(t));
+    _wants = wantsNow;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
     if (!sameKey || peek != null) _bytes = peek;
     if (peek == null && _wants) _request();
@@ -160,10 +168,12 @@ class _CoverImageState extends State<CoverImage> {
 
   /// Сервис что-то догрузил или пришло время повторить: если у нас картинки ещё нет, пробуем снова
   void _onReady() {
-    if (!mounted || _bytes != null || !_wants || _key == null) return;
+    if (!mounted || _bytes != null || _key == null) return;
     final t = widget.track;
     final id = widget.fileId;
     final svc = _svc!;
+    _wants = id != null || (t != null && svc.wants(t));
+    if (!_wants) return;
     final px = _wantPx;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
     if (peek != null) {
@@ -189,6 +199,7 @@ class _CoverImageState extends State<CoverImage> {
             : Image.memory(
                 bytes,
                 fit: BoxFit.cover,
+                gaplessPlayback: true,
                 cacheWidth: (widget.size * dpr).round(),
                 errorBuilder: (_, __, ___) => placeholder,
               ),

@@ -1,4 +1,5 @@
 import 'dart:math';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -112,17 +113,24 @@ class _NowFlow extends StatelessWidget {
     final p = app.player;
     final wave = app.wave;
     final t = p.current!;
-    final big = compact ? 230.0 : 300.0;
     return Column(children: [
       LayoutBuilder(builder: (context, box) {
         final w = box.maxWidth;
         final cx = w / 2;
+        // Размер центральной карточки — от ширины: пять карточек с зазорами помещаются без наложений
+        const gap = 22.0, pad = 24.0; // зазор между карточками и рамка карточки (по 12 с боков)
+        final big = math.max(140.0, math.min(compact ? 230.0 : 300.0, (w - 4 * gap - 5 * pad) / (1 + 2 * 0.74 + 2 * 0.56)));
+        final s1 = big * 0.74, s2 = big * 0.56;
+        final dx1 = (big + pad) / 2 + gap + (s1 + pad) / 2;
+        final dx2 = dx1 + (s1 + pad) / 2 + gap + (s2 + pad) / 2;
+        final showFar = !compact && w >= 2 * dx2 + s2 + pad;
+        // Соседние развёрнуты лицом к центру
         final slots = <int, ({double size, double dx, double angle, double opacity})>{
-          -2: (size: big * 0.56, dx: -big * 1.33, angle: 0.5, opacity: 0.55),
-          -1: (size: big * 0.74, dx: -big * 0.86, angle: 0.38, opacity: 0.85),
+          -2: (size: s2, dx: -dx2, angle: -0.42, opacity: 0.55),
+          -1: (size: s1, dx: -dx1, angle: -0.32, opacity: 0.85),
           0: (size: big, dx: 0, angle: 0, opacity: 1),
-          1: (size: big * 0.74, dx: big * 0.86, angle: -0.38, opacity: 0.85),
-          2: (size: big * 0.56, dx: big * 1.33, angle: -0.5, opacity: 0.55),
+          1: (size: s1, dx: dx1, angle: 0.32, opacity: 0.85),
+          2: (size: s2, dx: dx2, angle: 0.42, opacity: 0.55),
         };
         final cards = <Widget>[];
         final seen = <String, int>{};
@@ -133,7 +141,7 @@ class _NowFlow extends StatelessWidget {
           final track = app.lib.data.tracks[p.queue[i]];
           if (track == null) continue;
           final slot = slots[o]!;
-          if (compact && o.abs() == 2) continue;
+          if (!showFar && o.abs() == 2) continue;
           final n = seen[track.id] = (seen[track.id] ?? 0) + 1;
           final height = slot.size + 24 + slot.size * 0.24;
           cards.add(AnimatedPositioned(

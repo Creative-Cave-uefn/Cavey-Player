@@ -26,6 +26,7 @@ import 'core/tray.dart';
 import 'core/updater.dart';
 import 'ui/ambient.dart';
 import 'ui/onboarding.dart';
+import 'ui/window_bar.dart';
 import 'ui/shell.dart';
 import 'ui/theme.dart';
 import 'ui/tray_dialog.dart';
@@ -173,7 +174,13 @@ class CavePlayerApp extends StatelessWidget {
         // Стеклянный фон под всеми экранами, включая первый запуск и диалоги
         builder: (context, child) => Stack(children: [
           const Positioned.fill(child: AmbientBackground()),
-          if (child != null) Positioned.fill(child: child),
+          // Своя шапка окна сверху, всё остальное под ней — шапка сливается со стеклом
+          Positioned.fill(
+            child: Column(children: [
+              if (WindowBar.enabled) const WindowBar(),
+              Expanded(child: child ?? const SizedBox.shrink()),
+            ]),
+          ),
         ]),
         home: ListenableBuilder(
           listenable: Listenable.merge([app.accounts, app.lib]),

@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/player.dart';
+import 'cinema_view.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
@@ -163,6 +164,7 @@ class PlayerBar extends StatelessWidget {
               const SizedBox(width: 12),
               soundButton,
               lyricsButton,
+              const CinemaButton(),
               IconButton(
                 tooltip: 'Очередь',
                 onPressed: t == null ? null : () => _showQueue(context),

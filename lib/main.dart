@@ -27,6 +27,8 @@ Future<void> main() async {
     MediaKit.ensureInitialized();
     try {
       await windowManager.ensureInitialized();
+      // Системную шапку прячем: вместо неё своя, прозрачная, поверх стеклянного фона
+      if (Platform.isWindows) await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
     } catch (e) {
       AppLog.warn('Окно: управление не запустилось', e);
     }

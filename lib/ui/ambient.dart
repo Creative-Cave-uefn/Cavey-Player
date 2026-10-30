@@ -98,6 +98,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
   String? _key;
   ui.Image? _image;
   Color? _color;
+  final Map<String, DateTime> _retried = {};
   int _seq = 0;
   VoidCallback? _unlisten;
 
@@ -106,11 +107,26 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
     super.didChangeDependencies();
     if (_unlisten != null) return;
     final player = Services.of(context).player;
+    final covers = Services.of(context).covers;
     void changed() => _sync();
+    // Обложка догрузилась позже, чем трек включился: фон без картинки пробует ещё раз
+    void coversReady() {
+      final k = _key;
+      if (_image != null || _color != null || k == null) return;
+      // Сигналы от обложек частые (прокрутка списков) — повторяем не чаще раза в 8 секунд
+      final last = _retried[k];
+      if (last != null && DateTime.now().difference(last) < const Duration(seconds: 8)) return;
+      _retried[k] = DateTime.now();
+      _key = null;
+      _sync();
+    }
+
     player.addListener(changed);
+    covers.addListener(coversReady);
     AmbientScope.override.addListener(changed);
     _unlisten = () {
       player.removeListener(changed);
+      covers.removeListener(coversReady);
       AmbientScope.override.removeListener(changed);
     };
     _sync();
@@ -211,15 +227,15 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
   static Future<ui.Image?> _blurred(ui.Image? src) async {
     if (src == null) return null;
     try {
-      const size = 160.0;
+      const size = 288.0; // крупнее — меньше ступенек при растягивании на всё окно
       final rec = ui.PictureRecorder();
       final canvas = Canvas(rec);
       final paint = Paint()
         ..filterQuality = FilterQuality.medium
-        ..imageFilter = ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16, tileMode: TileMode.clamp);
+        ..imageFilter = ui.ImageFilter.blur(sigmaX: 30, sigmaY: 30, tileMode: TileMode.clamp);
       // Чуть шире холста, чтобы края размытия не темнели
       canvas.drawImageRect(src, Rect.fromLTWH(0, 0, src.width.toDouble(), src.height.toDouble()),
-          const Rect.fromLTWH(-24, -24, size + 48, size + 48), paint);
+          const Rect.fromLTWH(-44, -44, size + 88, size + 88), paint);
       return await rec.endRecording().toImage(size.toInt(), size.toInt());
     } catch (_) {
       return null;
@@ -245,7 +261,8 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
                   key: ValueKey(img),
                   image: img,
                   fit: BoxFit.cover,
-                  filterQuality: FilterQuality.medium,
+                  // Плавное (бикубическое) растягивание: без «квадратиков» при увеличении
+                  filterQuality: FilterQuality.high,
                   opacity: const AlwaysStoppedAnimation(0.8),
                 ),
         ),
@@ -259,9 +276,77 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
             ),
           ),
         ),
+        // Едва заметное зерно: разбивает полосы, которые иначе видны на плавных тёмных переходах
+        const _Grain(),
       ]),
     );
   }
+}
+
+/// Шум поверх фона (дизеринг). Картинка 128×128 создаётся один раз и повторяется плиткой
+class _Grain extends StatefulWidget {
+  const _Grain();
+
+  @override
+  State<_Grain> createState() => _GrainState();
+}
+
+class _GrainState extends State<_Grain> {
+  static ui.Image? _tile;
+  static Future<ui.Image>? _making;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_tile == null) {
+      (_making ??= _make()).then((img) {
+        _tile = img;
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  static Future<ui.Image> _make() {
+    const n = 128;
+    final px = Uint8List(n * n * 4);
+    var seed = 0x2545F491;
+    for (var i = 0; i < n * n; i++) {
+      // Простой быстрый генератор: шум не обязан быть «честным», лишь бы без узора
+      seed ^= seed << 13;
+      seed ^= seed >> 17;
+      seed ^= seed << 5;
+      seed &= 0xFFFFFFFF;
+      final v = seed & 0xFF;
+      final o = i * 4;
+      final light = v > 127;
+      px[o] = px[o + 1] = px[o + 2] = light ? 255 : 0;
+      px[o + 3] = (v % 64) ~/ 6; // прозрачность 0..10 из 255 — на глаз зерна не видно
+    }
+    final done = Completer<ui.Image>();
+    ui.decodeImageFromPixels(px, n, n, ui.PixelFormat.rgba8888, done.complete);
+    return done.future;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tile = _tile;
+    if (tile == null) return const SizedBox.shrink();
+    return IgnorePointer(child: CustomPaint(painter: _GrainPainter(tile)));
+  }
+}
+
+class _GrainPainter extends CustomPainter {
+  final ui.Image tile;
+  _GrainPainter(this.tile);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..shader = ImageShader(tile, TileMode.repeated, TileMode.repeated, Matrix4.identity().storage);
+    canvas.drawRect(Offset.zero & size, paint);
+  }
+
+  @override
+  bool shouldRepaint(_GrainPainter old) => !identical(old.tile, tile);
 }
 
 /// Профиль без картинки: мягкое свечение его цветом
