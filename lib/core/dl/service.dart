@@ -219,7 +219,7 @@ class DownloadService extends ChangeNotifier {
       return false;
     }
     // У каждого трека своя папка: при параллельной загрузке альбома файлы не перепутаются
-    final dir = Directory('${temp.path}${Platform.pathSeparator}${DateTime.now().microsecondsSinceEpoch}');
+    final dir = Directory('${temp.path}${Platform.pathSeparator}${YouTube.unique()}');
     await dir.create();
     for (final c in cands.take(maxDownloadTries)) {
       final d = c.duration;

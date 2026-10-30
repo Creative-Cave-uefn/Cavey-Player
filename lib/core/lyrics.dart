@@ -180,7 +180,12 @@ class LyricsService extends ChangeNotifier {
   /// Ответ LRCLIB: тело при 200, null при «не нашлось» или неподходящем запросе (400/404).
   /// Перегрузка (429, 5xx) и таймаут — исключение: это «не отвечает», а не «текста нет».
   Future<Object?> _get(String path, Map<String, String> q, {Duration timeout = _timeout}) async {
-    final res = await _http.get(Uri.https('lrclib.net', path, q), headers: _headers).timeout(timeout);
+    var res = await _http.get(Uri.https('lrclib.net', path, q), headers: _headers).timeout(timeout);
+    // Перегрузка (503 и т. п.) обычно короткая — одна повторная попытка чуть позже
+    if (res.statusCode >= 500 || res.statusCode == 429) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      res = await _http.get(Uri.https('lrclib.net', path, q), headers: _headers).timeout(timeout);
+    }
     if (res.statusCode == 200) return jsonDecode(utf8.decode(res.bodyBytes));
     if (res.statusCode == 400 || res.statusCode == 404) return null;
     throw HttpException('LRCLIB ответил ${res.statusCode} на $path');
