@@ -164,7 +164,7 @@ class WebTrackGrid extends StatelessWidget {
               for (var r = 0; r < 3; r++)
                 c * 3 + r < shown.length
                     ? Container(
-                        decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.line.withValues(alpha: 0.7)))),
+                        decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
                         child: WebTrackLine(track: shown[c * 3 + r]),
                       )
                     : const SizedBox(height: 58),
@@ -536,7 +536,7 @@ class _WebSectionPageState extends State<WebSectionPage> {
           if (widget.kind == 'top')
             for (var i = 0; i < d.top.length; i++)
               Container(
-                decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.line.withValues(alpha: 0.6)))),
+                decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
                 child: Row(children: [
                   SizedBox(width: 32, child: Text('${i + 1}', style: const TextStyle(color: C.faint, fontSize: 13))),
                   Expanded(child: WebTrackLine(track: d.top[i])),
@@ -621,7 +621,7 @@ class _WebAlbumPageState extends State<WebAlbumPage> {
           const SizedBox(height: 26),
           for (var i = 0; i < tracks.length; i++)
             Container(
-              decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.line.withValues(alpha: 0.6)))),
+              decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
               child: Row(children: [
                 SizedBox(width: 32, child: Text('${i + 1}', style: const TextStyle(color: C.faint, fontSize: 13))),
                 Expanded(child: WebTrackLine(track: tracks[i], showCover: false)),
@@ -723,7 +723,7 @@ class _WebSearchPageState extends State<WebSearchPage> {
                 const SectionTitle('Треки'),
                 for (final t in r.tracks)
                   Container(
-                    decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.line.withValues(alpha: 0.6)))),
+                    decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
                     child: WebTrackLine(track: t),
                   ),
               ],

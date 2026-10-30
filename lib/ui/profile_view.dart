@@ -308,7 +308,7 @@ class TrackGrid extends StatelessWidget {
         },
         onSecondaryTapUp: (d) => showTrackMenu(context, t, null, d.globalPosition),
         child: Container(
-          decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.line.withValues(alpha: 0.7)))),
+          decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
           padding: const EdgeInsets.only(left: 4),
           child: Row(children: [
             CoverImage(track: t, size: 46, radius: 4),

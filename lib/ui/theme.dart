@@ -10,6 +10,11 @@ class C {
   static const raised = Color(0x1FFFFFFF); // приподнятое стекло: поля, чипы, плашки
   static const hover = Color(0x29FFFFFF);
   static const line = Color(0x2EFFFFFF); // светлая обводка стекла
+  static const divider = Color(0x14FFFFFF); // тонкие разделители строк
+
+  /// Наведение и нажатие поверх стекла: лёгкая подсветка, а не белая плашка
+  static const hoverOverlay = Color(0x14FFFFFF);
+  static const pressOverlay = Color(0x24FFFFFF);
 
   /// Плотные панели для того, что открывается поверх: меню, диалоги, подсказки
   static const panel = Color(0xF21A1E33);
@@ -81,8 +86,11 @@ ThemeData buildTheme() {
       error: C.danger,
       outline: C.line,
     ),
-    dividerColor: C.line,
+    dividerColor: C.divider,
     splashFactory: NoSplash.splashFactory,
+    hoverColor: C.hoverOverlay,
+    highlightColor: C.pressOverlay,
+    focusColor: C.pressOverlay,
   );
   TextTheme textTheme;
   try {
@@ -94,8 +102,55 @@ ThemeData buildTheme() {
 
   return base.copyWith(
     textTheme: textTheme,
-    hoverColor: C.hover.withValues(alpha: 0.6),
-    highlightColor: Colors.transparent,
+    // Раньше здесь был C.hover с прозрачностью 0.6: для прозрачного белого это давало почти белую плашку
+    hoverColor: C.hoverOverlay,
+    highlightColor: C.pressOverlay,
+    focusColor: C.pressOverlay,
+    dividerTheme: const DividerThemeData(color: C.divider, space: 1, thickness: 1),
+    iconButtonTheme: IconButtonThemeData(
+      style: ButtonStyle(
+        overlayColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.pressed)
+            ? C.pressOverlay
+            : (s.contains(WidgetState.hovered) || s.contains(WidgetState.focused) ? C.hoverOverlay : null)),
+      ),
+    ),
+    chipTheme: const ChipThemeData(
+      backgroundColor: C.raised,
+      selectedColor: C.accent,
+      disabledColor: C.surface,
+      side: BorderSide(color: C.line),
+      shape: StadiumBorder(),
+      showCheckmark: false,
+      labelStyle: TextStyle(color: C.text, fontWeight: FontWeight.w500),
+      secondaryLabelStyle: TextStyle(color: C.accentInk, fontWeight: FontWeight.w600),
+      iconTheme: IconThemeData(color: C.text, size: 18),
+    ),
+    listTileTheme: ListTileThemeData(
+      selectedTileColor: C.hover,
+      selectedColor: C.text,
+      iconColor: C.muted,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+    switchTheme: SwitchThemeData(
+      trackColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? C.accent : C.raised),
+      thumbColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? C.accentInk : C.muted),
+      trackOutlineColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? Colors.transparent : C.line),
+    ),
+    checkboxTheme: CheckboxThemeData(
+      fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? C.accent : Colors.transparent),
+      checkColor: const WidgetStatePropertyAll(C.accentInk),
+      side: const BorderSide(color: C.muted, width: 1.5),
+    ),
+    radioTheme: RadioThemeData(
+      fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? C.accent : C.muted),
+    ),
+    scrollbarTheme: ScrollbarThemeData(
+      thumbColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.hovered) || s.contains(WidgetState.dragged)
+          ? const Color(0x59FFFFFF)
+          : const Color(0x2EFFFFFF)),
+      radius: const Radius.circular(8),
+      thickness: const WidgetStatePropertyAll(6),
+    ),
     iconTheme: const IconThemeData(color: C.muted, size: 20),
     tooltipTheme: TooltipThemeData(
       decoration: BoxDecoration(color: C.panelRaised, borderRadius: BorderRadius.circular(8), border: Border.all(color: C.line)),
@@ -129,7 +184,17 @@ ThemeData buildTheme() {
         shape: const StadiumBorder(),
       ),
     ),
-    textButtonTheme: TextButtonThemeData(style: TextButton.styleFrom(foregroundColor: C.accent)),
+    // Текстовые кнопки — светлые: жёлтый текст терялся на тёплых обложках. Жёлтый остался у главных действий
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        foregroundColor: C.text,
+        shape: const StadiumBorder(),
+      ).copyWith(
+        overlayColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.pressed)
+            ? C.pressOverlay
+            : (s.contains(WidgetState.hovered) ? C.hoverOverlay : null)),
+      ),
+    ),
     sliderTheme: const SliderThemeData(
       trackHeight: 3,
       activeTrackColor: C.text,
