@@ -134,6 +134,14 @@ jobs:
             Write-Output "::notice::Секрет RELEASES_TOKEN не задан, обновление не опубликовано"
             exit 0
           }
+          # В пустом репозитории релиз не создать: сначала кладём README первым коммитом
+          gh api "repos/Creative-Cave-uefn/cave-player-releases/commits?per_page=1" --silent 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            $text = "# Cave Player`n`nУстановщики Cave Player. Последняя версия — в разделе Releases, приложение обновляется само.`n"
+            $readme = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
+            gh api -X PUT repos/Creative-Cave-uefn/cave-player-releases/contents/README.md `
+              -f message="Первый коммит" -f content=$readme --silent
+          }
           $notes = if ($env:NOTES) { $env:NOTES } else { "Cave Player $env:APP_VERSION" }
           gh release create "v$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
             --repo Creative-Cave-uefn/cave-player-releases `
