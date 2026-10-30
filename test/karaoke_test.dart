@@ -100,6 +100,21 @@ void main() {
       expect(back[1], isNull);
     });
 
+    test('начало строк: по первому слову, остальные — на общий сдвиг песни', () {
+      final marks = [for (var i = 0; i < 6; i++) ms(10000 + i * 4000)];
+      final first = <Duration?>[ms(10600), ms(14500), null, ms(22600), ms(26500), null];
+      final s = KaraokeAligner.lineStarts(marks, first);
+      expect(s[0], ms(10600));
+      expect(s[1], ms(14500));
+      expect(s[2], ms(18600)); // медиана сдвига 600 мс
+      expect(s[5], ms(30600));
+    });
+
+    test('начало строк без данных — как в тексте', () {
+      final marks = [ms(1000), ms(2000)];
+      expect(KaraokeAligner.lineStarts(marks, [null, null]), marks);
+    });
+
     test('язык по тексту', () {
       expect(KaraokeService.langOf(Lyrics(lines, synced: true)), 'ru');
       expect(KaraokeService.langOf(const Lyrics([LyricLine(Duration.zero, '心に雲を持つ少年')], synced: true)), 'ja');

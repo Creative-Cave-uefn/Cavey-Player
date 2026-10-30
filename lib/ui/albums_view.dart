@@ -8,6 +8,7 @@ import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 class AlbumsPage extends StatefulWidget {
   const AlbumsPage({super.key});
@@ -207,7 +208,7 @@ Future<void> changeAlbumCover(BuildContext context, Album a) async {
 Future<void> showAlbumMenu(BuildContext context, Album a, Offset at) async {
   final lib = Services.of(context).lib;
   final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-  final v = await showMenu<String>(
+  final v = await showGlassMenu<String>(
     context: context,
     position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
     items: [

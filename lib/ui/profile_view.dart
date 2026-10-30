@@ -17,6 +17,7 @@ import 'tracks_view.dart';
 import 'web_pages.dart';
 import 'web_views.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 // Страницы исполнителя и пользователя: общая раскладка — цветной фон, круглое фото,
 // имя, кнопки «i», «играть» и ещё одна, сетка «Топ-песни» и ряды плиток.
@@ -279,7 +280,8 @@ class _Banner extends StatelessWidget {
                 height: h,
                 child: Stack(fit: StackFit.expand, children: [
                   ImageFiltered(
-                    imageFilter: ui.ImageFilter.blur(sigmaX: 6, sigmaY: 6, tileMode: TileMode.clamp),
+                    // mirror, а не clamp: у краёв clamp тянет крайний ряд пикселей в полосы — тот самый «шов»
+                    imageFilter: ui.ImageFilter.blur(sigmaX: 6, sigmaY: 6, tileMode: TileMode.mirror),
                     // Баннер размыт, поэтому хватает копии в 640 px: она читается с диска мгновенно
                     child: CoverImage(track: null, fileId: fileId, label: '', size: w, height: h, radius: 0, maxPx: 640),
                   ),
@@ -655,7 +657,7 @@ class ArtistProfilePage extends StatelessWidget {
       plays += app.social.playsOf(t.id);
     }
     final who = byWho.entries.toList()..sort((x, y) => y.value.compareTo(x.value));
-    showDialog<void>(
+    showGlassDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(a.name, style: display(18)),
@@ -827,7 +829,7 @@ class UserProfilePage extends StatelessWidget {
         if (day.compareTo(key) >= 0) week += tracks.values.fold(0, (a, b) => a + b);
       });
     }
-    showDialog<void>(
+    showGlassDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(name, style: display(18)),

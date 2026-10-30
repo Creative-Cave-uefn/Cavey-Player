@@ -30,6 +30,38 @@ class HeardWord {
 /// Сопоставление распознанных слов с текстом песни.
 /// Для каждой строки — время её слов или null, если строку распознать не удалось (там останется разбивка по слогам)
 class KaraokeAligner {
+  /// Когда строки начинаются на самом деле. Отметки LRCLIB часто сдвинуты на полсекунды-секунду:
+  /// где время первого слова известно (Whisper или расширенный LRC), строка начинается с него —
+  /// позже отметки до 3 с, раньше до 1,2 с. Остальные строки сдвигаются на типичный сдвиг песни
+  /// (медиана по узнанным строкам) — тогда и они не опаздывают и не спешат.
+  static List<Duration> lineStarts(List<Duration> marks, List<Duration?> firstWords) {
+    final diffs = <int>[];
+    for (var i = 0; i < marks.length; i++) {
+      final f = i < firstWords.length ? firstWords[i] : null;
+      if (f == null) continue;
+      final d = (f - marks[i]).inMilliseconds;
+      if (d > -1200 && d < 3000) diffs.add(d);
+    }
+    var shift = 0;
+    if (diffs.length >= 4) {
+      diffs.sort();
+      final median = diffs[diffs.length ~/ 2];
+      // Сдвиг устойчивый — большинство строк сдвинуты примерно одинаково
+      final close = diffs.where((d) => (d - median).abs() < 450).length;
+      if (median.abs() >= 120 && close >= diffs.length * 0.6) shift = median;
+    }
+    final out = <Duration>[];
+    for (var i = 0; i < marks.length; i++) {
+      final f = i < firstWords.length ? firstWords[i] : null;
+      final d = f == null ? null : (f - marks[i]).inMilliseconds;
+      var at = d != null && d > -1200 && d < 3000 ? f! : marks[i] + Duration(milliseconds: shift);
+      // Порядок строк не меняется, и каждая видна хотя бы долю секунды
+      if (out.isNotEmpty && at < out.last + const Duration(milliseconds: 150)) at = out.last + const Duration(milliseconds: 150);
+      out.add(at);
+    }
+    return out;
+  }
+
   static final _cjk = RegExp(r'[぀-ヿ㐀-䶿一-鿿가-힯]');
   static final _letters = RegExp(r'[\p{L}\p{N}]+', unicode: true);
 

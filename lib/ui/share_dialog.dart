@@ -6,10 +6,11 @@ import '../core/models.dart';
 import '../core/share_link.dart';
 import 'theme.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 /// «Поделиться треком»: другу в Cave Player (он получит уведомление) или ссылкой
 Future<void> showShareDialog(BuildContext context, Track track) {
-  return showDialog<void>(context: context, builder: (_) => _ShareDialog(track: track));
+  return showGlassDialog<void>(context: context, builder: (_) => _ShareDialog(track: track));
 }
 
 class _ShareDialog extends StatefulWidget {
@@ -42,7 +43,6 @@ class _ShareDialogState extends State<_ShareDialog> {
     final friends = app.social.friends;
     final web = webLinkFor(t.id);
     return AlertDialog(
-      backgroundColor: C.panel,
       title: Text('Поделиться', style: display(20)),
       content: SizedBox(
         width: 460,

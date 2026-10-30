@@ -8,6 +8,7 @@ import '../core/covers.dart';
 import '../core/models.dart';
 import 'shell.dart';
 import 'theme.dart';
+import 'glass_popup.dart';
 
 String plural(int n, String one, String few, String many) {
   final m10 = n % 10, m100 = n % 100;
@@ -399,7 +400,7 @@ class EmptyState extends StatelessWidget {
 Future<String?> askText(BuildContext context,
     {required String title, required String action, String initial = '', String hint = ''}) {
   final ctrl = TextEditingController(text: initial);
-  return showDialog<String>(
+  return showGlassDialog<String>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(title, style: display(18)),
@@ -421,7 +422,7 @@ Future<String?> askText(BuildContext context,
 }
 
 Future<bool> confirm(BuildContext context, {required String title, required String text, required String action}) async {
-  final r = await showDialog<bool>(
+  final r = await showGlassDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(title, style: display(18)),

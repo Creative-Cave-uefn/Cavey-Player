@@ -8,6 +8,7 @@ import '../app.dart';
 import '../core/image_tools.dart';
 import 'crop_dialog.dart';
 import 'theme.dart';
+import 'glass_popup.dart';
 
 /// Картинка, подготовленная к загрузке на Диск
 class PickedCover {
@@ -172,7 +173,7 @@ Future<String?> coverDialog(
   String? note,
 }) async {
   final choice = CoverChoice();
-  final ok = await showDialog<bool>(
+  final ok = await showGlassDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(title, style: display(18)),

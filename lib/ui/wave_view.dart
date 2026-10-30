@@ -10,6 +10,8 @@ import 'shell.dart';
 import 'theme.dart';
 import 'web_views.dart';
 import 'widgets.dart';
+import 'ambient.dart';
+import 'glass_popup.dart';
 
 /// Страница «Моя волна» в духе стекла: без очереди — карусель обложек вокруг текущего трека,
 /// «не нравится» и «нравится» под ней, все настройки — в панели «Настроить»
@@ -325,6 +327,7 @@ class _IdleState extends State<_Idle> with SingleTickerProviderStateMixin {
         for (final m in waveMoods)
           _MoodTile(
             mood: m,
+            selected: wave.active && wave.mood == m.id,
             onTap: () {
               wave.setMood(m.id);
               wave.start();
@@ -359,39 +362,85 @@ class _IdleState extends State<_Idle> with SingleTickerProviderStateMixin {
 }
 
 const _moodColors = {
-  'energy': Color(0xFF96501F),
-  'calm': Color(0xFF2E7A6B),
-  'sad': Color(0xFF3B5797),
-  'love': Color(0xFF9A3F6A),
-  'dark': Color(0xFF34374F),
-  'focus': Color(0xFF4F7A34),
+  'energy': Color(0xFFFF9A4A),
+  'calm': Color(0xFF5FD3B4),
+  'sad': Color(0xFF7FA2FF),
+  'love': Color(0xFFFF7FB2),
+  'dark': Color(0xFFA08CFF),
+  'focus': Color(0xFF9BDB6A),
 };
 
-class _MoodTile extends StatelessWidget {
+const _moodIcons = {
+  'energy': Icons.bolt_rounded,
+  'calm': Icons.spa_outlined,
+  'sad': Icons.water_drop_outlined,
+  'love': Icons.favorite_border_rounded,
+  'dark': Icons.nightlight_outlined,
+  'focus': Icons.center_focus_strong_outlined,
+};
+
+/// Плитка настроения: стекло с цветным свечением из угла и значком. Наведение — свечение ярче,
+/// включённое настроение — цветная обводка
+class _MoodTile extends StatefulWidget {
   final WaveMood mood;
+  final bool selected;
   final VoidCallback onTap;
-  const _MoodTile({required this.mood, required this.onTap});
+  const _MoodTile({required this.mood, required this.selected, required this.onTap});
 
   @override
-  Widget build(BuildContext context) => Material(
-        color: (_moodColors[mood.id] ?? C.raised).withValues(alpha: 0.85),
-        borderRadius: BorderRadius.circular(16),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: onTap,
-          child: Container(
-            width: 150,
-            height: 88,
-            padding: const EdgeInsets.all(14),
-            alignment: Alignment.bottomLeft,
-            child: Text(mood.title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: Colors.white)),
+  State<_MoodTile> createState() => _MoodTileState();
+}
+
+class _MoodTileState extends State<_MoodTile> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _moodColors[widget.mood.id] ?? C.accent;
+    final lit = _hover || widget.selected;
+    final r = BorderRadius.circular(18);
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedScale(
+          scale: _hover ? 1.03 : 1,
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 156,
+            height: 92,
+            decoration: BoxDecoration(
+              borderRadius: r,
+              border: Border.all(color: widget.selected ? color.withValues(alpha: 0.8) : C.line, width: widget.selected ? 1.5 : 1),
+              // Свечение из угла поверх стекла (у BoxDecoration градиент заменяет цвет, поэтому стекло вмешано в сам градиент)
+              gradient: RadialGradient(
+                center: const Alignment(-1, -1),
+                radius: 1.6,
+                colors: [
+                  for (final c in smoothFadeColors(color.withValues(alpha: lit ? 0.42 : 0.26))) Color.alphaBlend(c, C.surface),
+                ],
+                stops: smoothFadeStops(),
+              ),
+            ),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Icon(_moodIcons[widget.mood.id] ?? Icons.music_note_rounded, size: 22, color: color),
+              const Spacer(),
+              Text(widget.mood.title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15, color: C.text)),
+            ]),
           ),
         ),
-      );
+      ),
+    );
+  }
 }
 
 /// Панель «Настроить волну»: характер, настроение, свои исполнители, новинки, обучение
-Future<void> showWaveSettings(BuildContext context) => showDialog<void>(
+Future<void> showWaveSettings(BuildContext context) => showGlassDialog<void>(
       context: context,
       builder: (ctx) => Dialog(
         insetPadding: const EdgeInsets.all(32),
@@ -749,7 +798,7 @@ class _Tune extends StatelessWidget {
 Future<String?> _pickArtist(BuildContext context) {
   final app = Services.of(context);
   final all = app.lib.artists;
-  return showDialog<String>(
+  return showGlassDialog<String>(
     context: context,
     builder: (ctx) {
       final ctrl = TextEditingController();

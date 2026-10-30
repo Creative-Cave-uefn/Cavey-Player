@@ -11,6 +11,7 @@ import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 class PlayerBar extends StatelessWidget {
   final bool compact;
@@ -182,7 +183,7 @@ class PlayerBar extends StatelessWidget {
 
   void _showQueue(BuildContext context) {
     final app = Services.of(context);
-    showDialog<void>(
+    showGlassDialog<void>(
       context: context,
       builder: (ctx) => Dialog(
         alignment: Alignment.bottomRight,

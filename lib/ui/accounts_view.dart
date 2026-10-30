@@ -9,6 +9,7 @@ import '../core/updater.dart';
 import 'sources_view.dart';
 import 'theme.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 class AccountsPage extends StatefulWidget {
   const AccountsPage({super.key});
@@ -88,7 +89,7 @@ class _AccountsPageState extends State<AccountsPage> {
                     padding: const EdgeInsets.only(right: 8),
                     child: FilledButton(onPressed: () => _signIn(hint: a.email), child: const Text('Войти снова')),
                   ),
-                PopupMenuButton<String>(
+                GlassMenuButton<String>(
                   tooltip: 'Действия',
                   icon: const Icon(Icons.more_horiz_rounded),
                   onSelected: (v) async {

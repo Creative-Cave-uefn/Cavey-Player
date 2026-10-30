@@ -147,6 +147,13 @@ class WaveEngine {
   /// Доля треков из похожих, когда они есть
   static const similarShare = 0.65;
 
+  /// Сколько последних треков помнить, чтобы не ставить того же исполнителя слишком часто
+  static const artistGap = 3;
+
+  /// Насколько выбор тянется к лучшим трекам: веса возводятся в эту степень.
+  /// 1 — чистая лотерея по весам; больше — меньше случайных «мимо», но и меньше неожиданного
+  static const focusPower = 1.35;
+
   /// Симпатия к каждому исполнителю: лайки, прослушивания, «любимые», то, что волна выучила, и похожие
   static Map<String, double> affinity(WaveInputs x) {
     final a = <String, double>{};
@@ -225,12 +232,20 @@ class WaveEngine {
     for (final v in x.crowd.values) {
       if (v > maxCrowd) maxCrowd = v;
     }
-    final weights = [for (final t in cands) _score(t, x, mode, aff, maxCrowd)];
+    final weights = [for (final t in cands) pow(_score(t, x, mode, aff, maxCrowd), focusPower).toDouble()];
 
-    Set<String> lastArtists = {};
-    if (recent.isNotEmpty) {
-      final last = x.tracks.where((t) => t.id == recent.last);
-      if (last.isNotEmpty) lastArtists = {for (final a in last.first.artists) a.toLowerCase()};
+    // Исполнители последних треков: самый последний — сильный штраф, два-три назад — послабее.
+    // Так один исполнитель не идёт не только подряд, но и через трек
+    final byId = {for (final t in x.tracks) t.id: t};
+    final lately = <Set<String>>[
+      for (final id in recent.reversed.take(artistGap))
+        if (byId[id] case final t?) {for (final a in t.artists) a.toLowerCase()},
+    ];
+    double spacing(Track t) {
+      for (var j = 0; j < lately.length; j++) {
+        if (t.artists.any((a) => lately[j].contains(a.toLowerCase()))) return j == 0 ? 0.25 : 0.25 + 0.25 * j;
+      }
+      return 1;
     }
 
     final out = <String>[];
@@ -248,8 +263,7 @@ class WaveEngine {
           eff[i] = 0;
           if (taken[i]) continue;
           if (restrict && (x.boost[cands[i].id] ?? 0) < similarFloor) continue;
-          var w = weights[i];
-          if (cands[i].artists.any((a) => lastArtists.contains(a.toLowerCase()))) w *= 0.3;
+          final w = weights[i] * spacing(cands[i]);
           eff[i] = w;
           total += w;
         }
@@ -267,7 +281,8 @@ class WaveEngine {
       if (chosen < 0) break;
       taken[chosen] = true;
       out.add(cands[chosen].id);
-      lastArtists = {for (final a in cands[chosen].artists) a.toLowerCase()};
+      lately.insert(0, {for (final a in cands[chosen].artists) a.toLowerCase()});
+      if (lately.length > artistGap) lately.removeLast();
     }
     return out;
   }
@@ -783,7 +798,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       player.dropUpcoming((id) {
         final u = lib.data.tracks[id];
         return u != null && u.artists.any((a) => keys.contains(a.toLowerCase()));
-      });
+      }, keepVisible: true);
     } else if (finished) {
       final s = taste.skips[t.id];
       if (s != null && s <= 1) {

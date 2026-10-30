@@ -16,9 +16,13 @@ class C {
   static const hoverOverlay = Color(0x14FFFFFF);
   static const pressOverlay = Color(0x24FFFFFF);
 
-  /// Плотные панели для того, что открывается поверх: меню, диалоги, подсказки
-  static const panel = Color(0xF21A1E33);
-  static const panelRaised = Color(0xFF262B45);
+  /// Матовое стекло всплывающих окон, меню и уведомлений: под ним всё размыто (см. GlassPanel)
+  static const glass = Color(0xA614141B);
+
+  /// Плотные панели там, где размыть нельзя: подсказки, плашки поверх списков.
+  /// Нейтральные тёмные, без синевы — подходят к любому цвету фона
+  static const panel = Color(0xF0191920);
+  static const panelRaised = Color(0xF5232330);
   static const text = Color(0xFFEDE9E1);
   // Вторичный текст — нейтральный белый с прозрачностью: читается на любой обложке под стеклом
   static const muted = Color(0xB8FFFFFF);
@@ -209,7 +213,9 @@ ThemeData buildTheme() {
       textStyle: textTheme.bodyMedium,
     ),
     dialogTheme: DialogThemeData(
-      backgroundColor: C.panel,
+      // Окна открываются через showGlassDialog: всё позади размыто, само окно — полупрозрачное стекло
+      backgroundColor: C.glass,
+      surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24), side: const BorderSide(color: C.line)),
     ),
     bottomSheetTheme: const BottomSheetThemeData(backgroundColor: C.panel),

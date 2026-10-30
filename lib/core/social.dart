@@ -147,7 +147,8 @@ class SocialController extends ChangeNotifier {
     lib.onEvent = _addEvent;
     player.addListener(_onPlayer);
     player.position.addListener(_onPosition);
-    _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) => poll());
+    // Часто: по этому опросу приходят уведомления от друзей. Один короткий список файлов — Диску это не в тягость
+    _pollTimer = Timer.periodic(const Duration(seconds: 6), (_) => poll());
     _heartbeat = Timer.periodic(const Duration(seconds: 30), (_) {
       if (player.playing) _markDirty();
     });
@@ -197,10 +198,21 @@ class SocialController extends ChangeNotifier {
     _refreshMe();
   }
 
+  DateTime? _writeDue;
+
+  /// Отложенная запись своего файла. Новые изменения не отодвигают уже назначенную запись —
+  /// иначе частые сигналы плеера держали бы лайк или «поделиться» неотправленными
   void _markDirty({bool soon = false}) {
     _dirty = true;
+    final due = DateTime.now().add(Duration(milliseconds: soon ? 1200 : 4000));
+    final pending = _writeDue;
+    if ((_writeTimer?.isActive ?? false) && pending != null && !pending.isAfter(due)) return;
     _writeTimer?.cancel();
-    _writeTimer = Timer(Duration(milliseconds: soon ? 1200 : 4000), _write);
+    _writeDue = due;
+    _writeTimer = Timer(due.difference(DateTime.now()), () {
+      _writeDue = null;
+      unawaited(_write());
+    });
   }
 
   Map<String, dynamic> _myJson() {

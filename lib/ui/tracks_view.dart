@@ -15,6 +15,7 @@ import 'share_dialog.dart';
 import 'theme.dart';
 import 'wave_view.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 /// Ctrl+F: каждое увеличение просит открытый список треков поставить курсор в поиск
 final searchRequests = ValueNotifier<int>(0);
@@ -188,7 +189,7 @@ class AlbumPage extends StatelessWidget {
           numbered: true,
           compact: compact,
           actions: [
-            PopupMenuButton<String>(
+            GlassMenuButton<String>(
               tooltip: 'Ещё',
               icon: const Icon(Icons.more_horiz_rounded),
               onSelected: (v) {
@@ -258,7 +259,7 @@ class PlaylistPage extends StatelessWidget {
               tracks: tracks,
               onChanged: (v) => app.cache.setPlaylistOffline(playlistId, v),
             ),
-            PopupMenuButton<String>(
+            GlassMenuButton<String>(
               tooltip: 'Ещё',
               icon: const Icon(Icons.more_horiz_rounded),
               onSelected: (v) async {
@@ -499,10 +500,9 @@ class _TracksPageState extends State<TracksPage> {
       bottom: 14,
       child: Center(
         child: Material(
-          color: C.panelRaised, // плавает над списком: стекло здесь просвечивало бы строками
-          elevation: 10,
-          borderRadius: BorderRadius.circular(14),
-          child: Padding(
+          type: MaterialType.transparency,
+          child: GlassPanel(
+            radius: 16,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             child: Wrap(spacing: 4, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
               Text('Выбрано: ${picked.length}', style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -1196,7 +1196,7 @@ class TrackMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return PopupMenuButton<String>(
+    return GlassMenuButton<String>(
       tooltip: 'Действия',
       icon: const Icon(Icons.more_horiz_rounded, size: 20),
       onSelected: (v) => onTrackMenu(context, v, track, playlistId, onSelect: onSelect),
@@ -1209,7 +1209,7 @@ class TrackMenu extends StatelessWidget {
 Future<void> showTrackMenu(BuildContext context, Track track, String? playlistId, Offset at,
     {VoidCallback? onSelect, bool selected = false}) async {
   final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-  final v = await showMenu<String>(
+  final v = await showGlassMenu<String>(
     context: context,
     position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
     items: trackMenuItems(context, track, playlistId, canSelect: onSelect != null, selected: selected),
@@ -1304,7 +1304,7 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
 Future<bool> addToPlaylistDialog(BuildContext context, List<String> trackIds) async {
   final app = Services.of(context);
   final lib = app.lib;
-  final choice = await showDialog<String>(
+  final choice = await showGlassDialog<String>(
     context: context,
     builder: (ctx) => SimpleDialog(
       title: Text('В плейлист', style: display(18)),

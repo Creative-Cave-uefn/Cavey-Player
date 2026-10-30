@@ -8,6 +8,7 @@ import '../core/library.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 /// Папки с музыкой, приглашение друзей и отключение: раздел страницы «Настройки»
 class LibrarySection extends StatefulWidget {
@@ -595,7 +596,7 @@ class _LocationPanelState extends State<_LocationPanel> {
 /// Подтверждение опасного действия вводом названия
 Future<bool> _confirmByName(BuildContext context, String name) async {
   final ctl = TextEditingController();
-  final ok = await showDialog<bool>(
+  final ok = await showGlassDialog<bool>(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setState) => AlertDialog(

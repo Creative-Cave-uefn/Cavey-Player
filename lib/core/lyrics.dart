@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -47,7 +48,8 @@ List<KWord> syllables(String text, Duration start, Duration end) {
   if (total <= 0) return [for (final r in ranges) KWord(r.$1, r.$2, start, start)];
   // Обычно поют 3–6 слогов в секунду: строку с долгой паузой в конце не растягиваем на всю длину
   final weight = ranges.fold<double>(0, (a, r) => a + r.$3);
-  final active = (total * 0.9).clamp(0.0, (weight * 420).clamp(total * 0.5, total * 0.9)).toDouble();
+  // Длинный проигрыш до следующей строки не растягивает слоги: заливка идёт в темпе пения
+  final active = math.min(total * 0.9, weight * 420).toDouble();
   final out = <KWord>[];
   var acc = 0.0;
   for (final r in ranges) {

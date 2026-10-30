@@ -277,30 +277,35 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Заменяет всё, что дальше текущего трека (например, сменили характер волны)
+  /// Заменяет всё, что дальше видимых следующих треков (например, сменили характер волны)
   void replaceUpcoming(List<String> ids) {
     if (index < 0) return;
-    queue = [...queue.take(index + 1), for (final id in ids) if (lib.data.tracks[id] != null) id];
+    final head = queue.take(index + 1 + visibleAhead).toList();
+    queue = [...head, for (final id in ids) if (lib.data.tracks[id] != null && !head.contains(id)) id];
     _origin = List.of(queue);
     _queueChanged();
   }
 
-  /// Ставит трек сразу после следующего: волна так вставляет только что скачанное
+  /// Ставит трек сразу после двух следующих: их уже видно на странице волны, их не двигаем.
+  /// Волна так вставляет только что скачанное
   void insertSoon(String id) {
     if (index < 0 || lib.data.tracks[id] == null || queue.skip(index).contains(id)) return;
-    final at = (index + 2).clamp(0, queue.length);
+    final at = (index + 1 + visibleAhead).clamp(0, queue.length);
     queue.insert(at, id);
     _origin = List.of(queue);
     _queueChanged();
   }
 
-  /// Пересобирает очередь волны после следующего трека (он уже подгружается — его не трогаем).
-  /// Остаётся то, что поставили руками, и то, что [keep] просит оставить
+  /// Сколько следующих треков уже видно (страница волны показывает два): при пересборке их не меняем
+  static const visibleAhead = 2;
+
+  /// Пересобирает очередь волны после видимых следующих треков — их человек уже видит, они не должны
+  /// вдруг смениться. Остаётся то, что поставили руками, и то, что [keep] просит оставить
   void refillFeed({bool Function(String id)? keep}) {
     if (feeder == null || index < 0) return;
-    final head = queue.take(index + 2).toList();
+    final head = queue.take(index + 1 + visibleAhead).toList();
     final tail = [
-      for (final id in queue.skip(index + 2))
+      for (final id in queue.skip(index + 1 + visibleAhead))
         if (_userAdded.contains(id) || (keep?.call(id) ?? false)) id
     ];
     queue = [...head, ...tail];
@@ -309,11 +314,12 @@ class PlayerController extends ChangeNotifier {
     _queueChanged();
   }
 
-  /// Убирает из следующих треки, подходящие под [test]
-  void dropUpcoming(bool Function(String id) test) {
+  /// Убирает из следующих треки, подходящие под [test]. [keepVisible] — не трогать уже видимые следующие
+  void dropUpcoming(bool Function(String id) test, {bool keepVisible = false}) {
     if (index < 0) return;
     final before = queue.length;
-    queue = [...queue.take(index + 1), ...queue.skip(index + 1).where((id) => !test(id))];
+    final keep = index + 1 + (keepVisible ? visibleAhead : 0);
+    queue = [...queue.take(keep), ...queue.skip(keep).where((id) => !test(id))];
     if (queue.length == before) return;
     _origin = List.of(queue);
     _queueChanged();

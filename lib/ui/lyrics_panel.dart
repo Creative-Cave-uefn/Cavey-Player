@@ -260,17 +260,13 @@ class _LyricsBodyState extends State<LyricsBody> {
     // Время слов: точное из текста (расширенный LRC) → посчитанное Whisper → разбивка по слогам
     final exact = widget.karaoke ? app.karaoke.wordsFor(t, ly) : null;
     _starts = widget.karaoke
-        ? [
+        ? KaraokeAligner.lineStarts([for (final l in ly.lines) l.at!], [
             for (var i = 0; i < ly.lines.length; i++)
               () {
-                final at = ly.lines[i].at!;
                 final w = ly.lines[i].words ?? (exact != null && i < exact.length ? exact[i] : null);
-                if (w == null || w.isEmpty) return at;
-                final first = w.first.start;
-                // Первое слово спето позже отметки — ждём его (но не дольше 3 секунд: дальше это уже ошибка)
-                return first > at && first - at < const Duration(seconds: 3) ? first : at;
+                return w == null || w.isEmpty ? null : w.first.start;
               }(),
-          ]
+          ])
         : null;
     final idx = _idx = _lineAt(ly);
     _follow(idx);

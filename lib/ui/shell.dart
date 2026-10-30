@@ -29,6 +29,7 @@ import 'web_pages.dart';
 import 'web_views.dart';
 import 'wave_view.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 class Nav {
   final String kind; // all, albums, album, liked, playlist, sources, accounts
@@ -517,14 +518,9 @@ class _ToastCard extends StatelessWidget {
       type: MaterialType.transparency,
       child: ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 620),
-      child: Container(
+      child: GlassPanel(
+        radius: 16,
         padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
-        decoration: BoxDecoration(
-          color: C.panelRaised, // плавает поверх содержимого — стекло тут просвечивало бы
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: C.line),
-          boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 14, offset: Offset(0, 4))],
-        ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
           Flexible(
             child: Text(text,
@@ -763,7 +759,7 @@ class _PlaylistsHeader extends StatelessWidget {
             ),
           ),
         ),
-        PopupMenuButton<String>(
+        GlassMenuButton<String>(
           tooltip: 'Вид плейлистов',
           icon: Icon(
             switch (mode) { 'covers' => Icons.grid_view_rounded, 'both' => Icons.view_agenda_outlined, _ => Icons.view_list_rounded },
