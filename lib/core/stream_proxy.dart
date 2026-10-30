@@ -8,12 +8,16 @@
 //   новое защищённое соединение.
 // - Токен берётся свежий на каждый запрос: после долгой паузы трек
 //   продолжает играть без переоткрытия.
+// - Для треков, которые вот-вот включат (навели мышь, следующий в очереди,
+//   первые в открытом альбоме), начало и конец скачиваются заранее —
+//   тогда старт почти мгновенный.
 
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 
 import 'log.dart';
 
@@ -23,6 +27,8 @@ class _Entry {
   final Future<String> Function() token;
   Future<Uint8List?>? tail;
   int tailStart = 0;
+  Future<Uint8List?>? head;
+  bool timed = false; // время до первого байта уже записали в журнал
   _Entry(this.id, this.size, this.token);
 }
 
@@ -36,13 +42,20 @@ class StreamProxy {
   /// Сколько конца файла скачивать заранее
   static const tailSize = 128 * 1024;
 
+  /// Сколько начала скачивать заранее для треков, которые вот-вот включат
+  static const headSize = 384 * 1024;
+
   /// Сколько последних треков помнить (старые ссылки перестают работать)
-  static const keep = 12;
+  static const keep = 24;
+
+  DateTime _warmedAt = DateTime(0);
 
   /// Сколько раз прокси сходил на Диск (для тестов и журнала)
   int upstreamRequests = 0;
 
-  StreamProxy({required this.urlFor, http.Client? client}) : _client = client ?? http.Client();
+  StreamProxy({required this.urlFor, http.Client? client})
+      // Соединения с Диском держим подольше: следующий клик не тратит время на новое
+      : _client = client ?? IOClient(HttpClient()..idleTimeout = const Duration(seconds: 90));
 
   Future<HttpServer> _ensure() => _starting ??= () async {
         final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -51,23 +64,53 @@ class StreamProxy {
         return s;
       }();
 
-  /// Ссылка для плеера. Сразу начинает скачивать конец файла.
-  Future<Uri> register(String id, {required int size, required Future<String> Function() token}) async {
-    final s = await _ensure();
-    final e = _Entry(id, size, token);
-    _entries.remove(id);
-    _entries[id] = e;
+  _Entry _entry(String id, int size, Future<String> Function() token) {
+    var e = _entries.remove(id);
+    if (e == null || e.size != size) e = _Entry(id, size, token);
+    _entries[id] = e; // в конец: недавно нужный
     while (_entries.length > keep) {
       _entries.remove(_entries.keys.first);
     }
-    if (size > tailSize * 4) {
+    if (size > tailSize * 4 && e.tail == null) {
       e.tailStart = size - tailSize;
       e.tail = _fetch(e, e.tailStart, size - 1).catchError((Object err) {
         AppLog.warn('Не получилось заранее скачать конец файла', err);
         return null;
       });
     }
+    return e;
+  }
+
+  /// Ссылка для плеера. Сразу начинает скачивать конец файла.
+  Future<Uri> register(String id, {required int size, required Future<String> Function() token}) async {
+    final s = await _ensure();
+    _entry(id, size, token).timed = false;
     return Uri.parse('http://127.0.0.1:${s.port}/t/$id');
+  }
+
+  /// Трек скоро могут включить: заранее скачиваем начало и конец
+  Future<void> prefetch(String id, {required int size, required Future<String> Function() token}) async {
+    if (size <= 0) return;
+    await _ensure();
+    final e = _entry(id, size, token);
+    e.head ??= _fetch(e, 0, (size < headSize ? size : headSize) - 1).catchError((Object err) {
+      AppLog.warn('Не получилось заранее скачать начало файла', err);
+      e.head = null; // попробуем в другой раз
+      return null;
+    });
+  }
+
+  /// Открываем соединение с Диском заранее, чтобы клик по треку не ждал рукопожатия
+  void warmUp() {
+    final now = DateTime.now();
+    if (now.difference(_warmedAt) < const Duration(seconds: 45)) return;
+    _warmedAt = now;
+    unawaited(() async {
+      try {
+        final res = await _client.send(http.Request('HEAD', urlFor('warmup'))).timeout(const Duration(seconds: 10));
+        await res.stream.drain<void>();
+      } catch (_) {}
+    }());
   }
 
   Future<Uint8List?> _fetch(_Entry e, int start, int end) async {
@@ -132,6 +175,26 @@ class StreamProxy {
         return;
       }
 
+      // Начало скачано заранее — отдаём из памяти, остальное догружаем с Диска
+      final head = e.head;
+      if (head != null && start < (e.size < headSize ? e.size : headSize)) {
+        final bytes = await head;
+        if (bytes != null && start < bytes.length) {
+          final stop = end + 1 < bytes.length ? end + 1 : bytes.length;
+          out.add(Uint8List.sublistView(bytes, start, stop));
+          if (!e.timed) {
+            e.timed = true;
+            AppLog.info('Прокси: начало трека из заранее скачанного');
+          }
+          if (stop > end) {
+            await out.close();
+          } else {
+            await _stream(e, out, stop, end);
+          }
+          return;
+        }
+      }
+
       // Конец файла уже скачан (или вот-вот) — отдаём из памяти
       final tail = e.tail;
       if (tail != null && start >= e.tailStart) {
@@ -158,7 +221,12 @@ class StreamProxy {
       ..headers['Authorization'] = 'Bearer ${await e.token()}'
       ..headers['Range'] = 'bytes=$start-$end';
     upstreamRequests++;
+    final sent = DateTime.now();
     final res = await _client.send(req);
+    if (!e.timed) {
+      e.timed = true;
+      AppLog.info('Прокси: Диск ответил через ${DateTime.now().difference(sent).inMilliseconds} мс');
+    }
     if (res.statusCode != 206 && !(res.statusCode == 200 && start == 0)) {
       await res.stream.drain<void>();
       throw HttpException('Диск ответил ${res.statusCode}');

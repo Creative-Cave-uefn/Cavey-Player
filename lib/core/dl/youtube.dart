@@ -172,10 +172,10 @@ class YouTube {
     final tmp = '$path.tagged.mp3';
     final args = ['-y', '-loglevel', 'error', '-i', path];
     if (coverFile != null) {
-      final head = await coverFile.openRead(0, 2).first;
-      final jpeg = head.length >= 2 && head[0] == 0xFF && head[1] == 0xD8;
+      // Обложка лежит в самом начале файла, и плеер скачивает её целиком до первого звука.
+      // Поэтому встраиваем её не больше 600 пикселей (десятки килобайт вместо мегабайт)
       args.addAll(['-i', coverFile.path, '-map', '0:a', '-map', '1:v', '-c:a', 'copy']);
-      args.addAll(jpeg ? ['-c:v', 'copy'] : ['-c:v', 'mjpeg', '-q:v', '2', '-vf', 'format=yuvj420p']);
+      args.addAll(['-c:v', 'mjpeg', '-q:v', '3', '-vf', "scale=w='min(600,iw)':h=-2,format=yuvj420p"]);
       args.addAll(['-metadata:s:v', 'title=Album cover', '-metadata:s:v', 'comment=Cover (front)']);
     } else {
       args.addAll(['-map', '0', '-c', 'copy']); // сохраняем обложку, если она уже есть

@@ -255,6 +255,16 @@ class _TracksPageState extends State<TracksPage> {
   void initState() {
     super.initState();
     searchRequests.addListener(_focusSearch);
+    // В альбоме и плейлисте чаще всего включают первые треки — готовим их заранее
+    if (widget.numbered || widget.playlistId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final player = Services.of(context).player;
+        for (final t in widget.tracks.take(2)) {
+          player.warmUp(t);
+        }
+      });
+    }
   }
 
   @override
@@ -541,6 +551,7 @@ class TrackRow extends StatelessWidget {
     final titleColor = current ? C.accent : C.text;
     return InkWell(
       onTap: current ? app.player.toggle : onPlay,
+      onHover: (inside) => app.player.hover(track, inside),
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),

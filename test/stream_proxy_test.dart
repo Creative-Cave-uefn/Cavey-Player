@@ -100,4 +100,27 @@ void main() {
     await proxy.close();
     await drive.close(force: true);
   });
+
+  test('заранее скачанное начало отдаёт из памяти и догружает остальное', () async {
+    final ranges = <String>[];
+    final drive = await fakeDrive(file, ranges);
+    final proxy = StreamProxy(urlFor: (id) => Uri.parse('http://127.0.0.1:${drive.port}/$id'));
+    await proxy.prefetch('p', size: file.length, token: () async => 't');
+    final url = await proxy.register('p', size: file.length, token: () async => 't');
+
+    final (code, body, _) = await get(url, 'bytes=0-');
+    expect(code, 206);
+    expect(body, file);
+    expect(ranges, contains('bytes=0-${StreamProxy.headSize - 1}'));
+    expect(ranges, contains('bytes=${StreamProxy.headSize}-${file.length - 1}'));
+
+    // Кусок целиком внутри начала — Диск больше не нужен
+    final before = ranges.length;
+    final (_, small, _) = await get(url, 'bytes=100-199');
+    expect(small, Uint8List.sublistView(file, 100, 200));
+    expect(ranges.length, before);
+
+    await proxy.close();
+    await drive.close(force: true);
+  });
 }

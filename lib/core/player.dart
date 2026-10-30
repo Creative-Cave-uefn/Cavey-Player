@@ -86,6 +86,7 @@ class PlayerController extends ChangeNotifier {
     }));
     unawaited(_p.setVolume(settings.volume));
     unawaited(_applyNormalize());
+    unawaited(_tuneStreaming());
     // Пока играет, раз в 15 секунд запоминаем позицию — на случай, если окно закроют
     _saveTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (playing) _saveSession();
@@ -233,7 +234,8 @@ class PlayerController extends ChangeNotifier {
     _preloadNext();
   }
 
-  /// Следующий трек заранее скачиваем в кэш: переход будет без паузы на буферизацию
+  /// Следующий трек заранее скачиваем в кэш: переход будет без паузы на буферизацию.
+  /// Пока он качается целиком, его начало и конец уже лежат в памяти прокси.
   void _preloadNext() {
     String? nextId;
     if (index + 1 < queue.length) {
@@ -241,7 +243,55 @@ class PlayerController extends ChangeNotifier {
     } else if (repeat == RepeatSetting.all && queue.isNotEmpty) {
       nextId = queue.first;
     }
-    if (nextId != null && !cache.has(nextId)) cache.enqueue(nextId);
+    if (nextId == null || cache.has(nextId)) return;
+    cache.enqueue(nextId);
+    final t = lib.data.tracks[nextId];
+    if (t != null) warmUp(t);
+  }
+
+  // ---------- быстрый старт ----------
+
+  Timer? _hoverTimer;
+  String? _hovered;
+
+  /// Трек скоро могут включить: заранее скачиваем его начало и конец и открываем
+  /// соединение с Диском. Для сохранённых на компьютере ничего не нужно.
+  void warmUp(Track t) {
+    if (cache.has(t.id)) return;
+    _proxy.warmUp();
+    unawaited(_proxy
+        .prefetch(t.id, size: t.size, token: () async => accounts.token(await lib.accessFor(t.source)))
+        .catchError((Object _) {}));
+  }
+
+  /// Мышь над строкой трека: если задержалась, готовим трек к старту.
+  /// Быстрый проход мышью по списку ничего не качает.
+  void hover(Track t, bool inside) {
+    if (!inside) {
+      // Ушли со строки — отменяем, только если это та, над которой ждали
+      if (_hovered == t.id) {
+        _hovered = null;
+        _hoverTimer?.cancel();
+      }
+      return;
+    }
+    if (_hovered == t.id) return;
+    _hovered = t.id;
+    _hoverTimer?.cancel();
+    _proxy.warmUp();
+    _hoverTimer = Timer(const Duration(milliseconds: 250), () => warmUp(t));
+  }
+
+  /// Для стриминга: не анализировать поток дольше, чем нужно для звука
+  Future<void> _tuneStreaming() async {
+    final native = _p.platform;
+    if (native is! NativePlayer) return;
+    try {
+      await native.setProperty('demuxer-lavf-analyzeduration', '0.5');
+      await native.setProperty('cache-pause-initial', 'no');
+    } catch (e) {
+      AppLog.warn('Не получилось настроить стриминг', e);
+    }
   }
 
   // ---------- воспроизведение ----------
@@ -506,6 +556,7 @@ class PlayerController extends ChangeNotifier {
     }
     _saveTimer?.cancel();
     _saveDebounce?.cancel();
+    _hoverTimer?.cancel();
     _p.dispose();
     unawaited(_proxy.close());
     position.dispose();
