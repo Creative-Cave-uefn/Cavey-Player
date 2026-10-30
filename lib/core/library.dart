@@ -85,6 +85,12 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> saveSettings() => store.writeJson('settings.json', settings.toJson());
 
+  /// Личная настройка вида изменилась: сохраняем и перерисовываем экраны, которые слушают библиотеку
+  void viewChanged() {
+    unawaited(saveSettings());
+    notifyListeners();
+  }
+
   // ---------- запуск ----------
 
   Future<void> start() async {
@@ -689,7 +695,11 @@ class LibraryController extends ChangeNotifier {
 
   void renamePlaylist(String id, String name) => commit({'op': 'renamePlaylist', 'id': id, 'name': name});
   void deletePlaylist(String id) => commit({'op': 'deletePlaylist', 'id': id});
-  void addToPlaylist(String id, List<String> items) => commit({'op': 'addToPlaylist', 'id': id, 'items': items});
+  void addToPlaylist(String id, List<String> items) =>
+      commit({'op': 'addToPlaylist', 'id': id, 'items': items, 'at': DateTime.now().millisecondsSinceEpoch});
+
+  /// Когда трек добавлен в плейлист (мс). У старых записей даты нет, берём дату создания плейлиста
+  int playlistAddedAt(Playlist p, String trackId) => int.tryParse(data.edits['pl:${p.id}']?['t:$trackId'] ?? '') ?? p.createdAt;
   /// Переставляет трек в плейлисте: [after] — трек, за которым он должен стоять (null — в начало)
   void movePlaylistItem(String id, String trackId, String? after) =>
       commit({'op': 'movePlaylistItem', 'id': id, 'track': trackId, 'after': after});

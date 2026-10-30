@@ -79,6 +79,10 @@ class TrayController with TrayListener, WindowListener {
     if (sig == _signature) return;
     _signature = sig;
     try {
+      // Заголовок окна виден в превью на панели задач и в Alt+Tab
+      await windowManager.setTitle(t != null && playing ? _short('${t.title} — ${t.displayArtist}', 120) : 'Cave Player');
+    } catch (_) {}
+    try {
       await trayManager.setToolTip(t == null ? 'Cave Player' : _tip(t, playing));
       await trayManager.setContextMenu(Menu(items: [
         MenuItem(key: 'show', label: 'Открыть Cave Player'),

@@ -10,6 +10,7 @@ LibraryData withTrack() => LibraryData()
   });
 
 void main() {
+  playlistDateTests();
   group('данные беты хранятся в edits', () {
     test('длительность и обложка трека накладываются на трек', () {
       final d = withTrack();
@@ -86,6 +87,39 @@ void main() {
       d.apply(op);
       d.apply(op);
       expect(d.tracks['t1']!.durationMs, 42);
+    });
+  });
+}
+
+void playlistDateTests() {
+  group('дата добавления в плейлист', () {
+    LibraryData withPl() => LibraryData()
+      ..apply({
+        'op': 'createPlaylist',
+        'playlist': {'id': 'p', 'name': 'P', 'by': 'me', 'at': 1000, 'items': <String>[]},
+      });
+
+    test('время добавления пишется в edits и не затирается повтором', () {
+      final d = withPl();
+      d.apply({'op': 'addToPlaylist', 'id': 'p', 'items': ['a', 'b'], 'at': 5000});
+      d.apply({'op': 'addToPlaylist', 'id': 'p', 'items': ['a'], 'at': 9000});
+      expect(d.edits['pl:p']!['t:a'], '5000');
+      expect(d.edits['pl:p']!['t:b'], '5000');
+      expect(d.playlists.single.items, ['a', 'b']);
+    });
+
+    test('без времени в операции ничего не пишется, при удалении трека ключ уходит', () {
+      final d = withPl();
+      d.apply({'op': 'addToPlaylist', 'id': 'p', 'items': ['a']});
+      expect(d.edits['pl:p'], isNull);
+      d.apply({'op': 'addToPlaylist', 'id': 'p', 'items': ['b'], 'at': 7});
+      d.apply({'op': 'removeFromPlaylist', 'id': 'p', 'track': 'b'});
+      expect(d.edits['pl:p']!.containsKey('t:b'), isFalse);
+    });
+
+    test('время переживает сохранение библиотеки', () {
+      final d = withPl()..apply({'op': 'addToPlaylist', 'id': 'p', 'items': ['a'], 'at': 42});
+      expect(LibraryData.fromJson(d.toJson()).edits['pl:p']!['t:a'], '42');
     });
   });
 }

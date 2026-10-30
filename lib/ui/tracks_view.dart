@@ -481,7 +481,7 @@ class _TracksPageState extends State<TracksPage> {
   String _sort = ''; // пусто — порядок как есть
   bool _desc = false;
 
-  List<Track> _visible(String Function(String) nameOf) {
+  List<Track> _visible(String Function(String) nameOf, Map<String, int>? addedAt) {
     final q = _query.trim().toLowerCase();
     var list = q.isEmpty
         ? widget.tracks
@@ -493,6 +493,7 @@ class _TracksPageState extends State<TracksPage> {
     int byText(String a, String b) => a.toLowerCase().compareTo(b.toLowerCase());
     int byNo(Track a, Track b) => (a.no ?? 9999).compareTo(b.no ?? 9999);
     String when(Track t) => t.added.isNotEmpty ? t.added : t.modified;
+    final pos = _sort == 'padded' ? {for (var i = 0; i < widget.tracks.length; i++) widget.tracks[i].id: i} : const <String, int>{};
     final cmp = switch (_sort) {
       'title' => (Track a, Track b) => byText(a.title, b.title),
       'artist' => (Track a, Track b) {
@@ -507,6 +508,11 @@ class _TracksPageState extends State<TracksPage> {
         },
       'by' => (Track a, Track b) => byText(nameOf(a.by), nameOf(b.by)),
       'dur' => (Track a, Track b) => (a.durationMs ?? 0).compareTo(b.durationMs ?? 0),
+      'padded' => (Track a, Track b) {
+          // Дата добавления в плейлист; у одной даты (например, при создании) ниже стоит то, что добавлено позже
+          final r = (addedAt?[a.id] ?? 0).compareTo(addedAt?[b.id] ?? 0);
+          return r != 0 ? r : (pos[a.id] ?? 0).compareTo(pos[b.id] ?? 0);
+        },
       _ => (Track a, Track b) => when(a).compareTo(when(b)),
     };
     list = List.of(list)..sort(cmp);
@@ -515,7 +521,7 @@ class _TracksPageState extends State<TracksPage> {
 
   void _setSort(String key) => setState(() {
         if (_sort == key) {
-          if (_desc == (key == 'added')) {
+          if (_desc == (key == 'added' || key == 'padded')) {
             _desc = !_desc;
           } else {
             _sort = ''; // третий клик — вернуть исходный порядок
@@ -523,9 +529,45 @@ class _TracksPageState extends State<TracksPage> {
           }
         } else {
           _sort = key;
-          _desc = key == 'added'; // новые сверху
+          _desc = key == 'added' || key == 'padded'; // новые сверху
         }
       });
+
+  /// «Название / Исполнитель»: 1–2 клика — по названию (↑, ↓), 3–4 — по исполнителю (↑, ↓), 5-й сбрасывает
+  void _setTitleArtist() => setState(() {
+        if (_sort != 'title' && _sort != 'artist') {
+          _sort = 'title';
+          _desc = false;
+        } else if (!_desc) {
+          _desc = true;
+        } else if (_sort == 'title') {
+          _sort = 'artist';
+          _desc = false;
+        } else {
+          _sort = '';
+          _desc = false;
+        }
+      });
+
+  Widget _titleArtistLabel() {
+    Widget part(String text, bool active) => Text(text,
+        style: TextStyle(fontSize: 12, color: active ? C.text : C.faint, fontWeight: FontWeight.w500));
+    final arrow = Icon(_desc ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded, size: 13, color: C.accent);
+    return InkWell(
+      borderRadius: BorderRadius.circular(4),
+      onTap: _setTitleArtist,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          part('Название', _sort == 'title'),
+          if (_sort == 'title') arrow,
+          part(' / ', false),
+          part('Исполнитель', _sort == 'artist'),
+          if (_sort == 'artist') arrow,
+        ]),
+      ),
+    );
+  }
 
   Widget _sortHeader(bool compact) {
     Widget label(String key, String text, {IconData? icon}) {
@@ -556,7 +598,7 @@ class _TracksPageState extends State<TracksPage> {
         const SizedBox(width: 62),
         Expanded(
           flex: 5,
-          child: Row(children: [label('title', 'Название'), const SizedBox(width: 14), label('artist', 'Исполнитель')]),
+          child: Align(alignment: Alignment.centerLeft, child: _titleArtistLabel()),
         ),
         if (!compact) ...[
           const SizedBox(width: 16),
@@ -564,7 +606,11 @@ class _TracksPageState extends State<TracksPage> {
           const SizedBox(width: 16),
           Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: label('by', 'Загрузил(а)'))),
         ],
-        SizedBox(width: 88, child: Align(alignment: Alignment.centerRight, child: label('added', 'Новые'))),
+        if (widget.playlistId != null && !compact)
+          SizedBox(width: 120, child: Align(alignment: Alignment.centerLeft, child: label('padded', 'Дата добавления'))),
+        SizedBox(
+            width: 88,
+            child: widget.playlistId != null ? null : Align(alignment: Alignment.centerRight, child: label('added', 'Новые'))),
         SizedBox(width: 60, child: Align(alignment: Alignment.centerRight, child: label('dur', 'Длительность', icon: Icons.schedule_rounded))),
       ]),
     );
@@ -573,7 +619,9 @@ class _TracksPageState extends State<TracksPage> {
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final visible = _visible(app.lib.firstNameOf);
+    final pl = widget.playlistId == null ? null : app.lib.playlist(widget.playlistId!);
+    final addedAt = pl == null ? null : {for (final t in widget.tracks) t.id: app.lib.playlistAddedAt(pl, t.id)};
+    final visible = _visible(app.lib.firstNameOf, addedAt);
     _visibleNow = visible;
     final pad = widget.compact ? 20.0 : 36.0;
     if (_selecting) {
@@ -683,6 +731,7 @@ class _TracksPageState extends State<TracksPage> {
               selecting: _selecting,
               selected: _sel.contains(visible[i].id),
               onSelect: (shift) => _onSelect(visible, i, shift),
+              addedAt: addedAt?[visible[i].id],
             );
         final list = CustomScrollView(
             // Вернулись назад — список на том же месте
@@ -757,6 +806,9 @@ class TrackRow extends StatelessWidget {
   final bool selected;
   final void Function(bool shift)? onSelect;
 
+  /// Когда трек добавлен в этот плейлист (мс); есть только на страницах плейлистов
+  final int? addedAt;
+
   const TrackRow({
     super.key,
     required this.track,
@@ -771,6 +823,7 @@ class TrackRow extends StatelessWidget {
     this.selecting = false,
     this.selected = false,
     this.onSelect,
+    this.addedAt,
   });
 
   @override
@@ -801,14 +854,14 @@ class TrackRow extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
         ),
         child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+        padding: const EdgeInsets.only(right: 12),
         child: Row(children: [
-          SizedBox(
-            width: 28,
-            child: selecting
-                ? Icon(selected ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
-                    size: 20, color: selected ? C.accent : C.faint)
-                : current
+          _EdgeZone(
+            enabled: onSelect != null,
+            selecting: selecting,
+            selected: selected,
+            onTap: () => onSelect?.call(HardwareKeyboard.instance.isShiftPressed),
+            child: current
                 ? Icon(playing ? Icons.graphic_eq_rounded : Icons.pause_rounded, size: 18, color: C.accent)
                 : Text(numbered && track.no != null ? '${track.no}' : '${index + 1}',
                     style: const TextStyle(color: C.faint, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()])),
@@ -854,6 +907,12 @@ class TrackRow extends StatelessWidget {
             const SizedBox(width: 16),
             Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: FriendTag(track.by))),
           ],
+          if (addedAt != null && !compact)
+            SizedBox(
+              width: 120,
+              child: Text(formatAddedDate(addedAt!), maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: C.muted, fontSize: 13)),
+            ),
           LikeButton(track: track),
           TrackMenu(track: track, playlistId: playlistId),
           // Длительность — в самом правом столбце, правее кнопки «…»
@@ -1149,4 +1208,80 @@ List<LinkPart> trackLinks(BuildContext context, Track t, {bool album = false}) {
     parts.add(LinkPart(t.displayAlbum, () => nav.go(Nav('album', t.albumKey))));
   }
   return parts;
+}
+
+/// «сегодня», «вчера», «3 дн. назад», дальше дата
+String formatAddedDate(int ms) {
+  final d = DateTime.fromMillisecondsSinceEpoch(ms);
+  final now = DateTime.now();
+  final days = DateTime(now.year, now.month, now.day).difference(DateTime(d.year, d.month, d.day)).inDays;
+  if (days <= 0) return 'сегодня';
+  if (days == 1) return 'вчера';
+  if (days < 7) return '$days дн. назад';
+  const months = ['янв.', 'февр.', 'марта', 'апр.', 'мая', 'июня', 'июля', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.'];
+  return '${d.day} ${months[d.month - 1]}${d.year == now.year ? '' : ' ${d.year}'}';
+}
+
+/// Левый край строки трека. При наведении он подсвечивается и показывает кружок выбора:
+/// клик по нему включает групповое выделение (Shift — диапазон). Без выбора это просто номер или значок «играет».
+class _EdgeZone extends StatefulWidget {
+  final bool enabled;
+  final bool selecting;
+  final bool selected;
+  final VoidCallback onTap;
+  final Widget child;
+  const _EdgeZone({required this.enabled, required this.selecting, required this.selected, required this.onTap, required this.child});
+
+  @override
+  State<_EdgeZone> createState() => _EdgeZoneState();
+}
+
+class _EdgeZoneState extends State<_EdgeZone> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.enabled) return SizedBox(width: 40, child: Padding(padding: const EdgeInsets.only(left: 12), child: widget.child));
+    final showBox = widget.selecting || _hover;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: SizedBox(
+          width: 40,
+          height: double.infinity,
+          child: Stack(children: [
+            if (_hover || widget.selected)
+              Positioned(
+                left: 0,
+                top: 6,
+                bottom: 6,
+                width: 3,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: widget.selected ? C.accent : C.accent.withValues(alpha: 0.7),
+                    borderRadius: const BorderRadius.horizontal(right: Radius.circular(3)),
+                  ),
+                ),
+              ),
+            Positioned.fill(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 12),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: showBox
+                      ? Icon(widget.selected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                          size: 20, color: widget.selected ? C.accent : C.faint)
+                      : widget.child,
+                ),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
 }

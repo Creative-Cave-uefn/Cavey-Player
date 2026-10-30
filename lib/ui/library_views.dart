@@ -73,11 +73,12 @@ class _ArtistsPageState extends State<ArtistsPage> {
         // Любимые исполнители — вверху, над остальными
         final favs = [for (final a in list) if (app.lib.isFavArtist(a.key)) a];
         final rest = [for (final a in list) if (!app.lib.isFavArtist(a.key)) a];
+        final prefs = ViewPrefs(app.settings, 'artists', defaultGrid: false, listDef: 64, listMin: 48, listMax: 96, gridDef: 160);
         final rows = <Object>[
           if (favs.isNotEmpty) 'Любимые',
-          ...favs,
+          if (favs.isNotEmpty) favs,
           if (favs.isNotEmpty && rest.isNotEmpty) 'Все исполнители',
-          ...rest,
+          if (rest.isNotEmpty) rest,
         ];
         return CustomScrollView(slivers: [
           SliverToBoxAdapter(
@@ -105,6 +106,7 @@ class _ArtistsPageState extends State<ArtistsPage> {
                       app.lib.saveSettings();
                       setState(() {});
                     },
+                    trailing: ViewControls(prefs: prefs, onChanged: () => setState(() {})),
                   ),
                 ],
               ]),
@@ -126,59 +128,107 @@ class _ArtistsPageState extends State<ArtistsPage> {
                 child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
               ),
             ),
-          SliverPadding(
-            padding: EdgeInsets.fromLTRB(pad - 12, 0, pad - 12, 32),
-            sliver: SliverList(
-              delegate: SliverChildBuilderDelegate(
-                (context, i) {
-                  final row = rows[i];
-                  if (row is String) {
-                    return Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 14, 12, 6),
-                      child: Text(row, style: const TextStyle(color: C.muted, fontSize: 13, fontWeight: FontWeight.w600)),
-                    );
-                  }
-                  final a = row as Artist;
-                  final fav = app.lib.isFavArtist(a.key);
-                  return SizedBox(
-                    height: 64,
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 12),
-                        child: Row(children: [
-                          ClipOval(child: CoverImage(track: a.coverTrack, size: 44, radius: 0)),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Text(a.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
-                          ),
-                          Text(
-                            '${countTracks(a.tracks.length)}, ${a.albums} ${plural(a.albums, 'альбом', 'альбома', 'альбомов')}',
-                            style: const TextStyle(color: C.muted, fontSize: 13),
-                          ),
-                          IconButton(
-                            tooltip: fav ? 'Убрать из любимых исполнителей' : 'В любимые исполнители',
-                            onPressed: () => app.lib.toggleFavArtist(a.key),
-                            icon: Icon(fav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                                size: 20, color: fav ? C.accent : C.faint),
-                          ),
-                        ]),
-                      ),
-                    ),
-                  );
-                },
-                childCount: rows.length,
-              ),
-            ),
-          ),
+          for (final row in rows)
+            if (row is String)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(pad, 14, pad, 6),
+                  child: Text(row, style: const TextStyle(color: C.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+                ),
+              )
+            else
+              _artistsSliver(context, app, row as List<Artist>, prefs, pad),
+          const SliverToBoxAdapter(child: SizedBox(height: 32)),
         ]);
       },
     );
   }
+}
+
+
+/// Исполнители сеткой (круглое фото, имя под ним) или списком; сердечко кладёт в «Любимые»
+Widget _artistsSliver(BuildContext context, AppServices app, List<Artist> items, ViewPrefs prefs, double pad) {
+  Widget heart(Artist a, {double size = 20}) {
+    final fav = app.lib.isFavArtist(a.key);
+    return IconButton(
+      tooltip: fav ? 'Убрать из любимых исполнителей' : 'В любимые исполнители',
+      onPressed: () => app.lib.toggleFavArtist(a.key),
+      icon: Icon(fav ? Icons.favorite_rounded : Icons.favorite_border_rounded, size: size, color: fav ? C.accent : C.faint),
+    );
+  }
+
+  if (prefs.grid) {
+    return SliverPadding(
+      padding: EdgeInsets.symmetric(horizontal: pad),
+      sliver: AdaptiveGridSliver(
+        tile: prefs.size,
+        extra: 62,
+        count: items.length,
+        builder: (context, i) {
+          final a = items[i];
+          return InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+            child: LayoutBuilder(
+              builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                Stack(children: [
+                  ClipOval(child: CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 0)),
+                  Positioned(
+                    right: 2,
+                    top: 2,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.45), shape: BoxShape.circle),
+                      child: SizedBox.square(dimension: 34, child: heart(a, size: 18)),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 10),
+                Text(a.name,
+                    maxLines: 1,
+                    textAlign: TextAlign.center,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                const SizedBox(height: 3),
+                Text(countTracks(a.tracks.length),
+                    maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12)),
+              ]),
+            ),
+          );
+        },
+      ),
+    );
+  }
+  return SliverPadding(
+    padding: EdgeInsets.symmetric(horizontal: pad - 12),
+    sliver: SliverFixedExtentList(
+      itemExtent: prefs.size,
+      delegate: SliverChildBuilderDelegate(
+        (context, i) {
+          final a = items[i];
+          return InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 12),
+              child: Row(children: [
+                ClipOval(child: CoverImage(track: a.coverTrack, size: prefs.size - 20, radius: 0)),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+                ),
+                Text(
+                  '${countTracks(a.tracks.length)}, ${a.albums} ${plural(a.albums, 'альбом', 'альбома', 'альбомов')}',
+                  style: const TextStyle(color: C.muted, fontSize: 13),
+                ),
+                heart(a),
+              ]),
+            ),
+          );
+        },
+        childCount: items.length,
+      ),
+    ),
+  );
 }
 
 class ArtistPage extends StatelessWidget {

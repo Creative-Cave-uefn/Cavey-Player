@@ -5,6 +5,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import 'crop_dialog.dart';
 import 'theme.dart';
 
 /// Картинка, подготовленная к загрузке на Диск
@@ -14,61 +15,39 @@ class PickedCover {
   const PickedCover(this.bytes, this.ext);
 }
 
-const _maxSide = 800; // больше обложке не нужно, а друзьям качать меньше
-const _keepOriginalBytes = 700 * 1024;
-
-String _sniffExt(Uint8List b) {
-  if (b.length > 12) {
-    if (b[0] == 0x89 && b[1] == 0x50) return 'png';
-    if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) return 'gif';
-    if (b[0] == 0x42 && b[1] == 0x4D) return 'bmp';
-    if (b[0] == 0x52 && b[1] == 0x49 && b[8] == 0x57 && b[9] == 0x45) return 'webp';
-  }
-  return 'jpg';
-}
-
-/// Проверяет, что это картинка, и уменьшает слишком большую до 800 пикселей.
-/// Маленькие файлы остаются как есть, большие превращаются в PNG. null — не картинка.
-Future<PickedCover?> prepareCover(Uint8List src) async {
-  try {
-    final codec = await ui.instantiateImageCodec(src);
-    final frame = await codec.getNextFrame();
-    final w = frame.image.width;
-    final h = frame.image.height;
-    frame.image.dispose();
-    codec.dispose();
-    if (w <= 0 || h <= 0) return null;
-    if (w <= _maxSide && h <= _maxSide && src.length <= _keepOriginalBytes) return PickedCover(src, _sniffExt(src));
-
-    final long = w > h ? w : h;
-    final scale = long > _maxSide ? _maxSide / long : 1.0;
-    final codec2 = await ui.instantiateImageCodec(
-      src,
-      targetWidth: (w * scale).round().clamp(1, 100000).toInt(),
-      targetHeight: (h * scale).round().clamp(1, 100000).toInt(),
-    );
-    final frame2 = await codec2.getNextFrame();
-    final data = await frame2.image.toByteData(format: ui.ImageByteFormat.png);
-    frame2.image.dispose();
-    codec2.dispose();
-    if (data == null) return null;
-    return PickedCover(data.buffer.asUint8List(), 'png');
-  } catch (_) {
-    return null;
-  }
-}
-
-/// Окно выбора файла с картинкой
-Future<PickedCover?> pickCoverFile(BuildContext context) async {
+/// Окно выбора файла с картинкой, затем кадрирование мышью. [aspect] — ширина к высоте рамки.
+Future<PickedCover?> pickCoverFile(
+  BuildContext context, {
+  String title = 'Кадрирование обложки',
+  double aspect = 1,
+  int outWidth = 800,
+  bool round = false,
+}) async {
   final f = await openFile(acceptedTypeGroups: const [
     XTypeGroup(label: 'Картинки', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif']),
   ]);
-  if (f == null) return null;
-  final picked = await prepareCover(await f.readAsBytes());
-  if (picked == null && context.mounted) {
-    Services.of(context).lib.messages.add('Не получилось открыть «${f.name}» как картинку');
+  if (f == null || !context.mounted) return null;
+  final bytes = await f.readAsBytes();
+  if (!context.mounted) return null;
+  final cropped = await cropImageDialog(context, bytes, title: title, aspect: aspect, outWidth: outWidth, round: round);
+  if (cropped == null) {
+    // Либо отмена, либо файл не картинка; отличить по результату нельзя, сообщаем только про не-картинку
+    if (context.mounted && !await _decodes(bytes)) {
+      Services.of(context).lib.messages.add('Не получилось открыть «${f.name}» как картинку');
+    }
+    return null;
   }
-  return picked;
+  return PickedCover(cropped, 'png');
+}
+
+Future<bool> _decodes(Uint8List b) async {
+  try {
+    final codec = await ui.instantiateImageCodec(b, targetWidth: 8);
+    codec.dispose();
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 /// Что человек выбрал в окне правки: новую картинку, «вернуть исходную» или ничего
