@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 import 'config.dart';
 import 'core/preview.dart';
 import 'core/web_info.dart';
+import 'core/karaoke.dart';
 import 'core/wave.dart';
 import 'core/audio_cache.dart';
 import 'core/auth.dart';
@@ -54,6 +55,7 @@ class AppServices {
   late final WebInfoService web;
   late final PreviewPlayer preview;
   late final WaveService wave;
+  late final KaraokeService karaoke;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
@@ -124,6 +126,7 @@ class AppServices {
         store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
+    app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
     app.wave = await WaveService.open(store, lib, player, social, app.web, downloads);
     unawaited(tray.start());
     // Ярлык на панели задач запускает вторую копию; она просит первую показать окно

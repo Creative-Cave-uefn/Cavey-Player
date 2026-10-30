@@ -1,5 +1,4 @@
 import 'package:flutter/scheduler.dart';
-import 'dart:ui' as ui;
 import 'dart:math' as math;
 import 'dart:async';
 
@@ -7,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 
 import '../app.dart';
+import '../core/karaoke.dart';
 import '../core/lyrics.dart';
 import '../core/models.dart';
 import '../core/player.dart';
@@ -100,13 +100,18 @@ class _LyricsBodyState extends State<LyricsBody> {
     // Панель показывает то, что лежит в сервисе текстов, и перерисовывается,
     // когда любой поиск закончился — свой, начатый плеером при открытии трека, или повторный
     _lyrics = app.lyrics..addListener(_onLyrics);
+    // Посчитались точные тайминги слов — перерисовываем караоке
+    _karaoke = app.karaoke..addListener(_onLyrics);
     WidgetsBinding.instance.addPostFrameCallback((_) => _request());
   }
+
+  KaraokeService? _karaoke;
 
   @override
   void dispose() {
     _player?.position.removeListener(_onPosition);
     _lyrics?.removeListener(_onLyrics);
+    _karaoke?.removeListener(_onLyrics);
     super.dispose();
   }
 
@@ -234,6 +239,15 @@ class _LyricsBodyState extends State<LyricsBody> {
     }
     final idx = _idx = _lineAt(ly);
     _follow(idx);
+    // Время слов: точное из текста (расширенный LRC) → посчитанное Whisper → разбивка по слогам
+    final exact = widget.karaoke ? app.karaoke.wordsFor(t, ly) : null;
+    List<KWord> wordsOf(int i) {
+      final line = ly.lines[i];
+      final end = i + 1 < ly.lines.length && ly.lines[i + 1].at != null ? ly.lines[i + 1].at! : line.at! + const Duration(seconds: 5);
+      final w = line.words ?? (exact != null && i < exact.length ? exact[i] : null);
+      return (w != null && w.isNotEmpty) ? w : syllables(line.text, line.at!, end);
+    }
+
     return NotificationListener<UserScrollNotification>(
       onNotification: _onScroll,
       child: SingleChildScrollView(
@@ -259,14 +273,7 @@ class _LyricsBodyState extends State<LyricsBody> {
                     color: i == idx ? C.text : (i < idx ? (widget.big ? const Color(0x4DFFFFFF) : C.faint) : (widget.big ? const Color(0x80FFFFFF) : C.muted)),
                   ),
                   child: widget.karaoke && i == idx && ly.lines[i].text.isNotEmpty
-                      ? KaraokeText(
-                          text: ly.lines[i].text,
-                          start: ly.lines[i].at!,
-                          end: i + 1 < ly.lines.length && ly.lines[i + 1].at != null
-                              ? ly.lines[i + 1].at!
-                              : ly.lines[i].at! + const Duration(seconds: 5),
-                          player: app.player,
-                        )
+                      ? KaraokeText(text: ly.lines[i].text, words: wordsOf(i), player: app.player)
                       : Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
                 ),
               ),
@@ -279,15 +286,14 @@ class _LyricsBodyState extends State<LyricsBody> {
 }
 
 
-/// Строка в режиме караоке: тусклый текст, поверх — яркий, открывается слева направо по ходу строки.
-/// Перенос на несколько строк учитывается: сначала заполняется первая, потом вторая.
-/// Между обновлениями позиции от плеера заливка движется плавно — досчитываем время сами
+/// Строка в режиме караоке: тусклый текст, поверх — яркий, слова (или слоги) открываются каждое
+/// в своё время. Перенос на несколько строк учитывается. Между обновлениями позиции от плеера
+/// заливка движется плавно — досчитываем время сами
 class KaraokeText extends StatefulWidget {
   final String text;
-  final Duration start;
-  final Duration end;
+  final List<KWord> words;
   final PlayerController player;
-  const KaraokeText({super.key, required this.text, required this.start, required this.end, required this.player});
+  const KaraokeText({super.key, required this.text, required this.words, required this.player});
 
   @override
   State<KaraokeText> createState() => _KaraokeTextState();
@@ -304,25 +310,29 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
     super.dispose();
   }
 
-  double _progress() {
+  Duration _now() {
     final p = widget.player;
     final pos = p.position.value;
     if (pos != _lastPos) {
       _lastPos = pos;
       _lastAt = DateTime.now();
     }
-    final now = p.playing ? pos + DateTime.now().difference(_lastAt) : pos;
-    final len = (widget.end - widget.start).inMilliseconds;
-    if (len <= 0) return 1;
-    // Последние 15% строки обычно тянут ноту — заполняем чуть раньше, чтобы не «догонять»
-    return ((now - widget.start).inMilliseconds / (len * 0.85)).clamp(0.0, 1.0);
+    return p.playing ? pos + DateTime.now().difference(_lastAt) : pos;
   }
 
   @override
   Widget build(BuildContext context) {
     final style = DefaultTextStyle.of(context).style;
-    final p = _progress();
-    if (p >= 1) {
+    final now = _now();
+    // Насколько спето каждое слово: 0 — ещё нет, 1 — целиком
+    final fills = [
+      for (final w in widget.words)
+        w.end <= w.start
+            ? (now >= w.start ? 1.0 : 0.0)
+            : ((now - w.start).inMilliseconds / (w.end - w.start).inMilliseconds).clamp(0.0, 1.0),
+    ];
+    final done = fills.every((f) => f >= 1);
+    if (done) {
       _ticker.stop();
     } else if (!_ticker.isActive) {
       _ticker.start(); // перемотали назад внутри строки
@@ -333,12 +343,27 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
         textDirection: Directionality.of(context),
         textScaler: MediaQuery.textScalerOf(context),
       )..layout(maxWidth: box.maxWidth);
-      final lines = tp.computeLineMetrics();
+      final rects = <Rect>[];
+      for (var k = 0; k < widget.words.length; k++) {
+        final f = fills[k];
+        if (f <= 0) continue;
+        final w = widget.words[k];
+        final from = w.from.clamp(0, widget.text.length), to = w.to.clamp(0, widget.text.length);
+        if (to <= from) continue;
+        final boxes = tp.getBoxesForSelection(TextSelection(baseOffset: from, extentOffset: to));
+        var left = boxes.fold<double>(0, (a, b) => a + (b.right - b.left)) * f;
+        for (final b in boxes) {
+          if (left <= 0) break;
+          final bw = math.min(left, b.right - b.left);
+          rects.add(Rect.fromLTRB(b.left, b.top - 2, b.left + bw, b.bottom + 2));
+          left -= b.right - b.left;
+        }
+      }
       tp.dispose();
       return Stack(children: [
         Text(widget.text, style: style.copyWith(color: style.color?.withValues(alpha: 0.35))),
         ClipPath(
-          clipper: _Reveal(lines, p),
+          clipper: _Reveal(rects),
           child: Text(widget.text, style: style.copyWith(color: Colors.white)),
         ),
       ]);
@@ -347,25 +372,18 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
 }
 
 class _Reveal extends CustomClipper<Path> {
-  final List<ui.LineMetrics> lines;
-  final double progress;
-  _Reveal(this.lines, this.progress);
+  final List<Rect> rects;
+  _Reveal(this.rects);
 
   @override
   Path getClip(Size size) {
-    final total = lines.fold<double>(0, (a, l) => a + l.width);
-    var left = total * progress;
     final path = Path();
-    for (final l in lines) {
-      if (left <= 0) break;
-      final w = math.min(left, l.width);
-      final top = l.baseline - l.ascent;
-      path.addRect(Rect.fromLTWH(l.left, top, w, l.ascent + l.descent + 2));
-      left -= l.width;
+    for (final r in rects) {
+      path.addRect(r);
     }
     return path;
   }
 
   @override
-  bool shouldReclip(_Reveal old) => old.progress != progress || old.lines != lines;
+  bool shouldReclip(_Reveal old) => true;
 }

@@ -136,6 +136,8 @@ class _AccountsPageState extends State<AccountsPage> {
           const _DiscordSection(),
           const SizedBox(height: 44),
           const _TraySection(),
+          const SizedBox(height: 36),
+          const _KaraokeSection(),
           const SizedBox(height: 44),
           const _CacheSection(),
           const SizedBox(height: 44),
@@ -508,6 +510,61 @@ class _LogSectionState extends State<_LogSection> {
           ),
       ]),
     ]);
+  }
+}
+
+/// Точное караоке: время слов считает Whisper по звуку
+class _KaraokeSection extends StatelessWidget {
+  const _KaraokeSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final k = Services.of(context).karaoke;
+    return ListenableBuilder(
+      listenable: k,
+      builder: (context, _) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Точное караоке', style: display(20)),
+        const SizedBox(height: 10),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: k.enabled,
+          activeColor: C.accent,
+          title: const Text('Вычислять время каждого слова по звуку'),
+          subtitle: const Text(
+            'В кинотеатре текст заливается слово за словом точно в такт. Считает программа Whisper на этом компьютере, '
+            'в фоне и на половине ядер: около минуты на трек. Посчитанное сохраняется в общей папке — '
+            'каждый трек считается один раз на всю компанию. Без этого слова загораются по слогам примерно.',
+            style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+          ),
+          onChanged: k.setEnabled,
+        ),
+        if (k.enabled) ...[
+          const SizedBox(height: 6),
+          Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+            const Text('Модель:', style: TextStyle(color: C.muted)),
+            for (final (id, label) in const [('base', 'Быстрая — 142 МБ'), ('small', 'Точная — 466 МБ')])
+              ChoiceChip(
+                label: Text(label),
+                selected: k.model == id,
+                onSelected: (_) => k.setModel(id),
+                selectedColor: C.accent,
+                labelStyle: TextStyle(color: k.model == id ? C.accentInk : C.text),
+              ),
+          ]),
+          const SizedBox(height: 6),
+          const Text('Для русского и японского лучше «Точная». Модель скачивается один раз, при первом треке.',
+              style: TextStyle(color: C.faint, fontSize: 13)),
+          if (k.status.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Row(children: [
+              SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2, value: k.progress)),
+              const SizedBox(width: 10),
+              Expanded(child: Text(k.status, style: const TextStyle(color: C.muted, fontSize: 13))),
+            ]),
+          ],
+        ],
+      ]),
+    );
   }
 }
 

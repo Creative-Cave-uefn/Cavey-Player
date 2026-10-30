@@ -1,0 +1,500 @@
+// Точное караоке: время каждого слова вычисляется по звуку программой whisper.cpp
+// (распознавание речи OpenAI Whisper, работает на процессоре). Текст песни уже известен,
+// поэтому распознанные слова только сопоставляются с ним — внутри строк, время которых тоже известно.
+// Результат хранится на компьютере и в общей папке на Диске: каждый трек считается один раз на всю компанию.
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
+
+import 'package:archive/archive_io.dart';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+
+import 'audio_cache.dart';
+import 'dl/tools.dart';
+import 'drive.dart';
+import 'library.dart';
+import 'log.dart';
+import 'lyrics.dart';
+import 'models.dart';
+
+/// Слово, которое распознал Whisper
+class HeardWord {
+  final String text;
+  final Duration start, end;
+  const HeardWord(this.text, this.start, this.end);
+}
+
+/// Сопоставление распознанных слов с текстом песни.
+/// Для каждой строки — время её слов или null, если строку распознать не удалось (там останется разбивка по слогам)
+class KaraokeAligner {
+  static final _cjk = RegExp(r'[぀-ヿ㐀-䶿一-鿿가-힯]');
+  static final _letters = RegExp(r'[\p{L}\p{N}]+', unicode: true);
+
+  static String norm(String s) => s.toLowerCase().replaceAll('ё', 'е').replaceAll(RegExp(r'[^\p{L}\p{N}]', unicode: true), '');
+
+  /// Слова строки с их местом в тексте. Японский, китайский, корейский — по знаку: пробелов там нет
+  static List<(int, int, String)> tokens(String text) {
+    final out = <(int, int, String)>[];
+    for (final m in _letters.allMatches(text)) {
+      final w = m.group(0)!;
+      if (_cjk.hasMatch(w)) {
+        for (var i = 0; i < w.length; i++) {
+          out.add((m.start + i, m.start + i + 1, norm(w[i])));
+        }
+      } else {
+        out.add((m.start, m.end, norm(w)));
+      }
+    }
+    return [for (final t in out) if (t.$3.isNotEmpty) t];
+  }
+
+  /// Распознанные слова тоже делим на знаки, если это японский и т. п.
+  static List<HeardWord> splitHeard(List<HeardWord> heard) {
+    final out = <HeardWord>[];
+    for (final h in heard) {
+      final t = norm(h.text);
+      if (t.isEmpty) continue;
+      if (_cjk.hasMatch(t) && t.length > 1) {
+        final step = (h.end - h.start).inMilliseconds / t.length;
+        for (var i = 0; i < t.length; i++) {
+          out.add(HeardWord(t[i], h.start + Duration(milliseconds: (step * i).round()), h.start + Duration(milliseconds: (step * (i + 1)).round())));
+        }
+      } else {
+        out.add(HeardWord(t, h.start, h.end));
+      }
+    }
+    return out;
+  }
+
+  static double similarity(String a, String b) {
+    if (a == b) return 1;
+    if (a.isEmpty || b.isEmpty) return 0;
+    // Расстояние Левенштейна, переведённое в похожесть 0..1
+    var prev = List<int>.generate(b.length + 1, (i) => i);
+    for (var i = 1; i <= a.length; i++) {
+      final cur = List<int>.filled(b.length + 1, 0);
+      cur[0] = i;
+      for (var j = 1; j <= b.length; j++) {
+        cur[j] = math.min(math.min(cur[j - 1] + 1, prev[j] + 1), prev[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1));
+      }
+      prev = cur;
+    }
+    return 1 - prev[b.length] / math.max(a.length, b.length);
+  }
+
+  /// [lines] — строки текста (время начала), [ends] — когда каждая кончается
+  static List<List<KWord>?> align(List<LyricLine> lines, List<Duration> ends, List<HeardWord> heardRaw) {
+    final heard = splitHeard(heardRaw);
+    // Все слова текста подряд, с номером строки
+    final lw = <(int line, int from, int to, String text)>[];
+    for (var li = 0; li < lines.length; li++) {
+      for (final t in tokens(lines[li].text)) {
+        lw.add((li, t.$1, t.$2, t.$3));
+      }
+    }
+    final n = lw.length, m = heard.length;
+    final result = List<List<KWord>?>.filled(lines.length, null);
+    if (n == 0 || m == 0) return result;
+
+    // Выравнивание как в сравнении текстов: совпадение даёт очки, только если слово похоже
+    // и прозвучало около своей строки (±1,5 с от её границ)
+    const slack = Duration(milliseconds: 1500);
+    bool near(int i, int j) {
+      final li = lw[i].$1;
+      final a = lines[li].at!, b = ends[li];
+      return heard[j].start >= a - slack && heard[j].start <= b + slack;
+    }
+
+    final score = List.generate(n + 1, (_) => List<double>.filled(m + 1, 0));
+    for (var i = 1; i <= n; i++) {
+      for (var j = 1; j <= m; j++) {
+        var best = math.max(score[i - 1][j], score[i][j - 1]);
+        if (near(i - 1, j - 1)) {
+          final sim = similarity(lw[i - 1].$4, heard[j - 1].text);
+          if (sim >= 0.6) best = math.max(best, score[i - 1][j - 1] + sim);
+        }
+        score[i][j] = best;
+      }
+    }
+    final match = List<int?>.filled(n, null);
+    var i = n, j = m;
+    while (i > 0 && j > 0) {
+      if (score[i][j] == score[i - 1][j]) {
+        i--;
+      } else if (score[i][j] == score[i][j - 1]) {
+        j--;
+      } else {
+        match[i - 1] = j - 1;
+        i--;
+        j--;
+      }
+    }
+
+    // По строкам: найденные слова получают своё время, ненайденные — между соседями
+    var k = 0;
+    for (var li = 0; li < lines.length; li++) {
+      final idx = <int>[];
+      while (k < n && lw[k].$1 == li) {
+        idx.add(k++);
+      }
+      if (idx.isEmpty) continue;
+      final found = idx.where((x) => match[x] != null).length;
+      if (found < math.max(1, (idx.length * 0.4).ceil())) continue; // слишком мало узнали — оставим слоги
+      final start = lines[li].at!, end = ends[li];
+      final starts = <Duration?>[for (final x in idx) match[x] == null ? null : heard[match[x]!].start];
+      // Заполняем пропуски равномерно между известными соседями
+      for (var a = 0; a < starts.length; a++) {
+        if (starts[a] != null) continue;
+        var b = a;
+        while (b < starts.length && starts[b] == null) {
+          b++;
+        }
+        final left = a == 0 ? start : starts[a - 1]!;
+        final right = b < starts.length ? starts[b]! : end - const Duration(milliseconds: 300);
+        final span = (right - left).inMilliseconds;
+        for (var c = a; c < b; c++) {
+          starts[c] = left + Duration(milliseconds: (span * (c - a + 1) / (b - a + 1)).round());
+        }
+        a = b;
+      }
+      final words = <KWord>[];
+      for (var a = 0; a < idx.length; a++) {
+        var s = starts[a]!;
+        if (s < start) s = start;
+        if (a > 0 && s < words.last.start) s = words.last.start; // время не идёт назад
+        final heardEnd = match[idx[a]] != null ? heard[match[idx[a]]!].end : null;
+        var e = a + 1 < idx.length ? starts[a + 1]! : (heardEnd ?? end);
+        if (heardEnd != null && heardEnd < e) e = heardEnd;
+        if (e < s) e = s;
+        if (e > end + slack) e = end;
+        words.add(KWord(lw[idx[a]].$2, lw[idx[a]].$3, s, e));
+      }
+      result[li] = words;
+    }
+    return result;
+  }
+}
+
+/// Точные тайминги слов для треков: читает готовые, считает недостающие в фоне
+class KaraokeService extends ChangeNotifier {
+  final Directory dir;
+  final LibraryController lib;
+  final DriveApi drive;
+  final AudioCache cache;
+  final Tools tools;
+  KaraokeService(this.dir, this.lib, this.drive, this.cache, this.tools);
+
+  static const _whisperUrl = 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip';
+  static String modelUrl(String m) => 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$m.bin';
+
+  // ---------- настройки ----------
+
+  bool get enabled => lib.settings.view['karaoke.on'] == '1';
+  String get model => lib.settings.view['karaoke.model'] ?? 'small';
+
+  Future<void> setEnabled(bool on) async {
+    lib.settings.view['karaoke.on'] = on ? '1' : '0';
+    await lib.saveSettings();
+    notifyListeners();
+  }
+
+  Future<void> setModel(String m) async {
+    lib.settings.view['karaoke.model'] = m;
+    await lib.saveSettings();
+    notifyListeners();
+  }
+
+  // ---------- программы ----------
+
+  Directory get _bin => Directory('${dir.path}${Platform.pathSeparator}whisper');
+  File get _cli => File('${_bin.path}${Platform.pathSeparator}whisper-cli.exe');
+  File _modelFile(String m) => File('${dir.path}${Platform.pathSeparator}ggml-$m.bin');
+  bool get installed => _cli.existsSync() && _modelFile(model).existsSync();
+
+  String status = '';
+  double? progress;
+
+  void _status(String s, [double? p]) {
+    status = s;
+    progress = p;
+    notifyListeners();
+  }
+
+  Future<void> _install() async {
+    await dir.create(recursive: true);
+    if (!_cli.existsSync()) {
+      final zip = File('${dir.path}${Platform.pathSeparator}whisper.zip');
+      await _download(_whisperUrl, zip, 'whisper.cpp');
+      _status('Распаковываю whisper.cpp…');
+      await _bin.create(recursive: true);
+      final input = InputFileStream(zip.path);
+      try {
+        final archive = ZipDecoder().decodeBuffer(input);
+        for (final f in archive.files) {
+          if (!f.isFile) continue;
+          final base = f.name.split('/').last;
+          final low = base.toLowerCase();
+          if (!low.endsWith('.exe') && !low.endsWith('.dll')) continue;
+          final out = OutputFileStream('${_bin.path}${Platform.pathSeparator}$base');
+          f.writeContent(out);
+          await out.close();
+        }
+      } finally {
+        await input.close();
+      }
+      await zip.delete();
+      if (!_cli.existsSync()) throw Exception('в архиве whisper.cpp не нашлась whisper-cli.exe');
+    }
+    final mf = _modelFile(model);
+    if (!mf.existsSync()) await _download(modelUrl(model), mf, 'модель Whisper «$model» (только один раз)');
+  }
+
+  Future<void> _download(String url, File dest, String label) async {
+    final client = http.Client();
+    try {
+      final res = await client.send(http.Request('GET', Uri.parse(url))..headers['User-Agent'] = 'Mozilla/5.0');
+      if (res.statusCode != 200) throw Exception('$label: сервер ответил ${res.statusCode}');
+      final part = File('${dest.path}.part');
+      final sink = part.openWrite();
+      final total = res.contentLength ?? 0;
+      var got = 0, shown = -1;
+      await for (final chunk in res.stream) {
+        sink.add(chunk);
+        got += chunk.length;
+        final pc = total > 0 ? got * 100 ~/ total : -1;
+        if (pc != shown) {
+          shown = pc;
+          _status('Скачиваю $label${pc >= 0 ? ': $pc%' : '…'}', pc >= 0 ? pc / 100 : null);
+        }
+      }
+      await sink.close();
+      if (dest.existsSync()) await dest.delete();
+      await part.rename(dest.path);
+    } finally {
+      client.close();
+    }
+  }
+
+  // ---------- готовые тайминги ----------
+
+  final Map<String, List<List<KWord>?>?> _mem = {};
+  final Set<String> _loading = {};
+
+  /// Ключ: файл трека и сам текст — если текст поменяли, тайминги считаются заново
+  static String keyFor(Track t, Lyrics ly) {
+    var h = 0;
+    for (final l in ly.lines) {
+      for (final c in '${l.at?.inMilliseconds}|${l.text}\n'.codeUnits) {
+        h = (h * 31 + c) & 0x7fffffff;
+      }
+    }
+    return '${t.id}_${h.toRadixString(36)}';
+  }
+
+  File _local(String key) => File('${dir.path}${Platform.pathSeparator}kw_$key.json');
+
+  /// Время слов по строкам, если уже посчитано. Иначе null — и в фоне ищем или считаем
+  List<List<KWord>?>? wordsFor(Track t, Lyrics ly) {
+    if (!ly.synced) return null;
+    final key = keyFor(t, ly);
+    if (_mem.containsKey(key)) return _mem[key];
+    if (_loading.add(key)) unawaited(_fetch(t, ly, key));
+    return null;
+  }
+
+  static List<List<KWord>?>? decode(dynamic j) {
+    if (j is! Map || j['v'] != 1) return null;
+    final lines = j['lines'];
+    if (lines is! List) return null;
+    return [
+      for (final l in lines)
+        l is List ? [for (final w in l) if (KWord.fromJson(w) case final k?) k] : null,
+    ];
+  }
+
+  static Map<String, dynamic> encode(List<List<KWord>?> words) => {
+        'v': 1,
+        'lines': [for (final l in words) l == null ? null : [for (final w in l) w.toJson()]],
+      };
+
+  Future<void> _fetch(Track t, Lyrics ly, String key) async {
+    try {
+      // 1. На этом компьютере
+      final f = _local(key);
+      if (await f.exists()) {
+        final w = decode(jsonDecode(await f.readAsString()));
+        if (w != null) return _ready(key, w);
+      }
+      // 2. В общей папке: кто-то из друзей уже посчитал
+      if (lib.hasHub) {
+        final bytes = await lib.withHub((email) async {
+          final folder = await _sharedFolder(email);
+          final found = await drive.listChildren(email, folder, nameEquals: 'kw_$key.json');
+          return found.isEmpty ? null : drive.download(email, found.first.id);
+        });
+        if (bytes != null) {
+          final text = utf8.decode(bytes);
+          final w = decode(jsonDecode(text));
+          if (w != null) {
+            await f.writeAsString(text);
+            return _ready(key, w);
+          }
+        }
+      }
+      // 3. Посчитать самим — если включено
+      if (enabled) _enqueue(t, ly, key);
+    } catch (e) {
+      AppLog.warn('Караоке: тайминги для «${t.title}»', e);
+    } finally {
+      _loading.remove(key);
+    }
+  }
+
+  void _ready(String key, List<List<KWord>?> w) {
+    _mem[key] = w;
+    notifyListeners();
+  }
+
+  String? _folderId;
+  Future<String> _sharedFolder(String email) async {
+    final cached = _folderId;
+    if (cached != null) return cached;
+    final data = await lib.dataFolder();
+    final found = (await drive.listChildren(email, data, nameEquals: 'karaoke')).where((f) => f.isFolder).toList();
+    return _folderId = found.isNotEmpty ? found.first.id : await drive.createFolder(email, 'karaoke', parent: data);
+  }
+
+  // ---------- подсчёт ----------
+
+  final List<(Track, Lyrics, String)> _queue = [];
+  bool _busy = false;
+
+  void _enqueue(Track t, Lyrics ly, String key) {
+    if (_queue.any((q) => q.$3 == key)) return;
+    _queue.insert(0, (t, ly, key)); // свежий запрос — первым: обычно это то, что играет сейчас
+    if (_queue.length > 3) _queue.removeLast();
+    unawaited(_pump());
+  }
+
+  Future<void> _pump() async {
+    if (_busy) return;
+    _busy = true;
+    try {
+      while (_queue.isNotEmpty && enabled) {
+        final (t, ly, key) = _queue.removeAt(0);
+        try {
+          await _compute(t, ly, key);
+        } catch (e) {
+          AppLog.warn('Караоке: не посчиталось «${t.title}»', e);
+          _status('');
+        }
+      }
+    } finally {
+      _busy = false;
+      if (status.isNotEmpty && !status.startsWith('Скачиваю')) _status('');
+    }
+  }
+
+  static String langOf(Lyrics ly) {
+    final text = ly.lines.map((l) => l.text).join(' ');
+    if (RegExp(r'[぀-ヿ]').hasMatch(text)) return 'ja';
+    if (RegExp(r'[가-힯]').hasMatch(text)) return 'ko';
+    if (RegExp(r'[一-鿿]').hasMatch(text)) return 'zh';
+    final cyr = RegExp(r'[а-яё]', caseSensitive: false).allMatches(text).length;
+    final lat = RegExp(r'[a-z]', caseSensitive: false).allMatches(text).length;
+    if (cyr > lat) return RegExp(r'[іїєґ]', caseSensitive: false).hasMatch(text) ? 'uk' : 'ru';
+    return lat > 0 ? 'en' : 'auto';
+  }
+
+  Future<void> _compute(Track t, Lyrics ly, String key) async {
+    await _install();
+    _status('Точное караоке: готовлю звук «${t.title}»…');
+    final work = Directory('${dir.path}${Platform.pathSeparator}work');
+    await work.create(recursive: true);
+    final src = File('${work.path}${Platform.pathSeparator}src.audio');
+    final wav = File('${work.path}${Platform.pathSeparator}in.wav');
+    final out = '${work.path}${Platform.pathSeparator}out';
+    try {
+      // Звук трека: из кэша плеера, иначе скачиваем с Диска
+      final cached = cache.fileFor(t.id);
+      if (cache.has(t.id) && cached.existsSync()) {
+        await cached.copy(src.path);
+      } else {
+        final email = await lib.accessFor(t.source);
+        await src.writeAsBytes(await drive.download(email, t.id));
+      }
+      if (!tools.ffmpeg.existsSync()) await tools.ensure((l) => _status(l));
+      await Tools.run(tools.ffmpeg.path, ['-y', '-i', src.path, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav.path]);
+      if (!wav.existsSync()) throw Exception('ffmpeg не подготовил звук');
+
+      _status('Точное караоке: слушаю «${t.title}»…');
+      final threads = math.max(1, Platform.numberOfProcessors ~/ 2); // половина ядер: музыка не должна заикаться
+      final lang = langOf(ly);
+      // Подсказка из начала текста: Whisper охотнее пишет именно эти слова
+      final prompt = ly.lines.map((l) => l.text).where((x) => x.isNotEmpty).join(' ');
+      final started = DateTime.now();
+      await Tools.run(_cli.path, [
+        '-m', _modelFile(model).path,
+        '-f', wav.path,
+        '-l', lang,
+        '-t', '$threads',
+        '-ml', '1', '-sow', // каждое слово — отдельным кусочком со своим временем
+        '-oj', '-of', out,
+        '-np',
+        '--prompt', prompt.length > 400 ? prompt.substring(0, 400) : prompt,
+      ]);
+      final json = File('$out.json');
+      if (!json.existsSync()) throw Exception('whisper.cpp не выдал результат');
+      final heard = parseWhisper(jsonDecode(utf8.decode(await json.readAsBytes(), allowMalformed: true)));
+      final ends = [
+        for (var i = 0; i < ly.lines.length; i++)
+          i + 1 < ly.lines.length ? ly.lines[i + 1].at! : ly.lines[i].at! + const Duration(seconds: 6),
+      ];
+      final words = KaraokeAligner.align(ly.lines, ends, heard);
+      final ok = words.where((w) => w != null).length;
+      AppLog.info('Караоке: «${t.title}» — распознано ${heard.length} слов, точные строки $ok из ${ly.lines.length}, '
+          '${DateTime.now().difference(started).inSeconds} с');
+      final body = jsonEncode(encode(words));
+      await _local(key).writeAsString(body);
+      _ready(key, words);
+      // Делимся с друзьями
+      if (lib.hasHub && ok > 0) {
+        try {
+          await lib.withHub((email) async {
+            final folder = await _sharedFolder(email);
+            final found = await drive.listChildren(email, folder, nameEquals: 'kw_$key.json');
+            if (found.isEmpty) await drive.createFile(email, folder, 'kw_$key.json', body);
+          });
+        } catch (e) {
+          AppLog.warn('Караоке: не выложилось в общую папку', e);
+        }
+      }
+    } finally {
+      for (final f in [src, wav, File('$out.json')]) {
+        try {
+          if (f.existsSync()) await f.delete();
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Слова из JSON whisper.cpp: transcription[].offsets.from/to в миллисекундах
+  static List<HeardWord> parseWhisper(dynamic j) {
+    final out = <HeardWord>[];
+    final list = j is Map ? j['transcription'] : null;
+    if (list is! List) return out;
+    for (final s in list) {
+      if (s is! Map) continue;
+      final text = '${s['text'] ?? ''}'.trim();
+      final o = s['offsets'];
+      if (text.isEmpty || o is! Map) continue;
+      final a = (o['from'] as num?)?.toInt(), b = (o['to'] as num?)?.toInt();
+      if (a == null || b == null) continue;
+      out.add(HeardWord(text, Duration(milliseconds: a), Duration(milliseconds: b)));
+    }
+    return out;
+  }
+}
