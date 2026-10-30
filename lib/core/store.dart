@@ -91,7 +91,6 @@ class Settings {
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
   bool discord = true;
-  bool normalize = false; // выравнивать громкость треков
   bool betaUpdates = false; // получать бета-версии
   bool trayOnClose = true; // крестик прячет окно в трей, музыка играет дальше
   bool trayAsked = false; // уже спрашивали, что делать по крестику
@@ -123,7 +122,6 @@ class Settings {
         'offlineLiked': offlineLiked,
         'offlinePlaylists': offlinePlaylists.toList(),
         'discord': discord,
-        'normalize': normalize,
         'betaUpdates': betaUpdates,
         'trayOnClose': trayOnClose,
         'trayAsked': trayAsked,
@@ -153,7 +151,6 @@ class Settings {
     s.offlineLiked = j['offlineLiked'] == true;
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
     s.discord = j['discord'] != false;
-    s.normalize = j['normalize'] == true;
     s.betaUpdates = j['betaUpdates'] == true;
     s.trayOnClose = j['trayOnClose'] != false;
     s.trayAsked = j['trayAsked'] == true;

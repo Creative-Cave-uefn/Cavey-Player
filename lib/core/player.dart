@@ -85,7 +85,6 @@ class PlayerController extends ChangeNotifier {
       notifyListeners();
     }));
     unawaited(_p.setVolume(settings.volume));
-    unawaited(_applyNormalize());
     // Пока играет, раз в 15 секунд запоминаем позицию — на случай, если окно закроют
     _saveTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (playing) _saveSession();
@@ -94,7 +93,6 @@ class PlayerController extends ChangeNotifier {
 
   Track? get current => (index >= 0 && index < queue.length) ? lib.data.tracks[queue[index]] : null;
   double get volume => settings.volume;
-  bool get normalize => settings.normalize;
   List<Track> get upcoming => [
         for (final id in queue.skip(index + 1))
           if (lib.data.tracks[id] != null) lib.data.tracks[id]!
@@ -491,25 +489,6 @@ class PlayerController extends ChangeNotifier {
       await setVolume(0, save: true);
     } else {
       await setVolume(_volumeBeforeMute > 0 ? _volumeBeforeMute : 80, save: true);
-    }
-  }
-
-  /// Выравнивание громкости: треки с разных источников звучат одинаково громко
-  Future<void> setNormalize(bool on) async {
-    settings.normalize = on;
-    notifyListeners();
-    await _applyNormalize();
-    await lib.saveSettings();
-  }
-
-  Future<void> _applyNormalize() async {
-    final native = _p.platform;
-    if (native is! NativePlayer) return;
-    try {
-      // loudnorm в однопроходном режиме работает на лету; после него возвращаем обычную частоту
-      await native.setProperty('af', settings.normalize ? 'lavfi=[loudnorm=I=-16:LRA=11:TP=-1.5,aresample=48000]' : '');
-    } catch (e) {
-      AppLog.warn('Не получилось включить выравнивание громкости', e);
     }
   }
 

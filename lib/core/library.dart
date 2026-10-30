@@ -1269,6 +1269,18 @@ class LibraryController extends ChangeNotifier {
         if (me != null) me!,
       }..removeWhere((e) => e.isEmpty);
 
+  // ---------- открытые и приватные плейлисты (edits['pl:<id>']['pub']) ----------
+  // Новый плейлист приватный: его видит только автор. Старые версии приложения флаг не знают и показывают всё.
+
+  bool isPlaylistPublic(String id) => _metaValue('pl:$id', 'pub') == '1';
+
+  bool canSeePlaylist(Playlist p) => p.by.isEmpty || p.by == me || isPlaylistPublic(p.id);
+
+  /// Плейлисты, которые видит этот человек: свои и открытые
+  List<Playlist> get visiblePlaylists => [for (final p in data.playlists) if (canSeePlaylist(p)) p];
+
+  void setPlaylistPublic(String id, bool on) => setMeta({'pl:$id': {'pub': on ? '1' : ''}});
+
   String? albumCover(String albumKey) => _metaValue('album:$albumKey', 'cv');
   String? playlistCover(String id) => _metaValue('pl:$id', 'cv');
 

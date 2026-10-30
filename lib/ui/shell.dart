@@ -136,7 +136,7 @@ class _ShellState extends State<Shell> {
               return Column(children: [
                 Expanded(
                   child: Row(children: [
-                    _Sidebar(compact: compact),
+                    _SidebarHost(compact: compact),
                     Expanded(
                       child: ValueListenableBuilder<Nav>(
                         valueListenable: _nav,
@@ -338,6 +338,65 @@ class _ToastCard extends StatelessWidget {
   }
 }
 
+/// Левая панель с ручкой на правом краю: тянем влево — остаются значки и обложки, вправо — полная панель
+class _SidebarHost extends StatefulWidget {
+  final bool compact;
+  const _SidebarHost({required this.compact});
+
+  @override
+  State<_SidebarHost> createState() => _SidebarHostState();
+}
+
+class _SidebarHostState extends State<_SidebarHost> {
+  double _startW = 248;
+  double _dx = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return ListenableBuilder(
+      listenable: app.lib,
+      builder: (context, _) {
+        final mini = app.settings.viewOf('sidebar.mini', '0') == '1';
+        // Узкое окно всегда держит узкую панель; ручка нужна только на широком
+        final narrow = widget.compact || mini;
+        void setMini(bool v) {
+          if (v == mini) return;
+          app.settings.view['sidebar.mini'] = v ? '1' : '0';
+          app.lib.viewChanged();
+        }
+
+        return Stack(children: [
+          _Sidebar(compact: narrow),
+          if (!widget.compact)
+            Positioned(
+              right: 0,
+              top: 0,
+              bottom: 0,
+              width: 8,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.resizeColumn,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragStart: (_) {
+                    _startW = mini ? 72 : 248;
+                    _dx = 0;
+                  },
+                  onHorizontalDragUpdate: (d) {
+                    _dx += d.delta.dx;
+                    // Две позиции: ближе к узкой — значки, ближе к широкой — полная панель
+                    setMini(_startW + _dx < 160);
+                  },
+                  onDoubleTap: () => setMini(!mini),
+                ),
+              ),
+            ),
+        ]);
+      },
+    );
+  }
+}
+
 class _Sidebar extends StatelessWidget {
   final bool compact;
   const _Sidebar({required this.compact});
@@ -384,7 +443,6 @@ class _Sidebar extends StatelessWidget {
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
             if (lib.me != null) item(Icons.person_outline_rounded, 'Моя страница', Nav('user', lib.me)),
             item(Icons.groups_outlined, 'Компания', const Nav('company')),
-            NowListeningSidebar(compact: compact),
             const SizedBox(height: 18),
             _PlaylistsHeader(compact: compact, selected: cur.same(const Nav('playlists')), mode: mode),
           ];
@@ -393,7 +451,7 @@ class _Sidebar extends StatelessWidget {
             if (mode == 'covers')
               _PlaylistTiles(compact: compact, current: cur)
             else
-              for (final p in lib.data.playlists)
+              for (final p in lib.visiblePlaylists)
                 _PlaylistRow(
                   playlist: p,
                   compact: compact,
@@ -401,14 +459,15 @@ class _Sidebar extends StatelessWidget {
                   withCover: mode == 'both',
                   onTap: () => nav.go(Nav('playlist', p.id)),
                 ),
-            if (lib.data.playlists.isEmpty && !compact)
+            if (lib.visiblePlaylists.isEmpty && !compact)
               const Padding(
                 padding: EdgeInsets.fromLTRB(22, 4, 16, 0),
-                child: Text('Пока пусто. Плейлисты видят все друзья.', style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+                child: Text('Пока пусто. Новые плейлисты видите только вы, пока не сделаете их открытыми.', style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
               ),
           ];
 
           final foot = <Widget>[
+            NowListeningSidebar(compact: compact),
             const Divider(height: 1),
             const SizedBox(height: 8),
             item(Icons.folder_shared_outlined, 'Папки с музыкой', const Nav('sources'),
@@ -428,8 +487,8 @@ class _Sidebar extends StatelessWidget {
           return LayoutBuilder(builder: (context, box) {
             // Сколько места нужно, чтобы верх и низ панели стояли на месте, а прокручивались только плейлисты.
             // Оценка с запасом; если места меньше, прокручивается вся панель целиком
-            final live = app.social.friends.where((m) => m.live).length.clamp(0, 5);
-            final need = 820 + (live > 0 ? 40 + 44 * live : 0) + (app.social.following != null ? 36 : 0);
+            final live = app.social.friends.where((m) => m.live).length;
+            final need = 820 + (live > 0 ? 44 : 0) + (app.social.following != null ? 36 : 0);
             if (box.maxHeight >= need) {
               return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 ...head,
@@ -589,7 +648,7 @@ class _PlaylistTiles extends StatelessWidget {
   Widget build(BuildContext context) {
     final lib = Services.of(context).lib;
     final nav = NavScope.of(context);
-    final lists = lib.data.playlists;
+    final lists = lib.visiblePlaylists;
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: compact ? 14 : 14, vertical: 2),
       child: LayoutBuilder(builder: (context, box) {

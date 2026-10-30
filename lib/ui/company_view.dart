@@ -246,42 +246,84 @@ class _FeedRow extends StatelessWidget {
   }
 }
 
-/// Блок «Сейчас слушают» в боковой панели
-class NowListeningSidebar extends StatelessWidget {
+/// Блок «Сейчас слушают» внизу боковой панели. Свёрнут: одна строка с аватарками.
+/// При наведении раскрывается вверх и показывает всех, кто слушает
+class NowListeningSidebar extends StatefulWidget {
   final bool compact;
   const NowListeningSidebar({super.key, required this.compact});
+
+  @override
+  State<NowListeningSidebar> createState() => _NowListeningSidebarState();
+}
+
+class _NowListeningSidebarState extends State<NowListeningSidebar> {
+  bool _open = false;
 
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final social = app.social;
+    final compact = widget.compact;
     return ListenableBuilder(
       listenable: social,
       builder: (context, _) {
         final live = social.friends.where((m) => m.live).toList();
         final followed = social.following;
         if (live.isEmpty && followed == null) return const SizedBox.shrink();
-        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          if (!compact)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(22, 14, 16, 6),
-              child: Text('Сейчас слушают', style: TextStyle(color: C.muted, fontSize: 13)),
+        return MouseRegion(
+          onEnter: (_) => setState(() => _open = true),
+          onExit: (_) => setState(() => _open = false),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            // Список над заголовком: при раскрытии заголовок остаётся под курсором
+            AnimatedSize(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOut,
+              alignment: Alignment.bottomCenter,
+              child: _open && live.isNotEmpty
+                  ? ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 300),
+                      child: SingleChildScrollView(
+                        child: Column(children: [
+                          for (final m in live) _ListenerTile(key: ValueKey(m.email), member: m, compact: compact),
+                        ]),
+                      ),
+                    )
+                  : const SizedBox(width: double.infinity),
             ),
-          if (followed != null && !compact)
+            if (followed != null && !compact)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 10, 4),
+                child: Row(children: [
+                  const Icon(Icons.headphones_rounded, size: 16, color: C.accent),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('Вместе с ${app.lib.firstNameOf(followed)}',
+                        overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.accent, fontSize: 13)),
+                  ),
+                  TextButton(onPressed: social.stopFollowing, child: const Text('Выйти')),
+                ]),
+              ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 10, 4),
-              child: Row(children: [
-                const Icon(Icons.headphones_rounded, size: 16, color: C.accent),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text('Вместе с ${app.lib.firstNameOf(followed)}',
-                      overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.accent, fontSize: 13)),
-                ),
-                TextButton(onPressed: social.stopFollowing, child: const Text('Выйти')),
+              padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 10, compact ? 0 : 16, 10),
+              child: Row(mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
+                if (!compact) ...[
+                  const Expanded(child: Text('Сейчас слушают', style: TextStyle(color: C.muted, fontSize: 13))),
+                  SizedBox(
+                    height: 20,
+                    width: (20 + (live.length.clamp(0, 3) - 1).clamp(0, 2) * 12).toDouble(),
+                    child: Stack(children: [
+                      for (var i = 0; i < live.length && i < 3; i++)
+                        Positioned(left: i * 12.0, child: Avatar(key: ValueKey('hd-${live[i].email}'), email: live[i].email, name: live[i].name, size: 20)),
+                    ]),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('${live.length}', style: const TextStyle(color: C.faint, fontSize: 12)),
+                ] else
+                  const Icon(Icons.headphones_rounded, size: 18, color: C.muted),
               ]),
             ),
-          for (final m in live.take(5)) _ListenerTile(key: ValueKey(m.email), member: m, compact: compact),
-        ]);
+          ]),
+        );
       },
     );
   }

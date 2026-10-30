@@ -45,8 +45,11 @@ class PlayerBar extends StatelessWidget {
               child: t == null
                   ? const Text('Выберите трек', style: TextStyle(color: C.faint))
                   : Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(t.title,
-                          maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                      // Название ведёт в альбом, как и обложка
+                      Links(
+                        parts: [LinkPart(t.title, () => NavScope.of(context).go(Nav('album', t.albumKey)))],
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
                       const SizedBox(height: 3),
                       Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 13)),
                     ]),
@@ -104,14 +107,7 @@ class PlayerBar extends StatelessWidget {
             ),
           );
 
-          final soundButton = IconButton(
-            tooltip: 'Звук',
-            onPressed: () => _showSound(context),
-            icon: Icon(Icons.tune_rounded, color: p.normalize ? C.accent : C.muted),
-          );
-
           final right = Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-            soundButton,
             lyricsButton,
             IconButton(
               tooltip: 'Очередь',
@@ -125,7 +121,6 @@ class PlayerBar extends StatelessWidget {
             return Row(children: [
               Expanded(flex: 4, child: nowPlaying),
               Expanded(flex: 5, child: controls),
-              soundButton,
               lyricsButton,
             ]);
           }
@@ -135,40 +130,6 @@ class PlayerBar extends StatelessWidget {
             Expanded(flex: 3, child: right),
           ]);
         },
-      ),
-    );
-  }
-
-  void _showSound(BuildContext context) {
-    final app = Services.of(context);
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => Dialog(
-        alignment: Alignment.bottomRight,
-        insetPadding: const EdgeInsets.fromLTRB(24, 24, 24, 110),
-        child: SizedBox(
-          width: 380,
-          child: ListenableBuilder(
-            listenable: app.player,
-            builder: (context, _) {
-              final p = app.player;
-              return Padding(
-                padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-                child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('Звук', style: display(18)),
-                  const SizedBox(height: 6),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: p.normalize,
-                    onChanged: p.setNormalize,
-                    title: const Text('Выравнивать громкость'),
-                    subtitle: const Text('Тихие и громкие треки звучат одинаково', style: TextStyle(color: C.faint, fontSize: 13)),
-                  ),
-                ]),
-              );
-            },
-          ),
-        ),
       ),
     );
   }
