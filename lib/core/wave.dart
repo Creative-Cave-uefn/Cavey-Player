@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 
 import 'dl/service.dart';
+import 'lastfm.dart';
 import 'library.dart';
 import 'log.dart';
 import 'models.dart';
@@ -81,6 +82,7 @@ class WaveInputs {
   final Map<String, List<String>> related; // исполнитель → похожие (ключи)
   final WaveTaste taste;
   final Map<String, double> session; // поправки за эту волну: пропустил — меньше, дослушал — больше
+  final Map<String, double> boost; // трек → насколько он похож на недавно дослушанные (0..1, по Last.fm)
 
   WaveInputs({
     required this.tracks,
@@ -91,6 +93,7 @@ class WaveInputs {
     this.related = const {},
     WaveTaste? taste,
     this.session = const {},
+    this.boost = const {},
   }) : taste = taste ?? WaveTaste();
 }
 
@@ -144,6 +147,8 @@ class WaveEngine {
       WaveMode.unfamiliar => fresh ? 0.4 + 2.2 * aN + 0.6 * pop : 0.003,
       WaveMode.popular => 0.1 + 3.0 * pop + 0.8 * aN + (liked ? 0.3 : 0),
     };
+    // Похож на то, что вы только что дослушали, — держим настроение
+    w *= 1 + 2.5 * (x.boost[t.id] ?? 0);
     w *= pow(0.45, x.taste.skips[t.id] ?? 0);
     return max(w, 0.002);
   }
@@ -206,17 +211,25 @@ class WaveEngine {
 /// Трек, который волна скачала на пробу
 class WaveTrial {
   final String id; // id файла на Диске
-  final int deezer; // id трека в Deezer — чтобы не скачать его снова после удаления
+  final String key; // «исполнитель|название» — чтобы не скачать его снова после удаления
   final DateTime at; // когда загружен
-  WaveTrial(this.id, this.deezer, this.at);
+  WaveTrial(this.id, this.key, this.at);
 
-  Map<String, dynamic> toJson() => {'id': id, 'dz': deezer, 'at': at.toUtc().toIso8601String()};
+  Map<String, dynamic> toJson() => {'id': id, 'k': key, 'at': at.toUtc().toIso8601String()};
   static WaveTrial? fromJson(dynamic j) {
     if (j is! Map) return null;
     final at = DateTime.tryParse('${j['at']}');
     if (at == null || j['id'] == null) return null;
-    return WaveTrial('${j['id']}', (j['dz'] as num?)?.toInt() ?? 0, at);
+    return WaveTrial('${j['id']}', '${j['k'] ?? ''}', at);
   }
+}
+
+/// Кандидат в новинки: что качать
+class _Fresh {
+  final String artist, title;
+  final String? link; // ссылка Deezer, если нашлась; иначе ищем по названию
+  _Fresh(this.artist, this.title, this.link);
+  String get key => LibraryController.dupKey(artist, title);
 }
 
 /// Сколько живёт скачанный волной трек, если его никто не сохранил
@@ -233,12 +246,15 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   final SocialController social;
   final WebInfoService web;
   final DownloadService downloads;
+  final LastFm lastfm;
 
   WaveTaste taste = WaveTaste();
   WaveMode mode = WaveMode.mix;
   final Map<String, double> _session = {};
   final List<String> _recent = [];
-  final Map<String, List<String>> _related = {}; // исполнитель → кто звучит в его «радио»
+  final Map<String, List<String>> _related = {}; // исполнитель → похожие исполнители
+  final Map<String, double> _boost = {}; // трек библиотеки → похожесть на недавно дослушанные
+  final List<String> _good = []; // недавно дослушанные треки: от них ищем похожие
   Timer? _saveTimer;
   Timer? _sweepTimer;
   bool _learning = false;
@@ -251,18 +267,18 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   /// Не больше стольких новых треков в день: защищает Диск
   static const dailyLimit = 25;
   final Map<String, WaveTrial> trials = {};
-  final Set<int> _rejected = {}; // удалённые после пробы — не качаем снова
+  final Set<String> _rejected = {}; // удалённые после пробы — не качаем снова
   String _day = '';
   int _today = 0;
   int _sinceFresh = 0; // сколько треков прошло после последнего нового
   int _pending = 0; // загрузок в работе
   String discoverStatus = '';
 
-  WaveService._(this.store, this.lib, this.player, this.social, this.web, this.downloads);
+  WaveService._(this.store, this.lib, this.player, this.social, this.web, this.downloads, this.lastfm);
 
   static Future<WaveService> open(AppStore store, LibraryController lib, PlayerController player, SocialController social,
       WebInfoService web, DownloadService downloads) async {
-    final w = WaveService._(store, lib, player, social, web, downloads);
+    final w = WaveService._(store, lib, player, social, web, downloads, LastFm(store));
     try {
       final j = await store.readJson('wave.json');
       if (j is Map) {
@@ -271,7 +287,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         for (final x in (j['recent'] as List? ?? const [])) {
           w._recent.add('$x');
         }
-        final rel = j['radioArtists'];
+        final rel = j['similarArtists'];
         if (rel is Map) rel.forEach((k, v) => w._related['$k'] = [for (final x in (v as List? ?? const [])) '$x']);
         w.discover = j['discover'] != false;
         for (final x in (j['trials'] as List? ?? const [])) {
@@ -279,7 +295,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
           if (t != null) w.trials[t.id] = t;
         }
         for (final x in (j['rejected'] as List? ?? const [])) {
-          if (x is num) w._rejected.add(x.toInt());
+          if (x is String && x.isNotEmpty) w._rejected.add(x);
         }
         w._day = '${j['day'] ?? ''}';
         w._today = (j['today'] as num?)?.toInt() ?? 0;
@@ -311,6 +327,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   Future<void> start([WaveMode? m]) async {
     if (m != null) mode = m;
     _session.clear();
+    _boost.clear();
     final first = more(4);
     if (first.isEmpty) {
       lib.messages.add('В библиотеке пока нечего включить');
@@ -329,6 +346,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       _session[a.toLowerCase()] = 8;
     }
     _remember([t.id]);
+    _boost.clear();
+    await _learnFrom(t, wait: const Duration(seconds: 3)); // похожие на него — сразу в первую очередь
     await player.playFeed(this, [t.id, ...more(3)]);
     _save();
     notifyListeners();
@@ -337,6 +356,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   /// Волна по исполнителю
   Future<void> startFromArtist(String name) async {
+    _boost.clear();
     _session
       ..clear()
       ..[name.toLowerCase()] = 10;
@@ -441,6 +461,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       related: _related,
       taste: taste,
       session: _session,
+      boost: _boost,
     );
   }
 
@@ -503,8 +524,31 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         taste.bump(k, 0.4);
         _session[k] = (_session[k] ?? 0) + 1.5;
       }
+      _good.remove(t.id);
+      _good.add(t.id);
+      if (_good.length > 10) _good.removeAt(0);
+      unawaited(_learnFrom(t));
     }
     _save();
+  }
+
+  /// Похожие на трек по Last.fm: те, что есть в библиотеке, получают прибавку к весу.
+  /// Старые прибавки слабеют — волна плавно следует за тем, что вы слушаете сейчас
+  Future<void> _learnFrom(Track t, {Duration? wait}) async {
+    if (!lastfm.available) return;
+    try {
+      var f = lastfm.similarTracks(t.artists.first, t.title);
+      if (wait != null) f = f.timeout(wait, onTimeout: () => const <LfmItem>[]);
+      final items = await f;
+      _boost.updateAll((_, v) => v * 0.6);
+      _boost.removeWhere((_, v) => v < 0.05);
+      for (final i in items) {
+        final hit = lib.existing(i.artist, i.title);
+        if (hit == null || hit.id == t.id) continue;
+        final m = i.match.clamp(0.0, 1.0).toDouble();
+        if ((_boost[hit.id] ?? 0) < m) _boost[hit.id] = m;
+      }
+    } catch (_) {}
   }
 
   // ---------- «радио» исполнителей ----------
@@ -519,6 +563,12 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       final keys = <String>{for (final a in extra) a.toLowerCase(), ...top}.where((k) => !_related.containsKey(k)).take(8);
       for (final key in keys) {
         try {
+          final name = lib.artist(key)?.name ?? key;
+          final lfm = await lastfm.similarArtists(name);
+          if (lfm.isNotEmpty) {
+            _related[key] = [for (final a in lfm.take(25)) a.artist.toLowerCase()];
+            continue;
+          }
           final list = await _radioOf(key);
           if (list == null) continue;
           final count = <String, int>{};
@@ -594,7 +644,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       final folder = await lib.ensureSubfolder(src, src, 'Моя волна');
       _status('Качаю «${pick.title}» — ${pick.artist}');
       var got = false;
-      final job = downloads.enqueue(pick.link, src, folderId: folder, path: 'Моя волна', quiet: true, onTrack: (t) {
+      final job = downloads.enqueue(pick.link ?? '${pick.artist} - ${pick.title}', src, folderId: folder, path: 'Моя волна', quiet: true, onTrack: (t) {
         got = true;
         _onDownloaded(t, pick);
       });
@@ -608,7 +658,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
           downloads.removeListener(check);
           _pending--;
           if (!got) {
-            _rejected.add(pick.id); // не скачался или уже был — в следующий раз ищем другой
+            _rejected.add(pick.key); // не скачался или уже был — в следующий раз ищем другой
             _status('');
           }
           _save();
@@ -628,9 +678,82 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     notifyListeners();
   }
 
-  /// Новый трек: из «радио» того, что играет сейчас, и любимых исполнителей.
-  /// Чем больше «радио» сходятся на исполнителе, тем вероятнее его трек
-  Future<WebTrack?> _findFresh() async {
+  Set<String> get _trialKeys => {for (final t in trials.values) t.key};
+
+  bool _skippedArtist(String artist, Map<String, double> aff) =>
+      splitArtists(artist).any((a) => (aff[a.toLowerCase()] ?? 0) <= -3);
+
+  Future<_Fresh?> _findFresh() async {
+    if (lastfm.available) {
+      final f = await _findFreshLastFm();
+      if (f != null) return f;
+    }
+    return _findFreshDeezer();
+  }
+
+  /// Новый трек по Last.fm: похожие на то, что играет сейчас, и на пару последних дослушанных.
+  /// Трек, который похож сразу на несколько, — самый вероятный
+  Future<_Fresh?> _findFreshLastFm() async {
+    final seeds = <(Track, double)>[];
+    final cur = player.current;
+    if (cur != null) seeds.add((cur, 1.5));
+    for (final id in _good.reversed) {
+      final t = lib.data.tracks[id];
+      if (t != null && t.id != cur?.id) seeds.add((t, 1.0));
+      if (seeds.length >= 3) break;
+    }
+    if (seeds.isEmpty) return null;
+    final score = <String, double>{};
+    final item = <String, LfmItem>{};
+    for (final (t, w) in seeds) {
+      for (final i in await lastfm.similarTracks(t.artists.first, t.title)) {
+        final k = LibraryController.dupKey(i.artist, i.title);
+        if (k.isEmpty) continue;
+        item[k] = i;
+        score[k] = (score[k] ?? 0) + i.match * w;
+      }
+    }
+    final aff = _affinity();
+    final trialKeys = _trialKeys;
+    final cands = <(LfmItem, double)>[];
+    score.forEach((k, v) {
+      final i = item[k]!;
+      if (_rejected.contains(k) || trialKeys.contains(k)) return;
+      if (lib.existing(i.artist, i.title) != null || _skippedArtist(i.artist, aff)) return;
+      // Новый для библиотеки исполнитель интереснее, но новая песня знакомого — тоже хорошо
+      cands.add((i, lib.artist(i.artist.toLowerCase()) == null ? v * 1.2 : v));
+    });
+    if (cands.isEmpty) return null;
+    cands.sort((a, b) => b.$2.compareTo(a.$2));
+    final pick = _weighted(cands.take(8).toList());
+    // Ссылку берём из Deezer: так загрузчик возьмёт точные теги и обложку
+    try {
+      final r = await web.search('${pick.artist} ${pick.title}');
+      final want = LibraryController.dupKey(pick.artist, pick.title);
+      for (final t in r.tracks) {
+        if (LibraryController.dupKey(t.artist, t.title) != want) continue;
+        if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) return null; // интро, скиты, миксы
+        if (t.link.isNotEmpty) return _Fresh(pick.artist, pick.title, t.link);
+      }
+    } catch (_) {}
+    return _Fresh(pick.artist, pick.title, null);
+  }
+
+  static T _weighted<T>(List<(T, double)> list) {
+    var total = 0.0;
+    for (final c in list) {
+      total += c.$2;
+    }
+    var r = Random().nextDouble() * total;
+    for (final c in list) {
+      r -= c.$2;
+      if (r <= 0) return c.$1;
+    }
+    return list.first.$1;
+  }
+
+  /// Запасной путь, если Last.fm ничего не знает: «радио» исполнителей в Deezer
+  Future<_Fresh?> _findFreshDeezer() async {
     final seeds = <String>[];
     final cur = player.current;
     if (cur != null) seeds.add(cur.artists.first.toLowerCase());
@@ -658,7 +781,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       }
     }
     final aff = _affinity();
-    final trialIds = {for (final t in trials.values) t.deezer};
+    final trialKeys = _trialKeys;
     final artistVotes = <String, double>{};
     votes.forEach((id, v) {
       final k = byId[id]!.artist.toLowerCase();
@@ -666,10 +789,10 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     });
     final cands = <(WebTrack, double)>[];
     for (final t in byId.values) {
-      if (t.link.isEmpty || _rejected.contains(t.id) || trialIds.contains(t.id)) continue;
+      final key = LibraryController.dupKey(t.artist, t.title);
+      if (t.link.isEmpty || key.isEmpty || _rejected.contains(key) || trialKeys.contains(key)) continue;
       if (lib.existing(t.artist, t.title) != null) continue;
-      final names = splitArtists(t.artist).map((a) => a.toLowerCase());
-      if (names.any((k) => (aff[k] ?? 0) <= -3)) continue; // исполнителя постоянно пропускают
+      if (_skippedArtist(t.artist, aff)) continue; // исполнителя постоянно пропускают
       if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) continue; // интро, скиты и часовые миксы
       var w = votes[t.id]! + (artistVotes[t.artist.toLowerCase()] ?? 0) * 0.5;
       // Новые для библиотеки исполнители интереснее, но и новая песня знакомого — тоже хорошо
@@ -678,21 +801,12 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     }
     if (cands.isEmpty) return null;
     cands.sort((a, b) => b.$2.compareTo(a.$2));
-    final top5 = cands.take(5).toList();
-    var total = 0.0;
-    for (final c in top5) {
-      total += c.$2;
-    }
-    var r = Random().nextDouble() * total;
-    for (final c in top5) {
-      r -= c.$2;
-      if (r <= 0) return c.$1;
-    }
-    return top5.first.$1;
+    final t = _weighted(cands.take(5).toList());
+    return _Fresh(t.artist, t.title, t.link);
   }
 
-  void _onDownloaded(Track t, WebTrack from) {
-    trials[t.id] = WaveTrial(t.id, from.id, DateTime.now());
+  void _onDownloaded(Track t, _Fresh from) {
+    trials[t.id] = WaveTrial(t.id, from.key, DateTime.now());
     final today = _todayKey();
     if (_day != today) {
       _day = today;
@@ -729,9 +843,13 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   void _drop(WaveTrial t) {
     trials.remove(t.id);
-    _rejected.add(t.deezer);
-    if (_rejected.length > 1000) _rejected.remove(_rejected.first);
     final track = lib.data.tracks[t.id];
+    if (t.key.isNotEmpty) _rejected.add(t.key);
+    if (track != null) _rejected.add(LibraryController.dupKey(track.artist, track.title)); // теги могли отличаться
+    _rejected.remove('');
+    while (_rejected.length > 1000) {
+      _rejected.remove(_rejected.first);
+    }
     if (track != null) lib.deleteTracks([track]);
     _save();
   }
@@ -779,7 +897,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         'mode': mode.name,
         'taste': taste.toJson(),
         'recent': _recent,
-        'radioArtists': _related,
+        'similarArtists': _related,
         'discover': discover,
         'trials': [for (final t in trials.values) t.toJson()],
         'rejected': _rejected.toList(),

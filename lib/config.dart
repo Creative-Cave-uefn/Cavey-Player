@@ -30,3 +30,7 @@ const kBuildChannel = String.fromEnvironment('BUILD_CHANNEL');
 // Бета-сборка из ветки beta. Получать бета-версии или нет, человек выбирает в настройках,
 // поэтому канал здесь не вшивается — флаг нужен только чтобы показать, что стоит бета.
 const kBuildBeta = bool.fromEnvironment('BUILD_BETA');
+
+// Ключ Last.fm для похожих треков в «Моей волне». Он только читает публичные данные,
+// поэтому зашит прямо сюда; при сборке его можно заменить через --dart-define=LASTFM_API_KEY=...
+const kLastFmKey = String.fromEnvironment('LASTFM_API_KEY', defaultValue: '0189af77b8463ffc2e477f0ab6211c3f');

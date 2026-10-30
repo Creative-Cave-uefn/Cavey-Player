@@ -104,11 +104,21 @@ void main() {
   });
 
   test('пробный трек сохраняется', () {
-    final t = WaveTrial('file', 42, DateTime.utc(2026, 10, 30, 12));
+    final t = WaveTrial('file', 'a|b', DateTime.utc(2026, 10, 30, 12));
     final back = WaveTrial.fromJson(t.toJson())!;
     expect(back.id, 'file');
-    expect(back.deezer, 42);
+    expect(back.key, 'a|b');
     expect(back.at, DateTime.utc(2026, 10, 30, 12));
     expect(WaveTrial.fromJson({'dz': 1}), isNull);
+  });
+
+  test('похожие по Last.fm треки звучат чаще', () {
+    final x = WaveInputs(tracks: lib, boost: {for (var i = 0; i < 10; i++) 'c$i': 1.0});
+    final all = <String>[];
+    for (var s = 0; s < 30; s++) {
+      all.addAll(WaveEngine.pick(x, WaveMode.mix, 6, rnd: Random(s)));
+    }
+    final c = countArtists(all);
+    expect(c['c']!, greaterThan((c['a'] ?? 0) * 1.5));
   });
 }
