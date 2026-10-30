@@ -120,6 +120,13 @@ class DriveApi {
     }
   }
 
+  /// Сколько места на Google Диске занято у аккаунта и сколько всего (limit пуст, если лимита нет)
+  Future<StorageQuota> storageQuota(String email) async {
+    final res = await send(email, 'GET', api('about', {'fields': 'storageQuota'}));
+    final q = (jsonDecode(res.body) as Map)['storageQuota'] as Map? ?? const {};
+    return StorageQuota(int.tryParse('${q['usage'] ?? 0}') ?? 0, int.tryParse('${q['limit'] ?? ''}'));
+  }
+
   Future<Map<String, dynamic>> getFile(String email, String id, {String fields = 'id,name,mimeType,modifiedTime'}) async {
     final res = await send(email, 'GET', api('files/$id', {'fields': fields}));
     return jsonDecode(res.body) as Map<String, dynamic>;
@@ -308,4 +315,10 @@ class DriveApi {
     );
     return ((jsonDecode(res.body) as Map)['modifiedTime'] as String?) ?? '';
   }
+}
+
+class StorageQuota {
+  final int used;
+  final int? limit;
+  const StorageQuota(this.used, this.limit);
 }

@@ -14,6 +14,19 @@ String plural(int n, String one, String few, String many) {
   return many;
 }
 
+/// Размер в байтах человеческим языком: 1,4 ГБ
+String formatBytes(int b) {
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  var v = b.toDouble();
+  var i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  final text = i == 0 || v >= 100 ? v.round().toString() : v.toStringAsFixed(1).replaceAll('.', ',');
+  return '$text ${units[i]}';
+}
+
 String countTracks(int n) => '$n ${plural(n, 'трек', 'трека', 'треков')}';
 
 String formatDuration(Duration d) {

@@ -46,6 +46,31 @@ class _SourcesPageState extends State<SourcesPage> {
   }
   String? _error;
 
+  /// Занятое место на Дисках подключённых аккаунтов: почта → объём или ошибка
+  final Map<String, StorageQuota?> _quota = {};
+  bool _quotaLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadQuota());
+  }
+
+  Future<void> _loadQuota() async {
+    if (!mounted || _quotaLoading) return;
+    final app = Services.of(context);
+    setState(() => _quotaLoading = true);
+    for (final a in app.accounts.accounts) {
+      try {
+        _quota[a.email] = await app.drive.storageQuota(a.email);
+      } catch (_) {
+        _quota[a.email] = null;
+      }
+      if (!mounted) return;
+    }
+    if (mounted) setState(() => _quotaLoading = false);
+  }
+
   Future<void> _add() async {
     final app = Services.of(context);
     setState(() {
@@ -108,6 +133,14 @@ class _SourcesPageState extends State<SourcesPage> {
             ),
           ]),
           const SizedBox(height: 18),
+          _StoragePanel(
+            musicBytes: lib.data.tracks.values.where((t) => !lib.data.hidden.contains(t.id)).fold(0, (a, t) => a + t.size),
+            tracks: lib.data.tracks.length - lib.data.hidden.length,
+            accounts: [for (final a in app.accounts.accounts) (a.email, a.name, _quota[a.email], _quota.containsKey(a.email))],
+            loading: _quotaLoading,
+            onRefresh: _loadQuota,
+          ),
+          const SizedBox(height: 18),
           if (lib.data.sources.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 12),
@@ -116,7 +149,8 @@ class _SourcesPageState extends State<SourcesPage> {
           for (final s in lib.data.sources)
             _SourceRow(
               name: s.name,
-              detail: '${countTracks(lib.tracksIn(s.id))}, добавил(а) ${lib.firstNameOf(s.addedBy)}',
+              detail:
+                  '${countTracks(lib.tracksIn(s.id))} · ${formatBytes(lib.data.tracks.values.where((t) => t.source == s.id).fold(0, (a, t) => a + t.size))}, добавил(а) ${lib.firstNameOf(s.addedBy)}',
               via: app.settings.sourceAccess[s.id],
               addedBy: s.addedBy,
               onOpen: () => launchUrl(Uri.parse(folderUrl(s.id))),
@@ -308,5 +342,69 @@ class _SourceRow extends StatelessWidget {
         IconButton(tooltip: 'Убрать из библиотеки', onPressed: onRemove, icon: const Icon(Icons.close_rounded, size: 18)),
       ]),
     );
+  }
+}
+
+
+/// «Хранилище»: сколько занимает музыка библиотеки и сколько места занято на каждом подключённом Google Диске
+class _StoragePanel extends StatelessWidget {
+  final int musicBytes;
+  final int tracks;
+
+  /// (почта, имя, объём или null, если не удалось узнать, был ли ответ)
+  final List<(String, String, StorageQuota?, bool)> accounts;
+  final bool loading;
+  final VoidCallback onRefresh;
+  const _StoragePanel({required this.musicBytes, required this.tracks, required this.accounts, required this.loading, required this.onRefresh});
+
+  @override
+  Widget build(BuildContext context) {
+    return _Panel(children: [
+      Row(children: [
+        const Icon(Icons.storage_rounded, color: C.accent),
+        const SizedBox(width: 12),
+        Expanded(child: Text('Хранилище', style: display(18))),
+        IconButton(
+          tooltip: 'Обновить',
+          onPressed: loading ? null : onRefresh,
+          icon: loading
+              ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.refresh_rounded, size: 18),
+        ),
+      ]),
+      const SizedBox(height: 6),
+      Text('Музыка библиотеки занимает ${formatBytes(musicBytes)} (${countTracks(tracks)}). Файлы лежат на Google Дисках друзей.',
+          style: const TextStyle(color: C.muted, fontSize: 13, height: 1.4)),
+      for (final a in accounts) ...[
+        const SizedBox(height: 16),
+        Row(children: [
+          Expanded(child: Text(a.$2.isEmpty ? a.$1 : '${a.$2} · ${a.$1}', overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
+          const SizedBox(width: 12),
+          Text(
+            a.$3 != null
+                ? (a.$3!.limit != null ? '${formatBytes(a.$3!.used)} из ${formatBytes(a.$3!.limit!)}' : '${formatBytes(a.$3!.used)} (без лимита)')
+                : (a.$4 ? 'не удалось узнать' : 'загружаю…'),
+            style: const TextStyle(color: C.muted, fontSize: 13),
+          ),
+        ]),
+        if (a.$3?.limit != null) ...[
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: (a.$3!.used / a.$3!.limit!).clamp(0.0, 1.0).toDouble(),
+              minHeight: 6,
+              color: a.$3!.used / a.$3!.limit! > 0.9 ? C.danger : C.accent,
+              backgroundColor: C.raised,
+            ),
+          ),
+        ],
+      ],
+      if (accounts.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        const Text('Занято на Диске всё, что лежит на аккаунте: музыка, почта Gmail и фото, а не только Cave Player.',
+            style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+      ],
+    ]);
   }
 }
