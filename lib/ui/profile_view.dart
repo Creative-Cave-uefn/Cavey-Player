@@ -124,7 +124,7 @@ class _ProfileLayoutState extends State<ProfileLayout> {
         child: AnimatedBuilder(
           animation: _scroll,
           builder: (context, c) {
-            final off = _scroll.hasClients ? _scroll.offset.clamp(0.0, 4000.0) : 0.0;
+            final off = _scroll.hasClients ? _scroll.offset.clamp(0.0, 4000.0).toDouble() : 0.0;
             final t = (off / _fadeAt).clamp(0.0, 1.0);
             return Opacity(
               opacity: 1 - t,
@@ -208,7 +208,7 @@ class _ProfileLayoutState extends State<ProfileLayout> {
             width: 220,
             child: AnimatedBuilder(
               animation: _scroll,
-              builder: (context, c) => Transform.translate(offset: Offset(0, -(_scroll.hasClients ? _scroll.offset : 0)), child: c),
+              builder: (context, c) => Transform.translate(offset: Offset(0, -(_scroll.hasClients ? _scroll.offset : 0.0)), child: c),
               child: widget.extras!,
             ),
           ),
