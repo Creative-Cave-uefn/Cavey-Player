@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/library.dart';
-import '../core/log.dart';
 import '../core/models.dart';
 import '../core/tags.dart';
 import 'cover_picker.dart';
@@ -260,63 +259,31 @@ class _DuplicatesPageState extends State<DuplicatesPage> {
   Future<void> _merge(List<List<Track>> groups) async {
     final app = Services.of(context);
     final lib = app.lib;
-    final mine = <Track>[];
+    var copies = 0;
+    final others = <String>{};
     for (final g in groups) {
       final keep = _keepOf(g);
-      mine.addAll(g.where((t) => t.id != keep && t.by == lib.me));
-    }
-    var trash = false;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setD) => AlertDialog(
-          title: Text(groups.length == 1 ? 'Объединить копии?' : 'Объединить ${groups.length} групп?', style: display(18)),
-          content: SizedBox(
-            width: 420,
-            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text(
-                'Останется выбранная копия. Лайки всех друзей и места в плейлистах перейдут на неё, '
-                'прослушивания будут считаться вместе. Остальные копии скроются из библиотеки у всех, '
-                'их можно вернуть ниже.',
-                style: TextStyle(color: C.muted, height: 1.45),
-              ),
-              if (mine.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: trash,
-                  onChanged: (v) => setD(() => trash = v ?? false),
-                  title: Text('Отправить мои лишние копии в корзину Диска (${mine.length})'),
-                  subtitle: const Text('Освободит место; из корзины можно восстановить 30 дней',
-                      style: TextStyle(color: C.faint, fontSize: 12)),
-                ),
-              ],
-            ]),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Объединить')),
-          ],
-        ),
-      ),
-    );
-    if (ok != true) return;
-    for (final g in groups) {
-      final keep = _keepOf(g);
-      lib.mergeTracks(keep, g.map((t) => t.id));
-    }
-    var trashed = 0;
-    if (trash) {
-      for (final t in mine) {
-        try {
-          await lib.trashTrack(t);
-          trashed++;
-        } catch (e) {
-          AppLog.warn('Не получилось удалить копию «${t.title}»', e);
-        }
+      for (final t in g) {
+        if (t.id == keep) continue;
+        copies++;
+        if (t.by != lib.me && t.by.isNotEmpty) others.add(lib.firstNameOf(t.by));
       }
     }
-    lib.messages.add(trashed > 0 ? 'Объединено, в корзину: $trashed' : 'Объединено');
+    final ok = await confirm(
+      context,
+      title: groups.length == 1 ? 'Объединить и удалить копии?' : 'Объединить ${groups.length} групп и удалить копии?',
+      text: 'Останется выбранная копия: лайки всех друзей, места в плейлистах и прослушивания перейдут на неё. '
+          'Остальные копии ($copies) удалятся с Google Диска безвозвратно, у всех.'
+          '${others.isEmpty ? '' : '\n\nЧужие файлы (${others.join(', ')}) Google Диск даёт удалить только владельцу: '
+              'из библиотеки они пропадут сразу, а с Диска — когда владелец откроет Cave Player.'}',
+      action: 'Удалить копии',
+    );
+    if (!ok) return;
+    for (final g in groups) {
+      final keep = g.firstWhere((t) => t.id == _keepOf(g));
+      lib.mergeAndDelete(keep, g);
+    }
+    lib.messages.add('Объединено, лишних копий удалено: $copies');
   }
 
   @override
@@ -337,9 +304,9 @@ class _DuplicatesPageState extends State<DuplicatesPage> {
           Text('Дубликаты', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
           const Text(
-            'Одна и та же песня в нескольких копиях. Выберите, какую оставить, и объедините: '
-            'лайки и плейлисты перейдут на неё, ничего не потеряется. Одинаковые файлы в разных папках '
-            'объединяются сами. Песни, которые уже есть в библиотеке, загрузчик и загрузка с компьютера пропускают.',
+            'Одна и та же песня в нескольких копиях. Выберите, какую оставить, и объедините: лайки и плейлисты '
+            'перейдут на неё, а лишние копии удалятся с Диска. Одинаковые файлы в разных папках объединяются сами. '
+            'Песни, которые уже есть в библиотеке, загрузчик и загрузка с компьютера пропускают.',
             style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
           const SizedBox(height: 18),
@@ -411,8 +378,26 @@ class _DuplicatesPageState extends State<DuplicatesPage> {
             const SizedBox(height: 36),
             Text('Объединённые копии: ${merged.length}', style: display(17)),
             const SizedBox(height: 6),
-            const Text('Скрыты из библиотеки, их лайки и плейлисты перешли на оставшуюся копию.',
+            const Text('Скрыты из библиотеки, их лайки и плейлисты перешли на оставшуюся копию. '
+                'Раньше копии только скрывались — их можно удалить с Диска.',
                 style: TextStyle(color: C.faint, fontSize: 13)),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(foregroundColor: C.danger),
+                onPressed: () async {
+                  final ok = await confirm(context,
+                      title: 'Удалить скрытые копии с Диска?',
+                      text: 'Копии (${merged.length}) удалятся с Google Диска безвозвратно. Свои — сразу, чужие — когда '
+                          'владелец откроет Cave Player. Лайки и плейлисты уже на оставшихся копиях.',
+                      action: 'Удалить');
+                  if (ok) lib.messages.add('Удаляю копии: ${lib.deleteMergedCopies()}');
+                },
+                icon: const Icon(Icons.delete_forever_rounded, size: 18),
+                label: Text('Удалить с Диска (${merged.length})'),
+              ),
+            ),
             const SizedBox(height: 8),
             for (final id in merged.take(200))
               Builder(builder: (context) {

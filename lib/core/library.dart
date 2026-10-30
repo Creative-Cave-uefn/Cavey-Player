@@ -382,6 +382,8 @@ class LibraryController extends ChangeNotifier {
     syncError = null;
     await _saveLocal();
     _changed();
+    // Кто-то из друзей удалил мои файлы — удаляем их с Диска
+    unawaited(processDeletions());
   }
 
   Future<void> _poll() async {
@@ -521,10 +523,11 @@ class LibraryController extends ChangeNotifier {
       await saveSettings();
       // Один и тот же файл в разных папках — объединяем сами, без потерь
       final merged = mergeExactCopies();
+      unawaited(processDeletions());
       if (!quiet || added > 0) {
         messages.add(added > 0 ? 'Новых треков: $added' : 'Новых треков нет');
       }
-      if (merged > 0) messages.add('Одинаковые файлы объединены: $merged');
+      if (merged > 0) messages.add('Одинаковые файлы объединены, лишние копии удалены: $merged');
     } finally {
       scan
         ..running = false
@@ -551,6 +554,7 @@ class LibraryController extends ChangeNotifier {
     final upserts = <String, dynamic>{};
     final members = <String, String>{};
     for (final f in found) {
+      if (data.deleted.containsKey(f.file.id)) continue; // удалён, файл ещё ждёт владельца
       seen.add(f.file.id);
       if (f.file.ownerEmail.isNotEmpty && f.file.ownerName.isNotEmpty && data.members[f.file.ownerEmail] == null) {
         members[f.file.ownerEmail] = f.file.ownerName;
@@ -866,6 +870,72 @@ class LibraryController extends ChangeNotifier {
   /// Вернуть объединённую копию отдельным треком
   void unmergeTrack(String id) => commit({'op': 'unmergeTrack', 'id': id});
 
+  // ---------- удаление с Диска ----------
+
+  /// Удаляет треки полностью: из библиотеки у всех сразу, а файлы — с Диска их владельцев.
+  /// Свои файлы удаляются сразу, чужие — когда владелец откроет Cave Player
+  /// (удалить чужой файл Google Диск не даёт никому, кроме владельца)
+  void deleteTracks(Iterable<Track> list) {
+    final ids = {for (final t in list) t.id: t.by};
+    if (ids.isEmpty) return;
+    commit({'op': 'deleteTracks', 'ids': ids});
+    AppLog.info('Удаление с Диска: ${ids.length}');
+    unawaited(processDeletions());
+  }
+
+  /// Объединить копии в [keep] (лайки, плейлисты, прослушивания переходят на неё) и удалить остальные
+  void mergeAndDelete(Track keep, Iterable<Track> copies) {
+    final drop = [for (final t in copies) if (t.id != keep.id) t];
+    if (drop.isEmpty) return;
+    mergeTracks(keep.id, drop.map((t) => t.id));
+    deleteTracks(drop);
+  }
+
+  /// Копии, объединённые раньше и только скрытые, — удалить с Диска
+  int deleteMergedCopies() {
+    final list = [
+      for (final id in data.merged.keys)
+        if (data.hidden.contains(id) && data.tracks[id] != null) data.tracks[id]!
+    ];
+    deleteTracks(list);
+    return list.length;
+  }
+
+  /// Чьи файлы удалены, но ещё лежат на Диске и я их владелец — удаляем
+  bool _purging = false;
+
+  Future<int> processDeletions() async {
+    if (_purging || data.deleted.isEmpty) return 0;
+    _purging = true;
+    final done = <String>[];
+    try {
+      for (final e in Map.of(data.deleted).entries) {
+        final owner = e.value.toLowerCase();
+        final acc = accounts.accounts.where((a) => a.email.toLowerCase() == owner).firstOrNull;
+        if (acc == null) continue; // не мой файл — удалит владелец
+        try {
+          await drive.deleteFile(acc.email, e.key);
+          done.add(e.key);
+        } on DriveException catch (err) {
+          if (err.notFound) {
+            done.add(e.key); // уже удалён
+          } else {
+            AppLog.warn('Не получилось удалить файл ${e.key} с Диска', err);
+          }
+        } catch (err) {
+          AppLog.warn('Не получилось удалить файл ${e.key} с Диска', err);
+        }
+      }
+    } finally {
+      _purging = false;
+    }
+    if (done.isNotEmpty) {
+      commit({'op': 'purged', 'ids': done});
+      AppLog.info('Удалено с Диска файлов: ${done.length}');
+    }
+    return done.length;
+  }
+
   /// Точные копии (та же песня и тот же размер файла — один и тот же файл в разных папках)
   /// объединяем сами. Выбор однозначный, поэтому у всех друзей остаётся одна и та же копия.
   int mergeExactCopies() {
@@ -877,7 +947,7 @@ class LibraryController extends ChangeNotifier {
       }
       for (final same in bySize.values.where((l) => l.length > 1)) {
         final keep = bestOf(same);
-        mergeTracks(keep.id, same.map((t) => t.id));
+        mergeAndDelete(keep, same);
         n += same.length - 1;
       }
     }

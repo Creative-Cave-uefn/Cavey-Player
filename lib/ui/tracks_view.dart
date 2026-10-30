@@ -979,6 +979,7 @@ List<PopupMenuEntry<String>> trackMenuItems(Track track, String? playlistId) {
     const PopupMenuDivider(),
     const PopupMenuItem(value: 'edit', child: Text('Изменить название…')),
     const PopupMenuItem(value: 'hide', child: Text('Скрыть из библиотеки')),
+    const PopupMenuItem(value: 'delete', child: Text('Удалить с Диска…', style: TextStyle(color: C.danger))),
   ];
 }
 
@@ -1005,6 +1006,19 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
       NavScope.of(context).go(Nav('album', track.albumKey));
     case 'edit':
       await editTrackDialog(context, track);
+    case 'delete':
+      final mine = track.by == app.lib.me || track.by.isEmpty;
+      final ok = await confirm(
+        context,
+        title: 'Удалить «${track.title}» с Диска?',
+        text: 'Трек пропадёт из библиотеки у всех, а файл удалится с Google Диска безвозвратно.'
+            '${mine ? '' : '\n\nФайл принадлежит ${app.lib.firstNameOf(track.by)}: Google Диск даёт удалить его только '
+                'владельцу, поэтому с Диска он удалится, когда ${app.lib.firstNameOf(track.by)} откроет Cave Player.'}',
+        action: 'Удалить',
+      );
+      if (!ok) return;
+      app.lib.deleteTracks([track]);
+      app.lib.messages.add('«${track.title}» удалён');
     case 'hide':
       app.lib.hideTrack(track.id, true);
       app.lib.messages.add('«${track.title}» скрыт из библиотеки у всех. Вернуть можно в разделе «Дубликаты».');

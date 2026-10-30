@@ -181,6 +181,10 @@ class LibraryData {
   /// По нему старые ссылки (лайки, плейлисты, прослушивания) ведут на оставшуюся копию
   final Map<String, String> merged = {};
 
+  /// Удалённые файлы: id → почта владельца. Сканирование их не возвращает,
+  /// а приложение владельца удаляет файл с Диска и снимает отметку
+  final Map<String, String> deleted = {};
+
   /// Куда ведёт id после объединений (цепочки тоже)
   String resolve(String id) {
     var cur = id;
@@ -202,6 +206,7 @@ class LibraryData {
         'edits': edits,
         'hidden': hidden.toList(),
         if (merged.isNotEmpty) 'merged': merged,
+        if (deleted.isNotEmpty) 'deleted': deleted,
       };
 
   static LibraryData fromJson(dynamic j) {
@@ -238,6 +243,8 @@ class LibraryData {
     }
     final mg = j['merged'];
     if (mg is Map) mg.forEach((k, v) => d.merged['$k'] = '$v');
+    final del = j['deleted'];
+    if (del is Map) del.forEach((k, v) => d.deleted['$k'] = '$v');
     for (final id in d.edits.keys) {
       d._overlay(id);
     }
@@ -266,6 +273,7 @@ class LibraryData {
         }
       case 'upsertTracks':
         (op['tracks'] as Map).forEach((k, v) {
+          if (deleted.containsKey('$k')) return; // уже удалён — не возвращаем
           tracks['$k'] = Track.fromJson('$k', v as Map);
           _overlay('$k');
         });
@@ -340,6 +348,24 @@ class LibraryData {
             }
             hidden.add(d);
           }
+        }
+      case 'deleteTracks':
+        // Удаление с Диска: трек сразу пропадает у всех, файл удаляет приложение владельца
+        (op['ids'] as Map).forEach((k, v) {
+          final id = '$k';
+          deleted[id] = '$v';
+          tracks.remove(id);
+          hidden.remove(id);
+          likes.remove(id);
+          edits.remove(id);
+          for (final p in playlists) {
+            p.items.remove(id);
+          }
+        });
+      case 'purged':
+        // Файл удалён с Диска — отметка больше не нужна
+        for (final id in (op['ids'] as List)) {
+          deleted.remove('$id');
         }
       case 'unmergeTrack':
         // Вернуть копию отдельным треком (лайки и плейлисты остаются на той, куда перешли)

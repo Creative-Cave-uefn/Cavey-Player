@@ -124,4 +124,42 @@ void main() {
       expect(again.resolve('dup'), 'dup');
     });
   });
+
+  group('удаление с Диска', () {
+    test('трек пропадает у всех и не возвращается сканированием, пока файл не удалён', () {
+      Map<String, dynamic> t(String title) => {'s': 'src', 't': title, 'a': 'A', 'm': '', 'sz': 1};
+      final d = LibraryData()
+        ..apply({'op': 'upsertTracks', 'tracks': {'x': t('X'), 'y': t('Y')}})
+        ..apply({'op': 'like', 'id': 'x', 'email': 'me', 'on': true})
+        ..apply({
+          'op': 'createPlaylist',
+          'playlist': {'id': 'p', 'name': 'P', 'by': 'me', 'at': 0, 'items': ['x', 'y']},
+        })
+        ..apply({'op': 'deleteTracks', 'ids': {'x': 'owner@mail'}});
+      expect(d.tracks.containsKey('x'), isFalse);
+      expect(d.likes.containsKey('x'), isFalse);
+      expect(d.playlists.single.items, ['y']);
+      expect(d.deleted, {'x': 'owner@mail'});
+      // Сканирование у друга ещё видит файл — не возвращаем
+      d.apply({'op': 'upsertTracks', 'tracks': {'x': t('X')}});
+      expect(d.tracks.containsKey('x'), isFalse);
+      // Владелец удалил файл — отметка снимается
+      d.apply({'op': 'purged', 'ids': ['x']});
+      expect(d.deleted, isEmpty);
+      expect(LibraryData.fromJson(d.toJson()).tracks.keys, ['y']);
+    });
+
+    test('объединить и удалить: лайки переходят, копия удалена, ссылки ведут на оставшуюся', () {
+      Map<String, dynamic> t(String title) => {'s': 'src', 't': title, 'a': 'A', 'm': '', 'sz': 1};
+      final d = LibraryData()
+        ..apply({'op': 'upsertTracks', 'tracks': {'keep': t('Song'), 'dup': t('Song')}})
+        ..apply({'op': 'like', 'id': 'dup', 'email': 'friend', 'on': true})
+        ..apply({'op': 'mergeTracks', 'keep': 'keep', 'drop': ['dup']})
+        ..apply({'op': 'deleteTracks', 'ids': {'dup': 'friend@mail'}});
+      expect(d.tracks.keys, ['keep']);
+      expect(d.likes['keep'], {'friend'});
+      expect(d.hidden, isEmpty);
+      expect(d.resolve('dup'), 'keep');
+    });
+  });
 }

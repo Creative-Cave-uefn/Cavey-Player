@@ -259,6 +259,11 @@ class DriveApi {
     return DriveFile.fromJson(jsonDecode(res.body) as Map);
   }
 
+  /// Удаляет файл с Диска безвозвратно (может только владелец)
+  Future<void> deleteFile(String email, String id) async {
+    await send(email, 'DELETE', api('files/$id'));
+  }
+
   /// Перемещает файл в корзину Диска
   Future<void> trash(String email, String id) async {
     await send(email, 'PATCH', api('files/$id'),
