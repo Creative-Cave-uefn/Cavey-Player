@@ -76,6 +76,12 @@ class Settings {
   String? hubId;
   String? hubEmail;
   String? libFileId;
+
+  /// Человек сам нажал «Отключиться от библиотеки»: сами её больше не ищем, пока он не подключится вручную
+  bool autoJoinDisabled = false;
+
+  /// Своя папка cave-data (если задана вручную). Иначе ищется внутри общей папки
+  String? dataFolderOverride;
   String? primaryEmail;
   Map<String, String> sourceAccess = {};
   double volume = 80;
@@ -106,6 +112,8 @@ class Settings {
         'hubId': hubId,
         'hubEmail': hubEmail,
         'libFileId': libFileId,
+        'autoJoinDisabled': autoJoinDisabled,
+        'dataFolderOverride': dataFolderOverride,
         'primaryEmail': primaryEmail,
         'sourceAccess': sourceAccess,
         'volume': volume,
@@ -133,6 +141,8 @@ class Settings {
     s.hubId = j['hubId'] as String?;
     s.hubEmail = j['hubEmail'] as String?;
     s.libFileId = j['libFileId'] as String?;
+    s.autoJoinDisabled = j['autoJoinDisabled'] == true;
+    s.dataFolderOverride = j['dataFolderOverride'] as String?;
     s.primaryEmail = j['primaryEmail'] as String?;
     final sa = j['sourceAccess'];
     if (sa is Map) s.sourceAccess = sa.map((k, v) => MapEntry('$k', '$v'));
