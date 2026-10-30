@@ -394,10 +394,13 @@ class KaraokeService extends ChangeNotifier {
   final List<(Track, Lyrics, String)> _queue = [];
   bool _busy = false;
 
+  /// В очереди или уже считается — второй раз не ставим (раньше один трек считался дважды)
+  final Set<String> _working = {};
+
   void _enqueue(Track t, Lyrics ly, String key) {
-    if (_queue.any((q) => q.$3 == key)) return;
+    if (!_working.add(key)) return;
     _queue.insert(0, (t, ly, key)); // свежий запрос — первым: обычно это то, что играет сейчас
-    if (_queue.length > 3) _queue.removeLast();
+    if (_queue.length > 3) _working.remove(_queue.removeLast().$3);
     unawaited(_pump());
   }
 
@@ -409,7 +412,9 @@ class KaraokeService extends ChangeNotifier {
         final (t, ly, key) = _queue.removeAt(0);
         try {
           await _compute(t, ly, key);
+          _working.remove(key);
         } catch (e) {
+          // Не вышло — не пробуем снова в этот запуск, чтобы не гонять процессор по кругу
           AppLog.warn('Караоке: не посчиталось «${t.title}»', e);
           _status('Не получилось: ${'$e'.replaceFirst('Exception: ', '')}');
         }

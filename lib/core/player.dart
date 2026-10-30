@@ -630,7 +630,9 @@ class PlayerController extends ChangeNotifier {
     final native = _p.platform;
     if (native is! NativePlayer) return;
     final filters = [
-      if (vocalCut) 'lavfi=[pan=stereo|c0=c0-c1|c1=c1-c0]',
+      // stereotools: середину стерео (там обычно голос) почти в ноль, края — как есть.
+      // Вычитание каналов через pan плеер не принимал («Audio filter initialized failed»)
+      if (vocalCut) 'lavfi=[stereotools=mlev=0.015625]',
       // loudnorm в однопроходном режиме работает на лету; после него возвращаем обычную частоту
       if (settings.normalize) 'lavfi=[loudnorm=I=-16:LRA=11:TP=-1.5,aresample=48000]',
     ];
