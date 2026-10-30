@@ -12,6 +12,7 @@ import 'drive.dart';
 import 'library.dart';
 import 'log.dart';
 import 'models.dart';
+import 'notices.dart';
 import 'player.dart';
 
 class NowPlaying {
@@ -313,6 +314,7 @@ class SocialController extends ChangeNotifier {
         _loadedMine = true;
         _refreshMe();
       }
+      _checkNotices();
       notifyListeners();
     } catch (e) {
       pollError = '$e';
@@ -369,6 +371,63 @@ class SocialController extends ChangeNotifier {
   }
 
   List<Member> get listeningNow => friends.where((m) => m.live || m.recent).toList();
+
+  // ---------- уведомления «Вам» ----------
+
+  /// Новые уведомления для показа (старые первыми). Окно решает, как их показать
+  final StreamController<Notice> noticeStream = StreamController<Notice>.broadcast();
+
+  /// Всё, что касается меня: чужие лайки и добавления в плейлисты моих треков, а также треки, которыми поделились со мной
+  List<Notice> get notices {
+    final m = me;
+    if (m == null) return const [];
+    return collectNotices(
+      me: m,
+      events: [
+        for (final member in members.values)
+          for (final e in member.events)
+            if (DateTime.tryParse('${e['at']}') case final at?) (member.email, at.toUtc(), e)
+      ],
+      uploaderOf: (id) => lib.data.tracks[lib.data.resolve(id)]?.by ?? '',
+    );
+  }
+
+  /// После каждого опроса: что появилось нового с прошлого раза. При первом запуске лишь ставим отметку.
+  void _checkNotices() {
+    if (me == null || !_loadedMine) return;
+    final seen = lib.settings.noticeSeen;
+    final now = DateTime.now().toUtc();
+    // Колокольчик: всё, что было до этого момента, считается прочитанным
+    if (lib.settings.bellSeen == null) {
+      lib.settings.bellSeen = seen ?? now.toIso8601String();
+      unawaited(lib.saveSettings());
+    }
+    if (seen == null) {
+      lib.settings.noticeSeen = now.toIso8601String();
+      unawaited(lib.saveSettings());
+      return;
+    }
+    final fresh = freshNotices(notices, seen);
+    if (fresh.isEmpty) return;
+    // Отметка не уходит в будущее: у друга часы могут спешить
+    final newest = fresh.first.at.isAfter(now) ? now : fresh.first.at;
+    lib.settings.noticeSeen = newest.toIso8601String();
+    unawaited(lib.saveSettings());
+    for (final n in fresh.take(5).toList().reversed) {
+      noticeStream.add(n);
+    }
+  }
+
+  /// Текст уведомления для показа
+  String noticeLine(Notice n) => noticeText(
+        n,
+        who: lib.firstNameOf(n.from),
+        title: (id) => lib.data.tracks[lib.data.resolve(id)]?.title ?? 'трек',
+        label: (id) {
+          final t = lib.data.tracks[lib.data.resolve(id)];
+          return t == null ? 'трек' : '${t.title} — ${t.displayArtist}';
+        },
+      );
 
   // ---------- лента и чарт ----------
 
@@ -486,6 +545,7 @@ class SocialController extends ChangeNotifier {
     _heartbeat?.cancel();
     _writeTimer?.cancel();
     _followTimer?.cancel();
+    noticeStream.close();
     super.dispose();
   }
 }

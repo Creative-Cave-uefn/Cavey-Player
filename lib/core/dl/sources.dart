@@ -84,6 +84,69 @@ Future<(String, List<TrackMeta>)?> yandexAlbum(String url) async {
   return ('$artist - ${res['title']}'.replaceAll(RegExp(r'^[ \-]+|[ \-]+$'), ''), metas);
 }
 
+/// Плейлист из внешнего сервиса: название, обложка и треки по порядку
+class PlaylistInfo {
+  final String name;
+  final String? coverUrl;
+  final List<TrackMeta> metas;
+
+  /// Сервис отдал не весь плейлист (у Spotify без ключа это первые 100 треков)
+  final bool truncated;
+  const PlaylistInfo(this.name, this.coverUrl, this.metas, {this.truncated = false});
+}
+
+/// Лимит треков, которые Spotify отдаёт открытой странице плейлиста
+const spotifyPlaylistLimit = 100;
+
+/// Ссылка на плейлист Яндекс Музыки: старого вида (/users/<логин>/playlists/<номер>) или нового (/playlists/<код>)
+String? yandexPlaylistApiUrl(String url) {
+  final old = RegExp(r'/users/([^/?#]+)/playlists/(\d+)').firstMatch(url);
+  if (old != null) return 'https://api.music.yandex.net/users/${old.group(1)}/playlists/${old.group(2)}';
+  final nw = RegExp(r'/playlists/([A-Za-z0-9\-.]+)').firstMatch(url);
+  if (nw != null) return 'https://api.music.yandex.net/playlist/${nw.group(1)}';
+  return null;
+}
+
+Future<PlaylistInfo?> yandexPlaylist(String url) async {
+  final api = yandexPlaylistApiUrl(url);
+  if (api == null) return null;
+  final data = jsonDecode(await fetchText(api)) as Map;
+  final res = data['result'] as Map?;
+  if (res == null) return null;
+  final entries = [for (final e in (res['tracks'] as List? ?? const [])) if (e is Map) e];
+  final tracks = <Map>[];
+  final missing = <String>[];
+  for (final e in entries) {
+    final t = e['track'];
+    if (t is Map) {
+      tracks.add(t);
+    } else if (e['id'] != null) {
+      missing.add('${e['id']}${e['albumId'] != null ? ':${e['albumId']}' : ''}');
+    }
+  }
+  // Короткий ответ без самих треков: дозапрашиваем пачками
+  for (var i = 0; i < missing.length; i += 100) {
+    final chunk = missing.sublist(i, i + 100 > missing.length ? missing.length : i + 100);
+    try {
+      final more = jsonDecode(await fetchText('https://api.music.yandex.net/tracks?track-ids=${chunk.join(',')}')) as Map;
+      for (final t in (more['result'] as List? ?? const [])) {
+        if (t is Map) tracks.add(t);
+      }
+    } catch (_) {}
+  }
+  final metas = [for (final t in tracks) _yandexMeta(t)];
+  if (metas.isEmpty) return null;
+  var cover = _yandexCover(res);
+  if (cover == null && res['cover'] is Map) {
+    final u = '${(res['cover'] as Map)['uri'] ?? ''}';
+    if (u.isNotEmpty) {
+      final big = u.replaceAll('%%', '1000x1000');
+      cover = big.startsWith('http') ? big : 'https://$big';
+    }
+  }
+  return PlaylistInfo('${res['title'] ?? 'Плейлист'}', cover, metas);
+}
+
 // ---------- Deezer ----------
 // Открытый API без ключа: трек и альбом целиком, с номерами, годом и обложкой
 
@@ -354,4 +417,38 @@ Future<(String, List<TrackMeta>)?> spotifyAlbum(String url) async {
     ));
   }
   return ('${albumArtist.split(',').first.trim()} - $albumTitle'.replaceAll(RegExp(r'^[ \-]+|[ \-]+$'), ''), metas);
+}
+
+/// Плейлист Spotify по открытой странице. Без ключа Spotify отдаёт первые [spotifyPlaylistLimit] треков.
+Future<PlaylistInfo?> spotifyPlaylist(String url) async {
+  final m = RegExp(r'(?:/playlist/|spotify:playlist:)([A-Za-z0-9]+)').firstMatch(url);
+  if (m == null) return null;
+  Map? entity;
+  for (final blob in await _embedBlobs('playlist', m.group(1)!)) {
+    for (final d in _walk(blob)) {
+      if (d is Map && d['trackList'] is List && (d['trackList'] as List).isNotEmpty) {
+        entity = d;
+        break;
+      }
+    }
+    if (entity != null) break;
+  }
+  if (entity == null) throw Exception('не нашёл список треков плейлиста на странице Spotify (возможно, он закрытый)');
+  final name = '${entity['name'] ?? entity['title'] ?? 'Плейлист'}'.trim();
+  final raw = [
+    for (final t in entity['trackList'] as List)
+      if (t is Map && '${t['title'] ?? t['name'] ?? ''}'.trim().isNotEmpty) t
+  ];
+  if (raw.isEmpty) throw Exception('список треков плейлиста пуст');
+  final metas = <TrackMeta>[];
+  for (final t in raw) {
+    final artist = '${t['subtitle'] ?? ''}'.replaceAll('\u00a0', ' ').trim();
+    metas.add(TrackMeta(
+      artist: artist.split(',').first.trim(),
+      artistTag: artist,
+      title: '${t['title'] ?? t['name']}'.trim(),
+      duration: _seconds(t['duration'] ?? t['durationMs']),
+    ));
+  }
+  return PlaylistInfo(name, _entityCover(entity) ?? _findCover(entity), metas, truncated: raw.length >= spotifyPlaylistLimit);
 }

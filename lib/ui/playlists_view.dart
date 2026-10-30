@@ -49,7 +49,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       listenable: app.lib,
       builder: (context, _) {
         final lib = app.lib;
-        final lists = lib.data.playlists;
+        final lists = lib.visiblePlaylists;
         final prefs = ViewPrefs(app.settings, 'playlists', defaultGrid: true, gridDef: 180, listDef: 60, listMin: 48, listMax: 96);
         final header = Padding(
           padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),

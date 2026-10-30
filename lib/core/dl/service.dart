@@ -8,7 +8,9 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../image_tools.dart';
 import '../library.dart';
+import '../models.dart';
 import '../log.dart';
 import 'sources.dart';
 import 'text.dart';
@@ -31,7 +33,14 @@ class DownloadJob {
   int skipped = 0; // уже были в библиотеке
   final List<String> log = [];
   final List<String> failedNames = [];
-  DownloadJob(this.input, this.sourceId, this.folderName) : title = input;
+
+  /// Сделать из скачанного плейлиста плейлист в Cave Player (для ссылок на плейлисты)
+  final bool makePlaylist;
+
+  /// Плейлист Cave Player, собранный из этого задания
+  String? playlistId;
+  String? playlistName;
+  DownloadJob(this.input, this.sourceId, this.folderName, {this.makePlaylist = true}) : title = input;
 
   void add(String line) {
     log.add(line);
@@ -88,11 +97,11 @@ class DownloadService extends ChangeNotifier {
   }
 
   /// Добавляет задание в очередь
-  void enqueue(String input, String sourceId) {
+  void enqueue(String input, String sourceId, {bool makePlaylist = true}) {
     final text = input.trim();
     if (text.isEmpty) return;
     final src = lib.data.sources.where((s) => s.id == sourceId).firstOrNull;
-    jobs.insert(0, DownloadJob(text, sourceId, src?.name ?? 'Cave Player'));
+    jobs.insert(0, DownloadJob(text, sourceId, src?.name ?? 'Cave Player', makePlaylist: makePlaylist));
     notifyListeners();
     unawaited(_pump());
   }
@@ -172,7 +181,8 @@ class DownloadService extends ChangeNotifier {
         final res = await yandexAlbum(q);
         return res != null && await _album(job, yt, temp, res.$1, res.$2, log);
       }
-      log('Поддерживаются ссылки на трек и на альбом Яндекс Музыки.');
+      if (yandexPlaylistApiUrl(q) != null) return _externalPlaylist(job, yt, temp, await yandexPlaylist(q), log);
+      log('Поддерживаются ссылки на трек, альбом и плейлист Яндекс Музыки.');
       return false;
     }
     if (q.contains('deezer.com/')) {
@@ -192,7 +202,10 @@ class DownloadService extends ChangeNotifier {
       if (q.contains('/track/') || q.startsWith('spotify:track:')) {
         return _single(job, yt, temp, await spotifyTrack(q, log), 'Spotify', log);
       }
-      log('Поддерживаются ссылки на трек и на альбом Spotify.');
+      if (q.contains('/playlist/') || q.startsWith('spotify:playlist:')) {
+        return _externalPlaylist(job, yt, temp, await spotifyPlaylist(q), log);
+      }
+      log('Поддерживаются ссылки на трек, альбом и плейлист Spotify.');
       return false;
     }
     if ((q.contains('youtube.com') || q.contains('youtu.be')) && q.contains('/playlist') && q.contains('list=')) {
@@ -216,24 +229,25 @@ class DownloadService extends ChangeNotifier {
     job.total = 1;
     log('Нашёл в $where: ${meta.label}');
     log('Ищу лучшую версию на YouTube…');
-    final ok = await _sourceTrack(job, yt, temp, meta, folderId: job.sourceId, path: '', cover: await yt.cover(meta.coverUrl));
-    return ok;
+    final t = await _sourceTrack(job, yt, temp, meta, folderId: job.sourceId, path: '', cover: await yt.cover(meta.coverUrl));
+    return t != null;
   }
 
-  Future<bool> _sourceTrack(DownloadJob job, YouTube yt, Directory temp, TrackMeta meta,
+  /// Возвращает трек из библиотеки: уже имевшийся или только что загруженный. null — не получилось
+  Future<Track?> _sourceTrack(DownloadJob job, YouTube yt, Directory temp, TrackMeta meta,
       {required String folderId, required String path, File? cover, String prefix = ''}) async {
     // Такая песня уже есть в библиотеке — второй копии не нужно
     final same = lib.existing(meta.artist, meta.title);
     if (same != null) {
       yt.log('Уже есть в библиотеке: ${same.displayArtist} — ${same.title}, пропускаю');
       job.skipped++;
-      return true;
+      return same;
     }
     final cands = await yt.ranked(meta);
     if (cands.isEmpty) {
       job.failed++;
       job.failedNames.add(meta.label);
-      return false;
+      return null;
     }
     // У каждого трека своя папка: при параллельной загрузке альбома файлы не перепутаются
     final dir = Directory('${temp.path}${Platform.pathSeparator}${YouTube.unique()}');
@@ -251,37 +265,56 @@ class DownloadService extends ChangeNotifier {
       }
       await yt.tag(entries.first.path, meta, coverFile: cover);
       final file = YouTube.moveTo(entries.first.path, dir.path, clampName(meta.label), prefix);
-      await _upload(job, yt, File(file), folderId: folderId, path: path);
-      return true;
+      return _upload(job, yt, File(file), folderId: folderId, path: path);
     }
     job.failed++;
     job.failedNames.add(meta.label);
-    return false;
+    return null;
   }
 
-  Future<bool> _album(DownloadJob job, YouTube yt, Directory temp, String name, List<TrackMeta> metas, void Function(String) log) async {
+  /// Плейлист из Spotify или Яндекс Музыки: скачивает недостающие треки и собирает из них плейлист Cave Player
+  Future<bool> _externalPlaylist(DownloadJob job, YouTube yt, Directory temp, PlaylistInfo? info, void Function(String) log) async {
+    if (info == null) {
+      log('Не удалось получить список треков плейлиста.');
+      return false;
+    }
+    if (info.truncated) {
+      log('Внимание: Spotify без ключа отдаёт только первые $spotifyPlaylistLimit треков плейлиста. Остальные придётся добавить отдельно.');
+    }
+    return _album(job, yt, temp, info.name, info.metas, log, playlist: info, subfolder: safeName(info.name, 80));
+  }
+
+  Future<bool> _album(DownloadJob job, YouTube yt, Directory temp, String name, List<TrackMeta> metas, void Function(String) log,
+      {PlaylistInfo? playlist, String? subfolder}) async {
     job.title = name;
     job.total = metas.length;
     log('Альбом: $name  (${metas.length} ${metas.length == 1 ? 'трек' : 'треков'})');
-    final folderId = await lib.ensureSubfolder(job.sourceId, job.sourceId, safeName(name));
-    log('Папка на Диске: ${job.folderName}/${safeName(name)}');
+    final folder = subfolder ?? safeName(name);
+    final folderId = await lib.ensureSubfolder(job.sourceId, job.sourceId, folder);
+    log('Папка на Диске: ${job.folderName}/$folder');
     // Обложки заранее, по одной на адрес
     final covers = <String, File?>{};
     for (final url in metas.map((m) => m.coverUrl).whereType<String>().toSet()) {
       covers[url] = await yt.cover(url);
     }
+    final ids = List<String?>.filled(metas.length, null);
     await _pool(List.generate(metas.length, (i) => i), albumWorkers, (i) async {
       final m = metas[i];
-      final ok = await _sourceTrack(job, yt, temp, m,
-          folderId: folderId, path: safeName(name), cover: covers[m.coverUrl], prefix: '${(i + 1).toString().padLeft(2, '0')} - ');
-      log('[${i + 1}/${metas.length}] ${ok ? 'OK' : 'ОШИБКА'}: ${m.label}');
+      final t = await _sourceTrack(job, yt, temp, m,
+          folderId: folderId, path: folder, cover: covers[m.coverUrl], prefix: '${(i + 1).toString().padLeft(2, '0')} - ');
+      ids[i] = t?.id;
+      log('[${i + 1}/${metas.length}] ${t != null ? 'OK' : 'ОШИБКА'}: ${m.label}');
     });
     _summary(job, log);
+    if (playlist != null && job.makePlaylist) {
+      await _makePlaylist(job, yt, playlist.name, ids, playlist.coverUrl, log);
+    }
     return job.done + job.skipped > 0;
   }
 
   Future<bool> _playlist(DownloadJob job, YouTube yt, Directory temp, String url, void Function(String) log) async {
     var title = 'Playlist';
+    String? listCover;
     var items = <Map>[];
     try {
       final out = await Tools.run(tools.ytdlp.path, [...tools.jsArgs, '-J', '--flat-playlist', '--no-warnings', url]);
@@ -289,6 +322,8 @@ class DownloadService extends ChangeNotifier {
       if (json.isNotEmpty) {
         final data = (await compute(_decode, json)) as Map;
         title = '${data['title'] ?? 'Playlist'}';
+        final thumbs = [for (final t in (data['thumbnails'] as List? ?? const [])) if (t is Map && t['url'] != null) '${t['url']}'];
+        if (thumbs.isNotEmpty) listCover = thumbs.last;
         items = [for (final e in (data['entries'] as List? ?? const [])) if (e is Map && e['id'] != null) e];
       }
     } catch (e) {
@@ -303,12 +338,23 @@ class DownloadService extends ChangeNotifier {
     final folderId = await lib.ensureSubfolder(job.sourceId, job.sourceId, safeName(title, 80));
     log('Плейлист: $title  (${items.length} ${items.length == 1 ? 'трек' : 'треков'})');
     log('Папка на Диске: ${job.folderName}/${safeName(title, 80)}');
+    final ids = List<String?>.filled(items.length, null);
     await _pool(List.generate(items.length, (i) => i), albumWorkers, (i) async {
       final e = items[i];
+      // Такая песня уже лежит в библиотеке — не качаем второй раз, в плейлист встанет имеющийся трек
+      final have = _existingForVideo(e);
+      if (have != null) {
+        ids[i] = have.id;
+        job.skipped++;
+        log('[${i + 1}/${items.length}] Уже есть в библиотеке: ${have.displayArtist} — ${have.title}');
+        return;
+      }
       final dir = Directory('${temp.path}${Platform.pathSeparator}p$i');
       await dir.create();
       final entries = await yt.download('${dir.path}${Platform.pathSeparator}%(id)s.%(ext)s', 'https://www.youtube.com/watch?v=${e['id']}');
-      final ok = await _finishYoutube(job, yt, entries, folderId: folderId, path: safeName(title, 80), number: i + 1);
+      final got = <String>[];
+      final ok = await _finishYoutube(job, yt, entries, folderId: folderId, path: safeName(title, 80), number: i + 1, ids: got);
+      if (got.isNotEmpty) ids[i] = got.first;
       if (!ok) {
         job.failed++;
         job.failedNames.add('${e['title'] ?? e['id']}');
@@ -316,7 +362,18 @@ class DownloadService extends ChangeNotifier {
       log('[${i + 1}/${items.length}] ${ok ? 'OK' : 'ОШИБКА'}: ${e['title'] ?? e['id']}');
     });
     _summary(job, log);
+    if (job.makePlaylist) await _makePlaylist(job, yt, title, ids, listCover, log);
     return job.done + job.skipped > 0;
+  }
+
+  /// Трек библиотеки, который совпадает с роликом из списка YouTube (по исполнителю и названию), или null
+  Track? _existingForVideo(Map e) {
+    final channel = '${e['channel'] ?? e['uploader'] ?? ''}'.replaceAll(RegExp(r'\s*-\s*Topic$'), '');
+    final (a, t) = splitArtistTitle(stripLeadNum(channel), stripLeadNum('${e['title'] ?? ''}'));
+    final artist = stripLeadNum(a);
+    final title = cleanTitle(stripLeadNum(t));
+    if (artist.isEmpty || title.isEmpty) return null;
+    return lib.existing(artist, title);
   }
 
   /// Просто текст: лучший вариант с YouTube
@@ -335,7 +392,7 @@ class DownloadService extends ChangeNotifier {
 
   /// Обычные ролики YouTube: красивое имя и теги без дублей, мусора и лишних номеров
   Future<bool> _finishYoutube(DownloadJob job, YouTube yt, List<Entry> entries,
-      {required String folderId, required String path, int? number}) async {
+      {required String folderId, required String path, int? number, List<String>? ids}) async {
     for (final e in entries) {
       var title = e.title;
       final lead = leadNumRe.firstMatch(title);
@@ -349,16 +406,50 @@ class DownloadService extends ChangeNotifier {
       await yt.tag(e.path, meta);
       final dir = File(e.path).parent.path;
       final file = YouTube.moveTo(e.path, dir, clampName(meta.label), n != null && number != null ? '${n.toString().padLeft(2, '0')} - ' : '');
-      await _upload(job, yt, File(file), folderId: folderId, path: path);
+      final uploaded = await _upload(job, yt, File(file), folderId: folderId, path: path);
+      ids?.add(uploaded.id);
     }
     return entries.isNotEmpty;
   }
 
-  Future<void> _upload(DownloadJob job, YouTube yt, File file, {required String folderId, required String path}) async {
+  Future<Track> _upload(DownloadJob job, YouTube yt, File file, {required String folderId, required String path}) async {
     yt.log('Загружаю на Диск: ${file.uri.pathSegments.last}');
-    await lib.uploadOne(file, sourceId: job.sourceId, folderId: folderId, path: path);
+    final t = await lib.uploadOne(file, sourceId: job.sourceId, folderId: folderId, path: path);
     job.done++;
     _notify();
+    return t;
+  }
+
+  /// Собирает из скачанных треков плейлист Cave Player: название и порядок как в источнике.
+  /// Плейлист с таким названием у вас уже есть — дополняет его недостающими треками.
+  Future<void> _makePlaylist(DownloadJob job, YouTube yt, String name, List<String?> ids, String? coverUrl, void Function(String) log) async {
+    final found = <String>[];
+    for (final id in ids) {
+      if (id != null && !found.contains(id)) found.add(id);
+    }
+    if (found.isEmpty) {
+      log('В плейлист Cave Player добавлять нечего: ни один трек не скачался.');
+      return;
+    }
+    final id = addToNamedPlaylist(lib, name, found);
+    final created = id.created;
+    job.playlistId = id.id;
+    job.playlistName = name;
+    if (created && coverUrl != null) {
+      try {
+        final file = await yt.cover(coverUrl);
+        if (file != null) {
+          final jpeg = await compressImage(await file.readAsBytes(), maxSide: 1000);
+          lib.setPlaylistCover(id.id, await lib.uploadCover(jpeg, 'jpg'));
+        }
+      } catch (e) {
+        log('Обложку плейлиста поставить не удалось: $e');
+      }
+    }
+    log(created
+        ? 'Создан плейлист «$name» в Cave Player: ${found.length} ${found.length == 1 ? 'трек' : 'треков'}.'
+        : 'Плейлист «$name» уже был: добавлено недостающих треков — ${id.added}.');
+    lib.messages.add(created ? 'Плейлист «$name» создан' : 'Плейлист «$name» дополнен');
   }
 
   void _summary(DownloadJob job, void Function(String) log) {
@@ -393,3 +484,26 @@ class DownloadService extends ChangeNotifier {
 
 /// Разбор большого JSON плейлиста в отдельном потоке, чтобы не подвисал интерфейс
 Object? _decode(String s) => jsonDecode(s);
+
+/// Результат [addToNamedPlaylist]
+class NamedPlaylistResult {
+  final String id;
+  final bool created;
+  final int added;
+  const NamedPlaylistResult(this.id, this.created, this.added);
+}
+
+/// Кладёт треки в ваш плейлист с таким названием (без учёта регистра). Если его нет — создаёт.
+/// Порядок сохраняется, уже лежащие в плейлисте треки не дублируются.
+NamedPlaylistResult addToNamedPlaylist(LibraryController lib, String name, List<String> trackIds) {
+  final me = lib.me ?? '';
+  final key = name.trim().toLowerCase();
+  final same = lib.data.playlists.where((p) => (p.by.isEmpty || p.by == me) && p.name.trim().toLowerCase() == key).firstOrNull;
+  if (same == null) {
+    return NamedPlaylistResult(lib.createPlaylist(name.trim(), trackIds), true, trackIds.length);
+  }
+  final have = same.items.toSet();
+  final fresh = [for (final t in trackIds) if (!have.contains(t)) t];
+  if (fresh.isNotEmpty) lib.addToPlaylist(same.id, fresh);
+  return NamedPlaylistResult(same.id, false, fresh.length);
+}

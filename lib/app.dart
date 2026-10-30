@@ -22,7 +22,11 @@ import 'core/store.dart';
 import 'core/single_instance.dart';
 import 'core/taskbar.dart';
 import 'core/tray.dart';
+import 'core/tray_cleanup.dart';
+import 'core/media_keys.dart';
+import 'core/share_link.dart';
 import 'core/updater.dart';
+import 'core/window_style.dart';
 import 'ui/onboarding.dart';
 import 'ui/shell.dart';
 import 'ui/theme.dart';
@@ -50,6 +54,10 @@ class AppServices {
   /// Фото, описания и новинки исполнителей из интернета, отрывки треков
   late final WebInfoService web;
   late final PreviewPlayer preview;
+  late final MediaKeys mediaKeys;
+
+  /// Ссылка caveplayer://track/…, пришедшая при запуске или от второй копии; окно её обрабатывает и очищает
+  final ValueNotifier<String?> incomingLink = ValueNotifier(null);
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
@@ -99,6 +107,8 @@ class AppServices {
           enabled: settings.discord,
         );
     player.addListener(showInDiscord);
+    // Слушаем вместе с другом: переходы идут по его трекам, плавный переход мешал бы синхронизации
+    player.crossfadeBlocked = () => social.following != null;
     player.onUserAction = () {
       social.onUserAction();
       showInDiscord();
@@ -120,9 +130,18 @@ class AppServices {
         store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
+    Updater.beforeExit = tray.dispose;
+    app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
+    // Значки, оставшиеся от закрытых принудительно прошлых версий, Проводник выбрасывает, когда над ними «проведут курсор»
+    Timer(const Duration(seconds: 2), sweepGhostTrayIcons);
+    Timer(const Duration(seconds: 12), sweepGhostTrayIcons);
     // Ярлык на панели задач запускает вторую копию; она просит первую показать окно
-    listenForSecondLaunch(() => unawaited(tray.showWindow()));
+    listenForSecondLaunch(() {
+      unawaited(tray.showWindow());
+      final link = takePendingLink();
+      if (link != null) app.incomingLink.value = link;
+    });
     // Кнопки «Назад / Пауза / Дальше» в превью на панели задач живут до выхода из приложения
     unawaited(TaskbarController(player).start());
     return app;
@@ -165,6 +184,11 @@ class CavePlayerApp extends StatelessWidget {
         title: 'Cave Player',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
+        // Выделяемый текст не должен менять указатель на «текстовый»: над ссылками остаётся рука, над остальным — стрелка
+        builder: (context, child) => DefaultSelectionStyle(
+          mouseCursor: MouseCursor.defer,
+          child: CaptionFrame(child: child ?? const SizedBox()),
+        ),
         home: ListenableBuilder(
           listenable: Listenable.merge([app.accounts, app.lib]),
           builder: (context, _) {

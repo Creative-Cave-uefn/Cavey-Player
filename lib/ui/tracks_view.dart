@@ -10,6 +10,7 @@ import 'cover_picker.dart';
 import 'download_view.dart';
 import 'library_views.dart';
 import 'shell.dart';
+import 'share_dialog.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -85,7 +86,7 @@ class AllTracksPage extends StatelessWidget {
                       ? 'Добавьте папку с музыкой с Google Диска — свою или ту, которой поделился друг.'
                       : 'В добавленных папках пока нет аудиофайлов. Загрузите музыку на Диск и обновите библиотеку.',
                   action: FilledButton(
-                    onPressed: () => NavScope.of(context).go(const Nav('sources')),
+                    onPressed: () => NavScope.of(context).go(const Nav('accounts')),
                     child: Text(lib.data.sources.isEmpty ? 'Добавить папку' : 'Открыть папки'),
                   ),
                 ),
@@ -165,10 +166,22 @@ class AlbumPage extends StatelessWidget {
         if (album == null) {
           return const EmptyState(icon: Icons.album_outlined, title: 'Альбом пропал', text: 'Его треки удалили с Диска.');
         }
-        final bits = [album.artist, if (album.year.isNotEmpty) album.year, countTracks(album.tracks.length)];
+        final tail = [if (album.year.isNotEmpty) album.year, countTracks(album.tracks.length)];
+        final nav = NavScope.of(context);
+        final artistParts = <LinkPart>[];
+        final names = splitArtists(album.artist);
+        for (var i = 0; i < names.length; i++) {
+          if (i > 0) artistParts.add(const LinkPart(', '));
+          final key = names[i].toLowerCase();
+          artistParts.add(LinkPart(names[i], () => nav.go(Nav('artist', key))));
+        }
         return TracksPage(
           title: album.title,
-          subtitle: bits.join(', '),
+          // Исполнитель альбома — ссылка на его страницу
+          subtitleWidget: Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [
+            Links(parts: artistParts, style: const TextStyle(color: C.muted, fontSize: 15)),
+            Text(', ${tail.join(', ')}', style: const TextStyle(color: C.muted, fontSize: 15)),
+          ]),
           tracks: album.tracks,
           cover: album.coverTrack,
           numbered: true,
@@ -231,6 +244,8 @@ class PlaylistPage extends StatelessWidget {
             const Text('Собирает ', style: TextStyle(color: C.muted, fontSize: 15)),
             if (p.by.isEmpty) const Text('кто-то', style: TextStyle(color: C.muted, fontSize: 15)) else UserLink(p.by),
             if (tracks.isNotEmpty) Text(', ${countTracks(tracks.length)}', style: const TextStyle(color: C.muted, fontSize: 15)),
+            Text(lib.isPlaylistPublic(p.id) ? ' · открытый' : ' · приватный',
+                style: TextStyle(color: lib.isPlaylistPublic(p.id) ? C.accent : C.faint, fontSize: 15)),
           ]),
           tracks: tracks,
           playlistId: playlistId,
@@ -260,6 +275,12 @@ class PlaylistPage extends StatelessWidget {
                   if (cv != null) lib.setPlaylistCover(p.id, cv);
                 } else if (v == 'cover_reset') {
                   lib.setPlaylistCover(p.id, '');
+                } else if (v == 'public') {
+                  lib.setPlaylistPublic(p.id, true);
+                  lib.messages.add('Плейлист «${p.name}» теперь видят все друзья');
+                } else if (v == 'private') {
+                  lib.setPlaylistPublic(p.id, false);
+                  lib.messages.add('Плейлист «${p.name}» виден только вам');
                 } else if (v == 'delete') {
                   final nav = NavScope.of(context);
                   final ok = await confirm(context,
@@ -273,6 +294,10 @@ class PlaylistPage extends StatelessWidget {
                 }
               },
               itemBuilder: (_) => [
+                if (p.by == lib.me || p.by.isEmpty)
+                  lib.isPlaylistPublic(p.id)
+                      ? const PopupMenuItem(value: 'private', child: Text('Сделать приватным'))
+                      : const PopupMenuItem(value: 'public', child: Text('Сделать открытым')),
                 const PopupMenuItem(value: 'rename', child: Text('Переименовать')),
                 const PopupMenuItem(value: 'cover', child: Text('Изменить обложку…')),
                 if (ownCover != null) const PopupMenuItem(value: 'cover_reset', child: Text('Убрать свою обложку')),
@@ -548,6 +573,28 @@ class _TracksPageState extends State<TracksPage> {
                   icon: const Icon(Icons.remove_circle_outline_rounded, size: 18),
                   label: const Text('Убрать из плейлиста'),
                 ),
+              TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: C.danger),
+                onPressed: none
+                    ? null
+                    : () async {
+                        final foreign = picked.where((t) => t.by.isNotEmpty && t.by != app.lib.me).length;
+                        final ok = await confirm(
+                          context,
+                          title: 'Удалить выбранное: ${countTracks(picked.length)}?',
+                          text: 'Треки пропадут из библиотеки у всех, а файлы удалятся с Google Диска безвозвратно.'
+                              '${foreign > 0 ? '\n\nЧужих файлов среди них: $foreign. Google Диск даёт удалить файл только владельцу, '
+                                  'поэтому они удалятся с Диска, когда их владелец откроет Cave Player.' : ''}',
+                          action: 'Удалить',
+                        );
+                        if (!ok) return;
+                        app.lib.deleteTracks(picked);
+                        app.lib.messages.add('Удалено: ${countTracks(picked.length)}');
+                        _exitSelection();
+                      },
+                icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                label: const Text('Удалить выбранное'),
+              ),
               IconButton(tooltip: 'Готово (Esc)', onPressed: _exitSelection, icon: const Icon(Icons.close_rounded, size: 20)),
             ]),
           ),
@@ -757,10 +804,14 @@ class _TracksPageState extends State<TracksPage> {
               child: Padding(
               padding: EdgeInsets.fromLTRB(pad, widget.compact ? 72 : 96, pad, 36),
               child: Column(children: [
-                Text(widget.title, textAlign: TextAlign.center, style: display(widget.compact ? 30 : 44, weight: FontWeight.w700)),
+                SelectionArea(
+                  child: Text(widget.title, textAlign: TextAlign.center, style: display(widget.compact ? 30 : 44, weight: FontWeight.w700)),
+                ),
                 if (widget.subtitle != null) ...[
                   const SizedBox(height: 10),
-                  Text(widget.subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                  SelectionArea(
+                    child: Text(widget.subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                  ),
                 ],
                 if (widget.tracks.isNotEmpty) ...[
                   const SizedBox(height: 24),
@@ -815,14 +866,16 @@ class _TracksPageState extends State<TracksPage> {
         ],
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(widget.title,
-                maxLines: 2, overflow: TextOverflow.ellipsis, style: display(widget.compact ? 26 : 36, weight: FontWeight.w700)),
+            SelectionArea(
+              child: Text(widget.title,
+                  maxLines: 2, overflow: TextOverflow.ellipsis, style: display(widget.compact ? 26 : 36, weight: FontWeight.w700)),
+            ),
             if (widget.subtitleWidget != null) ...[
               const SizedBox(height: 10),
-              widget.subtitleWidget!,
+              SelectionArea(child: widget.subtitleWidget!),
             ] else if (widget.subtitle != null) ...[
               const SizedBox(height: 10),
-              Text(widget.subtitle!, style: const TextStyle(color: C.muted, fontSize: 15)),
+              SelectionArea(child: Text(widget.subtitle!, style: const TextStyle(color: C.muted, fontSize: 15))),
             ],
             if (widget.tracks.isNotEmpty) ...[
               const SizedBox(height: 22),
@@ -1178,20 +1231,23 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
   final names = track.artists;
   final liked = Services.of(context).lib.isLiked(track.id);
   return [
+    PopupMenuItem(value: 'like', child: Text(liked ? 'Убрать из любимого' : 'Добавить в любимое')),
     const PopupMenuItem(value: 'next', child: Text('Играть следующим')),
     const PopupMenuItem(value: 'queue', child: Text('В конец очереди')),
-    PopupMenuItem(value: 'like', child: Text(liked ? 'Убрать из любимого' : 'Добавить в любимое')),
-    if (canSelect) PopupMenuItem(value: 'select', child: Text(selected ? 'Снять выбор' : 'Выбрать')),
     const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
     if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
+    const PopupMenuDivider(),
     const PopupMenuItem(value: 'album', child: Text('Открыть альбом')),
     if (names.length == 1)
       const PopupMenuItem(value: 'artist:0', child: Text('Открыть исполнителя'))
     else
       for (var i = 0; i < names.length && i < 5; i++)
         PopupMenuItem(value: 'artist:$i', child: Text('Открыть: ${names[i]}', overflow: TextOverflow.ellipsis)),
+    const PopupMenuItem(value: 'copy', child: Text('Копировать название')),
+    const PopupMenuItem(value: 'share', child: Text('Поделиться…')),
     const PopupMenuDivider(),
-    const PopupMenuItem(value: 'edit', child: Text('Изменить название…')),
+    if (canSelect) PopupMenuItem(value: 'select', child: Text(selected ? 'Снять выбор' : 'Выбрать')),
+    const PopupMenuItem(value: 'edit', child: Text('Изменить метаданные…')),
     const PopupMenuItem(value: 'hide', child: Text('Скрыть из библиотеки')),
     const PopupMenuItem(value: 'delete', child: Text('Удалить с Диска…', style: TextStyle(color: C.danger))),
   ];
@@ -1218,6 +1274,11 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
       app.lib.messages.add(was ? '«${track.title}» убран из любимого' : '«${track.title}» в любимом');
     case 'select':
       onSelect?.call();
+    case 'copy':
+      await Clipboard.setData(ClipboardData(text: '${track.title} — ${track.displayArtist}'));
+      app.lib.messages.add('Название скопировано');
+    case 'share':
+      await showShareDialog(context, track);
     case 'playlist':
       await addToPlaylistDialog(context, [track.id]);
     case 'remove':
@@ -1254,7 +1315,7 @@ Future<bool> addToPlaylistDialog(BuildContext context, List<String> trackIds) as
     builder: (ctx) => SimpleDialog(
       title: Text('В плейлист', style: display(18)),
       children: [
-        for (final p in lib.data.playlists)
+        for (final p in lib.visiblePlaylists)
           SimpleDialogOption(
             onPressed: () => Navigator.pop(ctx, p.id),
             child: Row(children: [

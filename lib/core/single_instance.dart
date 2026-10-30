@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
+import 'share_link.dart';
+
 // Окно может быть спрятано в трее, и человек запускает Cave Player ещё раз (например, ярлыком на панели задач).
 // Вторая копия не нужна: она бы играла поверх первой и писала в те же файлы. Поэтому вторая копия
 // сигналит первой через именованное событие Windows и закрывается, а первая сама показывает своё окно.
@@ -34,7 +36,7 @@ const _asfwAny = 0xFFFFFFFF;
 int _showEvent = 0;
 
 /// true — мы первая копия и можно запускаться. false — уже есть другая, ей послан сигнал показаться, надо выходить.
-bool claimSingleInstance() {
+bool claimSingleInstance({String? link}) {
   if (!Platform.isWindows) return true;
   try {
     final k32 = DynamicLibrary.open('kernel32.dll');
@@ -43,6 +45,8 @@ bool claimSingleInstance() {
     final name = _mutexName.toNativeUtf16();
     try {
       if (open(_synchronize, 0, name) != 0) {
+        // Ссылка на трек (caveplayer://…) от второй копии уходит первой через файл
+        if (link != null) leavePendingLink(link);
         _signalRunning(k32);
         return false;
       }
