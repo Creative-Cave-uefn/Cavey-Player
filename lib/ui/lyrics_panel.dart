@@ -160,7 +160,27 @@ class _LyricsBodyState extends State<LyricsBody> {
     }
   }
 
-  int _lineAt(Lyrics ly) => ly.indexAt(_player!.position.value + const Duration(milliseconds: 250));
+  /// Когда строка на самом деле начинается. В LRCLIB отметки часто стоят чуть раньше пения;
+  /// если Whisper знает время первого слова — строка переключается по нему
+  List<Duration>? _starts;
+
+  int _lineAt(Lyrics ly) {
+    // В панели строку подсвечиваем чуть заранее — читать удобнее. В караоке — ровно в такт, без упреждения
+    final pos = _player!.position.value + (widget.karaoke ? Duration.zero : const Duration(milliseconds: 250));
+    final starts = _starts;
+    if (starts == null || starts.length != ly.lines.length) return ly.indexAt(pos);
+    var lo = 0, hi = starts.length - 1, idx = -1;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      if (starts[mid] <= pos) {
+        idx = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return idx;
+  }
 
   /// Перерисовываем только когда сменилась строка, а не на каждый тик позиции
   void _onPosition() {
@@ -237,15 +257,31 @@ class _LyricsBodyState extends State<LyricsBody> {
     while (_keys.length < ly.lines.length) {
       _keys.add(GlobalKey());
     }
-    final idx = _idx = _lineAt(ly);
-    _follow(idx);
     // Время слов: точное из текста (расширенный LRC) → посчитанное Whisper → разбивка по слогам
     final exact = widget.karaoke ? app.karaoke.wordsFor(t, ly) : null;
+    _starts = widget.karaoke
+        ? [
+            for (var i = 0; i < ly.lines.length; i++)
+              () {
+                final at = ly.lines[i].at!;
+                final w = ly.lines[i].words ?? (exact != null && i < exact.length ? exact[i] : null);
+                if (w == null || w.isEmpty) return at;
+                final first = w.first.start;
+                // Первое слово спето позже отметки — ждём его (но не дольше 3 секунд: дальше это уже ошибка)
+                return first > at && first - at < const Duration(seconds: 3) ? first : at;
+              }(),
+          ]
+        : null;
+    final idx = _idx = _lineAt(ly);
+    _follow(idx);
     List<KWord> wordsOf(int i) {
       final line = ly.lines[i];
-      final end = i + 1 < ly.lines.length && ly.lines[i + 1].at != null ? ly.lines[i + 1].at! : line.at! + const Duration(seconds: 5);
+      final st = _starts;
+      final end = i + 1 < ly.lines.length && ly.lines[i + 1].at != null
+          ? (st != null && i + 1 < st.length ? st[i + 1] : ly.lines[i + 1].at!)
+          : line.at! + const Duration(seconds: 5);
       final w = line.words ?? (exact != null && i < exact.length ? exact[i] : null);
-      return (w != null && w.isNotEmpty) ? w : syllables(line.text, line.at!, end);
+      return (w != null && w.isNotEmpty) ? w : syllables(line.text, st != null && i < st.length ? st[i] : line.at!, end);
     }
 
     return NotificationListener<UserScrollNotification>(
