@@ -323,7 +323,134 @@ const _sectionNames = {
   'related': 'Похожие исполнители',
 };
 
-/// Страница исполнителя из интернета
+/// Онлайн-разделы исполнителя, как в Apple Music: «Топ-песни», «Альбомы», «Синглы и EP»,
+/// «Сборники», «Похожие исполнители», «Об исполнителе». [library] (скачанное) встаёт
+/// сразу после «Топ-песен», [guest] («Участвует в» из библиотеки) — после сборников.
+/// Пока сведения грузятся или их нет, показывается то, что есть в библиотеке.
+class WebArtistSections extends StatefulWidget {
+  final int? artistId;
+  final String name;
+  final bool compact;
+  final List<Widget> library;
+  final List<Widget> guest;
+  const WebArtistSections({
+    super.key,
+    this.artistId,
+    required this.name,
+    required this.compact,
+    this.library = const [],
+    this.guest = const [],
+  });
+
+  @override
+  State<WebArtistSections> createState() => _WebArtistSectionsState();
+}
+
+class _WebArtistSectionsState extends State<WebArtistSections> {
+  Future<_ArtistData?>? _future;
+  Future<WebBio?>? _bio;
+  bool _bioOpen = false;
+
+  Future<_ArtistData?> _load(AppServices app) async {
+    final id = widget.artistId ?? (await app.web.artist(widget.name))?.id;
+    if (id == null) return null;
+    return _loadArtist(app, id);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = Services.of(context);
+    _future ??= _load(app);
+    _bio ??= app.web.bio(widget.name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final nav = NavScope.of(context);
+    return FutureBuilder<_ArtistData?>(
+      future: _future,
+      builder: (context, snap) {
+        final d = snap.data;
+        final loading = snap.connectionState != ConnectionState.done;
+        Widget row(String kind, List<Widget> tiles, {double w = 200, double h = 270}) => tiles.isEmpty || d == null
+            ? const SizedBox.shrink()
+            : Padding(
+                padding: const EdgeInsets.only(top: 36),
+                child: TileRow(
+                  title: _sectionNames[kind]!,
+                  tileWidth: w,
+                  height: h,
+                  tiles: tiles.take(12).toList(),
+                  // Больше, чем помещается в ряд, — раздел открывается целиком
+                  onMore: tiles.length > 6 ? () => nav.go(Nav('websection', '${d.artist.id}:$kind')) : null,
+                ),
+              );
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          if (d != null && d.top.isNotEmpty) ...[
+            SectionTitle('Топ-песни', onTap: d.top.length > 12 ? () => nav.go(Nav('websection', '${d.artist.id}:top')) : null),
+            WebTrackGrid(tracks: d.top),
+            const SizedBox(height: 36),
+          ],
+          ...widget.library,
+          if (loading)
+            const Padding(
+              padding: EdgeInsets.only(top: 28),
+              child: Row(children: [
+                SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                SizedBox(width: 12),
+                Text('Загружаю дискографию из интернета…', style: TextStyle(color: C.faint)),
+              ]),
+            )
+          else if (d == null)
+            Padding(
+              padding: const EdgeInsets.only(top: 28),
+              child: Text(
+                snap.hasError ? 'Не получилось загрузить сведения из интернета: ${snap.error}' : 'В интернете (Deezer) такого исполнителя не нашлось.',
+                style: const TextStyle(color: C.faint, fontSize: 13),
+              ),
+            ),
+          if (d != null) ...[
+            row('album', [for (final x in d.ofKind('album')) albumTile(context, x)]),
+            row('single', [for (final x in d.ofKind('single')) albumTile(context, x)]),
+            row('compile', [for (final x in d.ofKind('compile')) albumTile(context, x)]),
+          ],
+          ...widget.guest,
+          if (d != null) row('related', [for (final x in d.related) artistTile(context, x)], w: 160, h: 200),
+          FutureBuilder<WebBio?>(
+            future: _bio,
+            builder: (context, b) {
+              final bio = b.data;
+              if (bio == null) return const SizedBox.shrink();
+              return Padding(
+                padding: const EdgeInsets.only(top: 36),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const SectionTitle('Об исполнителе'),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 820),
+                    child: Text(bio.text,
+                        maxLines: _bioOpen ? null : 5,
+                        overflow: _bioOpen ? null : TextOverflow.ellipsis,
+                        style: const TextStyle(color: C.muted, height: 1.55)),
+                  ),
+                  Row(children: [
+                    TextButton(onPressed: () => setState(() => _bioOpen = !_bioOpen), child: Text(_bioOpen ? 'Свернуть' : 'Читать дальше')),
+                    if (bio.url.isNotEmpty) TextButton(onPressed: () => launchUrl(Uri.parse(bio.url)), child: const Text('Википедия')),
+                    if (d != null && d.artist.link.isNotEmpty)
+                      TextButton(onPressed: () => launchUrl(Uri.parse(d.artist.link)), child: const Text('Deezer')),
+                  ]),
+                ]),
+              );
+            },
+          ),
+        ]);
+      },
+    );
+  }
+}
+
+/// Исполнитель из поиска или «Похожих». Если он есть в библиотеке — та же страница,
+/// что из библиотеки (со «Скачанным»); если нет — шапка и онлайн-разделы
 class WebArtistPage extends StatefulWidget {
   final int artistId;
   final bool compact;
@@ -334,91 +461,39 @@ class WebArtistPage extends StatefulWidget {
 }
 
 class _WebArtistPageState extends State<WebArtistPage> {
-  Future<_ArtistData>? _future;
+  Future<WebArtist>? _future;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _future ??= _loadArtist(Services.of(context), widget.artistId);
+    _future ??= Services.of(context).web.artistById(widget.artistId);
   }
 
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final nav = NavScope.of(context);
-    final pad = widget.compact ? 20.0 : 40.0;
-    return _Loading<_ArtistData>(
+    return _Loading<WebArtist>(
       future: _future,
-      onRetry: () => setState(() => _future = _loadArtist(app, widget.artistId)),
-      builder: (d) {
-        final a = d.artist;
+      onRetry: () => setState(() => _future = app.web.artistById(widget.artistId)),
+      builder: (a) {
         final mine = app.lib.artist(a.name.toLowerCase());
-        final photo = widget.compact ? 150.0 : 210.0;
-        Widget row(String kind, List<Widget> tiles, {double w = 200, double h = 270}) => tiles.isEmpty
-            ? const SizedBox.shrink()
-            : Padding(
-                padding: const EdgeInsets.only(top: 34),
-                child: TileRow(
-                  title: _sectionNames[kind]!,
-                  tileWidth: w,
-                  height: h,
-                  tiles: tiles.take(12).toList(),
-                  // Больше, чем помещается в ряд, — раздел открывается целиком
-                  onMore: tiles.length > 6 ? () => nav.go(Nav('websection', '${a.id}:$kind')) : null,
-                ),
-              );
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 40, pad, 40), children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            netCover(a.picture, photo, round: true),
-            const SizedBox(width: 28),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(a.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(widget.compact ? 30 : 44, weight: FontWeight.w700)),
-                const SizedBox(height: 8),
-                Text(
-                  [
-                    if (a.fans > 0) '${_fans(a.fans)} поклонников на Deezer',
-                    if (mine != null) '${countTracks(mine.tracks.length)} в библиотеке',
-                  ].join(' · '),
-                  style: const TextStyle(color: C.muted),
-                ),
-                const SizedBox(height: 16),
-                Wrap(spacing: 10, runSpacing: 10, children: [
-                  if (mine != null)
-                    FilledButton.icon(
-                      onPressed: () => nav.go(Nav('artist', mine.key)),
-                      icon: const Icon(Icons.library_music_rounded, size: 18),
-                      label: const Text('В библиотеке'),
-                    ),
-                  if (a.link.isNotEmpty)
-                    OutlinedButton.icon(
-                      onPressed: () => launchUrl(Uri.parse(a.link)),
-                      icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                      label: const Text('Deezer'),
-                    ),
-                ]),
-              ]),
-            ),
-          ]),
-          if (d.top.isNotEmpty) ...[
-            const SizedBox(height: 34),
-            SectionTitle('Топ-песни', onTap: d.top.length > 12 ? () => nav.go(Nav('websection', '${a.id}:top')) : null),
-            WebTrackGrid(tracks: d.top),
-          ],
-          row('album', [for (final x in d.ofKind('album')) albumTile(context, x)]),
-          row('single', [for (final x in d.ofKind('single')) albumTile(context, x)]),
-          row('compile', [for (final x in d.ofKind('compile')) albumTile(context, x)]),
-          row('related', [for (final x in d.related) artistTile(context, x)], w: 160, h: 200),
-        ]);
+        if (mine != null) return ArtistProfilePage(artistKey: mine.key, webId: a.id, compact: widget.compact);
+        return ProfileLayout(
+          compact: widget.compact,
+          avatar: netCover(a.picture, 220, round: true),
+          name: a.name,
+          subtitle: a.fans > 0 ? '${_fans(a.fans)} поклонников на Deezer · в библиотеке нет' : 'В библиотеке нет',
+          sections: [WebArtistSections(artistId: a.id, name: a.name, compact: widget.compact)],
+        );
       },
     );
   }
+}
 
-  static String _fans(int n) {
-    if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1).replaceAll('.0', '')} млн';
-    if (n >= 1000) return '${(n / 1000).round()} тыс.';
-    return '$n';
-  }
+String _fans(int n) {
+  if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1).replaceAll('.0', '')} млн';
+  if (n >= 1000) return '${(n / 1000).round()} тыс.';
+  return '$n';
 }
 
 /// Раздел исполнителя целиком: все песни, альбомы, синглы, сборники или похожие

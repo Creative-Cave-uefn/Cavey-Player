@@ -12,6 +12,7 @@ import 'shell.dart';
 import 'profile_edit.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'web_pages.dart';
 import 'web_views.dart';
 import 'widgets.dart';
 
@@ -417,10 +418,15 @@ Widget _albumTile(BuildContext context, Album a) => _tile(
 
 // ---------- страница исполнителя ----------
 
+/// Страница исполнителя — одна и для библиотеки, и для поиска: шапка профиля,
+/// дальше полная дискография из интернета, а в ней раздел «Скачанное» — что есть у вас
 class ArtistProfilePage extends StatelessWidget {
   final String artistKey;
   final bool compact;
-  const ArtistProfilePage({super.key, required this.artistKey, required this.compact});
+
+  /// id исполнителя на Deezer, если уже известен (пришли из поиска)
+  final int? webId;
+  const ArtistProfilePage({super.key, required this.artistKey, required this.compact, this.webId});
 
   static String _when(Track t) => t.added.isNotEmpty ? t.added : t.modified;
 
@@ -487,29 +493,37 @@ class ArtistProfilePage extends StatelessWidget {
             color: fav ? C.accent : null,
           ),
           sections: [
-            SectionTitle('Топ-песни', onTap: () => NavScope.of(context).go(Nav('artistTracks', a.key))),
-            TrackGrid(tracks: ranked),
-            if (own.isNotEmpty) ...[
-              const SizedBox(height: 36),
-              TileRow(
-                title: 'Альбомы',
-                tileWidth: compact ? 180 : 240,
-                height: compact ? 252 : 312,
-                tiles: [for (final al in own) _albumTile(context, al)],
-              ),
-            ],
-            if (guest.isNotEmpty) ...[
-              const SizedBox(height: 36),
-              TileRow(
-                title: 'Участвует в',
-                tileWidth: compact ? 180 : 240,
-                height: compact ? 252 : 312,
-                tiles: [for (final al in guest) _albumTile(context, al)],
-              ),
-            ],
-            // Из интернета: описание и то, чего нет в библиотеке, с отрывками и «Скачать»
-            const SizedBox(height: 28),
-            ArtistWebSection(key: ValueKey('web:${a.key}'), artist: a, compact: compact, padded: false),
+            WebArtistSections(
+              key: ValueKey('web:${a.key}'),
+              artistId: webId,
+              name: a.name,
+              compact: compact,
+              // «Скачанное» — сразу после «Топ-песен» из интернета: это играет целиком
+              library: [
+                SectionTitle('Скачанное', onTap: () => NavScope.of(context).go(Nav('artistTracks', a.key))),
+                TrackGrid(tracks: ranked),
+                if (own.isNotEmpty) ...[
+                  const SizedBox(height: 36),
+                  TileRow(
+                    title: 'Скачанные альбомы',
+                    tileWidth: compact ? 180 : 240,
+                    height: compact ? 252 : 312,
+                    tiles: [for (final al in own) _albumTile(context, al)],
+                  ),
+                ],
+              ],
+              guest: [
+                if (guest.isNotEmpty) ...[
+                  const SizedBox(height: 36),
+                  TileRow(
+                    title: 'Участвует в',
+                    tileWidth: compact ? 180 : 240,
+                    height: compact ? 252 : 312,
+                    tiles: [for (final al in guest) _albumTile(context, al)],
+                  ),
+                ],
+              ],
+            ),
           ],
         );
       },
