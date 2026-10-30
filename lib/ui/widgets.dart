@@ -1,8 +1,10 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/covers.dart';
 import '../core/models.dart';
 import 'shell.dart';
 import 'theme.dart';
@@ -64,6 +66,9 @@ class Wordmark extends StatelessWidget {
 class CoverImage extends StatefulWidget {
   final Track? track;
   final double size;
+
+  /// Высота, если картинка не квадратная (баннер)
+  final double? height;
   final double radius;
 
   /// Картинка из папки covers на Диске (обложка плейлиста или выбранная вручную) — важнее обложки трека
@@ -71,54 +76,122 @@ class CoverImage extends StatefulWidget {
 
   /// Подпись на плашке, пока нет картинки (по умолчанию — альбом трека)
   final String? label;
-  const CoverImage({super.key, required this.track, required this.size, this.radius = 6, this.fileId, this.label});
+
+  /// Не просить копию крупнее этого размера в пикселях (для размытых баннеров хватает 640)
+  final int? maxPx;
+  const CoverImage({super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx});
 
   @override
   State<CoverImage> createState() => _CoverImageState();
 }
 
 class _CoverImageState extends State<CoverImage> {
-  Future<Uint8List?>? _future;
+  Uint8List? _bytes;
   String? _key;
+  int _px = 0;
+  int _gen = 0;
+  bool _wants = false;
+  CoverService? _svc;
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final svc = Services.of(context).covers;
+    if (!identical(svc, _svc)) {
+      _svc?.removeListener(_onReady);
+      _svc = svc..addListener(_onReady);
+      _key = null;
+    }
+    _ensure();
+  }
+
+  @override
+  void didUpdateWidget(CoverImage old) {
+    super.didUpdateWidget(old);
+    _ensure();
+  }
+
+  @override
+  void dispose() {
+    _svc?.removeListener(_onReady);
+    super.dispose();
+  }
+
+  int get _wantPx {
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
+    final px = (math.max(widget.size, widget.height ?? 0) * dpr).round();
+    final cap = widget.maxPx;
+    return cap != null && px > cap ? cap : px;
+  }
+
+  /// Ключ поменялся (другой трек, другой человек) — старую картинку не показываем ни на кадр
   void _ensure() {
+    final svc = _svc;
+    if (svc == null) return;
     final t = widget.track;
-    final covers = Services.of(context).covers;
     final id = widget.fileId;
-    final key = id != null ? 'cv_$id' : (t == null ? null : covers.keyOf(t));
-    if (key == _key && _future != null) return;
+    final key = id != null ? 'cv_$id' : (t == null ? null : svc.keyOf(t));
+    final px = _wantPx;
+    final bucket = CoverService.bucketFor(px);
+    if (key == _key && bucket == _px) return;
+    final sameKey = key == _key;
     _key = key;
-    _future = id != null ? covers.forFile(id) : (t == null ? Future.value(null) : covers.forTrack(t));
+    _px = bucket;
+    _wants = id != null || (t != null && svc.wants(t));
+    final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
+    if (!sameKey || peek != null) _bytes = peek;
+    if (peek == null && _wants) _request();
+  }
+
+  void _request() {
+    final svc = _svc;
+    if (svc == null) return;
+    final t = widget.track;
+    final id = widget.fileId;
+    final key = _key;
+    final gen = ++_gen;
+    final px = _wantPx;
+    final f = id != null ? svc.forFile(id, px: px) : (t == null ? Future<Uint8List?>.value(null) : svc.forTrack(t, px: px));
+    f.then((b) {
+      if (!mounted || gen != _gen || key != _key || b == null || identical(b, _bytes)) return;
+      setState(() => _bytes = b);
+    });
+  }
+
+  /// Сервис что-то догрузил или пришло время повторить: если у нас картинки ещё нет, пробуем снова
+  void _onReady() {
+    if (!mounted || _bytes != null || !_wants || _key == null) return;
+    final t = widget.track;
+    final id = widget.fileId;
+    final svc = _svc!;
+    final px = _wantPx;
+    final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
+    if (peek != null) {
+      setState(() => _bytes = peek);
+    } else {
+      _request();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    _ensure();
     final t = widget.track;
     final placeholder = _Placeholder(label: widget.label ?? t?.displayAlbum ?? '', size: widget.size);
-    final covers = Services.of(context).covers;
-    final id = widget.fileId;
-    final peek = id != null ? covers.peekFile(id) : (t == null ? null : covers.peek(t));
     final dpr = MediaQuery.devicePixelRatioOf(context);
+    final bytes = _bytes;
     return ClipRRect(
       borderRadius: BorderRadius.circular(widget.radius),
-      child: SizedBox.square(
-        dimension: widget.size,
-        child: FutureBuilder<Uint8List?>(
-          future: _future,
-          initialData: peek,
-          builder: (context, snap) {
-            final bytes = snap.data;
-            if (bytes == null) return placeholder;
-            return Image.memory(
-              bytes,
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
-              cacheWidth: (widget.size * dpr).round(),
-              errorBuilder: (_, __, ___) => placeholder,
-            );
-          },
-        ),
+      child: SizedBox(
+        width: widget.size,
+        height: widget.height ?? widget.size,
+        child: bytes == null
+            ? placeholder
+            : Image.memory(
+                bytes,
+                fit: BoxFit.cover,
+                cacheWidth: (widget.size * dpr).round(),
+                errorBuilder: (_, __, ___) => placeholder,
+              ),
       ),
     );
   }

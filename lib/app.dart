@@ -87,6 +87,8 @@ class AppServices {
     };
     accounts.addListener(lib.saveSettings);
     await lib.start();
+    // Картинки первых треков читаем с диска заранее, чтобы список открылся уже с обложками
+    unawaited(covers.warm(lib.allTracks));
     updater.start();
     await cache.init();
     player.restoreSession();

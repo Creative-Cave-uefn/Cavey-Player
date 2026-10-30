@@ -82,20 +82,26 @@ class _ShellState extends State<Shell> {
   final _nav = NavController();
   StreamSubscription<String>? _msgs;
   bool _dragging = false;
+  String? _toast;
+  Timer? _toastTimer;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _msgs ??= Services.of(context).lib.messages.stream.listen((m) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(m), duration: const Duration(seconds: 4)));
+      // Своя плашка вместо SnackBar: маленькая, по центру и над плеером, ничего не перекрывает
+      setState(() => _toast = m);
+      _toastTimer?.cancel();
+      _toastTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted) setState(() => _toast = null);
+      });
     });
   }
 
   @override
   void dispose() {
+    _toastTimer?.cancel();
     _msgs?.cancel();
     _nav.dispose();
     super.dispose();
@@ -142,14 +148,15 @@ class _ShellState extends State<Shell> {
                         builder: (context, nav, _) => Stack(children: [
                           Positioned.fill(child: _content(nav, compact)),
                           Positioned(
-                            top: 4,
-                            left: compact ? 6 : 14,
+                            top: 10,
+                            left: compact ? 16 : 28,
                             child: Row(children: [
                               _HistoryButton(
                                 icon: Icons.chevron_left_rounded,
                                 tooltip: 'Назад (Alt+←)',
                                 onPressed: _nav.canBack ? _nav.back : null,
                               ),
+                              const SizedBox(width: 6),
                               _HistoryButton(
                                 icon: Icons.chevron_right_rounded,
                                 tooltip: 'Вперёд (Alt+→)',
@@ -172,6 +179,24 @@ class _ShellState extends State<Shell> {
               ]);
             }),
           ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: selectionBarOpen,
+                  // Над плеером, а если открыта панель выбора треков — выше неё
+                  builder: (context, bar, child) => Padding(padding: EdgeInsets.only(bottom: bar ? 92 + 84 : 92 + 14), child: child),
+                  child: IgnorePointer(
+                    child: Center(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 160),
+                        child: _toast == null ? const SizedBox.shrink(key: ValueKey('none')) : _ToastCard(_toast!, key: ValueKey(_toast)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
               if (_dragging) const Positioned.fill(child: IgnorePointer(child: _DropOverlay())),
             ]),
           ),
@@ -291,6 +316,37 @@ class _ShellState extends State<Shell> {
   }
 }
 
+/// Небольшое уведомление по центру над плеером
+class _ToastCard extends StatelessWidget {
+  final String text;
+  const _ToastCard(this.text, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // Material нужен, чтобы у текста вне Scaffold не было жёлтого подчёркивания
+    return Material(
+      type: MaterialType.transparency,
+      child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 620),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
+        decoration: BoxDecoration(
+          color: C.panelRaised, // плавает поверх содержимого — стекло тут просвечивало бы
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: C.line),
+          boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 14, offset: Offset(0, 4))],
+        ),
+        child: Text(text,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: C.text, fontSize: 16, fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
+      ),
+      ),
+    );
+  }
+}
+
 class _Sidebar extends StatelessWidget {
   final bool compact;
   const _Sidebar({required this.compact});
@@ -308,11 +364,11 @@ class _Sidebar extends StatelessWidget {
         builder: (context, _) {
           final lib = app.lib;
           final cur = nav.value;
-          Widget item(IconData icon, String label, Nav target, {Widget? trailing}) => _NavItem(
+          Widget item(IconData icon, String label, Nav target, {Widget? trailing, List<String> also = const []}) => _NavItem(
                 icon: icon,
                 label: label,
                 compact: compact,
-                selected: cur.same(target),
+                selected: cur.same(target) || also.contains(cur.kind),
                 trailing: trailing,
                 onTap: () => nav.go(target),
               );
@@ -326,19 +382,19 @@ class _Sidebar extends StatelessWidget {
                   : const Align(alignment: Alignment.centerLeft, child: Wordmark()),
             ),
             item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
-            item(Icons.library_music_outlined, 'Все треки', const Nav('all')),
-            item(Icons.album_outlined, 'Альбомы', const Nav('albums')),
-            item(Icons.mic_none_rounded, 'Исполнители', const Nav('artists')),
-            item(Icons.schedule_rounded, 'Недавно добавленные', const Nav('recent')),
-            item(Icons.new_releases_outlined, 'Новинки', const Nav('new')),
+            item(Icons.library_music_outlined, 'Все треки', const Nav('all'),
+                also: const ['albums', 'artists', 'recent']),
+            const SizedBox(height: 14),
             item(Icons.travel_explore_rounded, 'Поиск в интернете', const Nav('websearch')),
+            item(Icons.new_releases_outlined, 'Новинки', const Nav('new')),
             item(Icons.cloud_download_outlined, 'Скачать', const Nav('download'),
                 trailing: app.downloads.busy
                     ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
                     : null),
+            const SizedBox(height: 14),
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
-            item(Icons.groups_outlined, 'Компания', const Nav('company')),
             if (lib.me != null) item(Icons.person_outline_rounded, 'Моя страница', Nav('user', lib.me)),
+            item(Icons.groups_outlined, 'Компания', const Nav('company')),
             NowListeningSidebar(compact: compact),
             const SizedBox(height: 18),
             _PlaylistsHeader(compact: compact, selected: cur.same(const Nav('playlists')), mode: mode),

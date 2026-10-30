@@ -9,6 +9,7 @@ import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
 import 'ambient.dart';
+import 'company_view.dart';
 import 'shell.dart';
 import 'profile_edit.dart';
 import 'theme.dart';
@@ -62,14 +63,14 @@ Future<Color?> _trackTint(AppServices app, Track t) async {
   final key = app.covers.keyOf(t);
   final cached = _tintCache[key];
   if (cached != null) return cached;
-  final bytes = await app.covers.forTrack(t);
+  final bytes = await app.covers.forTrack(t, px: 160);
   if (bytes == null) return null;
   return _tintOf(bytes, key);
 }
 
 // ---------- общая раскладка ----------
 
-class ProfileLayout extends StatelessWidget {
+class ProfileLayout extends StatefulWidget {
   final bool compact;
   final Widget avatar;
   final Future<Color?>? tintFuture;
@@ -86,6 +87,8 @@ class ProfileLayout extends StatelessWidget {
 
   /// Чем красить фон окна, пока открыт этот профиль (важнее обложки текущего трека)
   final AmbientSource? ambient;
+  /// Дополнительные кнопки сбоку от шапки (например, «Слушать вместе»); на узком окне уходят под кнопки
+  final Widget? extras;
 
   const ProfileLayout({
     super.key,
@@ -101,10 +104,60 @@ class ProfileLayout extends StatelessWidget {
     this.thirdButton,
     this.bannerFileId,
     this.ambient,
+    this.extras,
   });
 
   @override
+  State<ProfileLayout> createState() => _ProfileLayoutState();
+}
+
+class _ProfileLayoutState extends State<ProfileLayout> {
+  final _scroll = ScrollController();
+
+  /// На какой высоте прокрутки баннер исчезает совсем
+  static const _fadeAt = 360.0;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Баннер (или градиент) уезжает вверх медленнее страницы, растворяется и чуть увеличивается
+  Widget _backdrop(Widget child) => Positioned.fill(
+        // Увеличенная картинка не должна выезжать за вкладку на левую панель
+        child: ClipRect(
+         child: AnimatedBuilder(
+          animation: _scroll,
+          builder: (context, c) {
+            final off = _scroll.hasClients ? _scroll.offset.clamp(0.0, 4000.0).toDouble() : 0.0;
+            final t = (off / _fadeAt).clamp(0.0, 1.0);
+            return Opacity(
+              opacity: 1 - t,
+              child: Transform.translate(
+                offset: Offset(0, -off * 0.5),
+                child: Transform.scale(scale: 1 + 0.08 * t, alignment: Alignment.topCenter, child: c),
+              ),
+            );
+          },
+          child: child,
+         ),
+        ),
+      );
+
+  @override
   Widget build(BuildContext context) {
+    final compact = widget.compact;
+    final avatar = widget.avatar;
+    final name = widget.name;
+    final subtitle = widget.subtitle;
+    final onPlay = widget.onPlay;
+    final onInfo = widget.onInfo;
+    final thirdButton = widget.thirdButton;
+    final sections = widget.sections;
+    final bannerFileId = widget.bannerFileId;
+    final tintFuture = widget.tintFuture;
+    final tintNow = widget.tintNow;
     final pad = compact ? 20.0 : 40.0;
     final photo = compact ? 160.0 : 220.0;
     Widget page(Color? tint) {
@@ -112,16 +165,16 @@ class ProfileLayout extends StatelessWidget {
       final top = (tint ?? C.raised).withValues(alpha: 0.35);
       return Stack(children: [
         if (bannerFileId != null)
-          Positioned.fill(child: Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId!)))
+          _backdrop(Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId)))
         else
-          Positioned.fill(
-            child: DecoratedBox(
+          _backdrop(
+            DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [top, Colors.transparent], stops: const [0.0, 0.75]),
               ),
             ),
           ),
-        CustomScrollView(slivers: [
+        CustomScrollView(controller: _scroll, slivers: [
           SliverToBoxAdapter(
             child: Padding(
               padding: EdgeInsets.fromLTRB(pad, 56, pad, 0),
@@ -145,6 +198,7 @@ class ProfileLayout extends StatelessWidget {
                   const SizedBox(width: 16),
                   thirdButton ?? const SizedBox.square(dimension: 42),
                 ]),
+                if (widget.extras != null && compact) ...[const SizedBox(height: 16), widget.extras!],
               ]),
             ),
           ),
@@ -155,6 +209,17 @@ class ProfileLayout extends StatelessWidget {
             ),
           ),
         ]),
+        if (widget.extras != null && !compact)
+          Positioned(
+            right: pad,
+            top: 56 + photo / 2 - 40,
+            width: 220,
+            child: AnimatedBuilder(
+              animation: _scroll,
+              builder: (context, c) => Transform.translate(offset: Offset(0, -(_scroll.hasClients ? _scroll.offset : 0.0)), child: c),
+              child: widget.extras!,
+            ),
+          ),
       ]);
     }
 
@@ -194,13 +259,8 @@ class _Banner extends StatelessWidget {
             child: Stack(fit: StackFit.expand, children: [
               ImageFiltered(
                 imageFilter: ui.ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-                child: FutureBuilder<Uint8List?>(
-                  future: covers.forFile(fileId),
-                  initialData: covers.peekFile(fileId),
-                  builder: (context, snap) => snap.data == null
-                      ? const SizedBox.shrink()
-                      : Image.memory(snap.data!, fit: BoxFit.cover, gaplessPlayback: true),
-                ),
+                // Баннер размыт, поэтому хватает копии в 640 px: она читается с диска мгновенно
+                child: CoverImage(track: null, fileId: fileId, label: '', size: box.maxWidth, height: h, radius: 0, maxPx: 640),
               ),
               ColoredBox(color: Colors.black.withValues(alpha: 0.45)),
             ]),
@@ -662,6 +722,7 @@ class UserProfilePage extends StatelessWidget {
             },
             color: friendColor(email),
           ),
+          extras: email == lib.me ? null : ListenActions(email: email),
           thirdButton: email == lib.me
               ? _roundButton(Icons.edit_rounded, () => editProfileDialog(context), tooltip: 'Изменить профиль')
               : null,

@@ -7,6 +7,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import '../config.dart';
 import 'drive.dart';
 import 'library.dart';
 import 'log.dart';
@@ -23,7 +24,7 @@ class NowPlaying {
   const NowPlaying(this.trackId, this.title, this.artist, this.playing, this.pos, this.at);
 
   /// Где трек сейчас, с учётом времени, прошедшего с последнего сохранения
-  Duration estimate() => playing ? pos + DateTime.now().toUtc().difference(at) : pos;
+  Duration estimate() => playing ? pos + Member.nowSynced.difference(at) : pos;
 
   Map<String, dynamic> toJson() =>
       {'id': trackId, 't': title, 'a': artist, 'p': playing, 'pos': pos.inMilliseconds, 'at': at.toIso8601String()};
@@ -56,13 +57,22 @@ class Member {
   NowPlaying? now;
   List<Map<String, dynamic>> events;
   Map<String, Map<String, int>> plays; // день → трек → сколько раз
-  Member(this.email, this.name, this.updated, this.now, this.events, this.plays);
+
+  /// Версия приложения у человека (пишется в статус; у старых версий пусто)
+  String version;
+  Member(this.email, this.name, this.updated, this.now, this.events, this.plays, [this.version = '']);
+
+  /// На сколько часы этого компьютера уходят от часов Google Диска. Статусы друзей мы сверяем
+  /// со временем Диска, поэтому чужие или свои неточные часы больше не прячут «слушает сейчас».
+  static Duration skew = Duration.zero;
+
+  static DateTime get nowSynced => DateTime.now().toUtc().add(skew);
 
   /// Слушает прямо сейчас
-  bool get live => now != null && now!.playing && DateTime.now().toUtc().difference(updated) < const Duration(seconds: 100);
+  bool get live => now != null && now!.playing && nowSynced.difference(updated) < const Duration(seconds: 100);
 
   /// Недавно был, но на паузе
-  bool get recent => now != null && DateTime.now().toUtc().difference(updated) < const Duration(minutes: 15);
+  bool get recent => now != null && nowSynced.difference(updated) < const Duration(minutes: 15);
 
   static Member fromJson(Map j) {
     final plays = <String, Map<String, int>>{};
@@ -79,6 +89,7 @@ class Member {
       NowPlaying.fromJson(j['now']),
       [for (final e in (j['events'] as List? ?? const [])) if (e is Map) e.cast<String, dynamic>()],
       plays,
+      '${j['v'] ?? ''}',
     );
   }
 }
@@ -199,6 +210,7 @@ class SocialController extends ChangeNotifier {
       'email': me,
       'name': lib.accounts.primary?.name ?? '',
       'updated': DateTime.now().toUtc().toIso8601String(),
+      'v': kAppVersion,
       'now': _myNow()?.toJson(),
       'events': _myEvents,
       'plays': _myPlays,
@@ -240,6 +252,7 @@ class SocialController extends ChangeNotifier {
         } else {
           _fileModified[id] = await drive.updateFile(email, id, body);
         }
+        _measureSkew(_fileModified[_myFileId ?? id]);
       });
       if (lastWrite == null) AppLog.info('Статус сохранён в cave-data');
       lastWrite = DateTime.now();
@@ -250,6 +263,15 @@ class SocialController extends ChangeNotifier {
     } finally {
       _writing = false;
     }
+  }
+
+  /// Время изменения файла на Диске — серверное. Сравнив его с нашими часами, узнаём, насколько они врут
+  void _measureSkew(String? serverTime) {
+    final srv = serverTime == null ? null : DateTime.tryParse(serverTime)?.toUtc();
+    if (srv == null) return;
+    final d = srv.difference(DateTime.now().toUtc());
+    // Мелкие расхождения (задержка сети) не трогаем
+    Member.skew = d.abs() < const Duration(seconds: 3) ? Duration.zero : d;
   }
 
   // ---------- что слушают друзья ----------
@@ -281,7 +303,7 @@ class SocialController extends ChangeNotifier {
           if (_loadedMine) continue;
         }
         if (_fileModified[f.id] == f.modifiedTime && members.containsKey(email)) continue;
-        await _load(f.id, email);
+        await _load(f.id, email, serverTime: f.modifiedTime);
         _fileModified[f.id] = f.modifiedTime;
       }
       lastPoll = DateTime.now();
@@ -304,12 +326,22 @@ class SocialController extends ChangeNotifier {
     }
   }
 
-  Future<void> _load(String fileId, String email) async {
+  Future<void> _load(String fileId, String email, {String? serverTime}) async {
     _fileOwner[email] = fileId;
     final bytes = await lib.withHub((e) => drive.download(e, fileId));
     final j = jsonDecode(utf8.decode(bytes));
     if (j is! Map) return;
     final m = Member.fromJson(j);
+    // Часы у друга могут врать: за время берём момент записи файла на Диске
+    final srv = serverTime == null ? null : DateTime.tryParse(serverTime)?.toUtc();
+    if (srv != null) {
+      final off = srv.difference(m.updated);
+      if (off.abs() > const Duration(seconds: 10)) {
+        final n = m.now;
+        if (n != null) m.now = NowPlaying(n.trackId, n.title, n.artist, n.playing, n.pos, n.at.add(off));
+        m.updated = srv;
+      }
+    }
     if (email == me) {
       // История с другого компьютера: объединяем с тем, что накопилось здесь
       final known = {for (final e in _myEvents) '${e['at']}${e['k']}'};
@@ -415,7 +447,7 @@ class SocialController extends ChangeNotifier {
     try {
       final meta = await lib.withHub((e) => drive.getFile(e, id, fields: 'id,modifiedTime'));
       if (meta['modifiedTime'] != _fileModified[id]) {
-        await _load(id, email);
+        await _load(id, email, serverTime: '${meta['modifiedTime']}');
         _fileModified[id] = '${meta['modifiedTime']}';
         notifyListeners();
       } else {

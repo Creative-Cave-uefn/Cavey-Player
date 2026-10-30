@@ -5,6 +5,7 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/image_tools.dart';
 import 'crop_dialog.dart';
 import 'theme.dart';
 
@@ -37,7 +38,9 @@ Future<PickedCover?> pickCoverFile(
     }
     return null;
   }
-  return PickedCover(cropped, 'png');
+  // На Диск уходит сжатый JPEG: аватарка около 50 КБ, баннер около 250 КБ вместо мегабайт PNG
+  final jpeg = await compressImage(cropped, maxSide: outWidth, quality: outWidth >= 1200 ? 82 : 85);
+  return PickedCover(jpeg, identical(jpeg, cropped) ? 'png' : 'jpg');
 }
 
 Future<bool> _decodes(Uint8List b) async {

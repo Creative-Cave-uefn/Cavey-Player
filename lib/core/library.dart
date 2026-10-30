@@ -844,7 +844,8 @@ class LibraryController extends ChangeNotifier {
     } else {
       suspiciousSources.remove(s.id);
     }
-    return toParse.where((f) => existing[f.file.id] == null).length;
+    // Сообщаем только о своих новых треках: чужие появляются в библиотеке и ленте без уведомления
+    return mine;
   }
 
   Future<(List<_Found>, Map<String, String>)> _walk(String email, Source s) async {
@@ -892,6 +893,15 @@ class LibraryController extends ChangeNotifier {
     final on = !isLiked(trackId);
     commit({'op': 'like', 'id': trackId, 'email': m, 'on': on});
     if (on) onEvent?.call({'k': 'like', 'track': trackId});
+  }
+
+  /// Добавить в любимое сразу несколько треков (или убрать, если [on] false). Лента не засоряется.
+  void setLikes(Iterable<String> trackIds, bool on) {
+    final m = me;
+    if (m == null) return;
+    for (final id in trackIds) {
+      if (isLiked(id) != on) commit({'op': 'like', 'id': id, 'email': m, 'on': on});
+    }
   }
 
   String createPlaylist(String name, [List<String> items = const []]) {
