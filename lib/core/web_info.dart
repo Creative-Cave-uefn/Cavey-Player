@@ -23,6 +23,9 @@ class WebArtist {
   const WebArtist(this.id, this.name, this.picture, this.fans, this.link);
 
   Map<String, dynamic> toJson() => {'id': id, 'name': name, 'pic': picture, 'fans': fans, 'link': link};
+  static WebArtist fromDeezer(Map a) => WebArtist((a['id'] as num).toInt(), '${a['name']}',
+      '${a['picture_xl'] ?? a['picture_big'] ?? a['picture_medium'] ?? ''}', (a['nb_fan'] as num?)?.toInt() ?? 0, '${a['link'] ?? ''}');
+
   static WebArtist fromJson(Map j) =>
       WebArtist((j['id'] as num).toInt(), '${j['name']}', '${j['pic'] ?? ''}', (j['fans'] as num?)?.toInt() ?? 0, '${j['link'] ?? ''}');
 }
@@ -35,15 +38,35 @@ class WebAlbum {
   final String type; // album, single, ep, compile
   final String artist;
   final String link;
-  const WebAlbum(this.id, this.title, this.cover, this.date, this.type, this.artist, this.link);
+  final int artistId;
+  final int tracks; // число треков, если известно
+  const WebAlbum(this.id, this.title, this.cover, this.date, this.type, this.artist, this.link, {this.artistId = 0, this.tracks = 0});
 
   String get year => date.length >= 4 ? date.substring(0, 4) : '';
   String get typeLabel => switch (type) { 'single' => 'Сингл', 'ep' => 'EP', 'compile' => 'Сборник', _ => 'Альбом' };
   DateTime? get released => DateTime.tryParse(date);
 
-  Map<String, dynamic> toJson() => {'id': id, 't': title, 'c': cover, 'd': date, 'k': type, 'a': artist, 'l': link};
+  Map<String, dynamic> toJson() =>
+      {'id': id, 't': title, 'c': cover, 'd': date, 'k': type, 'a': artist, 'l': link, 'ai': artistId, 'n': tracks};
   static WebAlbum fromJson(Map j) => WebAlbum((j['id'] as num).toInt(), '${j['t']}', '${j['c'] ?? ''}', '${j['d'] ?? ''}',
-      '${j['k'] ?? 'album'}', '${j['a'] ?? ''}', '${j['l'] ?? ''}');
+      '${j['k'] ?? 'album'}', '${j['a'] ?? ''}', '${j['l'] ?? ''}',
+      artistId: (j['ai'] as num?)?.toInt() ?? 0, tracks: (j['n'] as num?)?.toInt() ?? 0);
+
+  /// Из ответа Deezer (альбом в списке, в поиске или отдельно)
+  static WebAlbum fromDeezer(Map x, {String artist = '', int artistId = 0}) {
+    final a = x['artist'] as Map?;
+    return WebAlbum(
+      (x['id'] as num).toInt(),
+      '${x['title'] ?? ''}',
+      '${x['cover_xl'] ?? x['cover_big'] ?? x['cover_medium'] ?? ''}',
+      '${x['release_date'] ?? ''}',
+      '${x['record_type'] ?? 'album'}',
+      a?['name'] != null ? '${a!['name']}' : artist,
+      '${x['link'] ?? ''}',
+      artistId: (a?['id'] as num?)?.toInt() ?? artistId,
+      tracks: (x['nb_tracks'] as num?)?.toInt() ?? 0,
+    );
+  }
 }
 
 class WebTrack {
@@ -53,7 +76,30 @@ class WebTrack {
   final String preview; // 30 секунд mp3, может быть пустым
   final int seconds;
   final String link;
-  const WebTrack(this.id, this.title, this.artist, this.preview, this.seconds, this.link);
+  final int artistId;
+  final int albumId;
+  final String album;
+  final String cover;
+  const WebTrack(this.id, this.title, this.artist, this.preview, this.seconds, this.link,
+      {this.artistId = 0, this.albumId = 0, this.album = '', this.cover = ''});
+
+  /// Из ответа Deezer; [album] — если трек пришёл в составе альбома
+  static WebTrack fromDeezer(Map x, {Map? album}) {
+    final a = x['artist'] as Map?;
+    final al = (x['album'] as Map?) ?? album;
+    return WebTrack(
+      (x['id'] as num).toInt(),
+      '${x['title'] ?? ''}',
+      '${a?['name'] ?? ''}',
+      '${x['preview'] ?? ''}',
+      (x['duration'] as num?)?.toInt() ?? 0,
+      '${x['link'] ?? ''}',
+      artistId: (a?['id'] as num?)?.toInt() ?? 0,
+      albumId: (al?['id'] as num?)?.toInt() ?? 0,
+      album: '${al?['title'] ?? ''}',
+      cover: '${al?['cover_medium'] ?? al?['cover_big'] ?? ''}',
+    );
+  }
 }
 
 class WebBio {
@@ -286,8 +332,11 @@ class WebInfoService extends ChangeNotifier {
   }
 
   /// Альбомы и синглы исполнителя, новые сверху
-  Future<List<WebAlbum>> albums(WebArtist a) async {
+  Future<List<WebAlbum>> albums(WebArtist a) => albumsOf(a.id, a.name);
+
+  Future<List<WebAlbum>> albumsOf(int artistId, String artistName) async {
     await _load();
+    final a = (id: artistId, name: artistName);
     final key = 'albums:${a.id}';
     final hit = _fresh(key, _albumsTtl, (v) => [for (final x in (v as List)) WebAlbum.fromJson(x as Map)]);
     if (hit != null) return hit;
@@ -295,8 +344,7 @@ class WebInfoService extends ChangeNotifier {
     final list = [
       for (final x in (j['data'] as List? ?? const []))
         if (x is Map)
-          WebAlbum((x['id'] as num).toInt(), '${x['title']}', '${x['cover_xl'] ?? x['cover_big'] ?? ''}', '${x['release_date'] ?? ''}',
-              '${x['record_type'] ?? 'album'}', a.name, '${x['link'] ?? ''}')
+          WebAlbum.fromDeezer(x, artist: a.name, artistId: a.id)
     ]..sort((p, q) => q.date.compareTo(p.date));
     _put(key, [for (final x in list) x.toJson()]);
     return list;
@@ -312,10 +360,72 @@ class WebInfoService extends ChangeNotifier {
     final list = [
       for (final x in (j['data'] as List? ?? const []))
         if (x is Map)
-          WebTrack((x['id'] as num).toInt(), '${x['title']}', '${(x['artist'] as Map?)?['name'] ?? ''}', '${x['preview'] ?? ''}',
-              (x['duration'] as num?)?.toInt() ?? 0, '${x['link'] ?? ''}')
+          WebTrack.fromDeezer(x)
     ];
     return _tracks[albumId] = list;
+  }
+
+  // ---------- страницы исполнителя и альбома, поиск ----------
+
+  final Map<int, WebArtist> _artistsById = {};
+  final Map<int, List<WebTrack>> _top = {};
+  final Map<int, List<WebArtist>> _related = {};
+  final Map<int, WebAlbum> _albumsById = {};
+
+  /// Исполнитель по id Deezer (для страниц из поиска и «Похожих»)
+  Future<WebArtist> artistById(int id) async {
+    final hit = _artistsById[id];
+    if (hit != null) return hit;
+    return _artistsById[id] = WebArtist.fromDeezer(await _deezer('/artist/$id'));
+  }
+
+  /// Популярные треки исполнителя (до 50)
+  Future<List<WebTrack>> top(int id) async {
+    final hit = _top[id];
+    if (hit != null) return hit;
+    final j = await _deezer('/artist/$id/top', {'limit': '50'});
+    return _top[id] = [for (final x in (j['data'] as List? ?? const [])) if (x is Map) WebTrack.fromDeezer(x)];
+  }
+
+  /// Похожие исполнители
+  Future<List<WebArtist>> related(int id) async {
+    final hit = _related[id];
+    if (hit != null) return hit;
+    final j = await _deezer('/artist/$id/related', {'limit': '30'});
+    return _related[id] = [for (final x in (j['data'] as List? ?? const [])) if (x is Map) WebArtist.fromDeezer(x)];
+  }
+
+  /// Альбом целиком: сведения и треки
+  Future<(WebAlbum, List<WebTrack>)> albumById(int id) async {
+    final known = _albumsById[id];
+    final cached = _tracks[id];
+    if (known != null && cached != null) return (known, cached);
+    final j = await _deezer('/album/$id');
+    final album = WebAlbum.fromDeezer(j);
+    final tracks = [
+      for (final x in ((j['tracks'] as Map?)?['data'] as List? ?? const []))
+        if (x is Map) WebTrack.fromDeezer(x, album: j)
+    ];
+    _albumsById[id] = album;
+    _tracks[id] = tracks;
+    return (album, tracks);
+  }
+
+  /// Поиск по Deezer: треки, альбомы и исполнители сразу
+  Future<({List<WebTrack> tracks, List<WebAlbum> albums, List<WebArtist> artists})> search(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) return (tracks: const <WebTrack>[], albums: const <WebAlbum>[], artists: const <WebArtist>[]);
+    final r = await Future.wait([
+      _deezer('/search/track', {'q': q, 'limit': '30'}),
+      _deezer('/search/album', {'q': q, 'limit': '16'}),
+      _deezer('/search/artist', {'q': q, 'limit': '12'}),
+    ]);
+    List<Map> data(Map j) => [for (final x in (j['data'] as List? ?? const [])) if (x is Map) x];
+    return (
+      tracks: [for (final x in data(r[0])) WebTrack.fromDeezer(x)],
+      albums: [for (final x in data(r[1])) WebAlbum.fromDeezer(x)],
+      artists: [for (final x in data(r[2])) WebArtist.fromDeezer(x)],
+    );
   }
 
   // ---------- что уже есть в библиотеке ----------

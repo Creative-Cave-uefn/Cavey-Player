@@ -19,6 +19,7 @@ import 'profile_view.dart';
 import 'sources_view.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'web_pages.dart';
 import 'web_views.dart';
 import 'widgets.dart';
 
@@ -251,6 +252,20 @@ class _ShellState extends State<Shell> {
         return RecentPage(key: const ValueKey('recent'), compact: compact);
       case 'new':
         return NewReleasesPage(key: const ValueKey('new'), compact: compact);
+      case 'websearch':
+        return WebSearchPage(key: const ValueKey('websearch'), compact: compact);
+      case 'webartist':
+        return WebArtistPage(key: ValueKey('webartist:${nav.id}'), artistId: int.tryParse(nav.id ?? '') ?? 0, compact: compact);
+      case 'webalbum':
+        return WebAlbumPage(key: ValueKey('webalbum:${nav.id}'), albumId: int.tryParse(nav.id ?? '') ?? 0, compact: compact);
+      case 'websection':
+        final parts = (nav.id ?? '').split(':');
+        return WebSectionPage(
+          key: ValueKey('websection:${nav.id}'),
+          artistId: int.tryParse(parts.first) ?? 0,
+          kind: parts.length > 1 ? parts[1] : 'album',
+          compact: compact,
+        );
       case 'duplicates':
         return const DuplicatesPage(key: ValueKey('duplicates'));
       case 'sources':
@@ -299,6 +314,7 @@ class _Sidebar extends StatelessWidget {
             item(Icons.mic_none_rounded, 'Исполнители', const Nav('artists')),
             item(Icons.schedule_rounded, 'Недавно добавленные', const Nav('recent')),
             item(Icons.new_releases_outlined, 'Новинки', const Nav('new')),
+            item(Icons.travel_explore_rounded, 'Поиск в интернете', const Nav('websearch')),
             item(Icons.cloud_download_outlined, 'Скачать', const Nav('download'),
                 trailing: app.downloads.busy
                     ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))

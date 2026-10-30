@@ -287,7 +287,10 @@ class TileRow extends StatefulWidget {
   final List<Widget> tiles;
   final double tileWidth;
   final double height;
-  const TileRow({super.key, required this.title, required this.tiles, this.tileWidth = 220, this.height = 270});
+
+  /// «›» у заголовка — открыть раздел целиком
+  final VoidCallback? onMore;
+  const TileRow({super.key, required this.title, required this.tiles, this.tileWidth = 220, this.height = 270, this.onMore});
 
   @override
   State<TileRow> createState() => _TileRowState();
@@ -314,6 +317,7 @@ class _TileRowState extends State<TileRow> {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       SectionTitle(
         widget.title,
+        onTap: widget.onMore,
         trailing: many
             ? Row(mainAxisSize: MainAxisSize.min, children: [
                 IconButton(onPressed: () => _scroll(-1), icon: const Icon(Icons.chevron_left_rounded), tooltip: 'Назад'),

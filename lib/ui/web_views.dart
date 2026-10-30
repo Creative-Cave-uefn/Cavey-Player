@@ -167,6 +167,12 @@ class _ArtistWebSectionState extends State<ArtistWebSection> {
             const SizedBox(width: 10),
             if (missing.isNotEmpty) Text('${missing.length}', style: const TextStyle(color: C.faint)),
             const Spacer(),
+            // Полная онлайн-страница: топ-песни, все альбомы, синглы, похожие исполнители
+            TextButton.icon(
+              onPressed: () => NavScope.of(context).go(Nav('webartist', '${_web!.id}')),
+              icon: const Icon(Icons.travel_explore_rounded, size: 16),
+              label: const Text('Вся дискография'),
+            ),
             if (_web!.link.isNotEmpty)
               TextButton.icon(
                 onPressed: () => launchUrl(Uri.parse(_web!.link)),
