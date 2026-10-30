@@ -184,7 +184,7 @@ class WebInfoService extends ChangeNotifier {
   /// Уже известное (из кэша) — для мгновенного показа
   WebArtist? artistCached(String name) {
     if (!_loaded) return null;
-    return _fresh('artist:${_key(name)}', _artistTtl, (v) => v is Map ? WebArtist.fromJson(v) : null);
+    return _fresh<WebArtist?>('artist:${_key(name)}', _artistTtl, (v) => v is Map ? WebArtist.fromJson(v) : null);
   }
 
   /// Исполнитель на Deezer: точное совпадение имени, иначе самый популярный из похожих
@@ -284,7 +284,7 @@ class WebInfoService extends ChangeNotifier {
 
   WebBio? bioCached(String name) {
     if (!_loaded) return null;
-    return _fresh('bio:${_key(name)}', _artistTtl, (v) => v is Map ? WebBio('${v['t']}', '${v['u']}') : null);
+    return _fresh<WebBio?>('bio:${_key(name)}', _artistTtl, (v) => v is Map ? WebBio('${v['t']}', '${v['u']}') : null);
   }
 
   /// Короткое описание из Википедии (сначала русской). Берём, только если статья про музыканта
