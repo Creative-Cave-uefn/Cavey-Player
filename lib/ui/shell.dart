@@ -175,12 +175,17 @@ class _ShellState extends State<Shell> {
               Positioned(
                 left: 0,
                 right: 0,
-                bottom: 92 + 12,
-                child: IgnorePointer(
-                  child: Center(
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 160),
-                      child: _toast == null ? const SizedBox.shrink(key: ValueKey('none')) : _ToastCard(_toast!, key: ValueKey(_toast)),
+                bottom: 0,
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: selectionBarOpen,
+                  // Над плеером, а если открыта панель выбора треков — выше неё
+                  builder: (context, bar, child) => Padding(padding: EdgeInsets.only(bottom: bar ? 92 + 84 : 92 + 14), child: child),
+                  child: IgnorePointer(
+                    child: Center(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 160),
+                        child: _toast == null ? const SizedBox.shrink(key: ValueKey('none')) : _ToastCard(_toast!, key: ValueKey(_toast)),
+                      ),
                     ),
                   ),
                 ),
@@ -309,10 +314,13 @@ class _ToastCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 520),
+    // Material нужен, чтобы у текста вне Scaffold не было жёлтого подчёркивания
+    return Material(
+      type: MaterialType.transparency,
+      child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 620),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
         decoration: BoxDecoration(
           color: C.raised,
           borderRadius: BorderRadius.circular(10),
@@ -320,7 +328,11 @@ class _ToastCard extends StatelessWidget {
           boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 14, offset: Offset(0, 4))],
         ),
         child: Text(text,
-            maxLines: 2, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: const TextStyle(color: C.text, fontSize: 13)),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: C.text, fontSize: 16, fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
+      ),
       ),
     );
   }

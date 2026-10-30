@@ -16,6 +16,9 @@ import 'widgets.dart';
 /// Ctrl+F: каждое увеличение просит открытый список треков поставить курсор в поиск
 final searchRequests = ValueNotifier<int>(0);
 
+/// Открыта панель группового выбора треков: уведомления поднимаются выше неё
+final selectionBarOpen = ValueNotifier<bool>(false);
+
 class AllTracksPage extends StatelessWidget {
   final bool compact;
   const AllTracksPage({super.key, required this.compact});
@@ -378,6 +381,7 @@ class _TracksPageState extends State<TracksPage> {
   void dispose() {
     searchRequests.removeListener(_focusSearch);
     HardwareKeyboard.instance.removeHandler(_selectionKey);
+    if (_selecting) WidgetsBinding.instance.addPostFrameCallback((_) => selectionBarOpen.value = false);
     _search.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -414,6 +418,7 @@ class _TracksPageState extends State<TracksPage> {
   }
 
   void _exitSelection() {
+    selectionBarOpen.value = false;
     HardwareKeyboard.instance.removeHandler(_selectionKey);
     if (!mounted) return;
     setState(() {
@@ -432,6 +437,7 @@ class _TracksPageState extends State<TracksPage> {
           ..clear()
           ..add(id);
         _anchor = id;
+        selectionBarOpen.value = true;
         HardwareKeyboard.instance.addHandler(_selectionKey);
         return;
       }
@@ -450,6 +456,7 @@ class _TracksPageState extends State<TracksPage> {
       if (_sel.isEmpty) {
         // Сняли отметку с последнего трека — выделение отменяется, клик снова включает трек
         HardwareKeyboard.instance.removeHandler(_selectionKey);
+        selectionBarOpen.value = false;
         _selecting = false;
         _anchor = null;
       }
@@ -745,7 +752,9 @@ class _TracksPageState extends State<TracksPage> {
                 ),
               ),
             ),
-            Padding(
+            SizedBox(
+              width: double.infinity,
+              child: Padding(
               padding: EdgeInsets.fromLTRB(pad, widget.compact ? 72 : 96, pad, 36),
               child: Column(children: [
                 Text(widget.title, textAlign: TextAlign.center, style: display(widget.compact ? 30 : 44, weight: FontWeight.w700)),
@@ -785,6 +794,7 @@ class _TracksPageState extends State<TracksPage> {
                   ),
                 ],
               ]),
+              ),
             ),
           ]);
 

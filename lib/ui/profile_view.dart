@@ -121,7 +121,9 @@ class _ProfileLayoutState extends State<ProfileLayout> {
 
   /// Баннер (или градиент) уезжает вверх медленнее страницы, растворяется и чуть увеличивается
   Widget _backdrop(Widget child) => Positioned.fill(
-        child: AnimatedBuilder(
+        // Увеличенная картинка не должна выезжать за вкладку на левую панель
+        child: ClipRect(
+         child: AnimatedBuilder(
           animation: _scroll,
           builder: (context, c) {
             final off = _scroll.hasClients ? _scroll.offset.clamp(0.0, 4000.0).toDouble() : 0.0;
@@ -135,6 +137,7 @@ class _ProfileLayoutState extends State<ProfileLayout> {
             );
           },
           child: child,
+         ),
         ),
       );
 
