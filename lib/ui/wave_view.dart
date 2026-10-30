@@ -7,9 +7,11 @@ import '../core/models.dart';
 import '../core/wave.dart';
 import 'shell.dart';
 import 'theme.dart';
+import 'web_views.dart';
 import 'widgets.dart';
 
-/// Страница «Моя волна»: большая кнопка, характер волны, что дальше и что волна выучила
+/// Страница «Моя волна» в духе стекла: без очереди — карусель обложек вокруг текущего трека,
+/// «не нравится» и «нравится» под ней, все настройки — в панели «Настроить»
 class WavePage extends StatelessWidget {
   final bool compact;
   const WavePage({super.key, required this.compact});
@@ -19,7 +21,7 @@ class WavePage extends StatelessWidget {
     final app = Services.of(context);
     final wave = app.wave;
     final p = app.player;
-    final pad = compact ? 20.0 : 36.0;
+    final pad = compact ? 20.0 : 40.0;
     return ListenableBuilder(
       listenable: Listenable.merge([wave, p, app.lib]),
       builder: (context, _) {
@@ -30,154 +32,246 @@ class WavePage extends StatelessWidget {
             text: 'Добавьте папки с музыкой — и волна начнёт подбирать треки под ваш вкус.',
           );
         }
-        final active = wave.active;
-        final upcoming = active ? p.queue.skip(p.index + 1).take(8).toList() : const <String>[];
-        final top = wave.topArtists();
-        final disliked = [for (final id in wave.taste.disliked) if (app.lib.data.tracks[id] != null) app.lib.data.tracks[id]!];
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
-          _Hero(active: active, playing: active && p.playing),
-          const SizedBox(height: 22),
-          Wrap(spacing: 8, runSpacing: 8, children: [
-            for (final m in WaveMode.values)
-              Tooltip(
-                message: m.hint,
-                waitDuration: const Duration(milliseconds: 400),
-                child: ChoiceChip(
-                  label: Text(m.title),
-                  selected: wave.mode == m,
-                  onSelected: (_) {
-                    if (active) {
-                      wave.setMode(m);
-                    } else {
-                      wave.start(m);
-                    }
-                  },
-                  selectedColor: C.accent,
-                  labelStyle: TextStyle(color: wave.mode == m ? C.accentInk : C.text, fontWeight: FontWeight.w600),
-                  backgroundColor: C.raised,
-                  side: BorderSide.none,
-                  showCheckmark: false,
-                ),
-              ),
-          ]),
-          const SizedBox(height: 8),
-          Text(wave.mode.hint, style: const TextStyle(color: C.muted, fontSize: 13)),
-          const SizedBox(height: 22),
-          const _Tune(),
-          const SizedBox(height: 22),
-          _Discover(compact: compact),
-          if (upcoming.isNotEmpty) ...[
-            const SizedBox(height: 30),
-            Text('Дальше в волне', style: display(18)),
-            const SizedBox(height: 10),
-            for (var i = 0; i < upcoming.length; i++)
-              if (app.lib.data.tracks[upcoming[i]] case final t?)
-                _UpRow(
-                  track: t,
-                  onTap: () => p.jumpTo(p.index + 1 + i),
-                  trailing: wave.trials.containsKey(t.id) ? const _NewBadge() : null,
-                ),
-          ],
-          if (top.isNotEmpty) ...[
-            const SizedBox(height: 30),
-            Text('Волна по исполнителю', style: display(18)),
-            const SizedBox(height: 4),
-            const Text('Те, кого вы слушаете чаще всего. Нажмите — волна начнётся с них и похожих.',
-                style: TextStyle(color: C.muted, fontSize: 13)),
-            const SizedBox(height: 12),
-            Wrap(spacing: 8, runSpacing: 8, children: [
-              for (final (key, _) in top)
-                ActionChip(
-                  avatar: const Icon(Icons.waves_rounded, size: 16, color: C.accent),
-                  label: Text(app.lib.artist(key)?.name ?? key),
-                  backgroundColor: C.raised,
-                  side: BorderSide.none,
-                  onPressed: () => wave.startFromArtist(app.lib.artist(key)?.name ?? key),
-                ),
-            ]),
-          ],
-          const SizedBox(height: 30),
-          Text('Как волна учится', style: display(18)),
-          const SizedBox(height: 8),
-          const Text(
-            'Дослушали трек — волна поставит больше похожего. Переключили в первые 30 секунд — '
-            'этого исполнителя станет меньше, и он сразу пропадёт из ближайшей очереди. '
-            '«Не нравится» в плеере убирает трек из волны насовсем. Ещё волна смотрит на ваши лайки, '
-            'любимых исполнителей и что слушают друзья. Похожих исполнителей она находит по «радио» Deezer: '
-            'кто звучит рядом с вашими любимыми — тот и близок по вкусу.',
-            style: TextStyle(color: C.muted, height: 1.5),
-          ),
-          if (disliked.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            Theme(
-              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-              child: ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                title: Text('Не нравится: ${disliked.length}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                children: [
-                  for (final t in disliked)
-                    _UpRow(
-                      track: t,
-                      trailing: TextButton(onPressed: () => wave.undislike(t.id), child: const Text('Вернуть')),
-                    ),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              icon: const Icon(Icons.restart_alt_rounded, size: 18),
-              label: const Text('Забыть, чему волна научилась'),
-              style: TextButton.styleFrom(foregroundColor: C.muted),
-              onPressed: () async {
-                final ok = await confirm(context,
-                    title: 'Начать волну с нуля?',
-                    text: 'Пропуски, «не нравится» и выученные предпочтения сотрутся. Лайки и прослушивания останутся.',
-                    action: 'Сбросить');
-                if (ok) wave.resetTaste();
-              },
-            ),
-          ),
+        final active = wave.active && p.current != null;
+        return ListView(padding: EdgeInsets.fromLTRB(pad, 30, pad, 30), children: [
+          _TopBar(compact: compact),
+          SizedBox(height: compact ? 20 : 36),
+          if (active) _NowFlow(compact: compact) else _Idle(compact: compact),
         ]);
       },
     );
   }
 }
 
-class _Hero extends StatefulWidget {
-  final bool active;
-  final bool playing;
-  const _Hero({required this.active, required this.playing});
+/// Заголовок, что сейчас выбрано, и кнопка «Настроить»
+class _TopBar extends StatelessWidget {
+  final bool compact;
+  const _TopBar({required this.compact});
 
   @override
-  State<_Hero> createState() => _HeroState();
+  Widget build(BuildContext context) {
+    final wave = Services.of(context).wave;
+    final mood = moodById(wave.mood);
+    Widget pill(String text) => Container(
+          height: 34,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(color: C.raised, borderRadius: BorderRadius.circular(17), border: Border.all(color: C.line)),
+          child: Text(text, style: const TextStyle(fontSize: 13)),
+        );
+    return Wrap(
+      spacing: 8,
+      runSpacing: 10,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      alignment: WrapAlignment.spaceBetween,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(right: 24),
+          child: Text('Моя волна', style: display(compact ? 26 : 32)),
+        ),
+        Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          if (!compact) pill(wave.mode.title),
+          if (!compact && mood != null) pill(mood.title),
+          if (!compact && wave.custom.isNotEmpty)
+            pill(wave.custom.length == 1 ? wave.custom.first : '${wave.custom.length} своих исполнителя'),
+          if (wave.trials.isNotEmpty)
+            TextButton(
+              onPressed: () => showWaveSettings(context),
+              style: TextButton.styleFrom(foregroundColor: C.text),
+              child: Text('${wave.trials.length} новых на пробе'),
+            ),
+          FilledButton.icon(
+            onPressed: () => showWaveSettings(context),
+            style: FilledButton.styleFrom(
+              backgroundColor: C.text,
+              foregroundColor: C.bg,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            ),
+            icon: const Icon(Icons.tune_rounded, size: 18),
+            label: const Text('Настроить'),
+          ),
+        ]),
+      ],
+    );
+  }
 }
 
-class _HeroState extends State<_Hero> with SingleTickerProviderStateMixin {
-  late final AnimationController _anim = AnimationController(vsync: this, duration: const Duration(seconds: 6));
+/// Карусель обложек: два трека назад, текущий и два следующих. Соседние развёрнуты в перспективе;
+/// при смене трека карточки плавно переезжают
+class _NowFlow extends StatelessWidget {
+  final bool compact;
+  const _NowFlow({required this.compact});
 
   @override
-  void initState() {
-    super.initState();
-    _sync();
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final p = app.player;
+    final wave = app.wave;
+    final t = p.current!;
+    final big = compact ? 230.0 : 300.0;
+    return Column(children: [
+      LayoutBuilder(builder: (context, box) {
+        final w = box.maxWidth;
+        final cx = w / 2;
+        final slots = <int, ({double size, double dx, double angle, double opacity})>{
+          -2: (size: big * 0.56, dx: -big * 1.33, angle: 0.5, opacity: 0.55),
+          -1: (size: big * 0.74, dx: -big * 0.86, angle: 0.38, opacity: 0.85),
+          0: (size: big, dx: 0, angle: 0, opacity: 1),
+          1: (size: big * 0.74, dx: big * 0.86, angle: -0.38, opacity: 0.85),
+          2: (size: big * 0.56, dx: big * 1.33, angle: -0.5, opacity: 0.55),
+        };
+        final cards = <Widget>[];
+        final seen = <String, int>{};
+        // Дальние рисуем первыми, текущий — поверх всех
+        for (final o in const [-2, 2, -1, 1, 0]) {
+          final i = p.index + o;
+          if (i < 0 || i >= p.queue.length) continue;
+          final track = app.lib.data.tracks[p.queue[i]];
+          if (track == null) continue;
+          final slot = slots[o]!;
+          if (compact && o.abs() == 2) continue;
+          final n = seen[track.id] = (seen[track.id] ?? 0) + 1;
+          final height = slot.size + 24 + slot.size * 0.24;
+          cards.add(AnimatedPositioned(
+            key: ValueKey('${track.id}#$n'),
+            duration: const Duration(milliseconds: 450),
+            curve: Curves.easeOutCubic,
+            left: cx + slot.dx - slot.size / 2 - 12,
+            top: (big * 1.28 + 24 - height) / 2,
+            width: slot.size + 24,
+            height: height,
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 450),
+              opacity: slot.opacity,
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(end: slot.angle),
+                duration: const Duration(milliseconds: 450),
+                curve: Curves.easeOutCubic,
+                builder: (context, a, child) => Transform(
+                  alignment: Alignment.center,
+                  transform: Matrix4.identity()
+                    ..setEntry(3, 2, 0.0012)
+                    ..rotateY(a),
+                  child: child,
+                ),
+                child: _FlowCard(track: track, current: o == 0, onTap: o == 0 ? null : () => p.jumpTo(i)),
+              ),
+            ),
+          ));
+        }
+        return SizedBox(height: big * 1.28 + 24, child: Stack(clipBehavior: Clip.none, children: cards));
+      }),
+      const SizedBox(height: 22),
+      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+        _RoundGlass(
+          tooltip: 'Не нравится — больше не попадётся',
+          icon: Icons.thumb_down_alt_outlined,
+          onPressed: wave.dislike,
+        ),
+        SizedBox(
+          width: compact ? 200 : 300,
+          child: Text(wave.reasonFor(t.id),
+              textAlign: TextAlign.center, maxLines: 2, style: const TextStyle(color: C.muted, fontSize: 14)),
+        ),
+        _RoundGlass(
+          tooltip: wave.isUpvoted(t.id) ? 'Нравится в волне — нажмите, чтобы отменить' : 'Нравится: больше похожего, без сохранения в любимое',
+          icon: wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
+          color: wave.isUpvoted(t.id) ? C.accent : C.text,
+          onPressed: wave.upvote,
+        ),
+      ]),
+      const SizedBox(height: 10),
+      TextButton.icon(
+        onPressed: p.next,
+        style: TextButton.styleFrom(foregroundColor: C.muted),
+        icon: const Icon(Icons.skip_next_rounded, size: 20),
+        label: const Text('Дальше'),
+      ),
+      if (wave.discoverStatus.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.6)),
+          const SizedBox(width: 10),
+          Flexible(child: Text(wave.discoverStatus, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 13))),
+        ]),
+      ],
+    ]);
   }
+}
+
+class _FlowCard extends StatelessWidget {
+  final Track track;
+  final bool current;
+  final VoidCallback? onTap;
+  const _FlowCard({required this.track, required this.current, this.onTap});
 
   @override
-  void didUpdateWidget(covariant _Hero old) {
-    super.didUpdateWidget(old);
-    _sync();
+  Widget build(BuildContext context) {
+    final card = Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0x1FFFFFFF),
+        borderRadius: BorderRadius.circular(26),
+        border: Border.all(color: const Color(0x47FFFFFF)),
+      ),
+      child: LayoutBuilder(builder: (context, box) {
+        final s = box.maxWidth;
+        return Column(children: [
+          // Обложка одного размера, а масштаб — через FittedBox: при анимации картинка не перечитывается
+          SizedBox.square(dimension: s, child: FittedBox(child: CoverImage(track: track, size: 300, radius: 20))),
+          const Spacer(),
+          Text(track.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: s * (current ? 0.07 : 0.075), fontWeight: FontWeight.w600)),
+          Text(track.displayArtist,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: s * 0.058, color: const Color(0xB8FFFFFF))),
+          const Spacer(),
+        ]);
+      }),
+    );
+    if (onTap == null) return card;
+    return MouseRegion(cursor: SystemMouseCursors.click, child: GestureDetector(onTap: onTap, child: card));
   }
+}
 
-  void _sync() {
-    // Волны двигаются, только пока играет: без этого страница зря грузит процессор
-    if (widget.playing && !_anim.isAnimating) {
-      _anim.repeat();
-    } else if (!widget.playing && _anim.isAnimating) {
-      _anim.stop();
-    }
-  }
+class _RoundGlass extends StatelessWidget {
+  final String tooltip;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onPressed;
+  const _RoundGlass({required this.tooltip, required this.icon, required this.onPressed, this.color = C.text});
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: tooltip,
+        child: Material(
+          color: C.raised,
+          shape: const CircleBorder(side: BorderSide(color: C.line)),
+          child: InkWell(
+            customBorder: const CircleBorder(),
+            onTap: onPressed,
+            child: SizedBox.square(dimension: 54, child: Icon(icon, color: color, size: 22)),
+          ),
+        ),
+      );
+}
+
+/// Волна не играет: большая кнопка, быстрый старт по настроению и по исполнителю
+class _Idle extends StatefulWidget {
+  final bool compact;
+  const _Idle({required this.compact});
+
+  @override
+  State<_Idle> createState() => _IdleState();
+}
+
+class _IdleState extends State<_Idle> with SingleTickerProviderStateMixin {
+  late final AnimationController _anim = AnimationController(vsync: this, duration: const Duration(seconds: 8))..repeat();
 
   @override
   void dispose() {
@@ -188,76 +282,224 @@ class _HeroState extends State<_Hero> with SingleTickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final p = app.player;
-    final t = widget.active ? p.current : null;
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        height: 230,
-        color: C.raised,
-        child: Stack(children: [
-          Positioned.fill(
-            child: RepaintBoundary(
-              child: AnimatedBuilder(
-                animation: _anim,
-                builder: (context, _) => CustomPaint(painter: _WavesPainter(_anim.value, widget.active)),
+    final wave = app.wave;
+    final orb = widget.compact ? 220.0 : 280.0;
+    final top = wave.topArtists(7);
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Center(
+        child: SizedBox.square(
+          dimension: orb,
+          child: Stack(alignment: Alignment.center, children: [
+            Container(
+              clipBehavior: Clip.antiAlias,
+              decoration: const BoxDecoration(color: C.surface, shape: BoxShape.circle, border: Border.fromBorderSide(BorderSide(color: C.line))),
+              child: RepaintBoundary(
+                child: AnimatedBuilder(
+                  animation: _anim,
+                  builder: (context, _) => CustomPaint(size: Size.square(orb), painter: _WavesPainter(_anim.value, true)),
+                ),
               ),
             ),
+            PlayCircle(size: 92, playing: false, tooltip: 'Включить волну', onPressed: () => wave.start()),
+          ]),
+        ),
+      ),
+      const SizedBox(height: 18),
+      Center(child: Text(wave.mode.hint, textAlign: TextAlign.center, style: const TextStyle(color: C.muted))),
+      const SizedBox(height: 36),
+      Text('Под настроение', style: display(20)),
+      const SizedBox(height: 12),
+      Wrap(spacing: 12, runSpacing: 12, children: [
+        for (final m in waveMoods)
+          _MoodTile(
+            mood: m,
+            onTap: () {
+              wave.setMood(m.id);
+              wave.start();
+            },
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(30, 28, 30, 28),
-            child: Row(children: [
-              PlayCircle(
-                size: 76,
-                playing: widget.playing,
-                tooltip: widget.active ? (widget.playing ? 'Пауза' : 'Продолжить') : 'Включить волну',
-                onPressed: () => widget.active ? p.toggle() : app.wave.start(),
-              ),
-              const SizedBox(width: 26),
-              Expanded(
-                child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('Моя волна', style: display(40, weight: FontWeight.w700)),
-                  const SizedBox(height: 10),
-                  Text(
-                    t != null
-                        ? 'Сейчас: ${t.title} — ${t.displayArtist}'
-                        : app.wave.custom.isNotEmpty
-                            ? 'Своя волна: ${app.wave.custom.join(', ')}'
-                            : 'Бесконечный поток из вашей библиотеки под ваш вкус',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: C.muted, fontSize: 15),
-                  ),
-                  if (widget.active) ...[
-                    const SizedBox(height: 14),
-                    Wrap(spacing: 10, runSpacing: 8, children: [
-                      if (t != null)
-                        OutlinedButton.icon(
-                          icon: Icon(app.wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
-                              size: 16, color: app.wave.isUpvoted(t.id) ? C.accent : null),
-                          label: const Text('Нравится'),
-                          onPressed: app.wave.upvote,
-                        ),
-                      OutlinedButton.icon(
-                        icon: const Icon(Icons.thumb_down_alt_outlined, size: 16),
-                        label: const Text('Не нравится'),
-                        onPressed: app.wave.dislike,
-                      ),
-                      TextButton.icon(
-                        icon: const Icon(Icons.skip_next_rounded, size: 18),
-                        label: const Text('Дальше'),
-                        onPressed: p.next,
-                      ),
+      ]),
+      if (top.isNotEmpty) ...[
+        const SizedBox(height: 32),
+        Text('По исполнителю', style: display(20)),
+        const SizedBox(height: 14),
+        Wrap(spacing: 18, runSpacing: 16, children: [
+          for (final (key, _) in top)
+            if (app.lib.artist(key) case final a?)
+              MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: GestureDetector(
+                  onTap: () => wave.startFromArtist(a.name),
+                  child: SizedBox(
+                    width: 104,
+                    child: Column(children: [
+                      ArtistPhoto(name: a.name, size: 96, fallback: CoverImage(track: a.coverTrack, size: 96, radius: 48)),
+                      const SizedBox(height: 8),
+                      Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: const TextStyle(fontSize: 13)),
                     ]),
-                  ],
-                ]),
+                  ),
+                ),
               ),
-            ]),
-          ),
         ]),
+      ],
+    ]);
+  }
+}
+
+const _moodColors = {
+  'energy': Color(0xFF96501F),
+  'calm': Color(0xFF2E7A6B),
+  'sad': Color(0xFF3B5797),
+  'love': Color(0xFF9A3F6A),
+  'dark': Color(0xFF34374F),
+  'focus': Color(0xFF4F7A34),
+};
+
+class _MoodTile extends StatelessWidget {
+  final WaveMood mood;
+  final VoidCallback onTap;
+  const _MoodTile({required this.mood, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: (_moodColors[mood.id] ?? C.raised).withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Container(
+            width: 150,
+            height: 88,
+            padding: const EdgeInsets.all(14),
+            alignment: Alignment.bottomLeft,
+            child: Text(mood.title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: Colors.white)),
+          ),
+        ),
+      );
+}
+
+/// Панель «Настроить волну»: характер, настроение, свои исполнители, новинки, обучение
+Future<void> showWaveSettings(BuildContext context) => showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        insetPadding: const EdgeInsets.all(32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 780, maxHeight: 820),
+          child: const _WaveSettings(),
+        ),
       ),
     );
+
+class _WaveSettings extends StatelessWidget {
+  const _WaveSettings();
+
+  @override
+  Widget build(BuildContext context) {
+    final wave = Services.of(context).wave;
+    return ListenableBuilder(
+      listenable: wave,
+      builder: (context, _) {
+        final disliked = [
+          for (final id in wave.taste.disliked)
+            if (wave.lib.data.tracks[id] != null) wave.lib.data.tracks[id]!
+        ];
+        return ListView(shrinkWrap: true, padding: const EdgeInsets.fromLTRB(28, 22, 28, 24), children: [
+          Row(children: [
+            Expanded(child: Text('Настроить волну', style: display(24))),
+            IconButton(tooltip: 'Закрыть', onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close_rounded)),
+          ]),
+          const SizedBox(height: 18),
+          const Text('По характеру', style: TextStyle(color: C.muted, fontSize: 13)),
+          const SizedBox(height: 10),
+          Row(children: [
+            for (final m in WaveMode.values) ...[
+              if (m != WaveMode.values.first) const SizedBox(width: 8),
+              Expanded(
+                child: Tooltip(
+                  message: m.hint,
+                  child: Material(
+                    color: wave.mode == m ? C.accent : C.raised,
+                    borderRadius: BorderRadius.circular(14),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () => wave.setMode(m),
+                      child: SizedBox(
+                        height: 56,
+                        child: Center(
+                          child: Text(m.title,
+                              style: TextStyle(fontWeight: FontWeight.w600, color: wave.mode == m ? C.accentInk : C.text)),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ]),
+          const SizedBox(height: 24),
+          const _Tune(),
+          const SizedBox(height: 24),
+          _Discover(compact: false), // не const: иначе не перерисуется при изменениях волны
+          const SizedBox(height: 24),
+          Text('Как волна учится', style: display(16)),
+          const SizedBox(height: 10),
+          const _Learn(icon: Icons.thumb_up_alt_outlined, text: 'Нравится или дослушали — больше похожего'),
+          const _Learn(icon: Icons.skip_next_rounded, text: 'Пропуск в первые 30 секунд — меньше такого'),
+          const _Learn(icon: Icons.thumb_down_alt_outlined, text: 'Не нравится — больше не попадётся'),
+          const _Learn(icon: Icons.travel_explore_rounded, text: 'Похожие треки — из Last.fm, по тому, что люди слушают вместе'),
+          if (disliked.isNotEmpty)
+            Theme(
+              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: Text('Не нравится: ${disliked.length}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                children: [
+                  for (final t in disliked)
+                    _UpRow(track: t, trailing: TextButton(onPressed: () => wave.undislike(t.id), child: const Text('Вернуть'))),
+                ],
+              ),
+            ),
+          const SizedBox(height: 14),
+          Row(children: [
+            TextButton(
+              style: TextButton.styleFrom(foregroundColor: C.muted),
+              onPressed: () async {
+                final ok = await confirm(context,
+                    title: 'Начать волну с нуля?',
+                    text: 'Пропуски, «не нравится» и выученные предпочтения сотрутся. Лайки и прослушивания останутся.',
+                    action: 'Сбросить');
+                if (ok) wave.resetTaste();
+              },
+              child: const Text('Сбросить обучение'),
+            ),
+            const Spacer(),
+            FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Готово')),
+          ]),
+        ]);
+      },
+    );
   }
+}
+
+class _Learn extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _Learn({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 5),
+        child: Row(children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(color: C.raised, borderRadius: BorderRadius.circular(10)),
+            child: Icon(icon, size: 17, color: C.accent),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: Text(text, style: const TextStyle(fontSize: 14))),
+        ]),
+      );
 }
 
 class _WavesPainter extends CustomPainter {

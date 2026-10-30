@@ -587,6 +587,25 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     }
   }
 
+  // ---------- почему этот трек ----------
+
+  /// Короткая подпись под текущим треком: откуда волна его взяла
+  String reasonFor(String id) {
+    if (trials.containsKey(id)) return 'новое из интернета';
+    if ((_boost[id] ?? 0) >= WaveEngine.similarFloor) return 'похож на то, что вы только что слушали';
+    final t = lib.data.tracks[id];
+    if (t == null) return '';
+    final focus = _focus;
+    if (focus.isNotEmpty && t.artists.any((a) => focus.contains(a.toLowerCase()))) return 'из вашей подборки исполнителей';
+    if (isUpvoted(id)) return 'вам понравилось в волне';
+    if (lib.isLiked(id)) return 'из вашего любимого';
+    final m = moodById(mood);
+    if (m != null && (_moodMap([t])?[id] ?? 0) > 0) return 'под настроение «${m.title.toLowerCase()}»';
+    final me = lib.me;
+    if (lib.data.likes[id]?.any((e) => e != me) ?? false) return 'нравится друзьям';
+    return 'по вашему вкусу';
+  }
+
   // ---------- «нравится в волне» ----------
 
   bool isUpvoted(String id) => taste.upvoted.contains(id);

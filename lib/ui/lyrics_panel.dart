@@ -19,7 +19,9 @@ class LyricsPanel extends StatelessWidget {
     final app = Services.of(context);
     return Container(
       width: 340,
-      decoration: const BoxDecoration(color: C.surface, border: Border(left: BorderSide(color: C.line))),
+      margin: const EdgeInsets.fromLTRB(0, 12, 12, 12),
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(24), border: Border.all(color: C.line)),
       child: ListenableBuilder(
         listenable: app.player,
         builder: (context, _) {

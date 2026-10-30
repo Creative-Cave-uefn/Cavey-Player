@@ -111,7 +111,7 @@ class ProfileLayout extends StatelessWidget {
           Positioned.fill(
             child: DecoratedBox(
               decoration: BoxDecoration(
-                gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [top, C.bg], stops: const [0.0, 0.75]),
+                gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [top, Colors.transparent], stops: const [0.0, 0.75]),
               ),
             ),
           ),

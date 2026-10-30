@@ -10,6 +10,7 @@ import '../core/log.dart';
 import '../core/models.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
+import 'ambient.dart';
 import 'albums_view.dart';
 import 'company_view.dart';
 import 'download_view.dart';
@@ -125,13 +126,18 @@ class _ShellState extends State<Shell> {
               uploadPaths(context, [for (final f in detail.files) f.path]);
             },
             child: Stack(children: [
+          const Positioned.fill(child: AmbientBackground()),
           Scaffold(
+            backgroundColor: Colors.transparent,
             body: LayoutBuilder(builder: (context, box) {
               final compact = box.maxWidth < 860;
-              return Column(children: [
+              // Стекло: боковая панель плавает слева, справа содержимое и капсула плеера под ним
+              return Row(children: [
+                Padding(padding: const EdgeInsets.fromLTRB(12, 12, 0, 12), child: _Sidebar(compact: compact)),
+                Expanded(
+                  child: Column(children: [
                 Expanded(
                   child: Row(children: [
-                    _Sidebar(compact: compact),
                     Expanded(
                       child: ValueListenableBuilder<Nav>(
                         valueListenable: _nav,
@@ -163,6 +169,8 @@ class _ShellState extends State<Shell> {
                   ]),
                 ),
                 PlayerBar(compact: compact),
+                  ]),
+                ),
               ]);
             }),
           ),
@@ -294,8 +302,9 @@ class _Sidebar extends StatelessWidget {
     final app = Services.of(context);
     final nav = NavScope.of(context);
     return Container(
-      width: compact ? 72 : 248,
-      decoration: const BoxDecoration(color: C.surface, border: Border(right: BorderSide(color: C.line))),
+      width: compact ? 72 : 240,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(24), border: Border.all(color: C.line)),
       child: ListenableBuilder(
         listenable: Listenable.merge([app.lib, nav, app.downloads, app.social]),
         builder: (context, _) {
@@ -315,7 +324,7 @@ class _Sidebar extends StatelessWidget {
             Padding(
               padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 26, 0, 22),
               child: compact
-                  ? Center(child: Text('C', style: display(24, weight: FontWeight.w700, color: C.accent)))
+                  ? Center(child: Text('C', style: brand(24, color: C.accent)))
                   : const Align(alignment: Alignment.centerLeft, child: Wordmark()),
             ),
             item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
@@ -669,13 +678,13 @@ class _NavItem extends StatelessWidget {
     final color = selected ? C.text : C.muted;
     final body = InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(12),
       child: Container(
         height: 40,
         padding: EdgeInsets.symmetric(horizontal: compact ? 0 : 12),
         decoration: BoxDecoration(
-          color: selected ? C.raised : null,
-          borderRadius: BorderRadius.circular(8),
+          color: selected ? C.hover : null,
+          borderRadius: BorderRadius.circular(12),
         ),
         child: Row(
           mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start,
