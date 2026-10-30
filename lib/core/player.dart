@@ -86,7 +86,6 @@ class PlayerController extends ChangeNotifier {
     }));
     unawaited(_p.setVolume(settings.volume));
     unawaited(_applyNormalize());
-    unawaited(_tuneStreaming());
     // Пока играет, раз в 15 секунд запоминаем позицию — на случай, если окно закроют
     _saveTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (playing) _saveSession();
@@ -280,18 +279,6 @@ class PlayerController extends ChangeNotifier {
     _hoverTimer?.cancel();
     _proxy.warmUp();
     _hoverTimer = Timer(const Duration(milliseconds: 250), () => warmUp(t));
-  }
-
-  /// Для стриминга: не анализировать поток дольше, чем нужно для звука
-  Future<void> _tuneStreaming() async {
-    final native = _p.platform;
-    if (native is! NativePlayer) return;
-    try {
-      await native.setProperty('demuxer-lavf-analyzeduration', '0.5');
-      await native.setProperty('cache-pause-initial', 'no');
-    } catch (e) {
-      AppLog.warn('Не получилось настроить стриминг', e);
-    }
   }
 
   // ---------- воспроизведение ----------
