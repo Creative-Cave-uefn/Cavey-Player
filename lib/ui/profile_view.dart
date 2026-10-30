@@ -9,6 +9,7 @@ import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
 import 'shell.dart';
+import 'profile_edit.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
@@ -77,6 +78,9 @@ class ProfileLayout extends StatelessWidget {
   final Widget? thirdButton;
   final List<Widget> sections;
 
+  /// Свой баннер человека (id картинки на Диске): показывается сверху и плавно уходит в фон
+  final String? bannerFileId;
+
   const ProfileLayout({
     super.key,
     required this.compact,
@@ -89,6 +93,7 @@ class ProfileLayout extends StatelessWidget {
     this.onPlay,
     this.onInfo,
     this.thirdButton,
+    this.bannerFileId,
   });
 
   @override
@@ -106,9 +111,10 @@ class ProfileLayout extends StatelessWidget {
           ),
         ),
         CustomScrollView(slivers: [
+          if (bannerFileId != null) SliverToBoxAdapter(child: _Banner(fileId: bannerFileId!)),
           SliverToBoxAdapter(
             child: Padding(
-              padding: EdgeInsets.fromLTRB(pad, 56, pad, 0),
+              padding: EdgeInsets.fromLTRB(pad, bannerFileId != null ? 12 : 56, pad, 0),
               child: Column(children: [
                 SizedBox.square(dimension: photo, child: ClipOval(child: avatar)),
                 const SizedBox(height: 26),
@@ -148,6 +154,40 @@ class ProfileLayout extends StatelessWidget {
       initialData: tintNow,
       builder: (context, snap) => page(snap.data ?? tintNow),
     );
+  }
+}
+
+/// Баннер профиля: картинка 3:1 на всю ширину, низ плавно прозрачный
+class _Banner extends StatelessWidget {
+  final String fileId;
+  const _Banner({required this.fileId});
+
+  @override
+  Widget build(BuildContext context) {
+    final covers = Services.of(context).covers;
+    return LayoutBuilder(builder: (context, box) {
+      final h = (box.maxWidth / 3).clamp(120.0, 340.0).toDouble();
+      return ShaderMask(
+        blendMode: BlendMode.dstIn,
+        shaderCallback: (r) => const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Colors.white, Colors.white, Colors.transparent],
+          stops: [0.0, 0.55, 1.0],
+        ).createShader(r),
+        child: SizedBox(
+          width: box.maxWidth,
+          height: h,
+          child: FutureBuilder<Uint8List?>(
+            future: covers.forFile(fileId),
+            initialData: covers.peekFile(fileId),
+            builder: (context, snap) => snap.data == null
+                ? const SizedBox.shrink()
+                : Image.memory(snap.data!, fit: BoxFit.cover, gaplessPlayback: true),
+          ),
+        ),
+      );
+    });
   }
 }
 
@@ -558,6 +598,10 @@ class UserProfilePage extends StatelessWidget {
         return ProfileLayout(
           compact: compact,
           avatar: Avatar(email: email, name: name, size: 220),
+          bannerFileId: lib.profileBanner(email),
+          thirdButton: email == lib.me
+              ? _roundButton(Icons.edit_rounded, () => editProfileDialog(context), tooltip: 'Изменить профиль')
+              : null,
           tintNow: _darken(friendColor(email)),
           name: name,
           subtitle: subtitle,

@@ -39,6 +39,12 @@ class CompanyPage extends StatelessWidget {
           const Text('Что слушают друзья, что у вас в чарте и что нового в библиотеке.',
               style: TextStyle(color: C.muted, fontSize: 15)),
           const SizedBox(height: 32),
+          Text('Участники', style: display(20)),
+          const SizedBox(height: 6),
+          const Text('Нажмите на человека, чтобы открыть его страницу.', style: TextStyle(color: C.faint, fontSize: 13)),
+          const SizedBox(height: 14),
+          _People(),
+          const SizedBox(height: 40),
           Text('Сейчас слушают', style: display(20)),
           const SizedBox(height: 6),
           Text(
@@ -303,6 +309,86 @@ class NowListeningSidebar extends StatelessWidget {
             ),
         ]);
       },
+    );
+  }
+}
+
+
+/// Все, кто есть в компании: карточки со ссылкой на страницу человека
+class _People extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final lib = app.lib;
+    final emails = {...lib.people, ...app.social.members.keys}..removeWhere((e) => e.isEmpty);
+    final uploads = <String, int>{};
+    for (final t in lib.data.tracks.values) {
+      if (t.by.isNotEmpty && !lib.data.hidden.contains(t.id)) uploads[t.by] = (uploads[t.by] ?? 0) + 1;
+    }
+    final list = emails.toList()
+      ..sort((a, b) {
+        if (a == lib.me) return -1;
+        if (b == lib.me) return 1;
+        final la = app.social.members[a]?.live ?? false;
+        final lb = app.social.members[b]?.live ?? false;
+        if (la != lb) return la ? -1 : 1;
+        return lib.nameOf(a).toLowerCase().compareTo(lib.nameOf(b).toLowerCase());
+      });
+    return Wrap(spacing: 12, runSpacing: 12, children: [
+      for (final e in list) _PersonCard(email: e, uploads: uploads[e] ?? 0),
+    ]);
+  }
+}
+
+class _PersonCard extends StatelessWidget {
+  final String email;
+  final int uploads;
+  const _PersonCard({required this.email, required this.uploads});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final lib = app.lib;
+    final m = app.social.members[email];
+    final name = lib.nameOf(email);
+    final String status;
+    if (m != null && m.live && m.now != null) {
+      status = 'слушает: ${m.now!.title}';
+    } else if (m != null && m.recent) {
+      status = 'на паузе';
+    } else if (m != null) {
+      status = 'был(а) ${timeAgo(m.updated)}';
+    } else {
+      status = uploads == 0 ? 'ещё не заходил(а)' : '';
+    }
+    final live = m?.live ?? false;
+    return SizedBox(
+      width: 250,
+      child: Material(
+        color: C.surface,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => NavScope.of(context).go(Nav('user', email)),
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(borderRadius: BorderRadius.circular(14), border: Border.all(color: live ? C.accent : C.line)),
+            child: Row(children: [
+              Avatar(email: email, name: name, size: 46),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(email == lib.me ? '$name (вы)' : name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  if (status.isNotEmpty)
+                    Text(status, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: live ? C.accent : C.faint, fontSize: 12)),
+                  Text(uploads == 0 ? 'без загрузок' : 'загрузил(а) ${countTracks(uploads)}',
+                      maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12)),
+                ]),
+              ),
+            ]),
+          ),
+        ),
+      ),
     );
   }
 }

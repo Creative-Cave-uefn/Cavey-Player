@@ -181,6 +181,7 @@ class FriendTag extends StatelessWidget {
   }
 }
 
+/// Аватарка человека: своя картинка из профиля, а если её нет — цветной кружок с буквой
 class Avatar extends StatelessWidget {
   final String email;
   final String name;
@@ -189,13 +190,54 @@ class Avatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final letter = (name.trim().isEmpty ? email : name).trim().characters.first.toUpperCase();
+    final lib = Services.of(context).lib;
+    final custom = lib.profileAvatar(email);
+    final shown = lib.profileNick(email) ?? name;
+    final letter = (shown.trim().isEmpty ? email : shown).trim().characters.first.toUpperCase();
+    if (custom != null) {
+      return ClipOval(child: CoverImage(track: null, fileId: custom, label: letter, size: size, radius: 0));
+    }
     return Container(
       width: size,
       height: size,
       alignment: Alignment.center,
       decoration: BoxDecoration(color: friendColor(email), shape: BoxShape.circle),
       child: Text(letter, style: display(size * 0.42, weight: FontWeight.w700, color: C.accentInk)),
+    );
+  }
+}
+
+/// Имя человека, которое открывает его страницу; при наведении подчёркивается
+class UserLink extends StatefulWidget {
+  final String email;
+  final TextStyle style;
+  const UserLink(this.email, {super.key, this.style = const TextStyle(color: C.muted, fontSize: 15)});
+
+  @override
+  State<UserLink> createState() => _UserLinkState();
+}
+
+class _UserLinkState extends State<UserLink> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final lib = Services.of(context).lib;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: () => NavScope.of(context).go(Nav('user', widget.email)),
+        child: Text(
+          lib.firstNameOf(widget.email),
+          style: widget.style.copyWith(
+            color: _hover ? C.text : widget.style.color,
+            decoration: _hover ? TextDecoration.underline : TextDecoration.none,
+            decorationColor: C.text,
+          ),
+        ),
+      ),
     );
   }
 }

@@ -949,6 +949,33 @@ class LibraryController extends ChangeNotifier {
 
   /// Своя обложка: у альбома она важнее, чем у его треков, а у трека — важнее обложки из файла
   String? customCoverOf(Track t) => _metaValue('album:${t.albumKey}', 'cv') ?? t.customCover;
+  // ---------- профиль: ник, аватарка, баннер (хранятся в edits['u:<почта>']) ----------
+
+  String? profileNick(String email) => _metaValue('u:$email', 'nick');
+  String? profileAvatar(String email) => _metaValue('u:$email', 'av');
+  String? profileBanner(String email) => _metaValue('u:$email', 'bn');
+
+  /// Меняет только свой профиль. Значение '' возвращает прежнее (имя из Google, цветной кружок, обычную шапку)
+  void setProfile({String? nick, String? avatar, String? banner}) {
+    final m = me;
+    if (m == null) return;
+    final f = <String, String>{
+      if (nick != null) 'nick': nick,
+      if (avatar != null) 'av': avatar,
+      if (banner != null) 'bn': banner,
+    };
+    setMeta({'u:$m': f});
+  }
+
+  /// Все, кого мы знаем в компании: участники библиотеки, те, кто грузил треки, собирал плейлисты или лайкал
+  Set<String> get people => {
+        ...data.members.keys,
+        for (final t in data.tracks.values) t.by,
+        for (final p in data.playlists) p.by,
+        for (final who in data.likes.values) ...who,
+        if (me != null) me!,
+      }..removeWhere((e) => e.isEmpty);
+
   String? albumCover(String albumKey) => _metaValue('album:$albumKey', 'cv');
   String? playlistCover(String id) => _metaValue('pl:$id', 'cv');
 
@@ -1190,12 +1217,15 @@ class LibraryController extends ChangeNotifier {
 
   String nameOf(String email) {
     if (email.isEmpty) return 'кто-то';
+    final nick = profileNick(email);
+    if (nick != null) return nick;
     final n = data.members[email] ?? accounts.byEmail(email)?.name;
     if (n != null && n.isNotEmpty) return n;
     return email.split('@').first;
   }
 
-  String firstNameOf(String email) => nameOf(email).split(' ').first;
+  /// Ник показываем целиком, а имя из Google — только первое слово
+  String firstNameOf(String email) => profileNick(email) ?? nameOf(email).split(' ').first;
 
   void _report(Object e) {
     AppLog.warn('Синхронизация', e);

@@ -195,7 +195,11 @@ class PlaylistPage extends StatelessWidget {
           cover: coverTrack,
           coverFileId: ownCover,
           coverLabel: p.name,
-          subtitle: 'Собирает ${lib.firstNameOf(p.by)}${tracks.isEmpty ? '' : ', ${countTracks(tracks.length)}'}',
+          subtitleWidget: Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [
+            const Text('Собирает ', style: TextStyle(color: C.muted, fontSize: 15)),
+            if (p.by.isEmpty) const Text('кто-то', style: TextStyle(color: C.muted, fontSize: 15)) else UserLink(p.by),
+            if (tracks.isNotEmpty) Text(', ${countTracks(tracks.length)}', style: const TextStyle(color: C.muted, fontSize: 15)),
+          ]),
           tracks: tracks,
           playlistId: playlistId,
           compact: compact,
@@ -259,6 +263,9 @@ class PlaylistPage extends StatelessWidget {
 class TracksPage extends StatefulWidget {
   final String title;
   final String? subtitle;
+
+  /// Вместо строки подзаголовка: например, с именем автора, которое открывает его страницу
+  final Widget? subtitleWidget;
   final List<Track> tracks;
   final Track? cover;
 
@@ -284,6 +291,7 @@ class TracksPage extends StatefulWidget {
     required this.compact,
     required this.empty,
     this.subtitle,
+    this.subtitleWidget,
     this.cover,
     this.coverFileId,
     this.coverLabel,
@@ -645,7 +653,10 @@ class _TracksPageState extends State<TracksPage> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text(widget.title,
                 maxLines: 2, overflow: TextOverflow.ellipsis, style: display(widget.compact ? 26 : 36, weight: FontWeight.w700)),
-            if (widget.subtitle != null) ...[
+            if (widget.subtitleWidget != null) ...[
+              const SizedBox(height: 10),
+              widget.subtitleWidget!,
+            ] else if (widget.subtitle != null) ...[
               const SizedBox(height: 10),
               Text(widget.subtitle!, style: const TextStyle(color: C.muted, fontSize: 15)),
             ],
