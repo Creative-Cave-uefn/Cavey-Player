@@ -53,6 +53,17 @@ class PlayerBar extends StatelessWidget {
             ),
             if (t != null && app.wave.active)
               IconButton(
+                tooltip: app.wave.isUpvoted(t.id)
+                    ? 'Нравится в волне — нажмите, чтобы отменить'
+                    : 'Нравится в волне: больше похожего, но без сохранения в любимое',
+                visualDensity: VisualDensity.compact,
+                iconSize: 18,
+                onPressed: app.wave.upvote,
+                icon: Icon(app.wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
+                    color: app.wave.isUpvoted(t.id) ? C.accent : C.faint),
+              ),
+            if (t != null && app.wave.active)
+              IconButton(
                 tooltip: 'Не нравится — больше не ставить в волне',
                 visualDensity: VisualDensity.compact,
                 iconSize: 18,

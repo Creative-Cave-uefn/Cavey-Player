@@ -50,6 +50,9 @@ class PlayerController extends ChangeNotifier {
 
   /// Пока не null, очередь сама пополняется из него, когда заканчивается
   QueueFeeder? feeder;
+
+  /// Что человек сам поставил в очередь волны: при пересборке не выбрасываем
+  final Set<String> _userAdded = {};
   DateTime? _openedAt;
 
   /// Трек восстановлен из прошлой сессии, но ещё не открыт: откроем по первому нажатию
@@ -199,6 +202,7 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     queue.insert(index + 1, t.id);
+    if (feeder != null) _userAdded.add(t.id);
     // И в исходный порядок — иначе после выключения перемешивания трек пропадёт
     final oi = _origin.indexOf(current!.id);
     _origin.insert(oi < 0 ? _origin.length : oi + 1, t.id);
@@ -213,6 +217,7 @@ class PlayerController extends ChangeNotifier {
     }
     queue.add(t.id);
     _origin.add(t.id);
+    if (feeder != null) _userAdded.add(t.id);
     _queueChanged();
   }
 
@@ -246,6 +251,7 @@ class PlayerController extends ChangeNotifier {
     final ids = [for (final id in first) if (lib.data.tracks[id] != null) id];
     if (ids.isEmpty) return;
     feeder = f;
+    _userAdded.clear();
     queue = ids;
     _origin = List.of(ids);
     index = 0;
@@ -276,6 +282,21 @@ class PlayerController extends ChangeNotifier {
     _queueChanged();
   }
 
+  /// Пересобирает очередь волны после следующего трека (он уже подгружается — его не трогаем).
+  /// Остаётся то, что поставили руками, и то, что [keep] просит оставить
+  void refillFeed({bool Function(String id)? keep}) {
+    if (feeder == null || index < 0) return;
+    final head = queue.take(index + 2).toList();
+    final tail = [
+      for (final id in queue.skip(index + 2))
+        if (_userAdded.contains(id) || (keep?.call(id) ?? false)) id
+    ];
+    queue = [...head, ...tail];
+    _origin = List.of(queue);
+    _topUpFeed(force: true);
+    _queueChanged();
+  }
+
   /// Убирает из следующих треки, подходящие под [test]
   void dropUpcoming(bool Function(String id) test) {
     if (index < 0) return;
@@ -286,11 +307,12 @@ class PlayerController extends ChangeNotifier {
     _queueChanged();
   }
 
-  void _topUpFeed() {
+  void _topUpFeed({bool force = false}) {
     final f = feeder;
     if (f == null || index < 0) return;
     final ahead = queue.length - index - 1;
-    if (ahead >= 3) return;
+    if (ahead >= 3 && !force) return;
+    if (ahead >= 5) return;
     final add = [for (final id in f.more(5 - ahead)) if (lib.data.tracks[id] != null) id];
     if (add.isEmpty) return;
     queue.addAll(add);

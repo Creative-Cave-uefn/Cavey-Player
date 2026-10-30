@@ -62,7 +62,9 @@ class WavePage extends StatelessWidget {
           ]),
           const SizedBox(height: 8),
           Text(wave.mode.hint, style: const TextStyle(color: C.muted, fontSize: 13)),
-          const SizedBox(height: 26),
+          const SizedBox(height: 22),
+          const _Tune(),
+          const SizedBox(height: 22),
           _Discover(compact: compact),
           if (upcoming.isNotEmpty) ...[
             const SizedBox(height: 30),
@@ -217,20 +219,30 @@ class _HeroState extends State<_Hero> with SingleTickerProviderStateMixin {
                   Text('Моя волна', style: display(40, weight: FontWeight.w700)),
                   const SizedBox(height: 10),
                   Text(
-                    t != null ? 'Сейчас: ${t.title} — ${t.displayArtist}' : 'Бесконечный поток из вашей библиотеки под ваш вкус',
+                    t != null
+                        ? 'Сейчас: ${t.title} — ${t.displayArtist}'
+                        : app.wave.custom.isNotEmpty
+                            ? 'Своя волна: ${app.wave.custom.join(', ')}'
+                            : 'Бесконечный поток из вашей библиотеки под ваш вкус',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(color: C.muted, fontSize: 15),
                   ),
                   if (widget.active) ...[
                     const SizedBox(height: 14),
-                    Row(children: [
+                    Wrap(spacing: 10, runSpacing: 8, children: [
+                      if (t != null)
+                        OutlinedButton.icon(
+                          icon: Icon(app.wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
+                              size: 16, color: app.wave.isUpvoted(t.id) ? C.accent : null),
+                          label: const Text('Нравится'),
+                          onPressed: app.wave.upvote,
+                        ),
                       OutlinedButton.icon(
                         icon: const Icon(Icons.thumb_down_alt_outlined, size: 16),
                         label: const Text('Не нравится'),
                         onPressed: app.wave.dislike,
                       ),
-                      const SizedBox(width: 10),
                       TextButton.icon(
                         icon: const Icon(Icons.skip_next_rounded, size: 18),
                         label: const Text('Дальше'),
@@ -404,4 +416,123 @@ class _Discover extends StatelessWidget {
       ]),
     );
   }
+}
+
+/// Настроение и свои исполнители
+class _Tune extends StatelessWidget {
+  const _Tune();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final wave = app.wave;
+    Widget chip(String label, bool on, VoidCallback onTap) => ChoiceChip(
+          label: Text(label),
+          selected: on,
+          onSelected: (_) => onTap(),
+          selectedColor: C.accent,
+          labelStyle: TextStyle(color: on ? C.accentInk : C.text, fontWeight: FontWeight.w600),
+          backgroundColor: C.raised,
+          side: BorderSide.none,
+          showCheckmark: false,
+        );
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Настроение', style: display(16)),
+      const SizedBox(height: 10),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        chip('Любое', wave.mood == null, () => wave.setMood(null)),
+        for (final m in waveMoods) chip(m.title, wave.mood == m.id, () => wave.setMood(m.id)),
+      ]),
+      if (wave.mood != null && wave.tagsTotal > 0 && wave.tagsKnown < wave.tagsTotal) ...[
+        const SizedBox(height: 8),
+        Text('Узнаю настроение исполнителей в Last.fm: ${wave.tagsKnown} из ${wave.tagsTotal}',
+            style: const TextStyle(color: C.faint, fontSize: 12)),
+      ],
+      const SizedBox(height: 22),
+      Row(children: [
+        Expanded(child: Text('Свои исполнители', style: display(16))),
+        if (wave.custom.isNotEmpty)
+          TextButton(onPressed: wave.clearCustom, child: const Text('Очистить')),
+      ]),
+      const SizedBox(height: 4),
+      const Text('Волна будет держаться этих исполнителей и похожих на них — можно добавить и тех, кого нет в библиотеке.',
+          style: TextStyle(color: C.muted, fontSize: 13)),
+      const SizedBox(height: 10),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        for (final c in wave.custom)
+          InputChip(
+            label: Text(c),
+            backgroundColor: C.raised,
+            side: BorderSide.none,
+            onDeleted: () => wave.removeCustom(c),
+          ),
+        ActionChip(
+          avatar: const Icon(Icons.add_rounded, size: 18),
+          label: const Text('Добавить'),
+          backgroundColor: C.surface,
+          side: const BorderSide(color: C.line),
+          onPressed: () async {
+            final name = await _pickArtist(context);
+            if (name != null) wave.addCustom(name);
+          },
+        ),
+      ]),
+      if (wave.active && wave.similarInLibrary > 0) ...[
+        const SizedBox(height: 14),
+        Text('Похожих на текущий трек в библиотеке: ${wave.similarInLibrary}',
+            style: const TextStyle(color: C.faint, fontSize: 12)),
+      ],
+    ]);
+  }
+}
+
+/// Выбор исполнителя: из библиотеки с подсказками или любое имя
+Future<String?> _pickArtist(BuildContext context) {
+  final app = Services.of(context);
+  final all = app.lib.artists;
+  return showDialog<String>(
+    context: context,
+    builder: (ctx) {
+      final ctrl = TextEditingController();
+      return StatefulBuilder(builder: (ctx, setState) {
+        final q = ctrl.text.trim().toLowerCase();
+        final hits = q.isEmpty
+            ? (List.of(all)..sort((a, b) => b.tracks.length.compareTo(a.tracks.length))).take(8).toList()
+            : all.where((a) => a.key.contains(q)).take(8).toList();
+        return AlertDialog(
+          title: Text('Добавить исполнителя', style: display(18)),
+          content: SizedBox(
+            width: 380,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                decoration: const InputDecoration(hintText: 'Имя исполнителя'),
+                onChanged: (_) => setState(() {}),
+                onSubmitted: (v) => Navigator.pop(ctx, v.trim().isEmpty ? null : v.trim()),
+              ),
+              const SizedBox(height: 10),
+              for (final a in hits)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(a.name),
+                  subtitle: Text('${a.tracks.length} в библиотеке', style: const TextStyle(color: C.faint, fontSize: 12)),
+                  onTap: () => Navigator.pop(ctx, a.name),
+                ),
+              if (q.isNotEmpty && !hits.any((a) => a.key == q))
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.travel_explore_rounded, size: 18),
+                  title: Text('«${ctrl.text.trim()}» — найти в интернете'),
+                  onTap: () => Navigator.pop(ctx, ctrl.text.trim()),
+                ),
+            ]),
+          ),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена'))],
+        );
+      });
+    },
+  );
 }

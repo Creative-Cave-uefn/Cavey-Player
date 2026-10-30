@@ -72,10 +72,19 @@ class LastFm {
     });
   }
 
-  /// Похожие на трек: до 50 штук, самые похожие первыми
+  /// Название без «(feat. …)», «[Remastered]», «- Radio Edit» и т. п.: с ними Last.fm часто не узнаёт песню
+  static String cleanTitle(String t) {
+    var s = t.replaceAll(RegExp(r'\s*[\(\[][^\)\]]*[\)\]]'), '');
+    s = s.replaceAll(RegExp(r'\s+[-–—]\s+.*(remaster|edit|version|mix|live|mono|stereo|bonus|demo).*$', caseSensitive: false), '');
+    s = s.replaceAll(RegExp(r'\s+(feat|ft)\.?\s.*$', caseSensitive: false), '');
+    s = s.trim();
+    return s.isEmpty ? t.trim() : s;
+  }
+
+  /// Похожие на трек: до 100 штук, самые похожие первыми
   Future<List<LfmItem>> similarTracks(String artist, String title) => _get(
-        't:${artist.toLowerCase()}|${title.toLowerCase()}',
-        {'method': 'track.getsimilar', 'artist': artist, 'track': title, 'limit': '50'},
+        't:${artist.toLowerCase()}|${cleanTitle(title).toLowerCase()}',
+        {'method': 'track.getsimilar', 'artist': artist, 'track': cleanTitle(title), 'limit': '100'},
         (j) {
           final list = (j['similartracks'] as Map?)?['track'];
           return [
@@ -94,6 +103,50 @@ class LastFm {
           return [
             for (final x in (list is List ? list : const []))
               if (x is Map) LfmItem('${x['name'] ?? ''}', '', _num(x['match']))
+          ];
+        },
+      );
+
+  /// Самые популярные песни исполнителя: [match] — от 1 у первой до 0 у последней
+  Future<List<LfmItem>> topTracks(String artist) => _get(
+        'top:${artist.toLowerCase()}',
+        {'method': 'artist.gettoptracks', 'artist': artist, 'limit': '30'},
+        (j) {
+          final list = (j['toptracks'] as Map?)?['track'];
+          final l = list is List ? list : const [];
+          return [
+            for (var i = 0; i < l.length; i++)
+              if (l[i] is Map)
+                LfmItem('${((l[i] as Map)['artist'] as Map?)?['name'] ?? artist}', '${(l[i] as Map)['name'] ?? ''}',
+                    1 - i / l.length)
+          ];
+        },
+      );
+
+  /// Теги исполнителя (жанры и настроения): в [artist] — название тега, [match] — вес от 0 до 1
+  Future<List<LfmItem>> artistTags(String artist) => _get(
+        'tags:${artist.toLowerCase()}',
+        {'method': 'artist.gettoptags', 'artist': artist},
+        (j) {
+          final list = (j['toptags'] as Map?)?['tag'];
+          return [
+            for (final x in (list is List ? list : const []))
+              if (x is Map && _num(x['count']) >= 5) LfmItem('${x['name'] ?? ''}'.toLowerCase(), '', _num(x['count']) / 100)
+          ].take(20).toList();
+        },
+      );
+
+  /// Самые популярные песни с тегом (настроением)
+  Future<List<LfmItem>> tagTracks(String tag) => _get(
+        'tag:$tag',
+        {'method': 'tag.gettoptracks', 'tag': tag, 'limit': '100'},
+        (j) {
+          final list = (j['tracks'] as Map?)?['track'];
+          final l = list is List ? list : const [];
+          return [
+            for (var i = 0; i < l.length; i++)
+              if (l[i] is Map)
+                LfmItem('${((l[i] as Map)['artist'] as Map?)?['name'] ?? ''}', '${(l[i] as Map)['name'] ?? ''}', 1 - i / l.length)
           ];
         },
       );

@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cave_player/core/models.dart';
+import 'package:cave_player/core/lastfm.dart';
 import 'package:cave_player/core/wave.dart';
 
 Track tr(String id, String artist) => Track(
@@ -120,5 +121,31 @@ void main() {
     }
     final c = countArtists(all);
     expect(c['c']!, greaterThan((c['a'] ?? 0) * 1.5));
+  });
+
+  test('похожие выпадают заметно чаще даже в большой библиотеке', () {
+    final big = [...lib, for (var i = 0; i < 970; i++) tr('z$i', 'Zeta$i')];
+    final x = WaveInputs(tracks: big, boost: {'c1': 0.9, 'c2': 0.8, 'c3': 0.7});
+    final ids = WaveEngine.pick(x, WaveMode.mix, 6, rnd: Random(7));
+    expect(ids.where({'c1', 'c2', 'c3'}.contains).length, greaterThanOrEqualTo(2));
+  });
+
+  test('своя подборка держится своих исполнителей', () {
+    final ids = WaveEngine.pick(WaveInputs(tracks: lib, focus: {'gamma'}), WaveMode.mix, 8, rnd: Random(8));
+    expect(ids.where((id) => id.startsWith('c')).length, greaterThanOrEqualTo(6));
+  });
+
+  test('настроение отбирает подходящие треки', () {
+    final x = WaveInputs(tracks: lib, mood: {for (var i = 0; i < 10; i++) 'b$i': 1.0});
+    final ids = WaveEngine.pick(x, WaveMode.mix, 8, rnd: Random(9));
+    expect(ids.where((id) => id.startsWith('b')).length, greaterThanOrEqualTo(6));
+  });
+
+  test('название для Last.fm без приписок', () {
+    expect(LastFm.cleanTitle('Song (feat. B)'), 'Song');
+    expect(LastFm.cleanTitle('Song [Remastered 2011]'), 'Song');
+    expect(LastFm.cleanTitle('Song - Radio Edit'), 'Song');
+    expect(LastFm.cleanTitle('Song ft. B'), 'Song');
+    expect(LastFm.cleanTitle('(Intro)'), '(Intro)');
   });
 }
