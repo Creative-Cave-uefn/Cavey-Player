@@ -21,6 +21,36 @@ class Source {
       );
 }
 
+// Разделители соавторов в поле «исполнитель»: «A, B», «A feat. B», «A & B», «A x B».
+// «&» и «x» — только с пробелами вокруг, чтобы не резать «AC/DC» и «A&B».
+final _artistSep = RegExp(
+  r'\s*(?:,|;|\s/\s|\s&\s|\s(?:feat\.?|ft\.?|featuring|при\s+уч\.?|x|×|vs\.?)\s)\s*',
+  caseSensitive: false,
+);
+
+// Соавторы в названии: «Песня (feat. B, C)», «Песня [ft. B]»
+final _featInTitle = RegExp(r'[\(\[]\s*(?:feat\.?|ft\.?|featuring|при\s+уч\.?)\s+([^\)\]]+)[\)\]]', caseSensitive: false);
+
+/// Отдельные исполнители трека: из поля «исполнитель» и из «(feat. …)» в названии.
+/// Повторы убираются без учёта регистра, порядок как в тегах.
+List<String> splitArtists(String artist, [String title = '']) {
+  final out = <String>[];
+  final seen = <String>{};
+  void add(String raw) {
+    for (final part in raw.split(_artistSep)) {
+      final name = part.trim();
+      if (name.isEmpty || !seen.add(name.toLowerCase())) continue;
+      out.add(name);
+    }
+  }
+
+  add(artist);
+  for (final m in _featInTitle.allMatches(title)) {
+    add(m.group(1)!);
+  }
+  return out;
+}
+
 class Track {
   final String id;
   final String source;
@@ -57,6 +87,9 @@ class Track {
   });
 
   String get displayArtist => artist.isNotEmpty ? artist : 'Неизвестный исполнитель';
+
+  /// Каждый исполнитель отдельно (для страниц исполнителей и ссылок)
+  late final List<String> artists = artist.isEmpty ? const ['Неизвестный исполнитель'] : splitArtists(artist, title);
   String get displayAlbum => album.isNotEmpty ? album : (path.isNotEmpty ? path.split('/').last : 'Без альбома');
   String get albumKey =>
       '${(albumArtist.isNotEmpty ? albumArtist : artist).toLowerCase()}\u0001${displayAlbum.toLowerCase()}';

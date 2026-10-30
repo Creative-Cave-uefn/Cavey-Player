@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart' show TapGestureRecognizer;
 import 'package:flutter/material.dart';
 
 import '../app.dart';
@@ -471,7 +472,10 @@ class _TracksPageState extends State<TracksPage> {
               cached: app.cache.has(visible[i].id),
               onPlay: () => app.player.playTracks(visible, i),
             );
-        return CustomScrollView(slivers: [
+        return CustomScrollView(
+            // Вернулись назад — список на том же месте
+            key: PageStorageKey('tracks:${widget.title}:${widget.playlistId ?? ''}'),
+            slivers: [
           SliverToBoxAdapter(child: header),
           if (banner != null) SliverToBoxAdapter(child: banner),
           if (visible.isEmpty)
@@ -552,6 +556,8 @@ class TrackRow extends StatelessWidget {
     return InkWell(
       onTap: current ? app.player.toggle : onPlay,
       onHover: (inside) => app.player.hover(track, inside),
+      // Правый клик — то же меню, что под «…»
+      onSecondaryTapUp: (d) => showTrackMenu(context, track, playlistId, d.globalPosition),
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -586,18 +592,19 @@ class TrackRow extends StatelessWidget {
                   ),
               ]),
               const SizedBox(height: 3),
-              Text(track.displayArtist,
-                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+              Links(
+                parts: trackLinks(context, track, album: compact),
+                style: const TextStyle(color: C.muted, fontSize: 13),
+              ),
             ]),
           ),
           if (!compact) ...[
             const SizedBox(width: 16),
             Expanded(
               flex: 3,
-              child: InkWell(
-                onTap: () => NavScope.of(context).go(Nav('album', track.albumKey)),
-                child: Text(track.displayAlbum,
-                    maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+              child: Links(
+                parts: [LinkPart(track.displayAlbum, () => NavScope.of(context).go(Nav('album', track.albumKey)))],
+                style: const TextStyle(color: C.muted, fontSize: 13),
               ),
             ),
             const SizedBox(width: 16),
@@ -665,45 +672,71 @@ class TrackMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final app = Services.of(context);
     return PopupMenuButton<String>(
       tooltip: 'Действия',
       icon: const Icon(Icons.more_horiz_rounded, size: 20),
-      onSelected: (v) async {
-        switch (v) {
-          case 'next':
-            app.player.playNext(track);
-            app.lib.messages.add('«${track.title}» заиграет следующим');
-          case 'queue':
-            app.player.addToQueue(track);
-            app.lib.messages.add('«${track.title}» добавлен в конец очереди');
-          case 'playlist':
-            await addToPlaylistDialog(context, [track.id]);
-          case 'remove':
-            app.lib.removeFromPlaylist(playlistId!, track.id);
-          case 'album':
-            NavScope.of(context).go(Nav('album', track.albumKey));
-          case 'artist':
-            NavScope.of(context).go(Nav('artist', track.displayArtist.toLowerCase()));
-          case 'edit':
-            await editTrackDialog(context, track);
-          case 'hide':
-            app.lib.hideTrack(track.id, true);
-            app.lib.messages.add('«${track.title}» скрыт из библиотеки у всех. Вернуть можно в разделе «Дубликаты».');
-        }
-      },
-      itemBuilder: (_) => [
-        const PopupMenuItem(value: 'next', child: Text('Играть следующим')),
-        const PopupMenuItem(value: 'queue', child: Text('В конец очереди')),
-        const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
-        if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
-        const PopupMenuItem(value: 'album', child: Text('Открыть альбом')),
-        const PopupMenuItem(value: 'artist', child: Text('Открыть исполнителя')),
-        const PopupMenuDivider(),
-        const PopupMenuItem(value: 'edit', child: Text('Изменить название…')),
-        const PopupMenuItem(value: 'hide', child: Text('Скрыть из библиотеки')),
-      ],
+      onSelected: (v) => onTrackMenu(context, v, track, playlistId),
+      itemBuilder: (_) => trackMenuItems(track, playlistId),
     );
+  }
+}
+
+/// Меню трека по правому клику, в точке клика
+Future<void> showTrackMenu(BuildContext context, Track track, String? playlistId, Offset at) async {
+  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+  final v = await showMenu<String>(
+    context: context,
+    position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
+    items: trackMenuItems(track, playlistId),
+  );
+  if (v != null && context.mounted) await onTrackMenu(context, v, track, playlistId);
+}
+
+List<PopupMenuEntry<String>> trackMenuItems(Track track, String? playlistId) {
+  final names = track.artists;
+  return [
+    const PopupMenuItem(value: 'next', child: Text('Играть следующим')),
+    const PopupMenuItem(value: 'queue', child: Text('В конец очереди')),
+    const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
+    if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
+    const PopupMenuItem(value: 'album', child: Text('Открыть альбом')),
+    if (names.length == 1)
+      const PopupMenuItem(value: 'artist:0', child: Text('Открыть исполнителя'))
+    else
+      for (var i = 0; i < names.length && i < 5; i++)
+        PopupMenuItem(value: 'artist:$i', child: Text('Открыть: ${names[i]}', overflow: TextOverflow.ellipsis)),
+    const PopupMenuDivider(),
+    const PopupMenuItem(value: 'edit', child: Text('Изменить название…')),
+    const PopupMenuItem(value: 'hide', child: Text('Скрыть из библиотеки')),
+  ];
+}
+
+Future<void> onTrackMenu(BuildContext context, String v, Track track, String? playlistId) async {
+  final app = Services.of(context);
+  if (v.startsWith('artist:')) {
+    final i = int.tryParse(v.substring(7)) ?? 0;
+    final names = track.artists;
+    NavScope.of(context).go(Nav('artist', names[i < names.length ? i : 0].toLowerCase()));
+    return;
+  }
+  switch (v) {
+    case 'next':
+      app.player.playNext(track);
+      app.lib.messages.add('«${track.title}» заиграет следующим');
+    case 'queue':
+      app.player.addToQueue(track);
+      app.lib.messages.add('«${track.title}» добавлен в конец очереди');
+    case 'playlist':
+      await addToPlaylistDialog(context, [track.id]);
+    case 'remove':
+      app.lib.removeFromPlaylist(playlistId!, track.id);
+    case 'album':
+      NavScope.of(context).go(Nav('album', track.albumKey));
+    case 'edit':
+      await editTrackDialog(context, track);
+    case 'hide':
+      app.lib.hideTrack(track.id, true);
+      app.lib.messages.add('«${track.title}» скрыт из библиотеки у всех. Вернуть можно в разделе «Дубликаты».');
   }
 }
 
@@ -779,4 +812,86 @@ class OfflineButton extends StatelessWidget {
       },
     );
   }
+}
+
+// ---------- ссылки на исполнителей и альбом ----------
+
+/// Кусок строки: обычный текст или ссылка
+class LinkPart {
+  final String text;
+  final VoidCallback? onTap;
+  const LinkPart(this.text, [this.onTap]);
+}
+
+/// Строка из ссылок: каждая подчёркивается при наведении и открывается по клику.
+/// Остаётся одной строкой с многоточием, как обычный текст.
+class Links extends StatefulWidget {
+  final List<LinkPart> parts;
+  final TextStyle style;
+  const Links({super.key, required this.parts, required this.style});
+
+  @override
+  State<Links> createState() => _LinksState();
+}
+
+class _LinksState extends State<Links> {
+  final List<TapGestureRecognizer> _taps = [];
+  int _hovered = -1;
+
+  void _dropTaps() {
+    for (final r in _taps) {
+      r.dispose();
+    }
+    _taps.clear();
+  }
+
+  @override
+  void dispose() {
+    _dropTaps();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _dropTaps();
+    final spans = <InlineSpan>[];
+    for (var i = 0; i < widget.parts.length; i++) {
+      final p = widget.parts[i];
+      if (p.onTap == null) {
+        spans.add(TextSpan(text: p.text));
+        continue;
+      }
+      final tap = TapGestureRecognizer()..onTap = p.onTap;
+      _taps.add(tap);
+      final index = i;
+      spans.add(TextSpan(
+        text: p.text,
+        recognizer: tap,
+        mouseCursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hovered = index),
+        onExit: (_) {
+          if (_hovered == index) setState(() => _hovered = -1);
+        },
+        style: _hovered == index ? const TextStyle(decoration: TextDecoration.underline, color: C.text) : null,
+      ));
+    }
+    return Text.rich(TextSpan(children: spans), maxLines: 1, overflow: TextOverflow.ellipsis, style: widget.style);
+  }
+}
+
+/// Исполнители трека ссылками на их страницы; с [album] — ещё и альбом через « · »
+List<LinkPart> trackLinks(BuildContext context, Track t, {bool album = false}) {
+  final nav = NavScope.of(context);
+  final parts = <LinkPart>[];
+  final names = t.artists;
+  for (var i = 0; i < names.length; i++) {
+    if (i > 0) parts.add(const LinkPart(', '));
+    final key = names[i].toLowerCase();
+    parts.add(LinkPart(names[i], () => nav.go(Nav('artist', key))));
+  }
+  if (album) {
+    parts.add(const LinkPart('  ·  '));
+    parts.add(LinkPart(t.displayAlbum, () => nav.go(Nav('album', t.albumKey))));
+  }
+  return parts;
 }

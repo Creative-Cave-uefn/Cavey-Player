@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart' show kBackMouseButton, kForwardMouseButton;
 import 'package:flutter/material.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/services.dart';
@@ -26,9 +27,35 @@ class Nav {
   bool same(Nav o) => o.kind == kind && o.id == id;
 }
 
+/// Куда смотрим сейчас и история переходов — как в браузере: назад и вперёд
+/// боковыми кнопками мыши, Alt+← / Alt+→ или стрелками над страницей
 class NavController extends ValueNotifier<Nav> {
   NavController() : super(const Nav('all'));
-  void go(Nav n) => value = n;
+  final List<Nav> _back = [];
+  final List<Nav> _forward = [];
+
+  bool get canBack => _back.isNotEmpty;
+  bool get canForward => _forward.isNotEmpty;
+
+  void go(Nav n) {
+    if (n.same(value)) return;
+    _back.add(value);
+    if (_back.length > 60) _back.removeAt(0);
+    _forward.clear();
+    value = n;
+  }
+
+  void back() {
+    if (_back.isEmpty) return;
+    _forward.add(value);
+    value = _back.removeLast();
+  }
+
+  void forward() {
+    if (_forward.isEmpty) return;
+    _back.add(value);
+    value = _forward.removeLast();
+  }
 }
 
 class NavScope extends InheritedWidget {
@@ -73,7 +100,13 @@ class _ShellState extends State<Shell> {
     final app = Services.of(context);
     return NavScope(
       nav: _nav,
-      child: Focus(
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (e) {
+          if (e.buttons & kBackMouseButton != 0) _nav.back();
+          if (e.buttons & kForwardMouseButton != 0) _nav.forward();
+        },
+        child: Focus(
         onKeyEvent: (node, e) => _onKey(e),
         child: Focus(
           autofocus: true,
@@ -96,7 +129,25 @@ class _ShellState extends State<Shell> {
                     Expanded(
                       child: ValueListenableBuilder<Nav>(
                         valueListenable: _nav,
-                        builder: (context, nav, _) => _content(nav, compact),
+                        builder: (context, nav, _) => Stack(children: [
+                          Positioned.fill(child: _content(nav, compact)),
+                          Positioned(
+                            top: 4,
+                            left: compact ? 6 : 14,
+                            child: Row(children: [
+                              _HistoryButton(
+                                icon: Icons.chevron_left_rounded,
+                                tooltip: 'Назад (Alt+←)',
+                                onPressed: _nav.canBack ? _nav.back : null,
+                              ),
+                              _HistoryButton(
+                                icon: Icons.chevron_right_rounded,
+                                tooltip: 'Вперёд (Alt+→)',
+                                onPressed: _nav.canForward ? _nav.forward : null,
+                              ),
+                            ]),
+                          ),
+                        ]),
                       ),
                     ),
                     ValueListenableBuilder<bool>(
@@ -113,6 +164,7 @@ class _ShellState extends State<Shell> {
             ]),
           ),
         ),
+      ),
       ),
     );
   }
@@ -142,6 +194,10 @@ class _ShellState extends State<Shell> {
     if (ctrl && k == LogicalKeyboardKey.arrowRight && !repeat) action = p.next;
     if (ctrl && k == LogicalKeyboardKey.arrowLeft && !repeat) action = p.previous;
     if (ctrl && k == LogicalKeyboardKey.keyF && !repeat) action = () => searchRequests.value++;
+    if (kb.isAltPressed && !ctrl && k == LogicalKeyboardKey.arrowLeft && !repeat) action = _nav.back;
+    if (kb.isAltPressed && !ctrl && k == LogicalKeyboardKey.arrowRight && !repeat) action = _nav.forward;
+    if (k == LogicalKeyboardKey.browserBack && !repeat) action = _nav.back;
+    if (k == LogicalKeyboardKey.browserForward && !repeat) action = _nav.forward;
 
     if (action == null && plain && !_typing()) {
       if (k == LogicalKeyboardKey.space && !repeat) action = p.toggle;
@@ -463,6 +519,27 @@ class _DropOverlay extends StatelessWidget {
               style: TextStyle(color: C.muted)),
         ]),
       ),
+    );
+  }
+}
+
+/// Маленькая стрелка «назад» / «вперёд» над страницей
+class _HistoryButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+  const _HistoryButton({required this.icon, required this.tooltip, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      visualDensity: VisualDensity.compact,
+      iconSize: 22,
+      color: C.muted,
+      disabledColor: C.line,
+      icon: Icon(icon),
     );
   }
 }

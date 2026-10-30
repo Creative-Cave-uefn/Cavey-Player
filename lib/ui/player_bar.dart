@@ -24,7 +24,18 @@ class PlayerBar extends StatelessWidget {
         builder: (context, _) {
           final t = p.current;
           final nowPlaying = Row(children: [
-            CoverImage(track: t, size: 58, radius: 6),
+            t == null
+                ? CoverImage(track: t, size: 58, radius: 6)
+                : Tooltip(
+                    message: 'Открыть альбом',
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: () => NavScope.of(context).go(Nav('album', t.albumKey)),
+                        child: CoverImage(track: t, size: 58, radius: 6),
+                      ),
+                    ),
+                  ),
             const SizedBox(width: 14),
             Expanded(
               child: t == null
@@ -33,11 +44,7 @@ class PlayerBar extends StatelessWidget {
                       Text(t.title,
                           maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
                       const SizedBox(height: 3),
-                      InkWell(
-                        onTap: () => NavScope.of(context).go(Nav('album', t.albumKey)),
-                        child: Text(t.displayArtist,
-                            maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
-                      ),
+                      Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 13)),
                     ]),
             ),
             if (t != null) LikeButton(track: t),

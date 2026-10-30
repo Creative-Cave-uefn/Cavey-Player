@@ -54,4 +54,27 @@ void main() {
       expect(Updater.isNewer('0.2.10', '0.2.10'), isFalse);
     });
   });
+
+  group('соавторы', () {
+    test('разделители в поле исполнителя', () {
+      expect(splitArtists('A, B'), ['A', 'B']);
+      expect(splitArtists('A feat. B'), ['A', 'B']);
+      expect(splitArtists('A ft. B & C'), ['A', 'B', 'C']);
+      expect(splitArtists('A x B'), ['A', 'B']);
+      expect(splitArtists('A; B'), ['A', 'B']);
+      expect(splitArtists('Скриптонит, 104'), ['Скриптонит', '104']);
+    });
+
+    test('не режет то, что похоже на одно имя', () {
+      expect(splitArtists('AC/DC'), ['AC/DC']);
+      expect(splitArtists('A&B'), ['A&B']);
+      expect(splitArtists('Malcolm X'), ['Malcolm X']);
+      expect(splitArtists('Xzibit'), ['Xzibit']);
+    });
+
+    test('соавторы из названия и без повторов', () {
+      expect(splitArtists('A', 'Песня (feat. B, C)'), ['A', 'B', 'C']);
+      expect(splitArtists('A, B', 'Песня [ft. b]'), ['A', 'B']);
+    });
+  });
 }

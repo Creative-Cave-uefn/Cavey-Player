@@ -713,12 +713,19 @@ class LibraryController extends ChangeNotifier {
     for (final t in all) {
       byAlbum.putIfAbsent(t.albumKey, () => []).add(t);
     }
+    // Трек с соавторами («A, B», «A feat. B») попадает к каждому из них
     final byArtist = <String, List<Track>>{};
+    final names = <String, String>{};
     for (final t in all) {
-      byArtist.putIfAbsent(t.displayArtist.toLowerCase(), () => []).add(t);
+      for (final name in t.artists) {
+        final key = name.toLowerCase();
+        names.putIfAbsent(key, () => name);
+        byArtist.putIfAbsent(key, () => []).add(t);
+      }
     }
-    _artists = [for (final e in byArtist.entries) Artist(e.key, e.value.first.displayArtist, e.value)]
+    _artists = [for (final e in byArtist.entries) Artist(e.key, names[e.key]!, e.value)]
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    _artistByKey = {for (final a in _artists) a.key: a};
     _albums = byAlbum.entries.map((e) {
       final t = e.value.first;
       final artists = e.value.map((x) => x.albumArtist.isNotEmpty ? x.albumArtist : x.artist).toSet();
@@ -769,11 +776,11 @@ class LibraryController extends ChangeNotifier {
     return _artists;
   }
 
+  Map<String, Artist> _artistByKey = const {};
+
   Artist? artist(String key) {
-    for (final a in artists) {
-      if (a.key == key) return a;
-    }
-    return null;
+    _rebuild();
+    return _artistByKey[key.toLowerCase()];
   }
 
   /// Последние добавленные на Диск треки, новые сверху
