@@ -60,7 +60,15 @@ class AllTracksPage extends StatelessWidget {
               ),
             ),
           ],
-          banner: const DropHint(),
+          banner: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Wrap(spacing: 10, runSpacing: 10, children: [
+              _SectionChip(icon: Icons.album_outlined, label: 'Альбомы', target: const Nav('albums')),
+              _SectionChip(icon: Icons.mic_none_rounded, label: 'Исполнители', target: const Nav('artists')),
+              _SectionChip(icon: Icons.schedule_rounded, label: 'Недавно добавленное', target: const Nav('recent')),
+            ]),
+            const SizedBox(height: 12),
+            const DropHint(),
+          ]),
           empty: lib.scan.running
               ? EmptyState(
                   icon: Icons.downloading_rounded,
@@ -84,6 +92,26 @@ class AllTracksPage extends StatelessWidget {
   }
 }
 
+/// Плашка-переход под заголовком «Все треки»
+class _SectionChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Nav target;
+  const _SectionChip({required this.icon, required this.label, required this.target});
+
+  @override
+  Widget build(BuildContext context) {
+    return ActionChip(
+      avatar: Icon(icon, size: 18, color: C.accent),
+      label: Text(label),
+      onPressed: () => NavScope.of(context).go(target),
+      backgroundColor: C.surface,
+      side: const BorderSide(color: C.line),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    );
+  }
+}
+
 class LikedPage extends StatelessWidget {
   final bool compact;
   const LikedPage({super.key, required this.compact});
@@ -98,6 +126,7 @@ class LikedPage extends StatelessWidget {
         return TracksPage(
           title: 'Любимое',
           subtitle: tracks.isEmpty ? null : countTracks(tracks.length),
+          heroColor: const Color(0xFFB3261E),
           tracks: tracks,
           compact: compact,
           actions: [
@@ -290,6 +319,9 @@ class TracksPage extends StatefulWidget {
   /// Блок под списком треков (например, то, чего нет в библиотеке)
   final Widget? footer;
 
+  /// Шапка как в профилях: цветной градиент сверху, заголовок и кнопки по центру
+  final Color? heroColor;
+
   const TracksPage({
     super.key,
     required this.title,
@@ -308,6 +340,7 @@ class TracksPage extends StatefulWidget {
     this.onReorder,
     this.image,
     this.footer,
+    this.heroColor,
   });
 
   @override
@@ -414,6 +447,12 @@ class _TracksPageState extends State<TracksPage> {
       }
       if (!_sel.remove(id)) _sel.add(id);
       _anchor = id;
+      if (_sel.isEmpty) {
+        // Сняли отметку с последнего трека — выделение отменяется, клик снова включает трек
+        HardwareKeyboard.instance.removeHandler(_selectionKey);
+        _selecting = false;
+        _anchor = null;
+      }
     });
   }
 
@@ -456,6 +495,21 @@ class _TracksPageState extends State<TracksPage> {
                 icon: const Icon(Icons.queue_music_rounded, size: 18),
                 label: const Text('В очередь'),
               ),
+              Builder(builder: (_) {
+                final allLiked = !none && picked.every((t) => app.lib.isLiked(t.id));
+                return TextButton.icon(
+                  onPressed: none
+                      ? null
+                      : () {
+                          app.lib.setLikes(ids, !allLiked);
+                          app.lib.messages.add(allLiked
+                              ? 'Убрано из любимого: ${countTracks(ids.length)}'
+                              : 'В любимое добавлено: ${countTracks(ids.length)}');
+                        },
+                  icon: Icon(allLiked ? Icons.favorite_rounded : Icons.favorite_border_rounded, size: 18),
+                  label: Text(allLiked ? 'Убрать из любимого' : 'В любимое'),
+                );
+              }),
               FilledButton.icon(
                 onPressed: none
                     ? null
@@ -645,7 +699,96 @@ class _TracksPageState extends State<TracksPage> {
       _sel.retainAll(present);
     }
 
-    final header = Padding(
+    Widget buttons(WrapAlignment align) => Wrap(
+          spacing: 12,
+          runSpacing: 10,
+          alignment: align,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            FilledButton.icon(
+              onPressed: visible.isEmpty
+                  ? null
+                  : () {
+                      if (app.player.shuffle) app.player.toggleShuffle();
+                      app.player.playTracks(visible, 0);
+                    },
+              icon: const Icon(Icons.play_arrow_rounded, size: 20),
+              label: const Text('Слушать'),
+            ),
+            OutlinedButton.icon(
+              onPressed: visible.isEmpty
+                  ? null
+                  : () {
+                      if (!app.player.shuffle) app.player.toggleShuffle();
+                      app.player.playTracks(visible, (DateTime.now().microsecond) % visible.length);
+                    },
+              icon: const Icon(Icons.shuffle_rounded, size: 18),
+              label: const Text('Вперемешку'),
+            ),
+            ...widget.actions,
+          ],
+        );
+
+    final hero = widget.heroColor;
+    final heroHeader = hero == null
+        ? null
+        : Stack(children: [
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [hero.withValues(alpha: 0.85), C.bg],
+                    stops: const [0.0, 1.0],
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.fromLTRB(pad, widget.compact ? 72 : 96, pad, 36),
+              child: Column(children: [
+                Text(widget.title, textAlign: TextAlign.center, style: display(widget.compact ? 30 : 44, weight: FontWeight.w700)),
+                if (widget.subtitle != null) ...[
+                  const SizedBox(height: 10),
+                  Text(widget.subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                ],
+                if (widget.tracks.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  buttons(WrapAlignment.center),
+                ] else if (widget.actions.isNotEmpty) ...[
+                  const SizedBox(height: 18),
+                  Wrap(spacing: 12, alignment: WrapAlignment.center, children: widget.actions),
+                ],
+                if (widget.tracks.length > 8) ...[
+                  const SizedBox(height: 22),
+                  SizedBox(
+                    width: 320,
+                    child: TextField(
+                      controller: _search,
+                      focusNode: _searchFocus,
+                      onChanged: (v) => setState(() => _query = v),
+                      decoration: InputDecoration(
+                        hintText: 'Найти трек или исполнителя',
+                        prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                        suffixIcon: _query.isEmpty
+                            ? null
+                            : IconButton(
+                                icon: const Icon(Icons.close_rounded, size: 16),
+                                onPressed: () => setState(() {
+                                  _search.clear();
+                                  _query = '';
+                                }),
+                              ),
+                      ),
+                    ),
+                  ),
+                ],
+              ]),
+            ),
+          ]);
+
+    final header = heroHeader ?? Padding(
       padding: EdgeInsets.fromLTRB(pad, 34, pad, 18),
       child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
         if (widget.image != null) ...[
@@ -673,25 +816,7 @@ class _TracksPageState extends State<TracksPage> {
             ],
             if (widget.tracks.isNotEmpty) ...[
               const SizedBox(height: 22),
-              Wrap(spacing: 12, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
-                FilledButton.icon(
-                  onPressed: visible.isEmpty ? null : () {
-                    if (app.player.shuffle) app.player.toggleShuffle();
-                    app.player.playTracks(visible, 0);
-                  },
-                  icon: const Icon(Icons.play_arrow_rounded, size: 20),
-                  label: const Text('Слушать'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: visible.isEmpty ? null : () {
-                    if (!app.player.shuffle) app.player.toggleShuffle();
-                    app.player.playTracks(visible, (DateTime.now().microsecond) % visible.length);
-                  },
-                  icon: const Icon(Icons.shuffle_rounded, size: 18),
-                  label: const Text('Вперемешку'),
-                ),
-                ...widget.actions,
-              ]),
+              buttons(WrapAlignment.start),
             ] else if (widget.actions.isNotEmpty) ...[
               const SizedBox(height: 16),
               Row(children: widget.actions),
@@ -872,7 +997,8 @@ class TrackRow extends StatelessWidget {
       },
       onHover: (inside) => app.player.hover(track, inside),
       // Правый клик — то же меню, что под «…»
-      onSecondaryTapUp: (d) => showTrackMenu(context, track, playlistId, d.globalPosition),
+      onSecondaryTapUp: (d) => showTrackMenu(context, track, playlistId, d.globalPosition,
+          onSelect: onSelect == null ? null : () => onSelect!(false), selected: selected),
       borderRadius: BorderRadius.circular(8),
       child: DecoratedBox(
         decoration: BoxDecoration(
@@ -883,10 +1009,8 @@ class TrackRow extends StatelessWidget {
         padding: const EdgeInsets.only(right: 12),
         child: Row(children: [
           _EdgeZone(
-            enabled: onSelect != null,
             selecting: selecting,
             selected: selected,
-            onTap: () => onSelect?.call(HardwareKeyboard.instance.isShiftPressed),
             child: current
                 ? Icon(playing ? Icons.graphic_eq_rounded : Icons.pause_rounded, size: 18, color: C.accent)
                 : Text(numbered && track.no != null ? '${track.no}' : '${index + 1}',
@@ -940,7 +1064,8 @@ class TrackRow extends StatelessWidget {
                   style: const TextStyle(color: C.muted, fontSize: 13)),
             ),
           LikeButton(track: track),
-          TrackMenu(track: track, playlistId: playlistId),
+          TrackMenu(
+              track: track, playlistId: playlistId, onSelect: onSelect == null ? null : () => onSelect!(false), selected: selected),
           // Длительность — в самом правом столбце, правее кнопки «…»
           SizedBox(
             width: 60,
@@ -1009,35 +1134,44 @@ class LikeButton extends StatelessWidget {
 class TrackMenu extends StatelessWidget {
   final Track track;
   final String? playlistId;
-  const TrackMenu({super.key, required this.track, this.playlistId});
+
+  /// Включает групповое выделение с этим треком (пункт «Выбрать»); null — пункта нет
+  final VoidCallback? onSelect;
+  final bool selected;
+  const TrackMenu({super.key, required this.track, this.playlistId, this.onSelect, this.selected = false});
 
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<String>(
       tooltip: 'Действия',
       icon: const Icon(Icons.more_horiz_rounded, size: 20),
-      onSelected: (v) => onTrackMenu(context, v, track, playlistId),
-      itemBuilder: (_) => trackMenuItems(track, playlistId),
+      onSelected: (v) => onTrackMenu(context, v, track, playlistId, onSelect: onSelect),
+      itemBuilder: (ctx) => trackMenuItems(ctx, track, playlistId, canSelect: onSelect != null, selected: selected),
     );
   }
 }
 
 /// Меню трека по правому клику, в точке клика
-Future<void> showTrackMenu(BuildContext context, Track track, String? playlistId, Offset at) async {
+Future<void> showTrackMenu(BuildContext context, Track track, String? playlistId, Offset at,
+    {VoidCallback? onSelect, bool selected = false}) async {
   final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
   final v = await showMenu<String>(
     context: context,
     position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
-    items: trackMenuItems(track, playlistId),
+    items: trackMenuItems(context, track, playlistId, canSelect: onSelect != null, selected: selected),
   );
-  if (v != null && context.mounted) await onTrackMenu(context, v, track, playlistId);
+  if (v != null && context.mounted) await onTrackMenu(context, v, track, playlistId, onSelect: onSelect);
 }
 
-List<PopupMenuEntry<String>> trackMenuItems(Track track, String? playlistId) {
+List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, String? playlistId,
+    {bool canSelect = false, bool selected = false}) {
   final names = track.artists;
+  final liked = Services.of(context).lib.isLiked(track.id);
   return [
     const PopupMenuItem(value: 'next', child: Text('Играть следующим')),
     const PopupMenuItem(value: 'queue', child: Text('В конец очереди')),
+    PopupMenuItem(value: 'like', child: Text(liked ? 'Убрать из любимого' : 'Добавить в любимое')),
+    if (canSelect) PopupMenuItem(value: 'select', child: Text(selected ? 'Снять выбор' : 'Выбрать')),
     const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
     if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
     const PopupMenuItem(value: 'album', child: Text('Открыть альбом')),
@@ -1053,7 +1187,7 @@ List<PopupMenuEntry<String>> trackMenuItems(Track track, String? playlistId) {
   ];
 }
 
-Future<void> onTrackMenu(BuildContext context, String v, Track track, String? playlistId) async {
+Future<void> onTrackMenu(BuildContext context, String v, Track track, String? playlistId, {VoidCallback? onSelect}) async {
   final app = Services.of(context);
   if (v.startsWith('artist:')) {
     final i = int.tryParse(v.substring(7)) ?? 0;
@@ -1068,6 +1202,12 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
     case 'queue':
       app.player.addToQueue(track);
       app.lib.messages.add('«${track.title}» добавлен в конец очереди');
+    case 'like':
+      final was = app.lib.isLiked(track.id);
+      app.lib.toggleLike(track.id);
+      app.lib.messages.add(was ? '«${track.title}» убран из любимого' : '«${track.title}» в любимом');
+    case 'select':
+      onSelect?.call();
     case 'playlist':
       await addToPlaylistDialog(context, [track.id]);
     case 'remove':
@@ -1262,66 +1402,43 @@ String formatAddedDate(int ms) {
   return '${d.day} ${months[d.month - 1]}${d.year == now.year ? '' : ' ${d.year}'}';
 }
 
-/// Левый край строки трека. При наведении он подсвечивается и показывает кружок выбора:
-/// клик по нему включает групповое выделение (Shift — диапазон). Без выбора это просто номер или значок «играет».
-class _EdgeZone extends StatefulWidget {
-  final bool enabled;
+/// Левый столбец строки трека: номер или значок «играет». В режиме выделения вместо него кружок-галочка;
+/// включается режим Shift+кликом или пунктом «Выбрать» в меню трека.
+class _EdgeZone extends StatelessWidget {
   final bool selecting;
   final bool selected;
-  final VoidCallback onTap;
   final Widget child;
-  const _EdgeZone({required this.enabled, required this.selecting, required this.selected, required this.onTap, required this.child});
-
-  @override
-  State<_EdgeZone> createState() => _EdgeZoneState();
-}
-
-class _EdgeZoneState extends State<_EdgeZone> {
-  bool _hover = false;
+  const _EdgeZone({required this.selecting, required this.selected, required this.child});
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.enabled) return SizedBox(width: 40, child: Padding(padding: const EdgeInsets.only(left: 12), child: widget.child));
-    final showBox = widget.selecting || _hover;
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: SizedBox(
-          width: 40,
-          height: double.infinity,
-          child: Stack(children: [
-            if (_hover || widget.selected)
-              Positioned(
-                left: 0,
-                top: 6,
-                bottom: 6,
-                width: 3,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: widget.selected ? C.accent : C.accent.withValues(alpha: 0.7),
-                    borderRadius: const BorderRadius.horizontal(right: Radius.circular(3)),
-                  ),
-                ),
-              ),
-            Positioned.fill(
-              child: Padding(
-                padding: const EdgeInsets.only(left: 12),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: showBox
-                      ? Icon(widget.selected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
-                          size: 20, color: widget.selected ? C.accent : C.faint)
-                      : widget.child,
-                ),
-              ),
+    return SizedBox(
+      width: 40,
+      height: double.infinity,
+      child: Stack(children: [
+        if (selected)
+          Positioned(
+            left: 0,
+            top: 6,
+            bottom: 6,
+            width: 3,
+            child: const DecoratedBox(
+              decoration: BoxDecoration(color: C.accent, borderRadius: BorderRadius.horizontal(right: Radius.circular(3))),
             ),
-          ]),
+          ),
+        Positioned.fill(
+          child: Padding(
+            padding: const EdgeInsets.only(left: 12),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: selecting
+                  ? Icon(selected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                      size: 20, color: selected ? C.accent : C.faint)
+                  : child,
+            ),
+          ),
         ),
-      ),
+      ]),
     );
   }
 }

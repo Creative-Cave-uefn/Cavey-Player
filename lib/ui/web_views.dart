@@ -7,7 +7,9 @@ import 'package:url_launcher/url_launcher.dart';
 import '../app.dart';
 import '../core/library.dart';
 import '../core/web_info.dart';
+import 'list_filter.dart';
 import 'shell.dart';
+import 'tracks_view.dart' show searchRequests;
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -379,9 +381,28 @@ class NewReleasesPage extends StatefulWidget {
 }
 
 class _NewReleasesPageState extends State<NewReleasesPage> {
+  final _search = TextEditingController();
+  final _focus = FocusNode();
+  String _query = '';
+
+  @override
+  void dispose() {
+    searchRequests.removeListener(_focusSearch);
+    _search.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _focusSearch() {
+    if (!mounted) return;
+    _focus.requestFocus();
+    _search.selection = TextSelection(baseOffset: 0, extentOffset: _search.text.length);
+  }
+
   @override
   void initState() {
     super.initState();
+    searchRequests.addListener(_focusSearch);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) Services.of(context).web.loadReleases();
     });
@@ -395,7 +416,11 @@ class _NewReleasesPageState extends State<NewReleasesPage> {
     return ListenableBuilder(
       listenable: Listenable.merge([web, app.lib]),
       builder: (context, _) {
-        final list = [for (final r in web.releases) if (!web.inLibrary(r.artistKey, r.album)) r];
+        final all = [for (final r in web.releases) if (!web.inLibrary(r.artistKey, r.album)) r];
+        final q = foldText(_query.trim());
+        final list = q.isEmpty
+            ? all
+            : [for (final r in all) if (foldText(r.album.title).contains(q) || foldText(r.album.artist).contains(q)) r];
         return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Row(children: [
             Expanded(child: Text('Новинки', style: display(36, weight: FontWeight.w700))),
@@ -410,6 +435,34 @@ class _NewReleasesPageState extends State<NewReleasesPage> {
             'Альбомы и синглы за последние четыре месяца у исполнителей из вашей библиотеки, которых у вас ещё нет. '
             'Можно послушать отрывки и скачать в библиотеку. Сведения — из Deezer.',
             style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
+          ),
+          const SizedBox(height: 18),
+          SizedBox(
+            width: 360,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: SizedBox(
+                width: 360,
+                child: TextField(
+                  controller: _search,
+                  focusNode: _focus,
+                  onChanged: (v) => setState(() => _query = v),
+                  decoration: InputDecoration(
+                    hintText: 'Найти новинку или исполнителя',
+                    prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                    suffixIcon: _query.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.close_rounded, size: 16),
+                            onPressed: () => setState(() {
+                              _search.clear();
+                              _query = '';
+                            }),
+                          ),
+                  ),
+                ),
+              ),
+            ),
           ),
           const SizedBox(height: 18),
           if (web.loadingReleases) ...[
@@ -438,7 +491,12 @@ class _NewReleasesPageState extends State<NewReleasesPage> {
                 'Нажмите ↻, чтобы проверить ещё раз.', style: const TextStyle(color: C.faint, fontSize: 13)),
             const SizedBox(height: 12),
           ],
-          if (!web.loadingReleases && web.releasesError == null && list.isEmpty)
+          if (q.isNotEmpty && list.isEmpty && all.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Text('Ничего не нашлось по запросу «${_query.trim()}»', style: const TextStyle(color: C.muted)),
+            )
+          else if (!web.loadingReleases && web.releasesError == null && list.isEmpty)
             const EmptyState(
               icon: Icons.new_releases_outlined,
               title: 'Новинок нет',

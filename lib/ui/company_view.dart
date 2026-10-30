@@ -280,39 +280,142 @@ class NowListeningSidebar extends StatelessWidget {
                 TextButton(onPressed: social.stopFollowing, child: const Text('Выйти')),
               ]),
             ),
-          for (final m in live.take(5))
-            Tooltip(
-              message: '${m.now!.title} — ${m.now!.artist}',
-              child: InkWell(
-                onTap: () => NavScope.of(context).go(Nav('user', m.email)),
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: compact ? 0 : 22, vertical: 5),
-                  child: Row(
-                    mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start,
-                    children: [
-                      Avatar(email: m.email, name: m.name, size: 22),
-                      if (!compact) ...[
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text(app.lib.firstNameOf(m.email), style: const TextStyle(fontSize: 13)),
-                            Text(m.now!.title,
-                                maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 12)),
-                          ]),
-                        ),
-                        if (social.following == m.email) const Icon(Icons.headphones_rounded, size: 14, color: C.accent),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          for (final m in live.take(5)) _ListenerTile(key: ValueKey(m.email), member: m, compact: compact),
         ]);
       },
     );
   }
 }
 
+/// Строка человека в «Сейчас слушают»: при наведении подсвечивается и показывает кнопки
+/// «Слушать вместе» и «Включить у себя»; если задержать курсор — подсказка «Перейти в профиль»
+class _ListenerTile extends StatefulWidget {
+  final Member member;
+  final bool compact;
+  const _ListenerTile({super.key, required this.member, required this.compact});
+
+  @override
+  State<_ListenerTile> createState() => _ListenerTileState();
+}
+
+class _ListenerTileState extends State<_ListenerTile> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final m = widget.member;
+    final compact = widget.compact;
+    final together = app.social.following == m.email;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: Tooltip(
+        message: 'Перейти в профиль',
+        waitDuration: const Duration(milliseconds: 600),
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 10),
+          child: Material(
+            color: _hover ? C.raised.withValues(alpha: 0.7) : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => NavScope.of(context).go(Nav('user', m.email)),
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: compact ? 0 : 12, vertical: 5),
+                child: Row(
+                  mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start,
+                  children: [
+                    Avatar(key: ValueKey('av-${m.email}'), email: m.email, name: m.name, size: 22),
+                    if (!compact) ...[
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(app.lib.firstNameOf(m.email), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                          Text(m.now!.title,
+                              maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 12)),
+                        ]),
+                      ),
+                      if (_hover)
+                        ListenActions(email: m.email, dense: true)
+                      else if (together)
+                        const Icon(Icons.headphones_rounded, size: 14, color: C.accent),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// «Слушать вместе» и «Включить у себя» для человека, который сейчас слушает музыку.
+/// Включить у себя — тот же трек с начала, без синхронизации. Нет трека в библиотеке — кнопок нет.
+class ListenActions extends StatelessWidget {
+  final String email;
+
+  /// Маленькие значки без подписей (боковая панель) или кнопки с подписями (профиль)
+  final bool dense;
+  const ListenActions({super.key, required this.email, this.dense = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return ListenableBuilder(
+      listenable: app.social,
+      builder: (context, _) {
+        final m = app.social.members[email];
+        final now = m?.now;
+        if (m == null || now == null || !m.live) return const SizedBox.shrink();
+        final track = app.lib.data.tracks[now.trackId];
+        final together = app.social.following == email;
+        void toggleTogether() => together ? app.social.stopFollowing() : app.social.follow(email);
+        void playOwn() {
+          if (track == null) return;
+          app.social.stopFollowing();
+          app.player.playTracks([track], 0);
+        }
+
+        if (dense) {
+          Widget icon(IconData i, String tip, VoidCallback? onTap, {bool on = false}) => Tooltip(
+                message: tip,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(6),
+                  onTap: onTap,
+                  child: SizedBox.square(dimension: 26, child: Icon(i, size: 16, color: on ? C.accent : C.muted)),
+                ),
+              );
+          return Row(mainAxisSize: MainAxisSize.min, children: [
+            icon(Icons.headphones_rounded, together ? 'Перестать слушать вместе' : 'Слушать вместе', track == null ? null : toggleTogether,
+                on: together),
+            icon(Icons.play_arrow_rounded, 'Включить у себя', track == null ? null : playOwn),
+          ]);
+        }
+        return Wrap(spacing: 10, runSpacing: 10, alignment: WrapAlignment.center, children: [
+          together
+              ? OutlinedButton.icon(
+                  onPressed: toggleTogether,
+                  icon: const Icon(Icons.headphones_rounded, size: 18),
+                  label: const Text('Перестать слушать вместе'),
+                )
+              : FilledButton.icon(
+                  onPressed: track == null ? null : toggleTogether,
+                  icon: const Icon(Icons.headphones_rounded, size: 18),
+                  label: const Text('Слушать вместе'),
+                ),
+          OutlinedButton.icon(
+            onPressed: track == null ? null : playOwn,
+            icon: const Icon(Icons.play_arrow_rounded, size: 18),
+            label: const Text('Включить у себя'),
+          ),
+        ]);
+      },
+    );
+  }
+}
 
 /// Все, кто есть в компании: карточки со ссылкой на страницу человека
 class _People extends StatelessWidget {
@@ -383,6 +486,9 @@ class _PersonCard extends StatelessWidget {
                     Text(status, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: live ? C.accent : C.faint, fontSize: 12)),
                   Text(uploads == 0 ? 'без загрузок' : 'загрузил(а) ${countTracks(uploads)}',
                       maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12)),
+                  if (m != null)
+                    Text(m.version.isEmpty ? 'версия не передаётся' : 'версия ${m.version}',
+                        maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 11)),
                 ]),
               ),
             ]),
