@@ -146,7 +146,8 @@ class WebInfoService extends ChangeNotifier {
       final c = Completer<void>();
       if (low) {
         _low.add(c);
-        if (_low.length > 24) _low.removeAt(0).completeError(const _Dropped());
+        // Свежие запросы — строки, которые сейчас на экране; отбрасываем самые старые (пролистанные)
+        if (_low.length > 40) _low.removeAt(0).completeError(const _Dropped());
       } else {
         _high.add(c);
       }
@@ -165,7 +166,7 @@ class WebInfoService extends ChangeNotifier {
     if (_high.isNotEmpty) {
       _high.removeAt(0).complete();
     } else if (_low.isNotEmpty) {
-      _low.removeAt(0).complete();
+      _low.removeLast().complete(); // сначала то, что попросили последним — оно сейчас на экране
     } else {
       _active--;
     }
@@ -231,8 +232,32 @@ class WebInfoService extends ChangeNotifier {
     }
   }
 
-  Future<WebArtist?> _lookup(String name, bool low) => _artistInflight[_key(name)] ??= _search(name, low)
-      .whenComplete(() => _artistInflight.remove(_key(name)));
+  /// Одинаковые поиски объединяются, но важный не ждёт фоновый (тот может долго стоять
+  /// в очереди или быть отброшен): тогда важный ищет сам и подменяет фоновый
+  Future<WebArtist?> _lookup(String name, bool low) {
+    final k = _key(name);
+    final running = _artistInflight[k];
+    if (running != null && (low || !_inflightLow.contains(k))) return running;
+    late final Future<WebArtist?> f;
+    f = _search(name, low).whenComplete(() {
+      if (identical(_artistInflight[k], f)) {
+        _artistInflight.remove(k);
+        _inflightLow.remove(k);
+      }
+    });
+    _artistInflight[k] = f;
+    if (low) {
+      _inflightLow.add(k);
+    } else {
+      _inflightLow.remove(k);
+    }
+    return f;
+  }
+
+  final Set<String> _inflightLow = {};
+
+  /// Сведения об исполнителе уже есть (в том числе «не нашёлся») или их сейчас ищут
+  bool artistKnownOrLoading(String name) => _isFresh('artist:${_key(name)}', _artistTtl) || _artistInflight.containsKey(_key(name));
 
   /// Сам поиск (без объединения одинаковых запросов): новинки зовут его напрямую,
   /// чтобы не ждать фоновый запрос фото того же исполнителя

@@ -36,12 +36,17 @@ class ArtistPhoto extends StatefulWidget {
 }
 
 class _ArtistPhotoState extends State<ArtistPhoto> {
+  /// Фото — фоном: важные запросы (новинки, страница исполнителя) идут вперёд.
+  /// Просим снова, если прошлый запрос отбросили из очереди, пока строка была за экраном
+  void _ask() {
+    final web = Services.of(context).web;
+    if (!web.artistKnownOrLoading(widget.name)) web.artist(widget.name, low: true);
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final web = Services.of(context).web;
-    // Фото — фоном: важные запросы (новинки, страница исполнителя) идут вперёд
-    if (web.artistCached(widget.name) == null) web.artist(widget.name, low: true);
+    _ask();
   }
 
   @override
@@ -51,6 +56,11 @@ class _ArtistPhotoState extends State<ArtistPhoto> {
       listenable: web,
       builder: (context, _) {
         final pic = web.artistCached(widget.name)?.picture ?? '';
+        if (pic.isEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _ask();
+          });
+        }
         if (pic.isEmpty) return widget.fallback;
         return ClipOval(
           child: Image.network(
