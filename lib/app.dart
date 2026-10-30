@@ -22,6 +22,7 @@ import 'core/store.dart';
 import 'core/single_instance.dart';
 import 'core/taskbar.dart';
 import 'core/tray.dart';
+import 'core/tray_cleanup.dart';
 import 'core/media_keys.dart';
 import 'core/share_link.dart';
 import 'core/updater.dart';
@@ -132,6 +133,9 @@ class AppServices {
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
+    // Значки, оставшиеся от закрытых принудительно прошлых версий, Проводник выбрасывает, когда над ними «проведут курсор»
+    Timer(const Duration(seconds: 2), sweepGhostTrayIcons);
+    Timer(const Duration(seconds: 12), sweepGhostTrayIcons);
     // Ярлык на панели задач запускает вторую копию; она просит первую показать окно
     listenForSecondLaunch(() {
       unawaited(tray.showWindow());
@@ -180,7 +184,11 @@ class CavePlayerApp extends StatelessWidget {
         title: 'Cave Player',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
-        builder: (context, child) => CaptionFrame(child: child ?? const SizedBox()),
+        // Выделяемый текст не должен менять указатель на «текстовый»: над ссылками остаётся рука, над остальным — стрелка
+        builder: (context, child) => DefaultSelectionStyle(
+          mouseCursor: MouseCursor.defer,
+          child: CaptionFrame(child: child ?? const SizedBox()),
+        ),
         home: ListenableBuilder(
           listenable: Listenable.merge([app.accounts, app.lib]),
           builder: (context, _) {

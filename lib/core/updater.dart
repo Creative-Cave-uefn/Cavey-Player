@@ -336,6 +336,7 @@ class Updater extends ChangeNotifier {
       // Скачанное раньше автообновление больше не нужно
       await _forget(null);
       AppLog.info('Ставлю ${b.beta ? 'бета-версию' : b.stable ? 'версию' : 'тестовую сборку ${b.branch}'} ${b.version}');
+      await _removeTrayIcon();
       await _launch(path);
       exit(0);
     } catch (e) {
@@ -400,11 +401,15 @@ class Updater extends ChangeNotifier {
     await store.writeJson('update.json', {...meta, 'attempted': true});
     // Значок из трея убираем сами и ДО запуска установщика: после exit(0) или принудительного закрытия
     // Windows оставляет «призрак» значка, пока не наведёшь на него курсор, и после обновлений в трее копятся старые иконки
+    await _removeTrayIcon();
+    await _launch('${meta['path']}');
+    exit(0);
+  }
+
+  Future<void> _removeTrayIcon() async {
     try {
       await beforeExit?.call().timeout(const Duration(seconds: 2));
     } catch (_) {}
-    await _launch('${meta['path']}');
-    exit(0);
   }
 
   /// Что сделать перед выходом ради установки обновления (убрать значок из трея)
