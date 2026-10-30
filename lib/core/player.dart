@@ -5,6 +5,7 @@ import 'package:media_kit/media_kit.dart' show Media, NativePlayer, Player;
 
 import 'audio_cache.dart';
 import 'auth.dart';
+import 'crossfade.dart';
 import 'drive.dart';
 import 'library.dart';
 import 'log.dart';
@@ -29,7 +30,10 @@ class PlayerController extends ChangeNotifier {
   final AccountManager accounts;
   final Settings settings;
   final AudioCache cache;
-  final Player _p = Player();
+  Player _p = Player();
+
+  /// Второй проигрыватель для плавного перехода: на нём включается следующий трек, пока затихает текущий
+  Player? _q;
 
   /// Панель с текстом песни открыта
   final ValueNotifier<bool> lyricsOpen = ValueNotifier(false);
@@ -73,42 +77,50 @@ class PlayerController extends ChangeNotifier {
   void Function(Track track, Duration duration)? onTrackReady;
 
   PlayerController(this.lib, this.accounts, this.settings, this.cache) {
-    _subs.add(_p.stream.position.listen((d) {
-      if (_resumeAt == null) position.value = d;
-    }));
-    _subs.add(_p.stream.duration.listen((d) {
-      if (_resumeAt != null && d == Duration.zero) return;
-      duration = d;
-      notifyListeners();
-    }));
-    _subs.add(_p.stream.playing.listen((v) {
-      playing = v;
-      notifyListeners();
-      _saveSession();
-    }));
-    _subs.add(_p.stream.buffering.listen((v) {
-      buffering = v;
-      notifyListeners();
-    }));
-    _subs.add(_p.stream.completed.listen((done) {
-      if (done) _onCompleted();
-    }));
-    _subs.add(_p.stream.error.listen((e) {
-      error = e;
-      AppLog.warn('Плеер: ${current?.title ?? ''}', e);
-      notifyListeners();
-    }));
+    _bind(_p);
     unawaited(_p.setVolume(settings.volume));
-    unawaited(_applyNormalize());
     // Пока играет, раз в 15 секунд запоминаем позицию — на случай, если окно закроют
     _saveTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (playing) _saveSession();
     });
   }
 
+  /// Подписывается на события проигрывателя [p] (и отписывается от прежнего)
+  void _bind(Player p) {
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _subs.clear();
+    _subs.add(p.stream.position.listen((d) {
+      if (_resumeAt == null) position.value = d;
+      _maybeCrossfade(d);
+    }));
+    _subs.add(p.stream.duration.listen((d) {
+      if (_resumeAt != null && d == Duration.zero) return;
+      duration = d;
+      notifyListeners();
+    }));
+    _subs.add(p.stream.playing.listen((v) {
+      playing = v;
+      notifyListeners();
+      _saveSession();
+    }));
+    _subs.add(p.stream.buffering.listen((v) {
+      buffering = v;
+      notifyListeners();
+    }));
+    _subs.add(p.stream.completed.listen((done) {
+      if (done) _onCompleted();
+    }));
+    _subs.add(p.stream.error.listen((e) {
+      error = e;
+      AppLog.warn('Плеер: ${current?.title ?? ''}', e);
+      notifyListeners();
+    }));
+  }
+
   Track? get current => (index >= 0 && index < queue.length) ? lib.data.tracks[queue[index]] : null;
   double get volume => settings.volume;
-  bool get normalize => settings.normalize;
   List<Track> get upcoming => [
         for (final id in queue.skip(index + 1))
           if (lib.data.tracks[id] != null) lib.data.tracks[id]!
@@ -396,12 +408,146 @@ class PlayerController extends ChangeNotifier {
     _hoverTimer = Timer(const Duration(milliseconds: 250), () => warmUp(t));
   }
 
+  // ---------- плавный переход ----------
+
+  /// Социальные функции (слушаем вместе с другом) могут запретить переход
+  bool Function()? crossfadeBlocked;
+
+  Duration _prevPos = Duration.zero;
+  bool _fading = false;
+  Timer? _fadeTimer;
+  double _inGain = 1;
+  double _outGain = 1;
+  Player? _outgoing;
+
+  /// Громкость обоих проигрывателей с учётом перехода
+  void _applyVolume() {
+    unawaited(_p.setVolume(volume * _inGain));
+    final o = _outgoing;
+    if (o != null) unawaited(o.setVolume(volume * _outGain));
+  }
+
+  /// Есть ли следующий трек для автоматического перехода (индекс, либо null)
+  int? _autoNextIndex() {
+    if (queue.isEmpty) return null;
+    if (index + 1 < queue.length) return index + 1;
+    if (repeat == RepeatSetting.all) return 0;
+    return null;
+  }
+
+  void _maybeCrossfade(Duration d) {
+    final prev = _prevPos;
+    _prevPos = d;
+    if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
+    if (crossfadeBlocked?.call() ?? false) return;
+    if (!crossfadeDue(seconds: settings.crossfadeSec, duration: duration, position: d, previous: prev)) return;
+    if (_autoNextIndex() == null) return;
+    unawaited(_startCrossfade());
+  }
+
+  Future<void> _startCrossfade() async {
+    final nextIndex = _autoNextIndex();
+    if (nextIndex == null || _fading) return;
+    final nextTrack = lib.data.tracks[queue[nextIndex]];
+    if (nextTrack == null) return;
+    _fading = true;
+    final seq = ++_openSeq;
+    final seconds = settings.crossfadeSec.clamp(1, 10).toInt();
+    try {
+      AppLog.info('Плавный переход на «${nextTrack.title}» ($seconds с)');
+      final media = await _mediaFor(nextTrack);
+      if (seq != _openSeq || !_fading) return; // пока готовили, человек сам что-то переключил
+      final incoming = _q ??= Player();
+      await incoming.setVolume(0);
+      await incoming.open(media, play: true);
+      if (seq != _openSeq || !_fading) {
+        await incoming.stop();
+        return;
+      }
+      // Теперь «главный» проигрыватель — новый, а прежний доигрывает затихая
+      final old = _p;
+      _p = incoming;
+      _q = old;
+      _outgoing = old;
+      _bind(_p);
+      _reportHeard(skipped: false); // волна учитывает дослушанный трек, как при обычном переходе
+      index = nextIndex;
+      cache.touch(nextTrack);
+      error = null;
+      _userPaused = false;
+      _prevPos = Duration.zero;
+      _openedAt = DateTime.now();
+      position.value = Duration.zero;
+      duration = Duration.zero;
+      playing = true;
+      _inGain = 0;
+      _outGain = 1;
+      _applyVolume();
+      notifyListeners();
+      unawaited(_whenReady(seq, nextTrack));
+      _preloadNext();
+      _saveSession();
+      _topUpFeed();
+      final started = DateTime.now();
+      _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+        final t = DateTime.now().difference(started).inMilliseconds / (seconds * 1000);
+        if (t >= 1) {
+          _endFade();
+          return;
+        }
+        final g = fadeGains(t);
+        _outGain = g.$1;
+        _inGain = g.$2;
+        _applyVolume();
+      });
+    } catch (e) {
+      AppLog.warn('Плавный переход не получился, трек доиграет как обычно', e);
+      _endFade(stopIncoming: seq == _openSeq);
+    }
+  }
+
+  /// Завершает переход: уходящий трек останавливается, у нового обычная громкость
+  void _endFade({bool stopIncoming = false}) {
+    _fadeTimer?.cancel();
+    _fadeTimer = null;
+    final wasFading = _fading;
+    _fading = false;
+    final old = _outgoing;
+    _outgoing = null;
+    _inGain = 1;
+    _outGain = 1;
+    if (old != null) unawaited(old.stop());
+    if (wasFading || old != null) unawaited(_p.setVolume(volume));
+    if (stopIncoming && old == null) unawaited(_q?.stop() ?? Future<void>.value());
+  }
+
   // ---------- воспроизведение ----------
+
+  /// Что открывать в проигрывателе: сохранённый трек играет с диска, остальные — потоком с Google Диска через прокси
+  Future<Media> _mediaFor(Track t) async {
+    final local = cache.fileFor(t.id);
+    if (cache.has(t.id) && local.existsSync()) return Media(local.path);
+    try {
+      final url = await _proxy.register(
+        t.id,
+        size: t.size,
+        token: () async => accounts.token(await lib.accessFor(t.source)),
+      );
+      return Media(url.toString());
+    } catch (e) {
+      // Прокси не запустился — по-старому, напрямую с Диска
+      AppLog.warn('Прокси стриминга недоступен', e);
+      final token = await accounts.token(await lib.accessFor(t.source));
+      return Media(DriveApi.mediaUrl(t.id).toString(), httpHeaders: {'Authorization': 'Bearer $token'});
+    }
+  }
 
   Future<void> _open({Duration? at, bool play = true}) async {
     final t = current;
     if (t == null) return;
     final seq = ++_openSeq;
+    _endFade();
+    _prevPos = Duration.zero;
     _resumeAt = null;
     _userPaused = false;
     error = null;
@@ -410,28 +556,9 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
     final started = DateTime.now();
     try {
-      // Сохранённый трек играет с диска, остальные — потоком с Google Диска через прокси
-      final local = cache.fileFor(t.id);
-      Media media;
-      final fromDisk = cache.has(t.id) && local.existsSync();
+      final fromDisk = cache.has(t.id) && cache.fileFor(t.id).existsSync();
       AppLog.info('Включаю «${t.title}» ${fromDisk ? 'с компьютера' : 'с Google Диска'}');
-      if (fromDisk) {
-        media = Media(local.path);
-      } else {
-        try {
-          final url = await _proxy.register(
-            t.id,
-            size: t.size,
-            token: () async => accounts.token(await lib.accessFor(t.source)),
-          );
-          media = Media(url.toString());
-        } catch (e) {
-          // Прокси не запустился — по-старому, напрямую с Диска
-          AppLog.warn('Прокси стриминга недоступен', e);
-          final token = await accounts.token(await lib.accessFor(t.source));
-          media = Media(DriveApi.mediaUrl(t.id).toString(), httpHeaders: {'Authorization': 'Bearer $token'});
-        }
-      }
+      final media = await _mediaFor(t);
       if (seq != _openSeq) return; // пока готовили, включили другой трек
       cache.touch(t);
       await _p.open(media, play: at == null && play);
@@ -550,6 +677,7 @@ class PlayerController extends ChangeNotifier {
       await _open(at: position.value);
       return;
     }
+    _endFade();
     if (playing) _userPaused = true;
     await _p.playOrPause();
     onUserAction?.call();
@@ -576,10 +704,14 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> pause() {
+    _endFade();
     _userPaused = true;
     return _p.pause();
   }
-  Future<void> play() => _p.play();
+  Future<void> play() {
+    _endFade();
+    return _p.play();
+  }
 
   /// Перемотка или пауза пользователем — чтобы друзья, слушающие вместе, сразу это увидели
   void Function()? onUserAction;
@@ -592,7 +724,7 @@ class PlayerController extends ChangeNotifier {
   Future<void> setVolume(double v, {bool save = false}) async {
     v = v.clamp(0.0, 100.0).toDouble();
     settings.volume = v;
-    await _p.setVolume(v);
+    _applyVolume();
     notifyListeners();
     if (save) await lib.saveSettings();
   }
@@ -603,29 +735,6 @@ class PlayerController extends ChangeNotifier {
       await setVolume(0, save: true);
     } else {
       await setVolume(_volumeBeforeMute > 0 ? _volumeBeforeMute : 80, save: true);
-    }
-  }
-
-  /// Выравнивание громкости: треки с разных источников звучат одинаково громко
-  Future<void> setNormalize(bool on) async {
-    settings.normalize = on;
-    notifyListeners();
-    await _applyNormalize();
-    await lib.saveSettings();
-  }
-
-  /// Фильтры звука. Встроенный в плеер звуковой движок (сборка media_kit) собран без фильтров ffmpeg,
-  /// кроме эквалайзера, — поэтому loudnorm здесь не запускается
-  Future<void> _applyNormalize() async {
-    final native = _p.platform;
-    if (native is! NativePlayer) return;
-    final filters = [
-      if (settings.normalize) 'lavfi=[loudnorm=I=-16:LRA=11:TP=-1.5,aresample=48000]',
-    ];
-    try {
-      await native.setProperty('af', filters.join(','));
-    } catch (e) {
-      AppLog.warn('Не получилось применить фильтры звука', e);
     }
   }
 
@@ -669,7 +778,9 @@ class PlayerController extends ChangeNotifier {
     _saveTimer?.cancel();
     _saveDebounce?.cancel();
     _hoverTimer?.cancel();
+    _fadeTimer?.cancel();
     _p.dispose();
+    _q?.dispose();
     unawaited(_proxy.close());
     position.dispose();
     lyricsOpen.dispose();

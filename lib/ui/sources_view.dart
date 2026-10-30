@@ -9,13 +9,14 @@ import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-class SourcesPage extends StatefulWidget {
-  const SourcesPage({super.key});
+/// Папки с музыкой, приглашение друзей и отключение: раздел страницы «Настройки»
+class LibrarySection extends StatefulWidget {
+  const LibrarySection({super.key});
   @override
-  State<SourcesPage> createState() => _SourcesPageState();
+  State<LibrarySection> createState() => _LibrarySectionState();
 }
 
-class _SourcesPageState extends State<SourcesPage> {
+class _LibrarySectionState extends State<LibrarySection> {
   final _link = TextEditingController();
   bool _adding = false;
   final _friend = TextEditingController();
@@ -47,31 +48,6 @@ class _SourcesPageState extends State<SourcesPage> {
   }
   String? _error;
 
-  /// Занятое место на Дисках подключённых аккаунтов: почта → объём или ошибка
-  final Map<String, StorageQuota?> _quota = {};
-  bool _quotaLoading = false;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadQuota());
-  }
-
-  Future<void> _loadQuota() async {
-    if (!mounted || _quotaLoading) return;
-    final app = Services.of(context);
-    setState(() => _quotaLoading = true);
-    for (final a in app.accounts.accounts) {
-      try {
-        _quota[a.email] = await app.drive.storageQuota(a.email);
-      } catch (_) {
-        _quota[a.email] = null;
-      }
-      if (!mounted) return;
-    }
-    if (mounted) setState(() => _quotaLoading = false);
-  }
-
   Future<void> _add() async {
     final app = Services.of(context);
     setState(() {
@@ -97,14 +73,14 @@ class _SourcesPageState extends State<SourcesPage> {
         final lib = app.lib;
         final hubLink = folderUrl(app.settings.hubId ?? '');
         final last = DateTime.tryParse(app.settings.lastScan ?? '');
-        return ListView(padding: const EdgeInsets.fromLTRB(36, 34, 36, 40), children: [
-          Text('Папки с музыкой', style: display(36, weight: FontWeight.w700)),
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Папки с музыкой', style: display(20)),
           const SizedBox(height: 10),
           const Text(
             'Библиотека собирается из папок на Google Дисках. Папки могут лежать у разных людей и на разных аккаунтах.',
             style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
-          const SizedBox(height: 28),
+          const SizedBox(height: 18),
           _Panel(children: [
             Row(children: [
               Expanded(
@@ -129,17 +105,15 @@ class _SourcesPageState extends State<SourcesPage> {
             const SizedBox(height: 10),
             const Text(
               'Подойдёт своя папка или та, которой с вами поделились. Если она открыта для другого вашего '
-              'аккаунта, сначала подключите его на вкладке «Аккаунты».',
+              'аккаунта, сначала подключите его в разделе «Аккаунты» выше.',
               style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
             ),
           ]),
           const SizedBox(height: 18),
-          _StoragePanel(
-            musicBytes: lib.data.tracks.values.where((t) => !lib.data.hidden.contains(t.id)).fold(0, (a, t) => a + t.size),
-            tracks: lib.data.tracks.length - lib.data.hidden.length,
-            accounts: [for (final a in app.accounts.accounts) (a.email, a.name, _quota[a.email], _quota.containsKey(a.email))],
-            loading: _quotaLoading,
-            onRefresh: _loadQuota,
+          Text(
+            'Музыка в библиотеке: ${countTracks(lib.data.tracks.length - lib.data.hidden.length)}, '
+            '${formatBytes(lib.data.tracks.values.where((t) => !lib.data.hidden.contains(t.id)).fold(0, (a, t) => a + t.size))}',
+            style: const TextStyle(color: C.muted, fontSize: 14),
           ),
           const SizedBox(height: 18),
           if (lib.data.sources.isEmpty)
@@ -168,13 +142,6 @@ class _SourcesPageState extends State<SourcesPage> {
                       if (ok) await lib.rescanAndPrune(s.id);
                     },
               onOpen: () => launchUrl(Uri.parse(folderUrl(s.id))),
-              onRemove: () async {
-                final ok = await confirm(context,
-                    title: 'Убрать «${s.name}»?',
-                    text: 'Треки из этой папки пропадут из библиотеки у всех друзей. Файлы на Диске останутся.',
-                    action: 'Убрать');
-                if (ok) lib.removeSource(s.id);
-              },
             ),
           const SizedBox(height: 18),
           Row(children: [
@@ -277,16 +244,6 @@ class _SourcesPageState extends State<SourcesPage> {
             ]),
           ]),
           const SizedBox(height: 44),
-          Text('Где хранятся данные', style: display(20)),
-          const SizedBox(height: 10),
-          const Text(
-            'Откуда программа берёт общие плейлисты, друзей и статусы. Если у вас не появляются друзья и плейлисты, '
-            'проверьте здесь, в той ли папке вы сидите.',
-            style: TextStyle(color: C.muted, height: 1.5),
-          ),
-          const SizedBox(height: 14),
-          const _LocationPanel(),
-          const SizedBox(height: 44),
           Text('Отключение', style: display(20)),
           const SizedBox(height: 10),
           const Text(
@@ -317,6 +274,56 @@ class _SourcesPageState extends State<SourcesPage> {
   }
 }
 
+/// Где хранятся данные и удаление папки из общей библиотеки: живёт в «Отладке» на странице настроек
+class LibraryDebug extends StatelessWidget {
+  const LibraryDebug({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return ListenableBuilder(
+      listenable: app.lib,
+      builder: (context, _) {
+        final lib = app.lib;
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Где хранятся данные', style: display(17)),
+          const SizedBox(height: 8),
+          const Text(
+            'Откуда программа берёт общие плейлисты, друзей и статусы. Если у вас не появляются друзья и плейлисты, '
+            'проверьте здесь, в той ли папке вы сидите.',
+            style: TextStyle(color: C.muted, height: 1.5),
+          ),
+          const SizedBox(height: 14),
+          const _LocationPanel(),
+          const SizedBox(height: 28),
+          Text('Убрать папку из библиотеки', style: display(17)),
+          const SizedBox(height: 8),
+          const Text(
+            'Опасно: треки этой папки пропадут из библиотеки у всех друзей. Файлы на Диске останутся. '
+            'Чтобы не нажать случайно, нужно ввести название папки.',
+            style: TextStyle(color: C.danger, height: 1.5),
+          ),
+          const SizedBox(height: 8),
+          if (lib.data.sources.isEmpty)
+            const Text('Папок пока нет.', style: TextStyle(color: C.faint, fontSize: 13)),
+          for (final s in lib.data.sources)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(s.name),
+              trailing: TextButton(
+                style: TextButton.styleFrom(foregroundColor: C.danger),
+                onPressed: () async {
+                  if (await _confirmByName(context, s.name)) lib.removeSource(s.id);
+                },
+                child: const Text('Убрать'),
+              ),
+            ),
+        ]);
+      },
+    );
+  }
+}
+
 class _Panel extends StatelessWidget {
   final List<Widget> children;
   const _Panel({required this.children});
@@ -338,7 +345,6 @@ class _SourceRow extends StatelessWidget {
   final String? via;
   final String addedBy;
   final VoidCallback onOpen;
-  final VoidCallback onRemove;
   final String? warning;
   final VoidCallback? onPrune;
   const _SourceRow({
@@ -347,7 +353,6 @@ class _SourceRow extends StatelessWidget {
     required this.via,
     required this.addedBy,
     required this.onOpen,
-    required this.onRemove,
     this.warning,
     this.onPrune,
   });
@@ -383,73 +388,8 @@ class _SourceRow extends StatelessWidget {
         if (onPrune != null)
           TextButton(onPressed: onPrune, child: const Text('Убрать пропавшие')),
         IconButton(tooltip: 'Открыть на Диске', onPressed: onOpen, icon: const Icon(Icons.open_in_new_rounded, size: 18)),
-        IconButton(tooltip: 'Убрать из библиотеки', onPressed: onRemove, icon: const Icon(Icons.close_rounded, size: 18)),
       ]),
     );
-  }
-}
-
-
-/// «Хранилище»: сколько занимает музыка библиотеки и сколько места занято на каждом подключённом Google Диске
-class _StoragePanel extends StatelessWidget {
-  final int musicBytes;
-  final int tracks;
-
-  /// (почта, имя, объём или null, если не удалось узнать, был ли ответ)
-  final List<(String, String, StorageQuota?, bool)> accounts;
-  final bool loading;
-  final VoidCallback onRefresh;
-  const _StoragePanel({required this.musicBytes, required this.tracks, required this.accounts, required this.loading, required this.onRefresh});
-
-  @override
-  Widget build(BuildContext context) {
-    return _Panel(children: [
-      Row(children: [
-        const Icon(Icons.storage_rounded, color: C.accent),
-        const SizedBox(width: 12),
-        Expanded(child: Text('Хранилище', style: display(18))),
-        IconButton(
-          tooltip: 'Обновить',
-          onPressed: loading ? null : onRefresh,
-          icon: loading
-              ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
-              : const Icon(Icons.refresh_rounded, size: 18),
-        ),
-      ]),
-      const SizedBox(height: 6),
-      Text('Музыка библиотеки занимает ${formatBytes(musicBytes)} (${countTracks(tracks)}). Файлы лежат на Google Дисках друзей.',
-          style: const TextStyle(color: C.muted, fontSize: 13, height: 1.4)),
-      for (final a in accounts) ...[
-        const SizedBox(height: 16),
-        Row(children: [
-          Expanded(child: Text(a.$2.isEmpty ? a.$1 : '${a.$2} · ${a.$1}', overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13))),
-          const SizedBox(width: 12),
-          Text(
-            a.$3 != null
-                ? (a.$3!.limit != null ? '${formatBytes(a.$3!.used)} из ${formatBytes(a.$3!.limit!)}' : '${formatBytes(a.$3!.used)} (без лимита)')
-                : (a.$4 ? 'не удалось узнать' : 'загружаю…'),
-            style: const TextStyle(color: C.muted, fontSize: 13),
-          ),
-        ]),
-        if (a.$3?.limit != null) ...[
-          const SizedBox(height: 6),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: (a.$3!.used / a.$3!.limit!).clamp(0.0, 1.0).toDouble(),
-              minHeight: 6,
-              color: a.$3!.used / a.$3!.limit! > 0.9 ? C.danger : C.accent,
-              backgroundColor: C.raised,
-            ),
-          ),
-        ],
-      ],
-      if (accounts.isNotEmpty) ...[
-        const SizedBox(height: 10),
-        const Text('Занято на Диске всё, что лежит на аккаунте: музыка, почта Gmail и фото, а не только Cave Player.',
-            style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
-      ],
-    ]);
   }
 }
 
@@ -649,4 +589,37 @@ class _LocationPanelState extends State<_LocationPanel> {
       if (_ok != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(_ok!, style: const TextStyle(color: C.accent))),
     ]);
   }
+}
+
+
+/// Подтверждение опасного действия вводом названия
+Future<bool> _confirmByName(BuildContext context, String name) async {
+  final ctl = TextEditingController();
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setState) => AlertDialog(
+        title: Text('Убрать «$name»?', style: display(18)),
+        content: SizedBox(
+          width: 380,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Треки из этой папки пропадут из библиотеки у всех друзей. Чтобы подтвердить, введите название папки:',
+                style: TextStyle(color: C.muted, height: 1.45)),
+            const SizedBox(height: 12),
+            TextField(controller: ctl, autofocus: true, onChanged: (_) => setState(() {}), decoration: InputDecoration(hintText: name)),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: C.muted))),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: C.danger),
+            onPressed: ctl.text.trim() == name.trim() ? () => Navigator.pop(ctx, true) : null,
+            child: const Text('Убрать'),
+          ),
+        ],
+      ),
+    ),
+  );
+  ctl.dispose();
+  return ok ?? false;
 }

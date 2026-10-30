@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/notices.dart';
 import '../core/social.dart';
 import 'shell.dart';
 import 'theme.dart';
@@ -33,13 +36,17 @@ class CompanyPage extends StatelessWidget {
         final now = social.listeningNow;
         final chart = social.chart();
         final feed = social.feed;
+        final notices = social.notices.take(20).toList();
         return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Text('Компания', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
           const Text('Что слушают друзья, что у вас в чарте и что нового в библиотеке.',
               style: TextStyle(color: C.muted, fontSize: 15)),
           const SizedBox(height: 32),
-          Text('Участники', style: display(20)),
+          Row(children: [
+            Expanded(child: Text('Участники', style: display(20))),
+            _NoticeBell(notices: notices),
+          ]),
           const SizedBox(height: 6),
           const Text('Нажмите на человека, чтобы открыть его страницу.', style: TextStyle(color: C.faint, fontSize: 13)),
           const SizedBox(height: 14),
@@ -196,6 +203,123 @@ class _ChartRow extends StatelessWidget {
   }
 }
 
+/// Колокольчик с уведомлениями «Вам»: загорается зелёным, пока есть непрочитанные; по нажатию раскрывается окошко
+class _NoticeBell extends StatefulWidget {
+  final List<Notice> notices;
+  const _NoticeBell({required this.notices});
+  @override
+  State<_NoticeBell> createState() => _NoticeBellState();
+}
+
+class _NoticeBellState extends State<_NoticeBell> {
+  /// Что считать прочитанным: всё, что старше последнего открытия колокольчика
+  DateTime? _seen(AppServices app) => DateTime.tryParse(app.settings.bellSeen ?? '');
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final seen = _seen(app);
+    final unread = seen == null ? 0 : widget.notices.where((n) => n.at.isAfter(seen)).length;
+    final lit = unread > 0;
+    return MenuAnchor(
+      style: MenuStyle(
+        backgroundColor: const WidgetStatePropertyAll(C.panel),
+        side: const WidgetStatePropertyAll(BorderSide(color: C.line)),
+        shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+        padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+      ),
+      alignmentOffset: const Offset(-330, 4),
+      onOpen: () {
+        // Открыли — всё считается прочитанным, колокольчик гаснет
+        app.settings.bellSeen = DateTime.now().toUtc().toIso8601String();
+        unawaited(app.lib.saveSettings());
+      },
+      onClose: () {
+        if (mounted) setState(() {});
+      },
+      menuChildren: [
+        SizedBox(
+          width: 380,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 380),
+            child: widget.notices.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(20),
+                    child: Text('Пока ничего нет. Здесь появятся добавления ваших загрузок в любимое и плейлисты, а также треки, которыми с вами поделились.',
+                        style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+                  )
+                : ListView(
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                    shrinkWrap: true,
+                    children: [for (final n in widget.notices) _NoticeRow(notice: n)],
+                  ),
+          ),
+        ),
+      ],
+      builder: (context, controller, _) => IconButton(
+        tooltip: lit ? 'Новых уведомлений: $unread' : 'Уведомления',
+        onPressed: () => controller.isOpen ? controller.close() : controller.open(),
+        icon: Stack(clipBehavior: Clip.none, children: [
+          Icon(lit ? Icons.notifications_active_rounded : Icons.notifications_none_rounded,
+              color: lit ? const Color(0xFF5BD68B) : C.muted),
+          if (lit)
+            Positioned(
+              right: -2,
+              top: -2,
+              child: Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(color: const Color(0xFF5BD68B), shape: BoxShape.circle, border: Border.all(color: C.bg, width: 1.5)),
+              ),
+            ),
+        ]),
+      ),
+    );
+  }
+}
+
+class _NoticeRow extends StatelessWidget {
+  final Notice notice;
+  const _NoticeRow({required this.notice});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final track = app.lib.data.tracks[app.lib.data.resolve(notice.trackIds.first)];
+    final icon = switch (notice.kind) {
+      NoticeKind.like => Icons.favorite_rounded,
+      NoticeKind.addToPlaylist => Icons.playlist_add_rounded,
+      NoticeKind.share => Icons.share_rounded,
+    };
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: track == null ? null : () => NavScope.of(context).go(Nav('album', track.albumKey)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
+        child: Row(children: [
+          Icon(icon, size: 18, color: friendColor(notice.from)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(app.social.noticeLine(notice), style: const TextStyle(height: 1.35)),
+              if (notice.note != null) Text('«${notice.note}»', style: const TextStyle(color: C.muted, fontSize: 13)),
+            ]),
+          ),
+          const SizedBox(width: 12),
+          Text(timeAgo(notice.at), style: const TextStyle(color: C.faint, fontSize: 12)),
+          if (track != null)
+            IconButton(
+              tooltip: 'Слушать',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.play_arrow_rounded, color: C.accent),
+              onPressed: () => app.player.playTracks([track], 0),
+            ),
+        ]),
+      ),
+    );
+  }
+}
+
 class _FeedRow extends StatelessWidget {
   final FeedEvent event;
   const _FeedRow({required this.event});
@@ -226,6 +350,24 @@ class _FeedRow extends StatelessWidget {
         text = '$who нравится «${t.title}» — ${t.displayArtist}';
         icon = Icons.favorite_rounded;
         onTap = () => app.player.playTracks([t], 0);
+      case 'share':
+        final t = lib.data.tracks[lib.data.resolve('${d['track']}')];
+        if (t == null) return const SizedBox.shrink();
+        final to = [for (final x in (d['to'] as List? ?? const [])) '$x'];
+        final whom = to.length == 1 ? lib.firstNameOf(to.first) : 'друзьями (${to.length})';
+        text = '$who поделился(ась) «${t.title}» — ${t.displayArtist} с $whom';
+        icon = Icons.share_rounded;
+        onTap = () => app.player.playTracks([t], 0);
+      case 'addpl':
+        // В ленте только открытые плейлисты: у них в событии есть название
+        final name = d['name'];
+        final first = (d['tracks'] as List? ?? const []).isEmpty ? null : lib.data.tracks[lib.data.resolve('${(d['tracks'] as List).first}')];
+        if (name is! String || name.isEmpty || first == null) return const SizedBox.shrink();
+        final n = (d['tracks'] as List).length;
+        text = n == 1
+            ? '$who добавил(а) «${first.title}» в плейлист «$name»'
+            : '$who добавил(а) в плейлист «$name» треков: $n';
+        icon = Icons.playlist_add_rounded;
       default:
         return const SizedBox.shrink();
     }
@@ -246,42 +388,84 @@ class _FeedRow extends StatelessWidget {
   }
 }
 
-/// Блок «Сейчас слушают» в боковой панели
-class NowListeningSidebar extends StatelessWidget {
+/// Блок «Сейчас слушают» внизу боковой панели. Свёрнут: одна строка с аватарками.
+/// При наведении раскрывается вверх и показывает всех, кто слушает
+class NowListeningSidebar extends StatefulWidget {
   final bool compact;
   const NowListeningSidebar({super.key, required this.compact});
+
+  @override
+  State<NowListeningSidebar> createState() => _NowListeningSidebarState();
+}
+
+class _NowListeningSidebarState extends State<NowListeningSidebar> {
+  bool _open = false;
 
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final social = app.social;
+    final compact = widget.compact;
     return ListenableBuilder(
       listenable: social,
       builder: (context, _) {
         final live = social.friends.where((m) => m.live).toList();
         final followed = social.following;
         if (live.isEmpty && followed == null) return const SizedBox.shrink();
-        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          if (!compact)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(22, 14, 16, 6),
-              child: Text('Сейчас слушают', style: TextStyle(color: C.muted, fontSize: 13)),
+        return MouseRegion(
+          onEnter: (_) => setState(() => _open = true),
+          onExit: (_) => setState(() => _open = false),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            // Список над заголовком: при раскрытии заголовок остаётся под курсором
+            AnimatedSize(
+              duration: const Duration(milliseconds: 160),
+              curve: Curves.easeOut,
+              alignment: Alignment.bottomCenter,
+              child: _open && live.isNotEmpty
+                  ? ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 300),
+                      child: SingleChildScrollView(
+                        child: Column(children: [
+                          for (final m in live) _ListenerTile(key: ValueKey(m.email), member: m, compact: compact),
+                        ]),
+                      ),
+                    )
+                  : const SizedBox(width: double.infinity),
             ),
-          if (followed != null && !compact)
+            if (followed != null && !compact)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 10, 4),
+                child: Row(children: [
+                  const Icon(Icons.headphones_rounded, size: 16, color: C.accent),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('Вместе с ${app.lib.firstNameOf(followed)}',
+                        overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.accent, fontSize: 13)),
+                  ),
+                  TextButton(onPressed: social.stopFollowing, child: const Text('Выйти')),
+                ]),
+              ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 10, 4),
-              child: Row(children: [
-                const Icon(Icons.headphones_rounded, size: 16, color: C.accent),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text('Вместе с ${app.lib.firstNameOf(followed)}',
-                      overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.accent, fontSize: 13)),
-                ),
-                TextButton(onPressed: social.stopFollowing, child: const Text('Выйти')),
+              padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 10, compact ? 0 : 16, 10),
+              child: Row(mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
+                if (!compact) ...[
+                  const Expanded(child: Text('Сейчас слушают', style: TextStyle(color: C.muted, fontSize: 13))),
+                  SizedBox(
+                    height: 20,
+                    width: (20 + (live.length.clamp(0, 3) - 1).clamp(0, 2) * 12).toDouble(),
+                    child: Stack(children: [
+                      for (var i = 0; i < live.length && i < 3; i++)
+                        Positioned(left: i * 12.0, child: Avatar(key: ValueKey('hd-${live[i].email}'), email: live[i].email, name: live[i].name, size: 20)),
+                    ]),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('${live.length}', style: const TextStyle(color: C.faint, fontSize: 12)),
+                ] else
+                  const Icon(Icons.headphones_rounded, size: 18, color: C.muted),
               ]),
             ),
-          for (final m in live.take(5)) _ListenerTile(key: ValueKey(m.email), member: m, compact: compact),
-        ]);
+          ]),
+        );
       },
     );
   }

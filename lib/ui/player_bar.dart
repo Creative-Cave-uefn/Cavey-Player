@@ -20,7 +20,9 @@ class PlayerBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final p = app.player;
-    return Padding(
+    return _SeekGestures(
+      player: p,
+      child: Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
       child: Container(
         height: 76,
@@ -100,12 +102,18 @@ class PlayerBar extends StatelessWidget {
                     Expanded(
                       child: t == null
                           ? const Text('Выберите трек', style: TextStyle(color: C.faint))
-                          : Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                              Text(t.title,
-                                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                              const SizedBox(height: 2),
-                              Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 13)),
-                            ]),
+                          // Текст можно выделить зажатой левой кнопкой и скопировать; обычный клик по ссылке работает как раньше
+                          : SelectionArea(
+                              child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                // Название ведёт в альбом, как и обложка
+                                Links(
+                                  parts: [LinkPart(t.title, () => NavScope.of(context).go(Nav('album', t.albumKey)))],
+                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                                ),
+                                const SizedBox(height: 2),
+                                Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 13)),
+                              ]),
+                            ),
                     ),
                     if (t != null && !compact) _Time(player: p),
                     if (t != null && app.wave.active) ...[
@@ -143,12 +151,6 @@ class PlayerBar extends StatelessWidget {
               ),
             );
 
-            final soundButton = IconButton(
-              tooltip: 'Звук',
-              onPressed: () => _showSound(context),
-              icon: Icon(Icons.tune_rounded, color: p.normalize ? C.accent : ink),
-            );
-
             if (compact) {
               return Row(children: [
                 controls,
@@ -162,7 +164,6 @@ class PlayerBar extends StatelessWidget {
               const SizedBox(width: 12),
               Expanded(child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 620), child: card))),
               const SizedBox(width: 12),
-              soundButton,
               lyricsButton,
               const CinemaButton(),
               IconButton(
@@ -175,40 +176,7 @@ class PlayerBar extends StatelessWidget {
           },
         ),
       ),
-    );
-  }
-
-  void _showSound(BuildContext context) {
-    final app = Services.of(context);
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => Dialog(
-        alignment: Alignment.bottomRight,
-        insetPadding: const EdgeInsets.fromLTRB(24, 24, 24, 110),
-        child: SizedBox(
-          width: 380,
-          child: ListenableBuilder(
-            listenable: app.player,
-            builder: (context, _) {
-              final p = app.player;
-              return Padding(
-                padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-                child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('Звук', style: display(18)),
-                  const SizedBox(height: 6),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: p.normalize,
-                    onChanged: p.setNormalize,
-                    title: const Text('Выравнивать громкость'),
-                    subtitle: const Text('Тихие и громкие треки звучат одинаково', style: TextStyle(color: C.faint, fontSize: 13)),
-                  ),
-                ]),
-              );
-            },
-          ),
-        ),
-      ),
+    ),
     );
   }
 
@@ -290,6 +258,44 @@ class PlayerBar extends StatelessWidget {
   }
 }
 
+/// Горизонтальные жесты над нижней панелью: наклон колеса и свайп двумя пальцами по тачпаду перематывают на 10 секунд
+class _SeekGestures extends StatefulWidget {
+  final PlayerController player;
+  final Widget child;
+  const _SeekGestures({required this.player, required this.child});
+  @override
+  State<_SeekGestures> createState() => _SeekGesturesState();
+}
+
+class _SeekGesturesState extends State<_SeekGestures> {
+  static const _step = Duration(seconds: 10);
+  static const _panStep = 80.0; // сколько пикселей свайпа даёт один шаг
+  double _pan = 0;
+
+  void _seek(int dir) => widget.player.seekBy(_step * dir);
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerSignal: (e) {
+        if (e is! PointerScrollEvent) return;
+        if (e.scrollDelta.dx.abs() > e.scrollDelta.dy.abs() && e.scrollDelta.dx != 0) _seek(e.scrollDelta.dx > 0 ? 1 : -1);
+      },
+      onPointerPanZoomStart: (_) => _pan = 0,
+      onPointerPanZoomUpdate: (e) {
+        if (e.panDelta.dx.abs() <= e.panDelta.dy.abs()) return;
+        _pan += e.panDelta.dx;
+        while (_pan.abs() >= _panStep) {
+          final dir = _pan > 0 ? 1 : -1;
+          _pan -= _panStep * dir;
+          _seek(dir);
+        }
+      },
+      child: widget.child,
+    );
+  }
+}
+
 class _Progress extends StatefulWidget {
   final PlayerController player;
   const _Progress({required this.player});
@@ -320,7 +326,15 @@ class _ProgressState extends State<_Progress> {
     final p = widget.player;
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
-      return MouseRegion(
+      return Listener(
+        // Колесо над полосой: ±5 секунд за щелчок, с Shift ±1 секунда
+        onPointerSignal: (e) {
+          if (e is! PointerScrollEvent || p.current == null) return;
+          if (e.scrollDelta.dy.abs() <= e.scrollDelta.dx.abs() || e.scrollDelta.dy == 0) return;
+          final shift = HardwareKeyboard.instance.isShiftPressed;
+          p.seekBy(Duration(seconds: shift ? 1 : 5) * (e.scrollDelta.dy < 0 ? 1 : -1));
+        },
+        child: MouseRegion(
         cursor: SystemMouseCursors.click,
         onEnter: (_) => setState(() => _hover = true),
         onExit: (_) => setState(() => _hover = false),
@@ -354,6 +368,7 @@ class _ProgressState extends State<_Progress> {
             ),
           ),
         ),
+      ),
       );
     });
   }

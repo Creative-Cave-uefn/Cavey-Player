@@ -37,6 +37,13 @@ Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: recurs
 Name: "{autoprograms}\Cave Player"; Filename: "{app}\cave_player.exe"
 Name: "{autodesktop}\Cave Player"; Filename: "{app}\cave_player.exe"; Tasks: desktopicon
 
+[Registry]
+; Ссылки caveplayer://track/<id> открывают Cave Player на нужном треке (для текущего пользователя, права администратора не нужны)
+Root: HKCU; Subkey: "Software\Classes\caveplayer"; ValueType: string; ValueName: ""; ValueData: "URL:Cave Player"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\caveplayer"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\caveplayer\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\cave_player.exe,0"
+Root: HKCU; Subkey: "Software\Classes\caveplayer\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\cave_player.exe"" ""%1"""
+
 [Run]
 Filename: "{app}\cave_player.exe"; Description: "{cm:LaunchProgram,Cave Player}"; Flags: nowait postinstall skipifsilent
 ; При тихой установке (автообновление) снова открываем приложение

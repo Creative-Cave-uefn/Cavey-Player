@@ -174,14 +174,18 @@ class _ProfileLayoutState extends State<ProfileLayout> {
               child: Column(children: [
                 SizedBox.square(dimension: photo, child: ClipOval(child: avatar)),
                 const SizedBox(height: 26),
-                Text(name,
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: display(compact ? 28 : 40, weight: FontWeight.w700)),
+                SelectionArea(
+                  child: Text(name,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: display(compact ? 28 : 40, weight: FontWeight.w700)),
+                ),
                 if (subtitle != null) ...[
                   const SizedBox(height: 10),
-                  Text(subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: C.muted, fontSize: 15)),
+                  SelectionArea(
+                    child: Text(subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: C.muted, fontSize: 15)),
+                  ),
                 ],
                 const SizedBox(height: 22),
                 Row(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -381,7 +385,6 @@ class TrackGrid extends StatelessWidget {
   Widget _cellFor(BuildContext context, AppServices app, List<Track> shown, int i, String? currentId) {
     final t = shown[i];
     final current = t.id == currentId;
-    final sub = t.year.isEmpty ? t.displayAlbum : '${t.displayAlbum} · ${t.year}';
     return SizedBox(
       height: _cell,
       child: InkWell(
@@ -407,7 +410,14 @@ class TrackGrid extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w500, color: current ? C.accent : C.text)),
                 const SizedBox(height: 3),
-                Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12.5)),
+                // Название альбома — ссылка на альбом
+                Links(
+                  parts: [
+                    LinkPart(t.displayAlbum, () => NavScope.of(context).go(Nav('album', t.albumKey))),
+                    if (t.year.isNotEmpty) LinkPart(' · ${t.year}'),
+                  ],
+                  style: const TextStyle(color: C.muted, fontSize: 12.5),
+                ),
               ]),
             ),
             TrackMenu(track: t),
@@ -719,7 +729,7 @@ class UserProfilePage extends StatelessWidget {
         final name = lib.nameOf(email);
         final liked = likedBy(app, email);
         final uploads = uploadedBy(app, email);
-        final lists = [for (final p in lib.data.playlists) if (p.by == email) p];
+        final lists = [for (final p in lib.visiblePlaylists) if (p.by == email) p];
         final m = app.social.members[email];
         String? subtitle;
         if (m != null && m.live && m.now != null) {

@@ -91,10 +91,13 @@ class Settings {
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
   bool discord = true;
-  bool normalize = false; // выравнивать громкость треков
   bool betaUpdates = false; // получать бета-версии
   bool trayOnClose = true; // крестик прячет окно в трей, музыка играет дальше
   bool trayAsked = false; // уже спрашивали, что делать по крестику
+  bool globalMediaKeys = true; // медиаклавиши работают и когда окно не активно
+  String? bellSeen; // когда человек последний раз открывал колокольчик в «Компании» (ISO)
+  String? noticeSeen; // время последнего показанного уведомления «Вам» (ISO)
+  int crossfadeSec = 3; // плавный переход между треками, секунд (0 — выключен)
   bool artistsDesc = false; // «Исполнители» сортируются Я–А
   bool albumsDesc = false; // «Альбомы» сортируются Я–А
 
@@ -123,10 +126,13 @@ class Settings {
         'offlineLiked': offlineLiked,
         'offlinePlaylists': offlinePlaylists.toList(),
         'discord': discord,
-        'normalize': normalize,
         'betaUpdates': betaUpdates,
         'trayOnClose': trayOnClose,
         'trayAsked': trayAsked,
+        'globalMediaKeys': globalMediaKeys,
+        'crossfadeSec': crossfadeSec,
+        'noticeSeen': noticeSeen,
+        'bellSeen': bellSeen,
         'artistsDesc': artistsDesc,
         'albumsDesc': albumsDesc,
         'view': view,
@@ -153,10 +159,13 @@ class Settings {
     s.offlineLiked = j['offlineLiked'] == true;
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
     s.discord = j['discord'] != false;
-    s.normalize = j['normalize'] == true;
     s.betaUpdates = j['betaUpdates'] == true;
     s.trayOnClose = j['trayOnClose'] != false;
     s.trayAsked = j['trayAsked'] == true;
+    s.globalMediaKeys = j['globalMediaKeys'] != false;
+    s.noticeSeen = j['noticeSeen'] as String?;
+    s.bellSeen = j['bellSeen'] as String?;
+    s.crossfadeSec = ((j['crossfadeSec'] as num?)?.toInt() ?? 3).clamp(0, 10).toInt();
     s.artistsDesc = j['artistsDesc'] == true;
     s.albumsDesc = j['albumsDesc'] == true;
     final vw = j['view'];

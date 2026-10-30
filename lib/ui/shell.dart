@@ -1,12 +1,14 @@
 import 'dart:async';
 
-import 'package:flutter/gestures.dart' show kBackMouseButton, kForwardMouseButton;
+import 'package:flutter/gestures.dart' show kBackMouseButton, kForwardMouseButton, kSecondaryMouseButton, PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/log.dart';
+import '../core/media_keys.dart';
+import '../core/share_link.dart';
 import '../core/models.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
@@ -16,10 +18,11 @@ import 'company_view.dart';
 import 'download_view.dart';
 import 'library_views.dart';
 import 'lyrics_panel.dart';
+import 'mouse_gesture.dart';
+import 'notice_tower.dart';
 import 'player_bar.dart';
 import 'playlists_view.dart';
 import 'profile_view.dart';
-import 'sources_view.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_pages.dart';
@@ -81,9 +84,13 @@ class Shell extends StatefulWidget {
 
 class _ShellState extends State<Shell> {
   final _nav = NavController();
+  final _gesture = MouseGesture();
   StreamSubscription<String>? _msgs;
   bool _dragging = false;
   String? _toast;
+  String? _toastActionLabel;
+  VoidCallback? _toastAction;
+  ValueNotifier<String?>? _linkSource;
   Timer? _toastTimer;
 
   // ---------- кинотеатр и волна: панели прячутся ----------
@@ -137,12 +144,65 @@ class _ShellState extends State<Shell> {
     _msgs ??= Services.of(context).lib.messages.stream.listen((m) {
       if (!mounted) return;
       // Своя плашка вместо SnackBar: маленькая, по центру и над плеером, ничего не перекрывает
-      setState(() => _toast = m);
-      _toastTimer?.cancel();
-      _toastTimer = Timer(const Duration(seconds: 4), () {
-        if (mounted) setState(() => _toast = null);
-      });
+      _showToast(m);
     });
+    if (_linkSource == null) {
+      _linkSource = Services.of(context).incomingLink..addListener(_onLink);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _onLink()); // ссылка, с которой запустили программу
+    }
+  }
+
+  void _showToast(String text, {String? actionLabel, VoidCallback? action, Duration time = const Duration(seconds: 4)}) {
+    setState(() {
+      _toast = text;
+      _toastActionLabel = actionLabel;
+      _toastAction = action;
+    });
+    _toastTimer?.cancel();
+    _toastTimer = Timer(time, () {
+      if (mounted) {
+        setState(() {
+          _toast = null;
+          _toastAction = null;
+        });
+      }
+    });
+  }
+
+  /// Открыли ссылку caveplayer://track/…: переходим к альбому трека и включаем его
+  void _onLink() {
+    if (!mounted) return;
+    final app = Services.of(context);
+    final link = app.incomingLink.value;
+    if (link == null) return;
+    app.incomingLink.value = null;
+    final id = trackIdFromLink(link);
+    final track = id == null ? null : app.lib.data.tracks[app.lib.data.resolve(id)];
+    if (track == null) {
+      _showToast('Этого трека нет в вашей библиотеке');
+      return;
+    }
+    _nav.go(Nav('album', track.albumKey));
+    unawaited(app.player.playTracks([track], 0));
+  }
+
+  /// Зажатая правая кнопка + движение: ← предыдущий, → следующий, ↑ ↓ громкость
+  void _onGesture(GestureDir dir) {
+    final app = Services.of(context);
+    final p = app.player;
+    switch (dir) {
+      case GestureDir.left:
+        _gesture.end(); // трек меняем один раз за нажатие, а не по треку на каждые 60 пикселей
+        p.previous();
+      case GestureDir.right:
+        _gesture.end();
+        p.next();
+      case GestureDir.up:
+      case GestureDir.down:
+        final v = (p.volume + (dir == GestureDir.up ? 5 : -5)).clamp(0, 100).toDouble();
+        p.setVolume(v, save: true);
+        app.lib.messages.add('Громкость: ${v.round()}%');
+    }
   }
 
   @override
@@ -151,6 +211,7 @@ class _ShellState extends State<Shell> {
     _hideSide?.cancel();
     _hideBar?.cancel();
     _msgs?.cancel();
+    _linkSource?.removeListener(_onLink);
     _nav.dispose();
     super.dispose();
   }
@@ -165,7 +226,15 @@ class _ShellState extends State<Shell> {
         onPointerDown: (e) {
           if (e.buttons & kBackMouseButton != 0) _nav.back();
           if (e.buttons & kForwardMouseButton != 0) _nav.forward();
+          if (e.kind == PointerDeviceKind.mouse && e.buttons == kSecondaryMouseButton) _gesture.start(e.position);
         },
+        onPointerMove: (e) {
+          if (!_gesture.active) return;
+          final dir = _gesture.move(e.position);
+          if (dir != null) _onGesture(dir);
+        },
+        onPointerUp: (_) => _gesture.end(),
+        onPointerCancel: (_) => _gesture.end(),
         child: Focus(
         onKeyEvent: (node, e) => _onKey(e),
         child: Focus(
@@ -183,15 +252,17 @@ class _ShellState extends State<Shell> {
             backgroundColor: Colors.transparent,
             body: LayoutBuilder(builder: (context, box) {
               final compact = box.maxWidth < 860;
-              final sideW = (compact ? 72.0 : 240.0) + 12;
               const barH = 88.0;
               const dur = Duration(milliseconds: 320);
               const curve = Curves.easeOutCubic;
               // Стекло: боковая панель плавает слева, капсула плеера внизу. В кинотеатре и в играющей волне
               // обе уезжают за край и возвращаются, когда к краю подводишь мышь
               return AnimatedBuilder(
-                animation: Listenable.merge([_nav, app.wave]),
+                animation: Listenable.merge([_nav, app.wave, app.lib]),
                 builder: (context, _) {
+                  // Узкая панель: в узком окне всегда, в широком — если её сузили за ручку на правом краю
+                  final narrowSide = compact || app.settings.viewOf('sidebar.mini', '0') == '1';
+                  final sideW = (narrowSide ? 72.0 : 240.0) + 12;
                   final nav = _nav.value;
                   final immersive = _immersive(nav);
                   if (!immersive && (_peekSide || _peekBar)) {
@@ -257,7 +328,7 @@ class _ShellState extends State<Shell> {
                       child: MouseRegion(
                         onEnter: (_) => _hover(side: true, inside: true),
                         onExit: (_) => _hover(side: true, inside: false),
-                        child: Padding(padding: const EdgeInsets.fromLTRB(12, 0, 0, 12), child: _Sidebar(compact: compact)),
+                        child: Padding(padding: const EdgeInsets.fromLTRB(12, 0, 0, 12), child: _SidebarHost(compact: compact)),
                       ),
                     ),
                     AnimatedPositioned(
@@ -287,13 +358,25 @@ class _ShellState extends State<Shell> {
                   // Над плеером, а если открыта панель выбора треков — выше неё
                   builder: (context, bar, child) => Padding(padding: EdgeInsets.only(bottom: bar ? 92 + 84 : 92 + 14), child: child),
                   child: IgnorePointer(
+                    ignoring: _toastAction == null,
                     child: Center(
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 160),
-                        child: _toast == null ? const SizedBox.shrink(key: ValueKey('none')) : _ToastCard(_toast!, key: ValueKey(_toast)),
+                        child: _toast == null
+                            ? const SizedBox.shrink(key: ValueKey('none'))
+                            : _ToastCard(_toast!, key: ValueKey(_toast), actionLabel: _toastActionLabel, onAction: _toastAction),
                       ),
                     ),
                   ),
+                ),
+              ),
+              Positioned(
+                right: 16,
+                bottom: 92 + 10,
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: selectionBarOpen,
+                  builder: (context, bar, child) => Padding(padding: EdgeInsets.only(bottom: bar ? 76 : 0), child: child),
+                  child: const NoticeTower(),
                 ),
               ),
               if (_dragging) const Positioned.fill(child: IgnorePointer(child: _DropOverlay())),
@@ -325,9 +408,12 @@ class _ShellState extends State<Shell> {
     void Function()? action;
     if (k == LogicalKeyboardKey.escape && !repeat && _nav.value.kind == 'cinema') action = _nav.back;
     // Медиаклавиши и сочетания с Ctrl работают всегда
-    if (k == LogicalKeyboardKey.mediaPlayPause && !repeat) action = p.toggle;
-    if (k == LogicalKeyboardKey.mediaTrackNext && !repeat) action = p.next;
-    if (k == LogicalKeyboardKey.mediaTrackPrevious && !repeat) action = p.previous;
+    // (если включён перехват по всей системе, медиаклавиши ловит он, иначе они сработали бы дважды)
+    if (!MediaKeys.running) {
+      if (k == LogicalKeyboardKey.mediaPlayPause && !repeat) action = p.toggle;
+      if (k == LogicalKeyboardKey.mediaTrackNext && !repeat) action = p.next;
+      if (k == LogicalKeyboardKey.mediaTrackPrevious && !repeat) action = p.previous;
+    }
     if (ctrl && k == LogicalKeyboardKey.arrowRight && !repeat) action = p.next;
     if (ctrl && k == LogicalKeyboardKey.arrowLeft && !repeat) action = p.previous;
     if (ctrl && k == LogicalKeyboardKey.keyF && !repeat) action = () => searchRequests.value++;
@@ -408,8 +494,7 @@ class _ShellState extends State<Shell> {
         );
       case 'duplicates':
         return const DuplicatesPage(key: ValueKey('duplicates'));
-      case 'sources':
-        return const SourcesPage(key: ValueKey('sources'));
+      case 'sources': // старая вкладка «Папки с музыкой» теперь внутри настроек
       case 'accounts':
         return const AccountsPage(key: ValueKey('accounts'));
       default:
@@ -421,7 +506,9 @@ class _ShellState extends State<Shell> {
 /// Небольшое уведомление по центру над плеером
 class _ToastCard extends StatelessWidget {
   final String text;
-  const _ToastCard(this.text, {super.key});
+  final String? actionLabel;
+  final VoidCallback? onAction;
+  const _ToastCard(this.text, {super.key, this.actionLabel, this.onAction});
 
   @override
   Widget build(BuildContext context) {
@@ -438,13 +525,80 @@ class _ToastCard extends StatelessWidget {
           border: Border.all(color: C.line),
           boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 14, offset: Offset(0, 4))],
         ),
-        child: Text(text,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: C.text, fontSize: 16, fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Flexible(
+            child: Text(text,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: C.text, fontSize: 16, fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
+          ),
+          if (actionLabel != null && onAction != null) ...[
+            const SizedBox(width: 14),
+            FilledButton(onPressed: onAction, child: Text(actionLabel!)),
+          ],
+        ]),
       ),
       ),
+    );
+  }
+}
+
+/// Левая панель с ручкой на правом краю: тянем влево — остаются значки и обложки, вправо — полная панель
+class _SidebarHost extends StatefulWidget {
+  final bool compact;
+  const _SidebarHost({required this.compact});
+
+  @override
+  State<_SidebarHost> createState() => _SidebarHostState();
+}
+
+class _SidebarHostState extends State<_SidebarHost> {
+  double _startW = 248;
+  double _dx = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return ListenableBuilder(
+      listenable: app.lib,
+      builder: (context, _) {
+        final mini = app.settings.viewOf('sidebar.mini', '0') == '1';
+        // Узкое окно всегда держит узкую панель; ручка нужна только на широком
+        final narrow = widget.compact || mini;
+        void setMini(bool v) {
+          if (v == mini) return;
+          app.settings.view['sidebar.mini'] = v ? '1' : '0';
+          app.lib.viewChanged();
+        }
+
+        return Stack(children: [
+          _Sidebar(compact: narrow),
+          if (!widget.compact)
+            Positioned(
+              right: 0,
+              top: 0,
+              bottom: 0,
+              width: 8,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.resizeColumn,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragStart: (_) {
+                    _startW = mini ? 72 : 248;
+                    _dx = 0;
+                  },
+                  onHorizontalDragUpdate: (d) {
+                    _dx += d.delta.dx;
+                    // Две позиции: ближе к узкой — значки, ближе к широкой — полная панель
+                    setMini(_startW + _dx < 160);
+                  },
+                  onDoubleTap: () => setMini(!mini),
+                ),
+              ),
+            ),
+        ]);
+      },
     );
   }
 }
@@ -497,7 +651,6 @@ class _Sidebar extends StatelessWidget {
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
             if (lib.me != null) item(Icons.person_outline_rounded, 'Моя страница', Nav('user', lib.me)),
             item(Icons.groups_outlined, 'Компания', const Nav('company')),
-            NowListeningSidebar(compact: compact),
             const SizedBox(height: 18),
             _PlaylistsHeader(compact: compact, selected: cur.same(const Nav('playlists')), mode: mode),
           ];
@@ -506,7 +659,7 @@ class _Sidebar extends StatelessWidget {
             if (mode == 'covers')
               _PlaylistTiles(compact: compact, current: cur)
             else
-              for (final p in lib.data.playlists)
+              for (final p in lib.visiblePlaylists)
                 _PlaylistRow(
                   playlist: p,
                   compact: compact,
@@ -514,25 +667,23 @@ class _Sidebar extends StatelessWidget {
                   withCover: mode == 'both',
                   onTap: () => nav.go(Nav('playlist', p.id)),
                 ),
-            if (lib.data.playlists.isEmpty && !compact)
+            if (lib.visiblePlaylists.isEmpty && !compact)
               const Padding(
                 padding: EdgeInsets.fromLTRB(22, 4, 16, 0),
-                child: Text('Пока пусто. Плейлисты видят все друзья.', style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+                child: Text('Пока пусто. Новые плейлисты видите только вы, пока не сделаете их открытыми.', style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
               ),
           ];
 
           final foot = <Widget>[
+            NowListeningSidebar(compact: compact),
             const Divider(height: 1),
             const SizedBox(height: 8),
-            item(Icons.folder_shared_outlined, 'Папки с музыкой', const Nav('sources'),
-                trailing: lib.scan.running
-                    ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                    : null),
             item(Icons.settings_outlined, 'Настройки', const Nav('accounts'),
                 trailing: app.accounts.accounts.any((a) => a.needsSignIn)
                     ? const Icon(Icons.error_outline_rounded, size: 16, color: C.danger)
-                    : null),
-            _SyncLine(compact: compact),
+                    : lib.scan.running
+                        ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : null),
             UploadLine(compact: compact),
             _UpdateLine(compact: compact),
             const SizedBox(height: 10),
@@ -541,8 +692,8 @@ class _Sidebar extends StatelessWidget {
           return LayoutBuilder(builder: (context, box) {
             // Сколько места нужно, чтобы верх и низ панели стояли на месте, а прокручивались только плейлисты.
             // Оценка с запасом; если места меньше, прокручивается вся панель целиком
-            final live = app.social.friends.where((m) => m.live).length.clamp(0, 5);
-            final need = 864 + (live > 0 ? 40 + 44 * live : 0) + (app.social.following != null ? 36 : 0);
+            final live = app.social.friends.where((m) => m.live).length;
+            final need = 864 + (live > 0 ? 44 : 0) + (app.social.following != null ? 36 : 0);
             if (box.maxHeight >= need) {
               return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 ...head,
@@ -702,7 +853,7 @@ class _PlaylistTiles extends StatelessWidget {
   Widget build(BuildContext context) {
     final lib = Services.of(context).lib;
     final nav = NavScope.of(context);
-    final lists = lib.data.playlists;
+    final lists = lib.visiblePlaylists;
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: compact ? 14 : 14, vertical: 2),
       child: LayoutBuilder(builder: (context, box) {
@@ -776,36 +927,6 @@ class _UpdateLine extends StatelessWidget {
           child: Tooltip(message: 'Перезапустить Cave Player с новой версией', child: button),
         );
       },
-    );
-  }
-}
-
-class _SyncLine extends StatelessWidget {
-  final bool compact;
-  const _SyncLine({required this.compact});
-
-  @override
-  Widget build(BuildContext context) {
-    final lib = Services.of(context).lib;
-    final err = lib.syncError;
-    if (err == null && !lib.hasUnsavedChanges) return const SizedBox.shrink();
-    final text = err != null ? 'Нет связи с Диском' : 'Сохраняю на Диск…';
-    final icon = err != null ? Icons.cloud_off_rounded : Icons.cloud_upload_outlined;
-    return Tooltip(
-      message: err ?? text,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 8, 12, 0),
-        child: Row(
-          mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start,
-          children: [
-            Icon(icon, size: 16, color: err != null ? C.danger : C.faint),
-            if (!compact) ...[
-              const SizedBox(width: 10),
-              Text(text, style: TextStyle(fontSize: 12, color: err != null ? C.danger : C.faint)),
-            ],
-          ],
-        ),
-      ),
     );
   }
 }
