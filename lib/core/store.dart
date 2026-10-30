@@ -33,12 +33,35 @@ class AppStore {
     }
   }
 
-  Future<void> writeJson(String name, Object value) async {
+  /// Записи одного файла по очереди: раньше одновременные сохранения (например,
+  /// pending_ops.json при быстрых правках) мешали друг другу через общий .tmp
+  final Map<String, Future<void>> _writes = {};
+
+  Future<void> writeJson(String name, Object value) {
+    final text = jsonEncode(value); // снимок данных на момент вызова
+    final prev = _writes[name] ?? Future<void>.value();
+    late final Future<void> next;
+    next = prev.catchError((Object _) {}).then((_) => _write(name, text)).whenComplete(() {
+      if (identical(_writes[name], next)) _writes.remove(name);
+    });
+    _writes[name] = next;
+    return next;
+  }
+
+  Future<void> _write(String name, String text) async {
     final f = file(name);
     final tmp = File('${f.path}.tmp');
-    await tmp.writeAsString(jsonEncode(value), flush: true);
-    if (await f.exists()) await f.delete();
-    await tmp.rename(f.path);
+    await tmp.writeAsString(text, flush: true);
+    try {
+      // rename поверх существующего файла на Windows работает, а удаление заранее
+      // оставляло окно, когда файла нет совсем
+      await tmp.rename(f.path);
+    } on FileSystemException {
+      // Файл держит антивирус или индексатор — пробуем ещё раз чуть позже
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      if (await f.exists()) await f.delete();
+      await tmp.rename(f.path);
+    }
   }
 }
 

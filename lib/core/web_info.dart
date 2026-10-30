@@ -157,6 +157,10 @@ class WebInfoService extends ChangeNotifier {
     _last = DateTime.now();
   }
 
+  /// Состояние очереди к Deezer — для журнала
+  String queueState() => 'запросов идёт: $_active, ждут: ${_high.length} важных и ${_low.length} фоновых, '
+      'поисков в ожидании: ${_artistInflight.length}';
+
   void _free() {
     if (_high.isNotEmpty) {
       _high.removeAt(0).complete();
@@ -227,7 +231,12 @@ class WebInfoService extends ChangeNotifier {
     }
   }
 
-  Future<WebArtist?> _lookup(String name, bool low) => _artistInflight[_key(name)] ??= () async {
+  Future<WebArtist?> _lookup(String name, bool low) => _artistInflight[_key(name)] ??= _search(name, low)
+      .whenComplete(() => _artistInflight.remove(_key(name)));
+
+  /// Сам поиск (без объединения одинаковых запросов): новинки зовут его напрямую,
+  /// чтобы не ждать фоновый запрос фото того же исполнителя
+  Future<WebArtist?> _search(String name, bool low) async {
         await _load();
         final key = 'artist:${_key(name)}';
         if (_isFresh(key, _artistTtl)) {
@@ -249,8 +258,7 @@ class WebInfoService extends ChangeNotifier {
         _put(key, w?.toJson());
         notifyListeners();
         return w;
-      }()
-          .whenComplete(() => _artistInflight.remove(_key(name)));
+  }
 
   /// Альбомы и синглы исполнителя, новые сверху
   Future<List<WebAlbum>> albums(WebArtist a) async {
@@ -385,7 +393,11 @@ class WebInfoService extends ChangeNotifier {
       final pick = artists.take(maxArtists).toList();
       releasesTotal = pick.length;
       notifyListeners();
-      AppLog.info('Новинки: проверяю ${pick.length} исполнителей');
+      AppLog.info('Новинки: проверяю ${pick.length} исполнителей, ${queueState()}');
+      // Сторож: если за 20 секунд никто не проверен — пишем в журнал, что творится с очередью
+      Timer(const Duration(seconds: 20), () {
+        if (loadingReleases && releasesDone == 0) AppLog.warn('Новинки: за 20 с ни одного исполнителя, ${queueState()}');
+      });
       final since = DateTime.now().subtract(Duration(days: days));
       final out = <NewRelease>[];
       var i = 0;
@@ -394,20 +406,17 @@ class WebInfoService extends ChangeNotifier {
         while (i < pick.length && !_stop && releasesError == null) {
           final a = pick[i++];
           try {
-            WebArtist? w;
-            try {
-              w = await _lookup(a.name, false);
-            } on _Dropped {
-              // Ждали фоновый запрос фото, а его отбросили — спрашиваем сами
-              w = await _lookup(a.name, false);
-            }
-            if (w != null) {
+            // Один исполнитель — не дольше 30 секунд, что бы ни случилось
+            await () async {
+              final w = await _search(a.name, false);
+              if (w == null) return;
               for (final al in await albums(w)) {
                 final d = al.released;
                 if (d == null || d.isBefore(since)) continue;
                 if (!inLibrary(a.key, al)) out.add(NewRelease(a.key, al));
               }
-            }
+            }()
+                .timeout(const Duration(seconds: 30), onTimeout: () => throw TimeoutException('исполнитель ${a.name}: ${queueState()}'));
             failedInRow = 0;
           } catch (e) {
             releasesFailed++;
