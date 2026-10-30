@@ -8,6 +8,8 @@ import 'dart:io';
 import 'package:archive/archive_io.dart';
 import 'package:http/http.dart' as http;
 
+import 'winproc.dart';
+
 const _ytdlpUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
 const _ffmpegUrl = 'https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip';
 const _denoUrl = 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip';
@@ -120,14 +122,10 @@ class Tools {
   }
 
   /// Запускает программу без окна консоли и возвращает строки её вывода.
-  /// Код возврата у такого процесса не узнать, поэтому успех проверяем по результату.
+  /// На Windows — через CreateProcess с CREATE_NO_WINDOW (см. winproc.dart):
+  /// обычный запуск из Dart открывал окно терминала и для yt-dlp, и для всего,
+  /// что он запускает сам.
   static Future<List<String>> run(String exe, List<String> args, {void Function(String)? onLine}) async {
-    final p = await Process.start(
-      exe,
-      args,
-      mode: ProcessStartMode.detachedWithStdio,
-      environment: {'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'},
-    );
     final lines = <String>[];
     void handle(String l) {
       final line = l.trimRight();
@@ -136,10 +134,16 @@ class Tools {
       onLine?.call(line);
     }
 
+    if (Platform.isWindows) {
+      await WinProc.run(exe, args, handle);
+      return lines;
+    }
+    final p = await Process.start(exe, args, environment: {'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'});
     await Future.wait([
       p.stdout.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).forEach(handle),
       p.stderr.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).forEach(handle),
     ]);
+    await p.exitCode;
     return lines;
   }
 }
