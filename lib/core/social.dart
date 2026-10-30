@@ -101,6 +101,9 @@ class SocialController extends ChangeNotifier {
   String? _myFileId;
   bool _loadedMine = false;
 
+  /// Своя история уже подтянулась с Диска (а с ней и друзья)
+  bool get loaded => _loadedMine;
+
   List<Map<String, dynamic>> _myEvents = [];
   Map<String, Map<String, int>> _myPlays = {};
 

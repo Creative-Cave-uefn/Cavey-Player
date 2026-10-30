@@ -62,13 +62,19 @@ class WavePage extends StatelessWidget {
           ]),
           const SizedBox(height: 8),
           Text(wave.mode.hint, style: const TextStyle(color: C.muted, fontSize: 13)),
+          const SizedBox(height: 26),
+          _Discover(compact: compact),
           if (upcoming.isNotEmpty) ...[
             const SizedBox(height: 30),
             Text('Дальше в волне', style: display(18)),
             const SizedBox(height: 10),
             for (var i = 0; i < upcoming.length; i++)
               if (app.lib.data.tracks[upcoming[i]] case final t?)
-                _UpRow(track: t, onTap: () => p.jumpTo(p.index + 1 + i)),
+                _UpRow(
+                  track: t,
+                  onTap: () => p.jumpTo(p.index + 1 + i),
+                  trailing: wave.trials.containsKey(t.id) ? const _NewBadge() : null,
+                ),
           ],
           if (top.isNotEmpty) ...[
             const SizedBox(height: 30),
@@ -95,7 +101,8 @@ class WavePage extends StatelessWidget {
             'Дослушали трек — волна поставит больше похожего. Переключили в первые 30 секунд — '
             'этого исполнителя станет меньше, и он сразу пропадёт из ближайшей очереди. '
             '«Не нравится» в плеере убирает трек из волны насовсем. Ещё волна смотрит на ваши лайки, '
-            'любимых исполнителей, что слушают друзья, и похожих артистов из интернета.',
+            'любимых исполнителей и что слушают друзья. Похожих исполнителей она находит по «радио» Deezer: '
+            'кто звучит рядом с вашими любимыми — тот и близок по вкусу.',
             style: TextStyle(color: C.muted, height: 1.5),
           ),
           if (disliked.isNotEmpty) ...[
@@ -315,4 +322,86 @@ Widget waveSidebarMark(BuildContext context) {
 void startWaveFrom(BuildContext context, Track t) {
   Services.of(context).wave.startFrom(t);
   NavScope.of(context).go(const Nav('wave'));
+}
+
+class _NewBadge extends StatelessWidget {
+  const _NewBadge();
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(color: C.accent.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(20)),
+        child: const Text('новое', style: TextStyle(color: C.accent, fontSize: 12, fontWeight: FontWeight.w600)),
+      );
+}
+
+/// «Новое из интернета»: волна сама качает треки на пробу
+class _Discover extends StatelessWidget {
+  final bool compact;
+  const _Discover({required this.compact});
+
+  static String _left(Duration d) {
+    if (d.inHours >= 1) return 'ещё ${d.inHours} ч';
+    if (d.inMinutes >= 1) return 'ещё ${d.inMinutes} мин';
+    return 'скоро удалится';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final wave = app.wave;
+    final p = app.player;
+    final list = wave.trialTracks..sort((a, b) => b.added.compareTo(a.added));
+    final modeNote = switch (wave.mode) {
+      WaveMode.favorite || WaveMode.popular => ' В режиме «${wave.mode.title}» новое не качается.',
+      _ => '',
+    };
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+      decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.travel_explore_rounded, size: 20, color: C.accent),
+          const SizedBox(width: 10),
+          Expanded(child: Text('Новое из интернета', style: display(16))),
+          Switch(value: wave.discover, onChanged: wave.setDiscover),
+        ]),
+        const SizedBox(height: 6),
+        Text(
+          'Волна сама скачивает треки, которые звучат рядом с вашими любимыми исполнителями, в папку «Моя волна». '
+          'Если за сутки трек никто не послушает второй раз, не лайкнет и не добавит в плейлист — он удалится с Диска '
+          'и больше не скачается. Не больше ${WaveService.dailyLimit} в день, сегодня: ${wave.downloadedToday}.$modeNote',
+          style: const TextStyle(color: C.muted, fontSize: 13, height: 1.45),
+        ),
+        if (wave.discoverStatus.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Row(children: [
+            const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.6)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(wave.discoverStatus,
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+            ),
+          ]),
+        ],
+        if (list.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          for (final t in list)
+            Builder(builder: (context) {
+              final (kept, left) = wave.trialState(t.id);
+              return _UpRow(
+                track: t,
+                onTap: () => p.playTracks(list, list.indexOf(t)),
+                trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text(kept ? 'останется' : _left(left), style: TextStyle(color: kept ? C.accent : C.faint, fontSize: 12)),
+                  const SizedBox(width: 6),
+                  if (!kept)
+                    TextButton(onPressed: () => wave.keep(t.id), child: const Text('Оставить')),
+                ]),
+              );
+            }),
+        ],
+      ]),
+    );
+  }
 }

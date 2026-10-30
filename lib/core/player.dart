@@ -267,6 +267,15 @@ class PlayerController extends ChangeNotifier {
     _queueChanged();
   }
 
+  /// Ставит трек сразу после следующего: волна так вставляет только что скачанное
+  void insertSoon(String id) {
+    if (index < 0 || lib.data.tracks[id] == null || queue.skip(index).contains(id)) return;
+    final at = (index + 2).clamp(0, queue.length);
+    queue.insert(at, id);
+    _origin = List.of(queue);
+    _queueChanged();
+  }
+
   /// Убирает из следующих треки, подходящие под [test]
   void dropUpcoming(bool Function(String id) test) {
     if (index < 0) return;

@@ -370,6 +370,18 @@ class WebInfoService extends ChangeNotifier {
   final Map<int, WebArtist> _artistsById = {};
   final Map<int, List<WebTrack>> _top = {};
   final Map<int, List<WebArtist>> _related = {};
+  final Map<int, (DateTime, List<WebTrack>)> _radio = {};
+
+  /// «Радио» исполнителя: микс похожих песен разных артистов, который Deezer собирает по тому,
+  /// что слушают вместе. Точнее, чем список похожих исполнителей. Каждый раз немного новый — держим 30 минут
+  Future<List<WebTrack>> radio(int id, {bool low = true}) async {
+    final hit = _radio[id];
+    if (hit != null && DateTime.now().difference(hit.$1) < const Duration(minutes: 30)) return hit.$2;
+    final j = await _deezer('/artist/$id/radio', {'limit': '50'}, low);
+    final list = [for (final x in (j['data'] as List? ?? const [])) if (x is Map) WebTrack.fromDeezer(x)];
+    _radio[id] = (DateTime.now(), list);
+    return list;
+  }
   final Map<int, WebAlbum> _albumsById = {};
 
   /// Исполнитель по id Deezer (для страниц из поиска и «Похожих»)

@@ -102,4 +102,13 @@ void main() {
     expect(back.disliked, {'x'});
     expect(back.skips['y'], 2);
   });
+
+  test('пробный трек сохраняется', () {
+    final t = WaveTrial('file', 42, DateTime.utc(2026, 10, 30, 12));
+    final back = WaveTrial.fromJson(t.toJson())!;
+    expect(back.id, 'file');
+    expect(back.deezer, 42);
+    expect(back.at, DateTime.utc(2026, 10, 30, 12));
+    expect(WaveTrial.fromJson({'dz': 1}), isNull);
+  });
 }

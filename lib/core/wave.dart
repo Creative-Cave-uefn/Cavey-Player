@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import 'dl/service.dart';
 import 'library.dart';
 import 'log.dart';
 import 'models.dart';
@@ -202,28 +203,66 @@ class WaveEngine {
   }
 }
 
-/// «Моя волна»: бесконечная очередь из библиотеки, которая подстраивается по ходу.
+/// Трек, который волна скачала на пробу
+class WaveTrial {
+  final String id; // id файла на Диске
+  final int deezer; // id трека в Deezer — чтобы не скачать его снова после удаления
+  final DateTime at; // когда загружен
+  WaveTrial(this.id, this.deezer, this.at);
+
+  Map<String, dynamic> toJson() => {'id': id, 'dz': deezer, 'at': at.toUtc().toIso8601String()};
+  static WaveTrial? fromJson(dynamic j) {
+    if (j is! Map) return null;
+    final at = DateTime.tryParse('${j['at']}');
+    if (at == null || j['id'] == null) return null;
+    return WaveTrial('${j['id']}', (j['dz'] as num?)?.toInt() ?? 0, at);
+  }
+}
+
+/// Сколько живёт скачанный волной трек, если его никто не сохранил
+const waveTrialTime = Duration(hours: 24);
+
+/// «Моя волна»: бесконечная очередь, которая подстраивается по ходу.
 /// Дослушали — больше такого, пропустили в начале — меньше, «не нравится» — больше не ставим.
+/// Ещё волна сама скачивает новые треки похожих исполнителей. Если за сутки трек никто не послушал
+/// второй раз, не лайкнул и не добавил в плейлист — он удаляется с Диска.
 class WaveService extends ChangeNotifier implements QueueFeeder {
   final AppStore store;
   final LibraryController lib;
   final PlayerController player;
   final SocialController social;
   final WebInfoService web;
+  final DownloadService downloads;
 
   WaveTaste taste = WaveTaste();
   WaveMode mode = WaveMode.mix;
   final Map<String, double> _session = {};
   final List<String> _recent = [];
-  final Map<String, List<String>> _related = {};
+  final Map<String, List<String>> _related = {}; // исполнитель → кто звучит в его «радио»
   Timer? _saveTimer;
+  Timer? _sweepTimer;
   bool _learning = false;
 
-  WaveService._(this.store, this.lib, this.player, this.social, this.web);
+  // ---------- новинки ----------
 
-  static Future<WaveService> open(
-      AppStore store, LibraryController lib, PlayerController player, SocialController social, WebInfoService web) async {
-    final w = WaveService._(store, lib, player, social, web);
+  /// Качать новые треки в волну
+  bool discover = true;
+
+  /// Не больше стольких новых треков в день: защищает Диск
+  static const dailyLimit = 25;
+  final Map<String, WaveTrial> trials = {};
+  final Set<int> _rejected = {}; // удалённые после пробы — не качаем снова
+  String _day = '';
+  int _today = 0;
+  int _sinceFresh = 0; // сколько треков прошло после последнего нового
+  int _pending = 0; // загрузок в работе
+  String discoverStatus = '';
+
+  WaveService._(this.store, this.lib, this.player, this.social, this.web, this.downloads);
+
+  static Future<WaveService> open(AppStore store, LibraryController lib, PlayerController player, SocialController social,
+      WebInfoService web, DownloadService downloads) async {
+    final w = WaveService._(store, lib, player, social, web, downloads);
     try {
       final j = await store.readJson('wave.json');
       if (j is Map) {
@@ -232,8 +271,18 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         for (final x in (j['recent'] as List? ?? const [])) {
           w._recent.add('$x');
         }
-        final rel = j['related'];
+        final rel = j['radioArtists'];
         if (rel is Map) rel.forEach((k, v) => w._related['$k'] = [for (final x in (v as List? ?? const [])) '$x']);
+        w.discover = j['discover'] != false;
+        for (final x in (j['trials'] as List? ?? const [])) {
+          final t = WaveTrial.fromJson(x);
+          if (t != null) w.trials[t.id] = t;
+        }
+        for (final x in (j['rejected'] as List? ?? const [])) {
+          if (x is num) w._rejected.add(x.toInt());
+        }
+        w._day = '${j['day'] ?? ''}';
+        w._today = (j['today'] as num?)?.toInt() ?? 0;
       }
     } catch (e) {
       AppLog.warn('Моя волна: не прочитались настройки', e);
@@ -241,6 +290,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     // Волна играла при закрытии — продолжаем её после перезапуска
     if (player.settings.session?['wave'] == true && player.current != null) player.attachFeeder(w);
     player.addListener(w._onPlayer);
+    // Пробные треки проверяем не сразу: сначала должны подтянуться прослушивания друзей
+    Timer(const Duration(minutes: 3), w.sweep);
+    w._sweepTimer = Timer.periodic(const Duration(minutes: 20), (_) => w.sweep());
     return w;
   }
 
@@ -267,7 +319,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     await player.playFeed(this, first);
     _save();
     notifyListeners();
-    unawaited(_learnRelated());
+    unawaited(_learnRadio());
   }
 
   /// Волна по треку: начинаем с него и держимся рядом с его исполнителями
@@ -280,7 +332,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     await player.playFeed(this, [t.id, ...more(3)]);
     _save();
     notifyListeners();
-    unawaited(_learnRelated(extra: t.artists));
+    unawaited(_learnRadio(extra: t.artists));
   }
 
   /// Волна по исполнителю
@@ -293,7 +345,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     await player.playFeed(this, first);
     _save();
     notifyListeners();
-    unawaited(_learnRelated(extra: [name]));
+    unawaited(_learnRadio(extra: [name]));
   }
 
   void setMode(WaveMode m) {
@@ -304,7 +356,14 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     notifyListeners();
   }
 
-  /// «Не нравится»: убираем трек из волны навсегда и сразу переключаем
+  void setDiscover(bool on) {
+    discover = on;
+    _save();
+    notifyListeners();
+  }
+
+  /// «Не нравится»: убираем трек из волны навсегда и сразу переключаем.
+  /// Если его волна скачала на пробу — сразу удаляем с Диска
   Future<void> dislike() async {
     final t = player.current;
     if (t == null) return;
@@ -314,14 +373,28 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       taste.bump(k, -1.5);
       _session[k] = (_session[k] ?? 0) - 4;
     }
+    final trial = trials[t.id];
     _save();
     notifyListeners();
-    lib.messages.add('«${t.title}» больше не попадётся в волне');
     await player.next();
+    if (trial != null && !_kept(t.id)) {
+      _drop(trial);
+      lib.messages.add('«${t.title}» удалён: не понравился');
+    } else {
+      lib.messages.add('«${t.title}» больше не попадётся в волне');
+    }
   }
 
   void undislike(String id) {
     if (taste.disliked.remove(id)) {
+      _save();
+      notifyListeners();
+    }
+  }
+
+  /// Оставить пробный трек в библиотеке насовсем
+  void keep(String id) {
+    if (trials.remove(id) != null) {
       _save();
       notifyListeners();
     }
@@ -339,7 +412,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   WaveInputs _inputs() {
     final me = lib.me;
-    final tracks = lib.allTracks;
+    // Пробные треки волна ставит сама один раз: повтор должен быть чьим-то выбором, а не волны
+    final tracks = [for (final t in lib.allTracks) if (!trials.containsKey(t.id)) t];
     final liked = {for (final t in tracks) if (lib.isLiked(t.id)) t.id};
     final myPlays = <String, int>{};
     final crowd = <String, int>{};
@@ -370,9 +444,11 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     );
   }
 
+  Map<String, double> _affinity() => WaveEngine.affinity(_inputs());
+
   /// Исполнители, которые волне нравятся больше всего (для страницы «Моя волна»)
   List<(String, double)> topArtists([int n = 12]) {
-    final aff = WaveEngine.affinity(_inputs());
+    final aff = _affinity();
     final list = [
       for (final e in aff.entries)
         if (e.value > 0 && lib.artist(e.key) != null) (e.key, e.value)
@@ -393,7 +469,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     final ahead = player.feeder == this ? player.queue.skip(player.index) : const <String>[];
     final ids = WaveEngine.pick(x, mode, n, recent: [..._recent, ...ahead]);
     _remember(ids);
+    _sinceFresh += ids.length;
     _save();
+    _maybeDiscover();
     return ids;
   }
 
@@ -429,24 +507,29 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     _save();
   }
 
-  // ---------- похожие исполнители из интернета ----------
+  // ---------- «радио» исполнителей ----------
 
-  Future<void> _learnRelated({List<String> extra = const []}) async {
+  /// Для любимых исполнителей спрашиваем у Deezer их «радио». Кто там звучит — тот и похож:
+  /// это то, что люди слушают вместе, а не просто «похожие» по жанру
+  Future<void> _learnRadio({List<String> extra = const []}) async {
     if (_learning) return;
     _learning = true;
     try {
       final top = [for (final e in topArtists(8)) e.$1];
-      final names = <String>{for (final a in extra) a.toLowerCase(), ...top}.where((k) => !_related.containsKey(k)).take(8);
-      for (final key in names) {
+      final keys = <String>{for (final a in extra) a.toLowerCase(), ...top}.where((k) => !_related.containsKey(k)).take(8);
+      for (final key in keys) {
         try {
-          final name = lib.artist(key)?.name ?? key;
-          final a = await web.artist(name, low: true);
-          if (a == null) {
-            _related[key] = const [];
-            continue;
+          final list = await _radioOf(key);
+          if (list == null) continue;
+          final count = <String, int>{};
+          for (final t in list) {
+            for (final a in splitArtists(t.artist)) {
+              final k = a.toLowerCase();
+              if (k != key) count[k] = (count[k] ?? 0) + 1;
+            }
           }
-          final rel = await web.related(a.id);
-          _related[key] = [for (final r in rel) r.name.toLowerCase()];
+          final sorted = count.keys.toList()..sort((a, b) => count[b]!.compareTo(count[a]!));
+          _related[key] = sorted.take(25).toList();
         } catch (_) {
           // нет сети — спросим в следующий раз
         }
@@ -460,6 +543,226 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     } finally {
       _learning = false;
     }
+  }
+
+  Future<List<WebTrack>?> _radioOf(String key) async {
+    final name = lib.artist(key)?.name ?? key;
+    final a = await web.artist(name, low: true);
+    if (a == null) return null;
+    return web.radio(a.id);
+  }
+
+  // ---------- скачивание новинок ----------
+
+  String _todayKey() => DateTime.now().toIso8601String().substring(0, 10);
+
+  int get downloadedToday => _day == _todayKey() ? _today : 0;
+
+  /// Каждый какой трек волны — новый из интернета
+  int? get _every => switch (mode) {
+        WaveMode.mix => 4,
+        WaveMode.unfamiliar => 2,
+        WaveMode.favorite || WaveMode.popular => null,
+      };
+
+  String? get _targetSource {
+    final sources = lib.data.sources;
+    if (sources.isEmpty) return null;
+    final hub = lib.settings.hubId;
+    return sources.any((s) => s.id == hub) ? hub : sources.first.id;
+  }
+
+  void _maybeDiscover() {
+    final every = _every;
+    if (!discover || !active || every == null || _pending > 0 || _sinceFresh < every) return;
+    if (downloadedToday >= dailyLimit || _targetSource == null || !lib.hasHub) return;
+    unawaited(_discoverOne());
+  }
+
+  Future<void> _discoverOne() async {
+    _pending++;
+    _sinceFresh = 0;
+    _status('Ищу новое для волны…');
+    try {
+      final pick = await _findFresh();
+      if (pick == null) {
+        _status('Нового пока не нашлось');
+        _pending--;
+        return;
+      }
+      final src = _targetSource!;
+      final folder = await lib.ensureSubfolder(src, src, 'Моя волна');
+      _status('Качаю «${pick.title}» — ${pick.artist}');
+      var got = false;
+      final job = downloads.enqueue(pick.link, src, folderId: folder, path: 'Моя волна', quiet: true, onTrack: (t) {
+        got = true;
+        _onDownloaded(t, pick);
+      });
+      if (job == null) {
+        _pending--;
+        return;
+      }
+      // Ждём конца задания, чтобы не ставить в очередь загрузчика десяток треков разом
+      void check() {
+        if (job.state == JobState.done || job.state == JobState.failed) {
+          downloads.removeListener(check);
+          _pending--;
+          if (!got) {
+            _rejected.add(pick.id); // не скачался или уже был — в следующий раз ищем другой
+            _status('');
+          }
+          _save();
+        }
+      }
+
+      downloads.addListener(check);
+    } catch (e) {
+      _pending--;
+      _status('');
+      AppLog.warn('Моя волна: новинка', e);
+    }
+  }
+
+  void _status(String s) {
+    discoverStatus = s;
+    notifyListeners();
+  }
+
+  /// Новый трек: из «радио» того, что играет сейчас, и любимых исполнителей.
+  /// Чем больше «радио» сходятся на исполнителе, тем вероятнее его трек
+  Future<WebTrack?> _findFresh() async {
+    final seeds = <String>[];
+    final cur = player.current;
+    if (cur != null) seeds.add(cur.artists.first.toLowerCase());
+    final top = topArtists(10).map((e) => e.$1).toList()..shuffle();
+    for (final k in top) {
+      if (!seeds.contains(k)) seeds.add(k);
+      if (seeds.length >= 3) break;
+    }
+    if (seeds.isEmpty) {
+      final all = lib.artists;
+      if (all.isEmpty) return null;
+      seeds.add(all[Random().nextInt(all.length)].key);
+    }
+    final votes = <int, double>{};
+    final byId = <int, WebTrack>{};
+    for (var i = 0; i < seeds.length; i++) {
+      List<WebTrack>? list;
+      try {
+        list = await _radioOf(seeds[i]);
+      } catch (_) {}
+      if (list == null) continue;
+      for (final t in list) {
+        byId[t.id] = t;
+        votes[t.id] = (votes[t.id] ?? 0) + (i == 0 ? 2 : 1);
+      }
+    }
+    final aff = _affinity();
+    final trialIds = {for (final t in trials.values) t.deezer};
+    final artistVotes = <String, double>{};
+    votes.forEach((id, v) {
+      final k = byId[id]!.artist.toLowerCase();
+      artistVotes[k] = (artistVotes[k] ?? 0) + v;
+    });
+    final cands = <(WebTrack, double)>[];
+    for (final t in byId.values) {
+      if (t.link.isEmpty || _rejected.contains(t.id) || trialIds.contains(t.id)) continue;
+      if (lib.existing(t.artist, t.title) != null) continue;
+      final names = splitArtists(t.artist).map((a) => a.toLowerCase());
+      if (names.any((k) => (aff[k] ?? 0) <= -3)) continue; // исполнителя постоянно пропускают
+      if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) continue; // интро, скиты и часовые миксы
+      var w = votes[t.id]! + (artistVotes[t.artist.toLowerCase()] ?? 0) * 0.5;
+      // Новые для библиотеки исполнители интереснее, но и новая песня знакомого — тоже хорошо
+      if (lib.artist(t.artist.toLowerCase()) == null) w *= 1.3;
+      cands.add((t, w));
+    }
+    if (cands.isEmpty) return null;
+    cands.sort((a, b) => b.$2.compareTo(a.$2));
+    final top5 = cands.take(5).toList();
+    var total = 0.0;
+    for (final c in top5) {
+      total += c.$2;
+    }
+    var r = Random().nextDouble() * total;
+    for (final c in top5) {
+      r -= c.$2;
+      if (r <= 0) return c.$1;
+    }
+    return top5.first.$1;
+  }
+
+  void _onDownloaded(Track t, WebTrack from) {
+    trials[t.id] = WaveTrial(t.id, from.id, DateTime.now());
+    final today = _todayKey();
+    if (_day != today) {
+      _day = today;
+      _today = 0;
+    }
+    _today++;
+    _status('');
+    if (active) player.insertSoon(t.id);
+    _save();
+    notifyListeners();
+  }
+
+  // ---------- пробный срок ----------
+
+  /// Трек остаётся, если его кто-то лайкнул, добавил в плейлист или послушал второй раз
+  bool _kept(String id) {
+    if (lib.data.likes[id]?.isNotEmpty ?? false) return true;
+    if (lib.data.playlists.any((p) => p.items.contains(id))) return true;
+    return social.playsOf(id) >= 2;
+  }
+
+  /// Что с пробным треком: сохранится он или сколько осталось
+  (bool, Duration) trialState(String id) {
+    final t = trials[id];
+    if (t == null) return (true, Duration.zero);
+    final left = t.at.add(waveTrialTime).difference(DateTime.now());
+    return (_kept(id), left.isNegative ? Duration.zero : left);
+  }
+
+  List<Track> get trialTracks => [
+        for (final t in trials.values)
+          if (lib.data.tracks[t.id] != null) lib.data.tracks[t.id]!
+      ];
+
+  void _drop(WaveTrial t) {
+    trials.remove(t.id);
+    _rejected.add(t.deezer);
+    if (_rejected.length > 1000) _rejected.remove(_rejected.first);
+    final track = lib.data.tracks[t.id];
+    if (track != null) lib.deleteTracks([track]);
+    _save();
+  }
+
+  /// Раз в 20 минут: сохранённые оставляем насовсем, просроченные удаляем с Диска
+  void sweep() {
+    if (trials.isEmpty || !lib.hasHub || !social.loaded) return;
+    var removed = 0;
+    for (final t in trials.values.toList()) {
+      final id = lib.data.resolve(t.id);
+      if (lib.data.tracks[id] == null) {
+        trials.remove(t.id); // уже удалили руками
+        continue;
+      }
+      if (_kept(id)) {
+        trials.remove(t.id);
+        continue;
+      }
+      // Пока играет — не трогаем
+      if (player.current?.id == id) continue;
+      if (DateTime.now().difference(t.at) >= waveTrialTime) {
+        _drop(t);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      player.dropUpcoming((id) => lib.data.tracks[id] == null);
+      AppLog.info('Моя волна: удалено непонравившихся новинок: $removed');
+    }
+    _save();
+    notifyListeners();
   }
 
   // ---------- сохранение ----------
@@ -476,10 +779,22 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         'mode': mode.name,
         'taste': taste.toJson(),
         'recent': _recent,
-        'related': _related,
+        'radioArtists': _related,
+        'discover': discover,
+        'trials': [for (final t in trials.values) t.toJson()],
+        'rejected': _rejected.toList(),
+        'day': _day,
+        'today': _today,
       });
     } catch (e) {
       AppLog.warn('Моя волна: не сохранилось', e);
     }
+  }
+
+  @override
+  void dispose() {
+    _sweepTimer?.cancel();
+    _saveTimer?.cancel();
+    super.dispose();
   }
 }

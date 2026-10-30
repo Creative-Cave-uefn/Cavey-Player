@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 
 import '../library.dart';
 import '../log.dart';
+import '../models.dart';
 import 'sources.dart';
 import 'text.dart';
 import 'tools.dart';
@@ -31,7 +32,20 @@ class DownloadJob {
   int skipped = 0; // уже были в библиотеке
   final List<String> log = [];
   final List<String> failedNames = [];
-  DownloadJob(this.input, this.sourceId, this.folderName) : title = input;
+  DownloadJob(this.input, this.sourceId, this.folderName, {this.folderId, this.path = '', this.quiet = false, this.onTrack})
+      : title = input;
+
+  /// Своя папка для одиночных треков (например, «Моя волна»); иначе — корень источника
+  final String? folderId;
+  final String path;
+
+  /// Без сообщений и записи в ленте: фоновые загрузки волны
+  final bool quiet;
+
+  /// Каждый загруженный на Диск трек
+  final void Function(Track t)? onTrack;
+
+  String get target => folderId ?? sourceId;
 
   void add(String line) {
     log.add(line);
@@ -88,13 +102,17 @@ class DownloadService extends ChangeNotifier {
   }
 
   /// Добавляет задание в очередь
-  void enqueue(String input, String sourceId) {
+  DownloadJob? enqueue(String input, String sourceId,
+      {String? folderId, String path = '', bool quiet = false, void Function(Track t)? onTrack}) {
     final text = input.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty) return null;
     final src = lib.data.sources.where((s) => s.id == sourceId).firstOrNull;
-    jobs.insert(0, DownloadJob(text, sourceId, src?.name ?? 'Cave Player'));
+    final job = DownloadJob(text, sourceId, src?.name ?? 'Cave Player',
+        folderId: folderId, path: path, quiet: quiet, onTrack: onTrack);
+    jobs.insert(0, job);
     notifyListeners();
     unawaited(_pump());
+    return job;
   }
 
   void clearFinished() {
@@ -145,7 +163,7 @@ class DownloadService extends ChangeNotifier {
       final yt = YouTube(tools, temp, log);
       final ok = await _route(job, yt, temp, log);
       job.state = ok ? JobState.done : JobState.failed;
-      if (job.done > 0) {
+      if (job.done > 0 && !job.quiet) {
         lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
         lib.messages.add('Скачано и загружено на Диск: ${job.done} ${job.done == 1 ? 'трек' : 'треков'}');
       }
@@ -201,7 +219,7 @@ class DownloadService extends ChangeNotifier {
     if (q.startsWith('http://') || q.startsWith('https://')) {
       job.total = 1;
       final entries = await yt.download('${temp.path}${Platform.pathSeparator}%(id)s.%(ext)s', q);
-      return _finishYoutube(job, yt, entries, folderId: job.sourceId, path: '');
+      return _finishYoutube(job, yt, entries, folderId: job.target, path: job.path);
     }
     return _search(job, yt, temp, q, log);
   }
@@ -216,7 +234,7 @@ class DownloadService extends ChangeNotifier {
     job.total = 1;
     log('Нашёл в $where: ${meta.label}');
     log('Ищу лучшую версию на YouTube…');
-    final ok = await _sourceTrack(job, yt, temp, meta, folderId: job.sourceId, path: '', cover: await yt.cover(meta.coverUrl));
+    final ok = await _sourceTrack(job, yt, temp, meta, folderId: job.target, path: job.path, cover: await yt.cover(meta.coverUrl));
     return ok;
   }
 
@@ -328,7 +346,7 @@ class DownloadService extends ChangeNotifier {
     for (final c in cands.take(maxDownloadTries)) {
       log('Выбрано на YouTube: ${c.title}  [${c.channel}]');
       final entries = await yt.download('${temp.path}${Platform.pathSeparator}%(id)s.%(ext)s', 'https://www.youtube.com/watch?v=${c.id}');
-      if (entries.isNotEmpty) return _finishYoutube(job, yt, entries, folderId: job.sourceId, path: '');
+      if (entries.isNotEmpty) return _finishYoutube(job, yt, entries, folderId: job.target, path: job.path);
     }
     return false;
   }
@@ -356,8 +374,13 @@ class DownloadService extends ChangeNotifier {
 
   Future<void> _upload(DownloadJob job, YouTube yt, File file, {required String folderId, required String path}) async {
     yt.log('Загружаю на Диск: ${file.uri.pathSegments.last}');
-    await lib.uploadOne(file, sourceId: job.sourceId, folderId: folderId, path: path);
+    final t = await lib.uploadOne(file, sourceId: job.sourceId, folderId: folderId, path: path);
     job.done++;
+    try {
+      job.onTrack?.call(t);
+    } catch (e) {
+      AppLog.warn('Загрузчик: после загрузки', e);
+    }
     _notify();
   }
 
