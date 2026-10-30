@@ -24,6 +24,7 @@ import 'core/single_instance.dart';
 import 'core/taskbar.dart';
 import 'core/tray.dart';
 import 'core/updater.dart';
+import 'ui/ambient.dart';
 import 'ui/onboarding.dart';
 import 'ui/shell.dart';
 import 'ui/theme.dart';
@@ -167,6 +168,11 @@ class CavePlayerApp extends StatelessWidget {
         title: 'Cave Player',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
+        // Стеклянный фон под всеми экранами, включая первый запуск и диалоги
+        builder: (context, child) => Stack(children: [
+          const Positioned.fill(child: AmbientBackground()),
+          if (child != null) Positioned.fill(child: child),
+        ]),
         home: ListenableBuilder(
           listenable: Listenable.merge([app.accounts, app.lib]),
           builder: (context, _) {

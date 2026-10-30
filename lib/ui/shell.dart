@@ -10,7 +10,6 @@ import '../core/log.dart';
 import '../core/models.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
-import 'ambient.dart';
 import 'albums_view.dart';
 import 'company_view.dart';
 import 'download_view.dart';
@@ -126,7 +125,6 @@ class _ShellState extends State<Shell> {
               uploadPaths(context, [for (final f in detail.files) f.path]);
             },
             child: Stack(children: [
-          const Positioned.fill(child: AmbientBackground()),
           Scaffold(
             backgroundColor: Colors.transparent,
             body: LayoutBuilder(builder: (context, box) {

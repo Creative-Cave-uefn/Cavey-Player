@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
+import 'ambient.dart';
 import 'shell.dart';
 import 'profile_edit.dart';
 import 'theme.dart';
@@ -83,6 +84,9 @@ class ProfileLayout extends StatelessWidget {
   /// Свой баннер человека (id картинки на Диске): показывается сверху и плавно уходит в фон
   final String? bannerFileId;
 
+  /// Чем красить фон окна, пока открыт этот профиль (важнее обложки текущего трека)
+  final AmbientSource? ambient;
+
   const ProfileLayout({
     super.key,
     required this.compact,
@@ -96,6 +100,7 @@ class ProfileLayout extends StatelessWidget {
     this.onInfo,
     this.thirdButton,
     this.bannerFileId,
+    this.ambient,
   });
 
   @override
@@ -103,7 +108,8 @@ class ProfileLayout extends StatelessWidget {
     final pad = compact ? 20.0 : 40.0;
     final photo = compact ? 160.0 : 220.0;
     Widget page(Color? tint) {
-      final top = (tint ?? C.raised).withValues(alpha: 0.85);
+      // Фон окна уже окрашен профилем — сверху лишь лёгкая дымка его цвета
+      final top = (tint ?? C.raised).withValues(alpha: 0.35);
       return Stack(children: [
         if (bannerFileId != null)
           Positioned.fill(child: Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId!)))
@@ -152,12 +158,14 @@ class ProfileLayout extends StatelessWidget {
       ]);
     }
 
-    if (tintFuture == null) return page(tintNow);
-    return FutureBuilder<Color?>(
-      future: tintFuture,
-      initialData: tintNow,
-      builder: (context, snap) => page(snap.data ?? tintNow),
-    );
+    final body = tintFuture == null
+        ? page(tintNow)
+        : FutureBuilder<Color?>(
+            future: tintFuture,
+            initialData: tintNow,
+            builder: (context, snap) => page(snap.data ?? tintNow),
+          );
+    return AmbientOverride(source: ambient, child: body);
   }
 }
 
@@ -477,6 +485,12 @@ class ArtistProfilePage extends StatelessWidget {
           compact: compact,
           // Фото из интернета; пока его нет — обложка одного из треков
           avatar: ArtistPhoto(name: a.name, size: 220, fallback: CoverImage(track: a.coverTrack, size: 220, radius: 0)),
+          // Фон окна — по фото исполнителя; нет фото — по обложке одного из его треков
+          ambient: AmbientSource(
+            'artist:${a.key}',
+            url: () async => (app.web.artistCached(a.name) ?? await app.web.artist(a.name))?.picture,
+            fallback: AmbientSource(app.covers.keyOf(a.coverTrack), bytes: () => app.covers.forTrack(a.coverTrack)),
+          ),
           tintFuture: _trackTint(app, a.coverTrack),
           tintNow: _tintCache[app.covers.keyOf(a.coverTrack)],
           name: a.name,
@@ -639,6 +653,15 @@ class UserProfilePage extends StatelessWidget {
           compact: compact,
           avatar: Avatar(email: email, name: name, size: 220),
           bannerFileId: lib.profileBanner(email),
+          // Фон — по баннеру человека, иначе по аватару, иначе его цветом
+          ambient: AmbientSource(
+            'user:$email:${lib.profileBanner(email)}:${lib.profileAvatar(email)}',
+            bytes: () async {
+              final id = lib.profileBanner(email) ?? lib.profileAvatar(email);
+              return id == null ? null : app.covers.forFile(id);
+            },
+            color: friendColor(email),
+          ),
           thirdButton: email == lib.me
               ? _roundButton(Icons.edit_rounded, () => editProfileDialog(context), tooltip: 'Изменить профиль')
               : null,

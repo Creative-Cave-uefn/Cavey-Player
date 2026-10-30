@@ -428,7 +428,7 @@ class _TracksPageState extends State<TracksPage> {
       bottom: 14,
       child: Center(
         child: Material(
-          color: C.raised,
+          color: C.panelRaised, // плавает над списком: стекло здесь просвечивало бы строками
           elevation: 10,
           borderRadius: BorderRadius.circular(14),
           child: Padding(
@@ -608,7 +608,7 @@ class _TracksPageState extends State<TracksPage> {
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
+      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
       height: 32,
       child: Row(children: [
         const SizedBox(width: 28, child: Text('#', style: TextStyle(fontSize: 12, color: C.faint))),
@@ -784,7 +784,7 @@ class _TracksPageState extends State<TracksPage> {
                     itemCount: visible.length,
                     itemExtent: 58,
                     proxyDecorator: (child, i, anim) => Material(
-                      color: C.raised,
+                      color: C.panelRaised,
                       elevation: 6,
                       borderRadius: BorderRadius.circular(8),
                       child: child,

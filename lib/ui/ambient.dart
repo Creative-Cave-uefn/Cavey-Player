@@ -5,11 +5,84 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../app.dart';
-import '../core/models.dart';
 import 'theme.dart';
 
-/// Фон всего окна: размытая обложка текущего трека, плавно сменяется вместе с треком.
-/// Обложка размывается один раз в маленькую картинку (160×160) и дальше просто растягивается:
+/// Откуда фон берёт картинку. Профиль (исполнитель, человек) важнее трека:
+/// пока он открыт, фон красит его фото; в остальных местах — обложка текущего трека
+class AmbientSource {
+  final String key;
+
+  /// Картинка-источник: байты (обложка, баннер на Диске) или адрес в интернете (фото исполнителя)
+  final Future<Uint8List?> Function()? bytes;
+  final Future<String?> Function()? url;
+
+  /// Картинки нет — мягкое свечение этим цветом (например, цвет друга)
+  final Color? color;
+
+  /// Если [bytes]/[url] ничего не дали — запасной источник
+  final AmbientSource? fallback;
+
+  const AmbientSource(this.key, {this.bytes, this.url, this.color, this.fallback});
+}
+
+/// Источник фона, который сейчас задаёт открытая страница (профиль). null — фон от трека
+class AmbientScope {
+  static final ValueNotifier<AmbientSource?> override = ValueNotifier(null);
+  static Object? _owner;
+
+  static void claim(Object owner, AmbientSource? source) {
+    _owner = owner;
+    if (override.value?.key != source?.key) override.value = source;
+  }
+
+  static void release(Object owner) {
+    if (!identical(_owner, owner)) return; // фон уже забрала следующая страница
+    _owner = null;
+    override.value = null;
+  }
+}
+
+/// Оборачивает страницу профиля: пока она на экране, фон окна красит её [source]
+class AmbientOverride extends StatefulWidget {
+  final AmbientSource? source;
+  final Widget child;
+  const AmbientOverride({super.key, required this.source, required this.child});
+
+  @override
+  State<AmbientOverride> createState() => _AmbientOverrideState();
+}
+
+class _AmbientOverrideState extends State<AmbientOverride> {
+  // Менять фон прямо во время построения нельзя — делаем это сразу после кадра
+  void _claim() => WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) AmbientScope.claim(this, widget.source);
+      });
+
+  @override
+  void initState() {
+    super.initState();
+    _claim();
+  }
+
+  @override
+  void didUpdateWidget(covariant AmbientOverride old) {
+    super.didUpdateWidget(old);
+    if (old.source?.key != widget.source?.key) _claim();
+  }
+
+  @override
+  void dispose() {
+    final me = this;
+    WidgetsBinding.instance.addPostFrameCallback((_) => AmbientScope.release(me));
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+/// Фон всего окна: размытая картинка (обложка трека или фото профиля), плавно сменяется.
+/// Картинка размывается один раз в маленькую (160×160) и дальше просто растягивается:
 /// на каждом кадре ничего не размываем, поэтому прокрутка и анимации не тормозят.
 class AmbientBackground extends StatefulWidget {
   const AmbientBackground({super.key});
@@ -24,6 +97,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
 
   String? _key;
   ui.Image? _image;
+  Color? _color;
   int _seq = 0;
   VoidCallback? _unlisten;
 
@@ -32,10 +106,14 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
     super.didChangeDependencies();
     if (_unlisten != null) return;
     final player = Services.of(context).player;
-    void onPlayer() => _sync(player.current);
-    player.addListener(onPlayer);
-    _unlisten = () => player.removeListener(onPlayer);
-    _sync(player.current);
+    void changed() => _sync();
+    player.addListener(changed);
+    AmbientScope.override.addListener(changed);
+    _unlisten = () {
+      player.removeListener(changed);
+      AmbientScope.override.removeListener(changed);
+    };
+    _sync();
   }
 
   @override
@@ -44,38 +122,95 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
     super.dispose();
   }
 
-  Future<void> _sync(Track? t) async {
+  AmbientSource? _trackSource() {
     final app = Services.of(context);
-    final key = t == null ? null : app.covers.keyOf(t);
-    if (key == _key) return;
-    _key = key;
-    final seq = ++_seq;
-    if (t == null || key == null) {
-      setState(() => _image = null);
-      return;
-    }
-    final hit = _cache[key];
-    if (hit != null) {
-      setState(() => _image = hit);
-      return;
-    }
-    final bytes = await app.covers.forTrack(t);
-    final img = bytes == null ? null : await _blurred(bytes);
-    if (!mounted || seq != _seq) return;
-    if (img != null) {
-      _cache[key] = img;
-      _order.add(key);
-      // Держим несколько последних: назад-вперёд по очереди без пересчёта
-      if (_order.length > 8) _cache.remove(_order.removeAt(0));
-    }
-    setState(() => _image = img);
+    final t = app.player.current;
+    if (t == null) return null;
+    return AmbientSource(app.covers.keyOf(t), bytes: () => app.covers.forTrack(t));
   }
 
-  static Future<ui.Image?> _blurred(Uint8List bytes) async {
+  Future<void> _sync() async {
+    final src = AmbientScope.override.value ?? _trackSource();
+    if (src?.key == _key) return;
+    _key = src?.key;
+    final seq = ++_seq;
+    var s = src;
+    while (s != null) {
+      final hit = _cache[s.key];
+      if (hit != null) {
+        setState(() {
+          _image = hit;
+          _color = null;
+        });
+        return;
+      }
+      ui.Image? img;
+      try {
+        final b = s.bytes;
+        final u = s.url;
+        if (b != null) {
+          final bytes = await b();
+          if (bytes != null) img = await _blurred(await _decode(bytes));
+        } else if (u != null) {
+          final link = await u();
+          if (link != null && link.isNotEmpty) img = await _blurred(await _fromUrl(link));
+        }
+      } catch (_) {}
+      if (!mounted || seq != _seq) return;
+      if (img != null) {
+        _cache[s.key] = img;
+        _order.add(s.key);
+        // Держим несколько последних: назад-вперёд без пересчёта
+        if (_order.length > 12) _cache.remove(_order.removeAt(0));
+        setState(() {
+          _image = img;
+          _color = null;
+        });
+        return;
+      }
+      if (s.color != null) {
+        setState(() {
+          _image = null;
+          _color = s!.color;
+        });
+        return;
+      }
+      s = s.fallback;
+    }
+    if (!mounted || seq != _seq) return;
+    setState(() {
+      _image = null;
+      _color = null;
+    });
+  }
+
+  static Future<ui.Image?> _decode(Uint8List bytes) async {
+    final codec = await ui.instantiateImageCodec(bytes, targetWidth: 64);
+    final frame = await codec.getNextFrame();
+    codec.dispose();
+    return frame.image;
+  }
+
+  /// Фото по адресу: маленькой копией, через обычный кеш картинок Flutter
+  static Future<ui.Image?> _fromUrl(String url) {
+    final done = Completer<ui.Image?>();
+    final stream = ResizeImage(NetworkImage(url), width: 64).resolve(ImageConfiguration.empty);
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener((info, _) {
+      if (!done.isCompleted) done.complete(info.image.clone());
+      info.dispose();
+      stream.removeListener(listener);
+    }, onError: (_, __) {
+      if (!done.isCompleted) done.complete(null);
+      stream.removeListener(listener);
+    });
+    stream.addListener(listener);
+    return done.future.timeout(const Duration(seconds: 15), onTimeout: () => null);
+  }
+
+  static Future<ui.Image?> _blurred(ui.Image? src) async {
+    if (src == null) return null;
     try {
-      final codec = await ui.instantiateImageCodec(bytes, targetWidth: 64);
-      final frame = await codec.getNextFrame();
-      final src = frame.image;
       const size = 160.0;
       final rec = ui.PictureRecorder();
       final canvas = Canvas(rec);
@@ -85,12 +220,11 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
       // Чуть шире холста, чтобы края размытия не темнели
       canvas.drawImageRect(src, Rect.fromLTWH(0, 0, src.width.toDouble(), src.height.toDouble()),
           const Rect.fromLTWH(-24, -24, size + 48, size + 48), paint);
-      final img = await rec.endRecording().toImage(size.toInt(), size.toInt());
-      src.dispose();
-      codec.dispose();
-      return img;
+      return await rec.endRecording().toImage(size.toInt(), size.toInt());
     } catch (_) {
       return null;
+    } finally {
+      src.dispose();
     }
   }
 
@@ -106,7 +240,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
           switchOutCurve: Curves.easeIn,
           layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
           child: img == null
-              ? const _BrandGlow(key: ValueKey('brand'))
+              ? (_color != null ? _ColorGlow(key: ValueKey(_color), color: _color!) : const _BrandGlow(key: ValueKey('brand')))
               : RawImage(
                   key: ValueKey(img),
                   image: img,
@@ -128,6 +262,24 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
       ]),
     );
   }
+}
+
+/// Профиль без картинки: мягкое свечение его цветом
+class _ColorGlow extends StatelessWidget {
+  final Color color;
+  const _ColorGlow({super.key, required this.color});
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: RadialGradient(
+            center: const Alignment(-0.2, -0.7),
+            radius: 1.3,
+            colors: [color.withValues(alpha: 0.75), color.withValues(alpha: 0.25), C.bg],
+            stops: const [0.0, 0.55, 1.0],
+          ),
+        ),
+      );
 }
 
 /// Пока ничего не играет: мягкое свечение фирменных цветов

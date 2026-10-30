@@ -10,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
 import '../core/web_info.dart';
+import 'ambient.dart';
 import 'profile_view.dart';
 import 'shell.dart';
 import 'theme.dart';
@@ -481,6 +482,7 @@ class _WebArtistPageState extends State<WebArtistPage> {
         return ProfileLayout(
           compact: widget.compact,
           avatar: netCover(a.picture, 220, round: true),
+          ambient: AmbientSource('webartist:${a.id}', url: () async => a.picture),
           name: a.name,
           subtitle: a.fans > 0 ? '${_fans(a.fans)} поклонников на Deezer · в библиотеке нет' : 'В библиотеке нет',
           sections: [WebArtistSections(artistId: a.id, name: a.name, compact: widget.compact)],

@@ -55,7 +55,7 @@ class _AccountsPageState extends State<AccountsPage> {
           for (final a in accounts.accounts)
             Container(
               padding: const EdgeInsets.symmetric(vertical: 14),
-              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
+              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
               child: Row(children: [
                 Avatar(email: a.email, name: a.name, size: 40),
                 const SizedBox(width: 16),

@@ -389,7 +389,7 @@ class _DuplicatesPageState extends State<DuplicatesPage> {
             for (final t in g)
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 6),
-                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
+                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
                 child: Row(children: [
                   Radio<String>(
                     value: t.id,

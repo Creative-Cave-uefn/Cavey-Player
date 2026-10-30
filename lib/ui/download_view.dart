@@ -184,7 +184,7 @@ class _JobCard extends StatelessWidget {
               width: double.infinity,
               constraints: const BoxConstraints(maxHeight: 260),
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: C.bg, borderRadius: BorderRadius.circular(8)),
+              decoration: BoxDecoration(color: const Color(0x40000000), borderRadius: BorderRadius.circular(8)),
               child: SingleChildScrollView(
                 reverse: true,
                 child: SelectableText(

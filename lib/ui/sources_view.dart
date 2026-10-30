@@ -356,7 +356,7 @@ class _SourceRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14),
-      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
+      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
       child: Row(children: [
         Container(
           width: 40,
