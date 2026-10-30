@@ -15,6 +15,16 @@ import 'models.dart';
 import 'store.dart';
 import 'tags.dart';
 
+/// Внутренний сигнал: библиотеку отключили или сменили, пока шло сохранение
+class _Abandoned implements Exception {}
+
+/// Снимок «куда смотрит это приложение»: нужен, чтобы понять, в какой библиотеке и папке данных человек сидит
+class LocationReport {
+  String? hubId, hubName, libFileId, libModified, dataId, error;
+  int libSize = 0, libraryFilesInHub = 0, dataFolderCount = 0, dataFiles = 0;
+  bool dataOverride = false;
+}
+
 class LibraryException implements Exception {
   final String message;
   LibraryException(this.message);
@@ -201,7 +211,11 @@ class LibraryController extends ChangeNotifier {
     settings
       ..hubId = folder
       ..hubEmail = email
-      ..libFileId = f['id'] as String;
+      ..libFileId = f['id'] as String
+      ..autoJoinDisabled = false
+      ..dataFolderOverride = null;
+    _dataFolderId = null;
+    dataFolders = const [];
     _libModified = f['modifiedTime'] as String?;
     data = fresh;
     _pending.clear();
@@ -212,31 +226,44 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> joinHub(String input) async {
-    final id = parseDriveId(input);
+    var id = parseDriveId(input);
     if (id == null) throw LibraryException('Это не похоже на ссылку на папку Google Диска');
     for (final a in accounts.accounts) {
       Map<String, dynamic> meta;
       try {
-        meta = await drive.getFile(a.email, id, fields: 'id,name,mimeType');
+        meta = await drive.getFile(a.email, id!, fields: 'id,name,mimeType,parents');
       } on DriveException catch (e) {
         if (e.notFound || e.forbidden) continue;
         rethrow;
       }
       if (meta['mimeType'] != 'application/vnd.google-apps.folder') {
-        throw LibraryException('По ссылке файл, а нужна папка «Cave Player»');
+        // Ссылка прямо на library.json: берём папку, в которой он лежит
+        final parents = meta['parents'];
+        if (meta['name'] == 'library.json' && parents is List && parents.isNotEmpty) {
+          id = '${parents.first}';
+        } else {
+          throw LibraryException('По ссылке файл, а нужна папка «Cave Player» или сам файл library.json');
+        }
       }
-      final found = await drive.listChildren(a.email, id, nameEquals: 'library.json');
-      String libId;
-      if (found.isNotEmpty) {
-        libId = found.first.id;
-      } else {
-        final f = await drive.createFile(a.email, id, 'library.json', jsonEncode(LibraryData().toJson()));
-        libId = f['id'] as String;
+      final found = await drive.listChildren(a.email, id!, nameEquals: 'library.json');
+      if (found.isEmpty) {
+        // Раньше здесь создавалась новая пустая библиотека: если вставить ссылку на папку с музыкой,
+        // человек оказывался в отдельной пустой библиотеке без плейлистов и друзей
+        throw LibraryException('В этой папке нет общей библиотеки Cave Player (файла library.json). '
+            'Нужна ссылка на папку «Cave Player», а не на папку с музыкой.');
       }
+      // Если в папке несколько library.json, настоящий — самый большой
+      found.sort((x, y) => y.size.compareTo(x.size));
+      final libId = found.first.id;
+      if (hasHub) await flushNow();
       settings
         ..hubId = id
         ..hubEmail = a.email
-        ..libFileId = libId;
+        ..libFileId = libId
+        ..autoJoinDisabled = false
+        ..dataFolderOverride = null;
+      _dataFolderId = null;
+      dataFolders = const [];
       data = LibraryData();
       _pending.clear();
       _libModified = null;
@@ -251,10 +278,110 @@ class LibraryController extends ChangeNotifier {
         'Проверьте, что друг поделился ею с вашей почтой.');
   }
 
+  // ---------- где лежат данные ----------
+
+  /// Переносит библиотеку в другую папку Диска: создаёт там library.json с текущим содержимым
+  /// и дальше работает с ним. Старый файл не трогаем — друзья, которые на него смотрят, ничего не потеряют.
+  Future<void> moveLibraryTo(String input) async {
+    final id = parseDriveId(input);
+    if (id == null) throw LibraryException('Это не похоже на ссылку на папку Google Диска');
+    if (!hasHub) throw LibraryException('Сначала подключитесь к библиотеке');
+    if (id == settings.hubId) throw LibraryException('Библиотека уже лежит в этой папке');
+    await flushNow();
+    final email = await accessFor(id, recheck: true);
+    final meta = await drive.getFile(email, id, fields: 'id,name,mimeType');
+    if (meta['mimeType'] != 'application/vnd.google-apps.folder') {
+      throw LibraryException('По ссылке файл, а нужна папка');
+    }
+    final existing = await drive.listChildren(email, id, nameEquals: 'library.json');
+    if (existing.isNotEmpty) {
+      throw LibraryException('В этой папке уже есть library.json. Чтобы работать с ним, используйте «Подключить другую папку».');
+    }
+    final f = await drive.createFile(email, id, 'library.json', jsonEncode(data.toJson()));
+    settings
+      ..hubId = id
+      ..hubEmail = email
+      ..libFileId = f['id'] as String
+      ..autoJoinDisabled = false;
+    _libModified = f['modifiedTime'] as String?;
+    _dataFolderId = null;
+    dataFolders = const [];
+    await saveSettings();
+    await _saveLocal();
+    _changed();
+    _goOnline();
+  }
+
+  /// Своя папка для статусов, ленты и чартов (cave-data). Можно дать ссылку на саму cave-data
+  /// или на любую папку: тогда cave-data найдётся внутри неё или будет создана.
+  Future<void> setDataFolder(String input) async {
+    final id = parseDriveId(input);
+    if (id == null) throw LibraryException('Это не похоже на ссылку на папку Google Диска');
+    final email = await accessFor(id, recheck: true);
+    final meta = await drive.getFile(email, id, fields: 'id,name,mimeType');
+    if (meta['mimeType'] != 'application/vnd.google-apps.folder') {
+      throw LibraryException('По ссылке файл, а нужна папка');
+    }
+    var target = id;
+    if (meta['name'] != dataFolderName) {
+      final inside = (await drive.listChildren(email, id, nameEquals: dataFolderName)).where((f) => f.isFolder).toList()
+        ..sort((a, b) => a.createdTime.compareTo(b.createdTime));
+      target = inside.isNotEmpty ? inside.first.id : await drive.createFolder(email, dataFolderName, parent: id);
+    }
+    settings.dataFolderOverride = target;
+    _dataFolderId = null;
+    dataFolders = const [];
+    await saveSettings();
+    _changed();
+  }
+
+  /// Вернуть cave-data на обычное место: внутри общей папки
+  Future<void> resetDataFolder() async {
+    settings.dataFolderOverride = null;
+    _dataFolderId = null;
+    dataFolders = const [];
+    await saveSettings();
+    _changed();
+  }
+
+  /// Что реально используется сейчас: для диагностики на странице «Папки с музыкой»
+  Future<LocationReport> locationReport() async {
+    final r = LocationReport();
+    final hub = settings.hubId, lib = settings.libFileId;
+    r.hubId = hub;
+    r.libFileId = lib;
+    r.dataOverride = settings.dataFolderOverride != null;
+    if (hub == null || lib == null) return r;
+    try {
+      await _withHub((email) async {
+        try {
+          r.hubName = (await drive.getFile(email, hub, fields: 'id,name'))['name'] as String?;
+        } catch (_) {}
+        try {
+          final m = await drive.getFile(email, lib, fields: 'id,name,size,modifiedTime');
+          r.libSize = int.tryParse('${m['size'] ?? 0}') ?? 0;
+          r.libModified = m['modifiedTime'] as String?;
+        } catch (_) {}
+        final strays = await drive.listChildren(email, hub, nameEquals: 'library.json');
+        r.libraryFilesInHub = strays.length;
+        final dataId = await dataFolder();
+        r.dataId = dataId;
+        r.dataFolderCount = dataFolders.length;
+        final files = await drive.listChildren(email, dataId);
+        r.dataFiles = files.where((f) => f.name.startsWith('user-')).length;
+      });
+    } catch (e) {
+      r.error = '$e';
+    }
+    return r;
+  }
+
   /// Ищет общую библиотеку сам: сначала папку из настроек сборки, потом любую
   /// library.json на Дисках подключённых аккаунтов. Так друзьям не нужна ссылка.
-  Future<bool> autoJoin() async {
+  Future<bool> autoJoin({bool manual = false}) async {
     if (hasHub || accounts.accounts.isEmpty) return hasHub;
+    // После «Отключиться от библиотеки» ищем только по явной просьбе человека
+    if (settings.autoJoinDisabled && !manual) return false;
     if (kDefaultLibraryId.isNotEmpty) {
       try {
         await joinHub(kDefaultLibraryId);
@@ -263,20 +390,22 @@ class LibraryController extends ChangeNotifier {
         // к папке по умолчанию нет доступа — поищем другие
       }
     }
-    final folders = <String>[];
+    // Настоящая библиотека — самый большой library.json: случайный пустой файл, даже свежий, её не перебьёт
+    final found = <(String, int)>[];
     for (final a in accounts.accounts) {
       try {
         for (final f in await drive.findLibraries(a.email)) {
           final parents = f['parents'];
-          if (parents is List && parents.isNotEmpty && !folders.contains('${parents.first}')) {
-            folders.add('${parents.first}');
+          if (parents is List && parents.isNotEmpty && !found.any((x) => x.$1 == '${parents.first}')) {
+            found.add(('${parents.first}', int.tryParse('${f['size'] ?? 0}') ?? 0));
           }
         }
       } catch (_) {
         // этот аккаунт не смог поискать — пробуем остальные
       }
     }
-    for (final id in folders) {
+    found.sort((a, b) => b.$2.compareTo(a.$2));
+    for (final id in [for (final x in found) x.$1]) {
       try {
         await joinHub(id);
         return true;
@@ -330,6 +459,11 @@ class LibraryController extends ChangeNotifier {
   Future<String> dataFolder() {
     final cached = _dataFolderId;
     if (cached != null) return Future.value(cached);
+    final own = settings.dataFolderOverride;
+    if (own != null) {
+      dataFolders = [own];
+      return Future.value(_dataFolderId = own);
+    }
     return _dataFolderFuture ??= _withHub((email) async {
       final found = (await drive.listChildren(email, settings.hubId!, nameEquals: dataFolderName))
           .where((f) => f.isFolder)
@@ -353,13 +487,19 @@ class LibraryController extends ChangeNotifier {
     await _withHub((e) => drive.createFile(e, folder, 'log-$who-$ts.txt', text, mime: 'text/plain'));
   }
 
+  /// Отключает этот компьютер от библиотеки. Только локально: ни одной общей операции
+  /// (удаление треков или папок) в library.json не пишется, у друзей всё остаётся как было.
+  /// После этого библиотеку сами больше не ищем: подключиться можно только вручную.
   Future<void> leaveHub() async {
     _pollTimer?.cancel();
     _scanTimer?.cancel();
+    _flushTimer?.cancel();
     settings
       ..hubId = null
       ..hubEmail = null
       ..libFileId = null
+      ..dataFolderOverride = null
+      ..autoJoinDisabled = true
       ..sourceAccess.clear();
     data = LibraryData();
     _pending.clear();
@@ -436,6 +576,8 @@ class LibraryController extends ChangeNotifier {
   }
 
   void commit(Map<String, dynamic> op) {
+    // Отключились от библиотеки, а сканирование ещё дописывает: эти правки уже ничьи
+    if (!hasHub) return;
     data.apply(op);
     _pending.add(op);
     _changed();
@@ -460,9 +602,12 @@ class LibraryController extends ChangeNotifier {
     if (_flushing || _pending.isEmpty || !hasHub) return;
     _flushing = true;
     final batch = List<Map<String, dynamic>>.of(_pending);
+    final libAtStart = settings.libFileId;
     try {
       await _withHub((email) async {
         final latest = await _downloadLatest(email);
+        // Пока качали, человек отключился или сменил библиотеку: в чужой файл ничего не пишем
+        if (settings.libFileId != libAtStart) throw _Abandoned();
         for (final op in batch) {
           latest.apply(op);
         }
@@ -482,6 +627,8 @@ class LibraryController extends ChangeNotifier {
       syncError = null;
       await store.writeJson('pending_ops.json', _pending);
       await _saveLocal();
+    } on _Abandoned {
+      // библиотеку сменили: письмо в старый файл не нужно
     } catch (e) {
       syncError = 'Изменения пока не сохранены на Диске: $e';
       _scheduleFlush(const Duration(seconds: 15));
@@ -545,7 +692,20 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> scanAll({bool quiet = false}) => _runScan(List.of(data.sources), quiet: quiet);
 
-  Future<void> _runScan(List<Source> sources, {bool quiet = false}) async {
+  /// Сколько треков можно убрать за одну проверку без вопросов: если папка вдруг «опустела»,
+  /// это почти всегда потеря доступа, а не то, что все файлы удалили.
+  static const _bulkRemoveLimit = 10;
+
+  /// Источники, где проверка нашла подозрительно мало файлов: [id] → сколько треков не тронуто
+  final Map<String, int> suspiciousSources = {};
+
+  /// Подтверждённая очистка: убрать из библиотеки треки, которых больше нет в папке
+  Future<void> rescanAndPrune(String id) async {
+    final src = data.sources.firstWhere((s) => s.id == id);
+    await _runScan([src], forcePrune: true);
+  }
+
+  Future<void> _runScan(List<Source> sources, {bool quiet = false, bool forcePrune = false}) async {
     if (scan.running || accounts.accounts.isEmpty) return;
     scan
       ..running = true
@@ -557,7 +717,7 @@ class LibraryController extends ChangeNotifier {
     try {
       for (final s in sources) {
         try {
-          added += await _scanSource(s);
+          added += await _scanSource(s, forcePrune: forcePrune);
         } catch (e) {
           AppLog.warn('Сканирование «${s.name}»', e);
           messages.add('Не получилось обновить «${s.name}»: $e');
@@ -580,7 +740,7 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
-  Future<int> _scanSource(Source s) async {
+  Future<int> _scanSource(Source s, {bool forcePrune = false}) async {
     var email = await accessFor(s.id);
     List<_Found> found;
     Map<String, String> covers;
@@ -668,7 +828,22 @@ class LibraryController extends ChangeNotifier {
     if (mine > 0) onEvent?.call({'k': 'upload', 'n': mine, 'folder': s.name});
 
     final removed = existing.keys.where((id) => !seen.contains(id)).toList();
-    if (removed.isNotEmpty) commit({'op': 'removeTracks', 'ids': removed});
+    if (removed.isNotEmpty) {
+      // Пустой ответ или «исчезла» большая часть папки — скорее всего пропал доступ, а не файлы:
+      // у друзей треки не трогаем, пока человек сам не подтвердит очистку
+      final looksLost = removed.length >= _bulkRemoveLimit && (seen.isEmpty || removed.length * 2 > existing.length);
+      if (looksLost && !forcePrune) {
+        suspiciousSources[s.id] = removed.length;
+        AppLog.warn('«${s.name}»: не найдено ${removed.length} из ${existing.length} треков, из библиотеки не убираю');
+        messages.add('«${s.name}»: не нашёл ${removed.length} треков. Из общей библиотеки они не убраны — '
+            'проверьте доступ к папке или подтвердите очистку на странице «Папки с музыкой».');
+      } else {
+        suspiciousSources.remove(s.id);
+        commit({'op': 'removeTracks', 'ids': removed});
+      }
+    } else {
+      suspiciousSources.remove(s.id);
+    }
     return toParse.where((f) => existing[f.file.id] == null).length;
   }
 
