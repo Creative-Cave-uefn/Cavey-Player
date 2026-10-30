@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../app.dart';
+import '../core/player.dart';
 import 'theme.dart';
 
 /// Откуда фон берёт картинку. Профиль (исполнитель, человек) важнее трека:
@@ -40,6 +44,9 @@ class AmbientScope {
     _owner = null;
     override.value = null;
   }
+
+  /// Ярче и сочнее, меньше затемнения — для кинотеатра
+  static final ValueNotifier<bool> vivid = ValueNotifier(false);
 
   /// Цветное свечение, которое просит страница (шапка «Любимого», профиль без баннера).
   /// Рисуется на всём окне, а не внутри страницы — поэтому без обрезанных краёв
@@ -144,8 +151,47 @@ class AmbientBackground extends StatefulWidget {
   State<AmbientBackground> createState() => _AmbientBackgroundState();
 }
 
-class _AmbientBackgroundState extends State<AmbientBackground> {
+class _AmbientBackgroundState extends State<AmbientBackground> with SingleTickerProviderStateMixin {
   static final Map<String, ui.Image> _cache = {};
+
+  /// Мягкое «пятно» той же картинки с прозрачными краями — для плавающих слоёв
+  static final Expando<ui.Image> _blob = Expando();
+
+  // ---------- движение ----------
+  /// Время фона в секундах: идёт быстрее на быстрых треках, медленнее на медленных и на паузе, но всегда идёт
+  final ValueNotifier<double> _clock = ValueNotifier(0);
+  Ticker? _ticker;
+  Duration _lastTick = Duration.zero;
+  double _speed = 0.8;
+  double? _bpm;
+  String? _bpmFor;
+  PlayerController? _player;
+
+  void _onTick(Duration elapsed) {
+    final dt = (elapsed - _lastTick).inMicroseconds / 1e6;
+    if (dt < 1 / 30) return; // 30 кадров в секунду фону хватает
+    _lastTick = elapsed;
+    final p = _player;
+    if (p == null) return;
+    final bpm = _bpm;
+    final tempo = bpm == null ? 0.8 : (bpm / 110).clamp(0.45, 1.9).toDouble();
+    final target = p.playing ? tempo : tempo * 0.35;
+    _speed += (target - _speed) * math.min(1.0, dt * 0.8); // скорость меняется плавно
+    _clock.value += math.min(dt, 0.1) * _speed;
+  }
+
+  void _trackTempo() {
+    final app = Services.of(context);
+    final t = app.player.current;
+    if (t == null || t.id == _bpmFor) return;
+    _bpmFor = t.id;
+    _bpm = null;
+    final id = t.id;
+    app.web.bpm(t.artists.first, t.title).then((b) {
+      if (mounted && _bpmFor == id) _bpm = b;
+    });
+  }
+
   static final List<String> _order = [];
 
   String? _key;
@@ -160,9 +206,13 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_unlisten != null) return;
-    final player = Services.of(context).player;
+    final player = _player = Services.of(context).player;
     final covers = Services.of(context).covers;
-    void changed() => _sync();
+    void changed() {
+      _sync();
+      _trackTempo();
+    }
+
     // Обложка догрузилась позже, чем трек включился: фон без картинки пробует ещё раз
     void coversReady() {
       final k = _key;
@@ -187,11 +237,15 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
       AmbientScope.override.removeListener(changed);
     };
     _sync();
+    _trackTempo();
+    _ticker = createTicker(_onTick)..start();
   }
 
   @override
   void dispose() {
     _unlisten?.call();
+    _ticker?.dispose();
+    _clock.dispose();
     super.dispose();
   }
 
@@ -298,7 +352,20 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
       // Чуть шире холста, чтобы края размытия не темнели
       canvas.drawImageRect(src, Rect.fromLTWH(0, 0, src.width.toDouble(), src.height.toDouble()),
           const Rect.fromLTWH(-44, -44, size + 88, size + 88), paint);
-      return await rec.endRecording().toImage(size.toInt(), size.toInt());
+      final base = await rec.endRecording().toImage(size.toInt(), size.toInt());
+      // Пятно: та же картинка, но края уходят в прозрачность — плавающие слои без видимых границ
+      final rec2 = ui.PictureRecorder();
+      final c2 = Canvas(rec2);
+      const r = Rect.fromLTWH(0, 0, size, size);
+      c2.drawImage(base, Offset.zero, Paint());
+      c2.drawRect(
+        r,
+        Paint()
+          ..blendMode = BlendMode.dstIn
+          ..shader = RadialGradient(colors: smoothFadeColors(Colors.white), stops: smoothFadeStops()).createShader(r),
+      );
+      _blob[base] = await rec2.endRecording().toImage(size.toInt(), size.toInt());
+      return base;
     } catch (_) {
       return null;
     } finally {
@@ -319,14 +386,20 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
           layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
           child: img == null
               ? (_color != null ? _ColorGlow(key: ValueKey(_color), color: _color!) : const _BrandGlow(key: ValueKey('brand')))
-              : RawImage(
+              : CustomPaint(
                   key: ValueKey(img),
-                  image: img,
-                  fit: BoxFit.cover,
-                  // Плавное (бикубическое) растягивание: без «квадратиков» при увеличении
-                  filterQuality: FilterQuality.high,
-                  opacity: const AlwaysStoppedAnimation(0.8),
+                  painter: _LivingPainter(img, _blob[img] ?? img, _clock),
+                  child: const SizedBox.expand(),
                 ),
+        ),
+        // В кинотеатре фон ярче: часть затемнения убираем
+        ValueListenableBuilder<bool>(
+          valueListenable: AmbientScope.vivid,
+          builder: (context, vivid, _) => AnimatedOpacity(
+            duration: const Duration(milliseconds: 600),
+            opacity: vivid ? 0 : 1,
+            child: const ColoredBox(color: Color(0x4D000000)),
+          ),
         ),
         // Затемнение: снизу темнее — там плеер. Переход по плавной кривой, без ступенек
         DecoratedBox(
@@ -336,7 +409,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
               end: Alignment.bottomCenter,
               colors: [
                 for (var i = 0; i <= 16; i++)
-                  Color.lerp(const Color(0x80000000), const Color(0xA8000000), () {
+                  Color.lerp(const Color(0x4D000000), const Color(0x80000000), () {
                     final t = i / 16;
                     return t * t * (3 - 2 * t);
                   }())!,
@@ -470,4 +543,43 @@ class _SmoothGlowState extends State<SmoothGlow> with SingleTickerProviderStateM
       ),
     );
   }
+}
+
+
+/// «Живой» фон, как в Apple Music: размытая обложка в несколько слоёв — большой слой медленно вращается,
+/// два пятна плывут по восьмёркам навстречу друг другу. Узор не повторяется ровно: у слоёв разные периоды
+class _LivingPainter extends CustomPainter {
+  final ui.Image base;
+  final ui.Image blob;
+  final ValueListenable<double> clock;
+  _LivingPainter(this.base, this.blob, this.clock) : super(repaint: clock);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final t = clock.value;
+    final w = size.width, h = size.height;
+    final m = math.max(w, h);
+    final c = size.center(Offset.zero);
+    final paint = Paint()..filterQuality = FilterQuality.medium;
+
+    void layer(ui.Image img, double rot, Offset off, double scale, double alpha) {
+      canvas.save();
+      canvas.translate(c.dx + off.dx, c.dy + off.dy);
+      canvas.rotate(rot);
+      final s = m * scale;
+      paint.color = Color.fromRGBO(255, 255, 255, alpha);
+      canvas.drawImageRect(img, Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+          Rect.fromCenter(center: Offset.zero, width: s, height: s), paint);
+      canvas.restore();
+    }
+
+    // Основа: закрывает всё окно с запасом даже повёрнутая
+    layer(base, t * 0.07, Offset(math.sin(t * 0.21) * w * 0.06, math.cos(t * 0.17) * h * 0.06), 1.9, 0.85);
+    // Пятна: восьмёрки (у y частота вдвое больше, чем у x) с разными периодами и направлениями
+    layer(blob, -t * 0.13 + 1.3, Offset(math.sin(t * 0.29 + 1) * w * 0.28, math.sin(t * 0.58 + 2) * h * 0.22), 1.1, 0.7);
+    layer(blob, t * 0.19 + 2.6, Offset(math.cos(t * 0.23 + 3) * w * 0.3, math.sin(t * 0.46) * h * 0.26), 0.85, 0.55);
+  }
+
+  @override
+  bool shouldRepaint(_LivingPainter old) => !identical(old.base, base) || !identical(old.blob, blob);
 }

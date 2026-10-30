@@ -353,6 +353,34 @@ class WebInfoService extends ChangeNotifier {
   final Map<int, List<WebTrack>> _tracks = {};
 
   /// Треки альбома с отрывками
+  /// Темп трека (удары в минуту) по Deezer, чтобы фон двигался в такт: быстрые треки — быстрее.
+  /// null — Deezer не знает трек или темп. Ответ хранится, повторно не спрашиваем
+  Future<double?> bpm(String artist, String title) async {
+    await _load();
+    final key = 'bpm:${_key(artist)}|${_key(title)}';
+    if (_isFresh(key, const Duration(days: 180))) {
+      final v = _value(key);
+      return v is num && v > 0 ? v.toDouble() : null;
+    }
+    try {
+      final q = 'artist:"${artist.replaceAll('"', '')}" track:"${title.replaceAll('"', '')}"';
+      final j = await _deezer('/search/track', {'q': q, 'limit': '5'}, true);
+      final list = [for (final x in (j['data'] as List? ?? const [])) if (x is Map) x];
+      if (list.isEmpty) {
+        _put(key, 0);
+        return null;
+      }
+      final id = (list.first['id'] as num?)?.toInt();
+      if (id == null) return null;
+      final t = await _deezer('/track/$id', null, true);
+      final b = (t['bpm'] as num?)?.toDouble() ?? 0;
+      _put(key, b);
+      return b > 0 ? b : null;
+    } catch (_) {
+      return null; // нет сети — спросим в другой раз
+    }
+  }
+
   Future<List<WebTrack>> albumTracks(int albumId) async {
     final hit = _tracks[albumId];
     if (hit != null) return hit;

@@ -614,14 +614,30 @@ class PlayerController extends ChangeNotifier {
     await lib.saveSettings();
   }
 
+  /// Караоке: приглушить голос. Голос обычно записан по центру стерео, поэтому вычитаем один канал
+  /// из другого — центр гасится, остаются инструменты по краям. Работает не на всех треках
+  bool vocalCut = false;
+
+  Future<void> setVocalCut(bool on) async {
+    if (vocalCut == on) return;
+    vocalCut = on;
+    notifyListeners();
+    await _applyNormalize();
+  }
+
+  /// Фильтры звука: приглушение голоса и выравнивание громкости, в одной цепочке
   Future<void> _applyNormalize() async {
     final native = _p.platform;
     if (native is! NativePlayer) return;
-    try {
+    final filters = [
+      if (vocalCut) 'lavfi=[pan=stereo|c0=c0-c1|c1=c1-c0]',
       // loudnorm в однопроходном режиме работает на лету; после него возвращаем обычную частоту
-      await native.setProperty('af', settings.normalize ? 'lavfi=[loudnorm=I=-16:LRA=11:TP=-1.5,aresample=48000]' : '');
+      if (settings.normalize) 'lavfi=[loudnorm=I=-16:LRA=11:TP=-1.5,aresample=48000]',
+    ];
+    try {
+      await native.setProperty('af', filters.join(','));
     } catch (e) {
-      AppLog.warn('Не получилось включить выравнивание громкости', e);
+      AppLog.warn('Не получилось применить фильтры звука', e);
     }
   }
 

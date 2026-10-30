@@ -198,8 +198,10 @@ class _ShellState extends State<Shell> {
                     _peekSide = false;
                     _peekBar = false;
                   }
-                  final showSide = !immersive || _peekSide;
-                  final showBar = !immersive || _peekBar;
+                  // В кинотеатре панели не выезжают совсем: всё управление на самой странице
+                  final cinema = nav.kind == 'cinema';
+                  final showSide = !immersive || (_peekSide && !cinema);
+                  final showBar = !immersive || (_peekBar && !cinema);
                   return Stack(children: [
                     AnimatedPositioned(
                       duration: dur,
@@ -212,6 +214,7 @@ class _ShellState extends State<Shell> {
                         Expanded(
                           child: Stack(children: [
                             Positioned.fill(child: _content(nav, compact)),
+                            if (!cinema)
                             Positioned(
                               top: 4,
                               left: compact ? 16 : 28,
@@ -239,7 +242,7 @@ class _ShellState extends State<Shell> {
                           ),
                       ]),
                     ),
-                    if (immersive) ...[
+                    if (immersive && !cinema) ...[
                       // Узкие полосы у края: навёл — панель выезжает
                       Positioned(left: 0, top: 0, bottom: 0, width: 12, child: MouseRegion(onEnter: (_) => _reveal(side: true))),
                       Positioned(left: 0, right: 0, bottom: 0, height: 14, child: MouseRegion(onEnter: (_) => _reveal(side: false))),

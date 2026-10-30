@@ -1,3 +1,6 @@
+import 'package:flutter/scheduler.dart';
+import 'dart:ui' as ui;
+import 'dart:math' as math;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -71,7 +74,10 @@ class _Note extends StatelessWidget {
 class LyricsBody extends StatefulWidget {
   final Track track;
   final bool big;
-  const LyricsBody({super.key, required this.track, this.big = false});
+
+  /// Караоке: текущая строка заливается цветом по мере того, как её поют
+  final bool karaoke;
+  const LyricsBody({super.key, required this.track, this.big = false, this.karaoke = false});
   @override
   State<LyricsBody> createState() => _LyricsBodyState();
 }
@@ -252,7 +258,16 @@ class _LyricsBodyState extends State<LyricsBody> {
                     letterSpacing: widget.big ? -0.4 : null,
                     color: i == idx ? C.text : (i < idx ? (widget.big ? const Color(0x4DFFFFFF) : C.faint) : (widget.big ? const Color(0x80FFFFFF) : C.muted)),
                   ),
-                  child: Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
+                  child: widget.karaoke && i == idx && ly.lines[i].text.isNotEmpty
+                      ? KaraokeText(
+                          text: ly.lines[i].text,
+                          start: ly.lines[i].at!,
+                          end: i + 1 < ly.lines.length && ly.lines[i + 1].at != null
+                              ? ly.lines[i + 1].at!
+                              : ly.lines[i].at! + const Duration(seconds: 5),
+                          player: app.player,
+                        )
+                      : Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
                 ),
               ),
             ),
@@ -261,4 +276,96 @@ class _LyricsBodyState extends State<LyricsBody> {
       ),
     );
   }
+}
+
+
+/// Строка в режиме караоке: тусклый текст, поверх — яркий, открывается слева направо по ходу строки.
+/// Перенос на несколько строк учитывается: сначала заполняется первая, потом вторая.
+/// Между обновлениями позиции от плеера заливка движется плавно — досчитываем время сами
+class KaraokeText extends StatefulWidget {
+  final String text;
+  final Duration start;
+  final Duration end;
+  final PlayerController player;
+  const KaraokeText({super.key, required this.text, required this.start, required this.end, required this.player});
+
+  @override
+  State<KaraokeText> createState() => _KaraokeTextState();
+}
+
+class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStateMixin {
+  late final Ticker _ticker = createTicker((_) => setState(() {}))..start();
+  Duration _lastPos = Duration.zero;
+  DateTime _lastAt = DateTime.now();
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    super.dispose();
+  }
+
+  double _progress() {
+    final p = widget.player;
+    final pos = p.position.value;
+    if (pos != _lastPos) {
+      _lastPos = pos;
+      _lastAt = DateTime.now();
+    }
+    final now = p.playing ? pos + DateTime.now().difference(_lastAt) : pos;
+    final len = (widget.end - widget.start).inMilliseconds;
+    if (len <= 0) return 1;
+    // Последние 15% строки обычно тянут ноту — заполняем чуть раньше, чтобы не «догонять»
+    return ((now - widget.start).inMilliseconds / (len * 0.85)).clamp(0.0, 1.0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final style = DefaultTextStyle.of(context).style;
+    final p = _progress();
+    if (p >= 1) {
+      _ticker.stop();
+    } else if (!_ticker.isActive) {
+      _ticker.start(); // перемотали назад внутри строки
+    }
+    return LayoutBuilder(builder: (context, box) {
+      final tp = TextPainter(
+        text: TextSpan(text: widget.text, style: style),
+        textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
+      )..layout(maxWidth: box.maxWidth);
+      final lines = tp.computeLineMetrics();
+      tp.dispose();
+      return Stack(children: [
+        Text(widget.text, style: style.copyWith(color: style.color?.withValues(alpha: 0.35))),
+        ClipPath(
+          clipper: _Reveal(lines, p),
+          child: Text(widget.text, style: style.copyWith(color: Colors.white)),
+        ),
+      ]);
+    });
+  }
+}
+
+class _Reveal extends CustomClipper<Path> {
+  final List<ui.LineMetrics> lines;
+  final double progress;
+  _Reveal(this.lines, this.progress);
+
+  @override
+  Path getClip(Size size) {
+    final total = lines.fold<double>(0, (a, l) => a + l.width);
+    var left = total * progress;
+    final path = Path();
+    for (final l in lines) {
+      if (left <= 0) break;
+      final w = math.min(left, l.width);
+      final top = l.baseline - l.ascent;
+      path.addRect(Rect.fromLTWH(l.left, top, w, l.ascent + l.descent + 2));
+      left -= l.width;
+    }
+    return path;
+  }
+
+  @override
+  bool shouldReclip(_Reveal old) => old.progress != progress || old.lines != lines;
 }
