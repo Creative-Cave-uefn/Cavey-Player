@@ -88,6 +88,11 @@ class Settings {
   bool artistsDesc = false; // «Исполнители» сортируются Я–А
   bool albumsDesc = false; // «Альбомы» сортируются Я–А
 
+  /// Личные настройки вида (сетка или список, размеры, вид плейлистов в боковой панели): ключ → значение
+  Map<String, String> view = {};
+  String viewOf(String key, String def) => view[key] ?? def;
+  double viewNum(String key, double def) => double.tryParse(view[key] ?? '') ?? def;
+
   /// Что играло при закрытии: очередь, место в ней и позиция
   Map<String, dynamic>? session;
 
@@ -112,6 +117,7 @@ class Settings {
         'trayAsked': trayAsked,
         'artistsDesc': artistsDesc,
         'albumsDesc': albumsDesc,
+        'view': view,
         if (session != null) 'session': session,
       };
 
@@ -139,6 +145,8 @@ class Settings {
     s.trayAsked = j['trayAsked'] == true;
     s.artistsDesc = j['artistsDesc'] == true;
     s.albumsDesc = j['albumsDesc'] == true;
+    final vw = j['view'];
+    if (vw is Map) s.view = vw.map((k, v) => MapEntry('$k', '$v'));
     final ses = j['session'];
     if (ses is Map) s.session = ses.map((k, v) => MapEntry('$k', v));
     return s;

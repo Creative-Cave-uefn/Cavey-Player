@@ -1,4 +1,10 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+
+import '../app.dart';
+import '../core/store.dart';
+import 'theme.dart';
 
 
 /// Для поиска и сортировки: без регистра, «ё» как «е»
@@ -19,6 +25,9 @@ class SearchSortBar extends StatelessWidget {
   final bool desc;
   final ValueChanged<String> onChanged;
   final VoidCallback onToggleSort;
+
+  /// Справа от кнопки сортировки (например, выбор вида)
+  final Widget? trailing;
   const SearchSortBar({
     super.key,
     required this.controller,
@@ -27,6 +36,7 @@ class SearchSortBar extends StatelessWidget {
     required this.desc,
     required this.onChanged,
     required this.onToggleSort,
+    this.trailing,
   });
 
   @override
@@ -64,6 +74,111 @@ class SearchSortBar extends StatelessWidget {
           label: Text(desc ? 'Я–А' : 'А–Я'),
         ),
       ),
+      if (trailing != null) ...[const SizedBox(width: 16), trailing!],
     ]);
+  }
+}
+
+
+/// Вид списка (сетка или список) и размер, отдельно для каждой вкладки. Хранится в настройках на этом компьютере.
+class ViewPrefs {
+  final Settings settings;
+  final String key;
+  final bool defaultGrid;
+  final double gridMin, gridMax, gridDef, listMin, listMax, listDef;
+  const ViewPrefs(
+    this.settings,
+    this.key, {
+    required this.defaultGrid,
+    this.gridMin = 120,
+    this.gridMax = 260,
+    this.gridDef = 170,
+    this.listMin = 44,
+    this.listMax = 88,
+    this.listDef = 56,
+  });
+
+  bool get grid => settings.viewOf('$key.mode', defaultGrid ? 'grid' : 'list') == 'grid';
+  double get min => grid ? gridMin : listMin;
+  double get max => grid ? gridMax : listMax;
+
+  /// Ширина плитки (сетка) или высота строки (список)
+  double get size => settings.viewNum('$key.${grid ? 'grid' : 'list'}', grid ? gridDef : listDef).clamp(min, max).toDouble();
+
+  void setGrid(bool v) => settings.view['$key.mode'] = v ? 'grid' : 'list';
+  void setSize(double v) => settings.view['$key.${grid ? 'grid' : 'list'}'] = v.round().toString();
+}
+
+/// Переключатель «Сетка / Список» и ползунок размера
+class ViewControls extends StatelessWidget {
+  final ViewPrefs prefs;
+  final VoidCallback onChanged;
+  const ViewControls({super.key, required this.prefs, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final lib = Services.of(context).lib;
+    void change(void Function() f, {bool save = true}) {
+      f();
+      if (save) lib.saveSettings();
+      onChanged();
+    }
+
+    Widget mode(bool grid, IconData icon, String tip) {
+      final on = prefs.grid == grid;
+      return IconButton(
+        tooltip: tip,
+        visualDensity: VisualDensity.compact,
+        onPressed: on ? null : () => change(() => prefs.setGrid(grid)),
+        icon: Icon(icon, size: 20, color: on ? C.accent : C.muted),
+      );
+    }
+
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      mode(true, Icons.grid_view_rounded, 'Сеткой'),
+      mode(false, Icons.view_list_rounded, 'Списком'),
+      const SizedBox(width: 6),
+      Tooltip(
+        message: prefs.grid ? 'Размер плиток' : 'Высота строк',
+        child: SizedBox(
+          width: 130,
+          child: Slider(
+            value: prefs.size,
+            min: prefs.min,
+            max: prefs.max,
+            onChanged: (v) => change(() => prefs.setSize(v), save: false),
+            onChangeEnd: (v) => change(() => prefs.setSize(v)),
+          ),
+        ),
+      ),
+    ]);
+  }
+}
+
+/// Сетка плиток с подгонкой под ширину: плитки не уже [tile], под картинкой остаётся место [extra] на подписи
+class AdaptiveGridSliver extends StatelessWidget {
+  final double tile;
+  final double extra;
+  final double gap;
+  final int count;
+  final IndexedWidgetBuilder builder;
+  const AdaptiveGridSliver({super.key, required this.tile, required this.extra, required this.count, required this.builder, this.gap = 20});
+
+  @override
+  Widget build(BuildContext context) {
+    return SliverLayoutBuilder(builder: (context, c) {
+      final w = c.crossAxisExtent;
+      final n = math.max(1, ((w + gap) / (tile + gap)).floor());
+      final tw = (w - gap * (n - 1)) / n;
+      return SliverGrid(
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: n,
+          mainAxisSpacing: 20,
+          crossAxisSpacing: gap,
+          mainAxisExtent: tw + extra,
+        ),
+        delegate: SliverChildBuilderDelegate(builder, childCount: count),
+      );
+    });
   }
 }

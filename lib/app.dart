@@ -19,6 +19,7 @@ import 'core/lyrics.dart';
 import 'core/player.dart';
 import 'core/social.dart';
 import 'core/store.dart';
+import 'core/single_instance.dart';
 import 'core/taskbar.dart';
 import 'core/tray.dart';
 import 'core/updater.dart';
@@ -118,6 +119,8 @@ class AppServices {
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
     unawaited(tray.start());
+    // Ярлык на панели задач запускает вторую копию; она просит первую показать окно
+    listenForSecondLaunch(() => unawaited(tray.showWindow()));
     // Кнопки «Назад / Пауза / Дальше» в превью на панели задач живут до выхода из приложения
     unawaited(TaskbarController(player).start());
     return app;

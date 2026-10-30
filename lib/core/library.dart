@@ -66,6 +66,11 @@ class LibraryController extends ChangeNotifier {
 
   LibraryData data = LibraryData();
   final List<Map<String, dynamic>> _pending = [];
+
+  /// Недавно сохранённые правки полей (setMeta). Если другой клиент в то же время переписал library.json
+  /// со старой копией, наша правка (например, ник) пропадёт; здесь мы это замечаем и сохраняем её заново
+  final List<(Map<String, dynamic>, DateTime)> _recentMeta = [];
+  int _flushGen = 0;
   String? _libModified;
   bool _flushing = false;
   Timer? _flushTimer;
@@ -84,6 +89,12 @@ class LibraryController extends ChangeNotifier {
   bool get hasUnsavedChanges => _pending.isNotEmpty;
 
   Future<void> saveSettings() => store.writeJson('settings.json', settings.toJson());
+
+  /// Личная настройка вида изменилась: сохраняем и перерисовываем экраны, которые слушают библиотеку
+  void viewChanged() {
+    unawaited(saveSettings());
+    notifyListeners();
+  }
 
   // ---------- запуск ----------
 
@@ -370,9 +381,12 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> reload() async {
     if (!hasHub) return;
+    final gen = _flushGen;
     await _withHub((email) async {
       final meta = await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime');
       final latest = await _downloadLatest(email);
+      // Пока скачивали, мы сами сохранили правки: скачанная копия уже старая, её не берём
+      if (_flushing || gen != _flushGen) return;
       for (final op in _pending) {
         latest.apply(op);
       }
@@ -380,10 +394,35 @@ class LibraryController extends ChangeNotifier {
       _libModified = meta['modifiedTime'] as String?;
     });
     syncError = null;
+    _reassertRecentMeta();
     await _saveLocal();
     _changed();
     // Кто-то из друзей удалил мои файлы — удаляем их с Диска
     unawaited(processDeletions());
+  }
+
+  /// Правки полей за последние минуты, которых нет в скачанной копии, сохраняем ещё раз
+  void _reassertRecentMeta() {
+    final cutoff = DateTime.now().subtract(const Duration(minutes: 3));
+    _recentMeta.removeWhere((r) => r.$2.isBefore(cutoff));
+    if (_recentMeta.isEmpty) return;
+    final want = <String, Map<String, String>>{};
+    for (final r in _recentMeta) {
+      (r.$1['meta'] as Map).forEach((id, fields) {
+        want['$id'] = {...?want['$id'], ...(fields as Map).map((a, b) => MapEntry('$a', '$b'))};
+      });
+    }
+    final lost = <String, Map<String, String>>{};
+    want.forEach((id, fields) {
+      fields.forEach((k, v) {
+        if ((data.edits[id]?[k] ?? '') != v) lost.putIfAbsent(id, () => {})[k] = v;
+      });
+    });
+    if (lost.isNotEmpty) {
+      AppLog.info('Правки пропали из скачанной копии, сохраняю заново: ${lost.length}');
+      // Повторное сохранение само в «недавние» не попадает, иначе при спорной правке двух людей мы бы бесконечно переписывали друг друга
+      commit({'op': 'setMeta', 'meta': lost, 're': true});
+    }
   }
 
   Future<void> _poll() async {
@@ -434,6 +473,11 @@ class LibraryController extends ChangeNotifier {
         }
         data = latest;
         _libModified = modified;
+        _flushGen++;
+        final now = DateTime.now();
+        for (final op in batch) {
+          if (op['op'] == 'setMeta' && op['re'] != true) _recentMeta.add((op, now));
+        }
       });
       syncError = null;
       await store.writeJson('pending_ops.json', _pending);
@@ -693,7 +737,11 @@ class LibraryController extends ChangeNotifier {
 
   void renamePlaylist(String id, String name) => commit({'op': 'renamePlaylist', 'id': id, 'name': name});
   void deletePlaylist(String id) => commit({'op': 'deletePlaylist', 'id': id});
-  void addToPlaylist(String id, List<String> items) => commit({'op': 'addToPlaylist', 'id': id, 'items': items});
+  void addToPlaylist(String id, List<String> items) =>
+      commit({'op': 'addToPlaylist', 'id': id, 'items': items, 'at': DateTime.now().millisecondsSinceEpoch});
+
+  /// Когда трек добавлен в плейлист (мс). У старых записей даты нет, берём дату создания плейлиста
+  int playlistAddedAt(Playlist p, String trackId) => int.tryParse(data.edits['pl:${p.id}']?['t:$trackId'] ?? '') ?? p.createdAt;
   /// Переставляет трек в плейлисте: [after] — трек, за которым он должен стоять (null — в начало)
   void movePlaylistItem(String id, String trackId, String? after) =>
       commit({'op': 'movePlaylistItem', 'id': id, 'track': trackId, 'after': after});
@@ -1009,6 +1057,33 @@ class LibraryController extends ChangeNotifier {
 
   /// Своя обложка: у альбома она важнее, чем у его треков, а у трека — важнее обложки из файла
   String? customCoverOf(Track t) => _metaValue('album:${t.albumKey}', 'cv') ?? t.customCover;
+  // ---------- профиль: ник, аватарка, баннер (хранятся в edits['u:<почта>']) ----------
+
+  String? profileNick(String email) => _metaValue('u:$email', 'nick');
+  String? profileAvatar(String email) => _metaValue('u:$email', 'av');
+  String? profileBanner(String email) => _metaValue('u:$email', 'bn');
+
+  /// Меняет только свой профиль. Значение '' возвращает прежнее (имя из Google, цветной кружок, обычную шапку)
+  void setProfile({String? nick, String? avatar, String? banner}) {
+    final m = me;
+    if (m == null) return;
+    final f = <String, String>{
+      if (nick != null) 'nick': nick,
+      if (avatar != null) 'av': avatar,
+      if (banner != null) 'bn': banner,
+    };
+    setMeta({'u:$m': f});
+  }
+
+  /// Все, кого мы знаем в компании: участники библиотеки, те, кто грузил треки, собирал плейлисты или лайкал
+  Set<String> get people => {
+        ...data.members.keys,
+        for (final t in data.tracks.values) t.by,
+        for (final p in data.playlists) p.by,
+        for (final who in data.likes.values) ...who,
+        if (me != null) me!,
+      }..removeWhere((e) => e.isEmpty);
+
   String? albumCover(String albumKey) => _metaValue('album:$albumKey', 'cv');
   String? playlistCover(String id) => _metaValue('pl:$id', 'cv');
 
@@ -1250,12 +1325,15 @@ class LibraryController extends ChangeNotifier {
 
   String nameOf(String email) {
     if (email.isEmpty) return 'кто-то';
+    final nick = profileNick(email);
+    if (nick != null) return nick;
     final n = data.members[email] ?? accounts.byEmail(email)?.name;
     if (n != null && n.isNotEmpty) return n;
     return email.split('@').first;
   }
 
-  String firstNameOf(String email) => nameOf(email).split(' ').first;
+  /// Ник показываем целиком, а имя из Google — только первое слово
+  String firstNameOf(String email) => profileNick(email) ?? nameOf(email).split(' ').first;
 
   void _report(Object e) {
     AppLog.warn('Синхронизация', e);

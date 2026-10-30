@@ -1,4 +1,8 @@
+import 'dart:async';
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/player.dart';
@@ -114,16 +118,7 @@ class PlayerBar extends StatelessWidget {
               onPressed: t == null ? null : () => _showQueue(context),
               icon: const Icon(Icons.queue_music_rounded),
             ),
-            Icon(p.volume == 0 ? Icons.volume_off_rounded : Icons.volume_up_rounded, size: 18),
-            SizedBox(
-              width: 120,
-              child: Slider(
-                value: p.volume.clamp(0.0, 100.0).toDouble(),
-                max: 100,
-                onChanged: (v) => p.setVolume(v),
-                onChangeEnd: (v) => p.setVolume(v, save: true),
-              ),
-            ),
+            _VolumeControl(p),
           ]);
 
           if (compact) {
@@ -297,6 +292,68 @@ class _ProgressState extends State<_Progress> {
           SizedBox(width: 44, child: Text(formatDuration(p.duration), style: timeStyle)),
         ]);
       },
+    );
+  }
+}
+
+
+/// Динамик и ползунок громкости. Колесо мыши над ними меняет громкость: на 5 %, с Shift на 1 %.
+class _VolumeControl extends StatefulWidget {
+  final PlayerController p;
+  const _VolumeControl(this.p);
+
+  @override
+  State<_VolumeControl> createState() => _VolumeControlState();
+}
+
+class _VolumeControlState extends State<_VolumeControl> {
+  double _acc = 0;
+  Timer? _save;
+
+  @override
+  void dispose() {
+    _save?.cancel();
+    super.dispose();
+  }
+
+  void _onScroll(PointerSignalEvent e) {
+    if (e is! PointerScrollEvent) return;
+    GestureBinding.instance.pointerSignalResolver.register(e, (_) {
+      final p = widget.p;
+      final step = HardwareKeyboard.instance.isShiftPressed ? 1.0 : 5.0;
+      // Вверх (отрицательный dy) — громче. Мелкую прокрутку тачпада копим, пока не наберётся целый процент
+      _acc += -e.scrollDelta.dy / 100 * step;
+      final whole = _acc.truncate();
+      if (whole == 0) return;
+      _acc -= whole;
+      final v = (p.volume + whole).clamp(0, 100).toDouble();
+      p.setVolume(v);
+      _save?.cancel();
+      _save = Timer(const Duration(milliseconds: 500), () => p.setVolume(v, save: true));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.p;
+    return Listener(
+      onPointerSignal: _onScroll,
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(p.volume == 0 ? Icons.volume_off_rounded : Icons.volume_up_rounded, size: 18),
+        SizedBox(
+          width: 120,
+          child: Slider(
+            value: p.volume.clamp(0.0, 100.0).toDouble(),
+            max: 100,
+            onChanged: (v) => p.setVolume(v),
+            onChangeEnd: (v) => p.setVolume(v, save: true),
+          ),
+        ),
+        SizedBox(
+          width: 36,
+          child: Text('${p.volume.round()}%', textAlign: TextAlign.right, style: const TextStyle(fontSize: 12, color: C.faint)),
+        ),
+      ]),
     );
   }
 }

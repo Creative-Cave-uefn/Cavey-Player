@@ -299,7 +299,11 @@ class LibraryData {
           if (p.id == op['id']) {
             for (final t in (op['items'] as List)) {
               final id = resolve('$t');
-              if (!p.items.contains(id)) p.items.add(id);
+              if (p.items.contains(id)) continue;
+              p.items.add(id);
+              // Когда трек попал в плейлист — в edits, чтобы старые версии приложения это не стирали
+              final at = op['at'];
+              if (at != null) edits['pl:${p.id}'] = {...?edits['pl:${p.id}'], 't:$id': '$at'};
             }
           }
         }
@@ -318,7 +322,9 @@ class LibraryData {
         for (final p in playlists) {
           if (p.id == op['id']) {
             p.items.remove(op['track']);
-            p.items.remove(resolve(op['track'] as String));
+            final gone = resolve(op['track'] as String);
+            p.items.remove(gone);
+            edits['pl:${p.id}']?.remove('t:$gone');
           }
         }
       case 'mergeTracks':

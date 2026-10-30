@@ -63,6 +63,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
         }
 
         albums.sort(cmp);
+        final prefs = ViewPrefs(app.settings, 'albums', defaultGrid: true);
         final pad = MediaQuery.sizeOf(context).width < 860 ? 20.0 : 36.0;
         final header = Padding(
           padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
@@ -88,6 +89,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
                   app.lib.saveSettings();
                   setState(() {});
                 },
+                trailing: ViewControls(prefs: prefs, onChanged: () => setState(() {})),
               ),
             ],
           ]),
@@ -115,39 +117,72 @@ class _AlbumsPageState extends State<AlbumsPage> {
             ),
           SliverPadding(
             padding: EdgeInsets.fromLTRB(pad, 0, pad, 32),
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 200,
-                mainAxisSpacing: 22,
-                crossAxisSpacing: 20,
-                childAspectRatio: 0.74,
-              ),
-              delegate: SliverChildBuilderDelegate(
-                (context, i) {
-                  final a = albums[i];
-                  return InkWell(
-                    borderRadius: BorderRadius.circular(10),
-                    onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-                    // Правый клик: сменить обложку альбома
-                    onSecondaryTapUp: (d) => showAlbumMenu(context, a, d.globalPosition),
-                    child: LayoutBuilder(
-                      builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 10),
-                        const SizedBox(height: 10),
-                        Text(a.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-                        const SizedBox(height: 3),
-                        Text(a.artist,
-                            maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
-                      ]),
+            sliver: prefs.grid
+                ? AdaptiveGridSliver(
+                    tile: prefs.size,
+                    extra: 58,
+                    count: albums.length,
+                    builder: (context, i) {
+                      final a = albums[i];
+                      return InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => NavScope.of(context).go(Nav('album', a.key)),
+                        // Правый клик: сменить обложку альбома
+                        onSecondaryTapUp: (d) => showAlbumMenu(context, a, d.globalPosition),
+                        child: LayoutBuilder(
+                          builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 10),
+                            const SizedBox(height: 10),
+                            Text(a.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                            const SizedBox(height: 3),
+                            Text(a.artist,
+                                maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+                          ]),
+                        ),
+                      );
+                    },
+                  )
+                : SliverFixedExtentList(
+                    itemExtent: prefs.size,
+                    delegate: SliverChildBuilderDelegate(
+                      (context, i) {
+                        final a = albums[i];
+                        final cover = prefs.size - 12;
+                        return InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => NavScope.of(context).go(Nav('album', a.key)),
+                          onSecondaryTapUp: (d) => showAlbumMenu(context, a, d.globalPosition),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                            child: Row(children: [
+                              CoverImage(track: a.coverTrack, size: cover, radius: 6),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Text(a.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                                  const SizedBox(height: 3),
+                                  Text(a.artist,
+                                      maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+                                ]),
+                              ),
+                              Text(
+                                '${a.year.isEmpty ? '' : '${a.year} · '}${countTracks(a.tracks.length)}',
+                                style: const TextStyle(color: C.muted, fontSize: 13),
+                              ),
+                              const SizedBox(width: 8),
+                            ]),
+                          ),
+                        );
+                      },
+                      childCount: albums.length,
                     ),
-                  );
-                },
-                childCount: albums.length,
-              ),
-            ),
+                  ),
           ),
         ]);
       },

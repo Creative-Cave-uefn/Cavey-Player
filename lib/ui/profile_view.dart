@@ -9,6 +9,7 @@ import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
 import 'shell.dart';
+import 'profile_edit.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
@@ -78,6 +79,9 @@ class ProfileLayout extends StatelessWidget {
   final Widget? thirdButton;
   final List<Widget> sections;
 
+  /// Свой баннер человека (id картинки на Диске): показывается сверху и плавно уходит в фон
+  final String? bannerFileId;
+
   const ProfileLayout({
     super.key,
     required this.compact,
@@ -90,6 +94,7 @@ class ProfileLayout extends StatelessWidget {
     this.onPlay,
     this.onInfo,
     this.thirdButton,
+    this.bannerFileId,
   });
 
   @override
@@ -99,13 +104,16 @@ class ProfileLayout extends StatelessWidget {
     Widget page(Color? tint) {
       final top = (tint ?? C.raised).withValues(alpha: 0.85);
       return Stack(children: [
-        Positioned.fill(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [top, C.bg], stops: const [0.0, 0.75]),
+        if (bannerFileId != null)
+          Positioned.fill(child: Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId!)))
+        else
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [top, C.bg], stops: const [0.0, 0.75]),
+              ),
             ),
           ),
-        ),
         CustomScrollView(slivers: [
           SliverToBoxAdapter(
             child: Padding(
@@ -149,6 +157,48 @@ class ProfileLayout extends StatelessWidget {
       initialData: tintNow,
       builder: (context, snap) => page(snap.data ?? tintNow),
     );
+  }
+}
+
+/// Баннер профиля вместо градиента: немного затемнён и размыт, чтобы текст поверх читался; низ плавно уходит в фон
+class _Banner extends StatelessWidget {
+  final String fileId;
+  const _Banner({required this.fileId});
+
+  @override
+  Widget build(BuildContext context) {
+    final covers = Services.of(context).covers;
+    return LayoutBuilder(builder: (context, box) {
+      final h = (box.maxWidth / 3).clamp(300.0, 620.0).toDouble();
+      return ShaderMask(
+        blendMode: BlendMode.dstIn,
+        shaderCallback: (r) => const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Colors.white, Colors.white, Colors.transparent],
+          stops: [0.0, 0.6, 1.0],
+        ).createShader(r),
+        child: SizedBox(
+          width: box.maxWidth,
+          height: h,
+          child: ClipRect(
+            child: Stack(fit: StackFit.expand, children: [
+              ImageFiltered(
+                imageFilter: ui.ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+                child: FutureBuilder<Uint8List?>(
+                  future: covers.forFile(fileId),
+                  initialData: covers.peekFile(fileId),
+                  builder: (context, snap) => snap.data == null
+                      ? const SizedBox.shrink()
+                      : Image.memory(snap.data!, fit: BoxFit.cover, gaplessPlayback: true),
+                ),
+              ),
+              ColoredBox(color: Colors.black.withValues(alpha: 0.45)),
+            ]),
+          ),
+        ),
+      );
+    });
   }
 }
 
@@ -567,6 +617,10 @@ class UserProfilePage extends StatelessWidget {
         return ProfileLayout(
           compact: compact,
           avatar: Avatar(email: email, name: name, size: 220),
+          bannerFileId: lib.profileBanner(email),
+          thirdButton: email == lib.me
+              ? _roundButton(Icons.edit_rounded, () => editProfileDialog(context), tooltip: 'Изменить профиль')
+              : null,
           tintNow: _darken(friendColor(email)),
           name: name,
           subtitle: subtitle,
