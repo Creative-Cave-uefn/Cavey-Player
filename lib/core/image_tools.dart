@@ -17,7 +17,12 @@ class _Job {
 /// Уменьшает картинку так, чтобы длинная сторона была не больше [maxSide], и сохраняет как JPEG.
 /// Если картинку не удалось прочитать, возвращает null.
 Uint8List? compressImageSync(Uint8List bytes, int maxSide, int quality) {
-  final src = img.decodeImage(bytes);
+  img.Image? src;
+  try {
+    src = img.decodeImage(bytes);
+  } catch (_) {
+    return null; // битый файл: декодер может упасть с RangeError
+  }
   if (src == null) return null;
   var out = src;
   final longest = math.max(src.width, src.height);
@@ -58,7 +63,12 @@ Future<Uint8List> makeThumbnail(Uint8List bytes, int side) async {
 }
 
 Uint8List? _thumb(_Job j) {
-  final src = img.decodeImage(j.bytes);
+  img.Image? src;
+  try {
+    src = img.decodeImage(j.bytes);
+  } catch (_) {
+    return null;
+  }
   if (src == null) return null;
   if (math.max(src.width, src.height) <= j.maxSide) return j.bytes;
   return compressImageSync(j.bytes, j.maxSide, j.quality);

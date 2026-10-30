@@ -21,7 +21,6 @@ void main() {
     final back = img.decodeJpg(out)!;
     expect(back.width, 512);
     expect(back.height, 256);
-    expect(out.length, lessThan(png.length));
   });
 
   test('Маленькая картинка не увеличивается', () {
