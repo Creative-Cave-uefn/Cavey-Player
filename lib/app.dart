@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'config.dart';
 import 'core/audio_cache.dart';
@@ -15,10 +17,16 @@ import 'core/lyrics.dart';
 import 'core/player.dart';
 import 'core/social.dart';
 import 'core/store.dart';
+import 'core/taskbar.dart';
+import 'core/tray.dart';
 import 'core/updater.dart';
 import 'ui/onboarding.dart';
 import 'ui/shell.dart';
 import 'ui/theme.dart';
+import 'ui/tray_dialog.dart';
+
+/// Нужен, чтобы показать окно вопроса, когда окна самого приложения в дереве ещё нет под рукой
+final navigatorKey = GlobalKey<NavigatorState>();
 
 class AppServices {
   final AppStore store;
@@ -34,11 +42,12 @@ class AppServices {
   final SocialController social;
   final DiscordPresence discord;
   final DownloadService downloads;
+  final TrayController tray;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
 
-  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.discord, this.downloads, this.keysBuiltIn);
+  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.discord, this.downloads, this.tray, this.keysBuiltIn);
 
   static Future<AppServices> create() async {
     final store = await AppStore.open();
@@ -86,8 +95,37 @@ class AppServices {
       showInDiscord();
     };
     final downloads = DownloadService(lib, Tools(store.sub('tools')), store.sub('downloads'));
-    return AppServices._(
-        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, builtIn);
+    late final AppServices app;
+    final tray = TrayController(
+      player: player,
+      settings: settings,
+      save: lib.saveSettings,
+      onQuit: () => app.shutdown(),
+      askFirstTime: () async {
+        final context = navigatorKey.currentContext;
+        if (context == null) return true;
+        return askTrayOnClose(context);
+      },
+    );
+    app = AppServices._(
+        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
+    unawaited(tray.start());
+    // Кнопки «Назад / Пауза / Дальше» в превью на панели задач живут до выхода из приложения
+    unawaited(TaskbarController(player).start());
+    return app;
+  }
+
+  /// Полный выход (из меню трея или по крестику, если трей выключен): сохраняем, что не сохранено, и закрываемся
+  Future<void> shutdown() async {
+    try {
+      await player.flushSession();
+      await lib.flushNow();
+    } catch (_) {}
+    try {
+      await tray.dispose();
+      await windowManager.destroy();
+    } catch (_) {}
+    exit(0);
   }
 }
 
@@ -110,6 +148,7 @@ class CavePlayerApp extends StatelessWidget {
     return Services(
       app: app,
       child: MaterialApp(
+        navigatorKey: navigatorKey,
         title: 'Cave Player',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),

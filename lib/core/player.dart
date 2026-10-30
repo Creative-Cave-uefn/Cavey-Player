@@ -133,23 +133,31 @@ class PlayerController extends ChangeNotifier {
 
   void _saveSession() {
     _saveDebounce?.cancel();
-    _saveDebounce = Timer(const Duration(milliseconds: 600), () {
-      final cur = current;
-      settings.session = cur == null
-          ? null
-          : {
-              // Очень длинные очереди обрезаем: хватит того, что вокруг текущего трека
-              'queue': queue.length > 2000 ? queue.sublist(index > 500 ? index - 500 : 0).take(2000).toList() : queue,
-              'origin': _origin.length > 2000 ? const <String>[] : _origin,
-              'current': cur.id,
-              'index': index,
-              'pos': (_resumeAt ?? position.value).inMilliseconds,
-              'dur': duration.inMilliseconds,
-              'shuffle': shuffle,
-              'repeat': repeat.name,
-            };
-      unawaited(lib.saveSettings());
-    });
+    _saveDebounce = Timer(const Duration(milliseconds: 600), () => unawaited(_writeSession()));
+  }
+
+  /// Записывает очередь и позицию сразу — перед выходом из приложения
+  Future<void> flushSession() {
+    _saveDebounce?.cancel();
+    return _writeSession();
+  }
+
+  Future<void> _writeSession() {
+    final cur = current;
+    settings.session = cur == null
+        ? null
+        : {
+            // Очень длинные очереди обрезаем: хватит того, что вокруг текущего трека
+            'queue': queue.length > 2000 ? queue.sublist(index > 500 ? index - 500 : 0).take(2000).toList() : queue,
+            'origin': _origin.length > 2000 ? const <String>[] : _origin,
+            'current': cur.id,
+            'index': index,
+            'pos': (_resumeAt ?? position.value).inMilliseconds,
+            'dur': duration.inMilliseconds,
+            'shuffle': shuffle,
+            'repeat': repeat.name,
+          };
+    return lib.saveSettings();
   }
 
   // ---------- очередь ----------

@@ -134,6 +134,8 @@ class _AccountsPageState extends State<AccountsPage> {
           const SizedBox(height: 44),
           const _DiscordSection(),
           const SizedBox(height: 44),
+          const _TraySection(),
+          const SizedBox(height: 44),
           const _CacheSection(),
           const SizedBox(height: 44),
           const _LogSection(),
@@ -504,6 +506,41 @@ class _LogSectionState extends State<_LogSection> {
             label: const Text('Открыть папку'),
           ),
       ]),
+    ]);
+  }
+}
+
+class _TraySection extends StatefulWidget {
+  const _TraySection();
+  @override
+  State<_TraySection> createState() => _TraySectionState();
+}
+
+class _TraySectionState extends State<_TraySection> {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Работа в фоне', style: display(20)),
+      const SizedBox(height: 10),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: app.settings.trayOnClose,
+        activeColor: C.accent,
+        title: const Text('Сворачивать в трей при закрытии окна'),
+        subtitle: const Text(
+          'Музыка играет дальше, а Cave Player остаётся значком у часов. Закрыть совсем можно пунктом «Выйти» в меню значка.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+        ),
+        onChanged: (v) async {
+          setState(() {
+            app.settings
+              ..trayOnClose = v
+              ..trayAsked = true;
+          });
+          await app.lib.saveSettings();
+        },
+      ),
     ]);
   }
 }

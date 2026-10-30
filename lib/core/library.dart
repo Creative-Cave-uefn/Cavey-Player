@@ -401,6 +401,13 @@ class LibraryController extends ChangeNotifier {
     _scheduleFlush();
   }
 
+  /// Сохраняет накопленные правки на Диск сразу — перед выходом из приложения
+  Future<void> flushNow() async {
+    _flushTimer?.cancel();
+    if (_pending.isEmpty || !hasHub) return;
+    await _flush().timeout(const Duration(seconds: 6), onTimeout: () {});
+  }
+
   void _scheduleFlush([Duration? delay]) {
     _flushTimer?.cancel();
     // Во время сканирования правок много — копим их и сохраняем реже

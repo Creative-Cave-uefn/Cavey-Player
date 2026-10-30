@@ -20,6 +20,11 @@ dependencies:
   file_selector: ^1.0.3
   ffi: ^2.1.0
   archive: ^3.6.1
+  window_manager: ^0.4.3
+  tray_manager: ^0.2.3
+  # Своя копия плагина: возвращает кнопки миниатюры после того, как окно спрятали и показали
+  windows_taskbar:
+    path: packages/windows_taskbar
 
 dev_dependencies:
   flutter_test:
@@ -28,3 +33,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/app_icon.ico
+    - assets/taskbar/prev.ico
+    - assets/taskbar/play.ico
+    - assets/taskbar/pause.ico
+    - assets/taskbar/next.ico

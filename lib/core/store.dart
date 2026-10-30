@@ -60,6 +60,8 @@ class Settings {
   bool discord = true;
   bool normalize = false; // выравнивать громкость треков
   bool betaUpdates = false; // получать бета-версии
+  bool trayOnClose = true; // крестик прячет окно в трей, музыка играет дальше
+  bool trayAsked = false; // уже спрашивали, что делать по крестику
   bool artistsDesc = false; // «Исполнители» сортируются Я–А
   bool albumsDesc = false; // «Альбомы» сортируются Я–А
 
@@ -83,6 +85,8 @@ class Settings {
         'discord': discord,
         'normalize': normalize,
         'betaUpdates': betaUpdates,
+        'trayOnClose': trayOnClose,
+        'trayAsked': trayAsked,
         'artistsDesc': artistsDesc,
         'albumsDesc': albumsDesc,
         if (session != null) 'session': session,
@@ -108,6 +112,8 @@ class Settings {
     s.discord = j['discord'] != false;
     s.normalize = j['normalize'] == true;
     s.betaUpdates = j['betaUpdates'] == true;
+    s.trayOnClose = j['trayOnClose'] != false;
+    s.trayAsked = j['trayAsked'] == true;
     s.artistsDesc = j['artistsDesc'] == true;
     s.albumsDesc = j['albumsDesc'] == true;
     final ses = j['session'];
