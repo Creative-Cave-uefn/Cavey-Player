@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 
 import '../app.dart';
 import '../core/lyrics.dart';
 import '../core/models.dart';
+import '../core/player.dart';
 import 'theme.dart';
 
 /// Панель справа с текстом песни. Синхронный текст подсвечивается по ходу трека,
@@ -46,11 +50,18 @@ class LyricsPanel extends StatelessWidget {
 
 class _Note extends StatelessWidget {
   final String text;
-  const _Note(this.text);
+  final VoidCallback? onRetry;
+  const _Note(this.text, {this.onRetry});
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.fromLTRB(22, 8, 22, 0),
-        child: Text(text, style: const TextStyle(color: C.faint, height: 1.5)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(text, style: const TextStyle(color: C.faint, height: 1.5)),
+          if (onRetry != null) ...[
+            const SizedBox(height: 10),
+            TextButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh_rounded, size: 18), label: const Text('Искать снова')),
+          ],
+        ]),
       );
 }
 
@@ -63,27 +74,74 @@ class _LyricsBody extends StatefulWidget {
 
 class _LyricsBodyState extends State<_LyricsBody> {
   Future<Lyrics?>? _future;
+  PlayerController? _player;
+  Lyrics? _synced;
   final List<GlobalKey> _keys = [];
+  int _idx = -1;
   int _shown = -2;
+  DateTime _userScrolledAt = DateTime(0);
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_future != null) return;
+    _player = Services.of(context).player..position.addListener(_onPosition);
+    _start();
+  }
+
+  @override
+  void dispose() {
+    _player?.position.removeListener(_onPosition);
+    super.dispose();
+  }
+
+  void _start({bool refresh = false}) {
     final app = Services.of(context);
-    // Длительность помогает найти правильную версию; ждём её пару секунд после старта трека
+    final player = app.player;
+    _synced = null;
+    _idx = -1;
+    _shown = -2;
     _future = () async {
-      var d = app.player.duration;
-      for (var i = 0; i < 10 && d == Duration.zero; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 300));
-        d = app.player.duration;
-      }
-      return app.lyrics.forTrack(widget.track, d);
+      final d = await _waitDuration(player);
+      final ly = await app.lyrics.forTrack(widget.track, d, refresh: refresh);
+      _synced = (ly != null && ly.synced) ? ly : null;
+      _onPosition();
+      return ly;
     }();
   }
 
+  /// Длительность помогает выбрать правильную версию текста. При стриминге с Диска
+  /// она появляется не сразу, поэтому ждём её по событию плеера, а не фиксированное время.
+  static Future<Duration> _waitDuration(PlayerController p) async {
+    if (p.duration > Duration.zero) return p.duration;
+    final done = Completer<Duration>();
+    void check() {
+      if (p.duration > Duration.zero && !done.isCompleted) done.complete(p.duration);
+    }
+
+    p.addListener(check);
+    try {
+      return await done.future.timeout(const Duration(seconds: 10), onTimeout: () => p.duration);
+    } finally {
+      p.removeListener(check);
+    }
+  }
+
+  /// Перерисовываем только когда сменилась строка, а не на каждый тик позиции
+  void _onPosition() {
+    final ly = _synced;
+    final p = _player;
+    if (ly == null || p == null || !mounted) return;
+    final i = ly.indexAt(p.position.value + const Duration(milliseconds: 250));
+    if (i != _idx) setState(() => _idx = i);
+  }
+
+  void _retry() => setState(() => _start(refresh: true));
+
   void _follow(int idx) {
     if (idx == _shown || idx < 0 || idx >= _keys.length) return;
+    // Человек сам листает текст — не утаскиваем его обратно несколько секунд
+    if (DateTime.now().difference(_userScrolledAt) < const Duration(seconds: 4)) return;
     _shown = idx;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ctx = _keys[idx].currentContext;
@@ -92,6 +150,22 @@ class _LyricsBodyState extends State<_LyricsBody> {
       }
     });
   }
+
+  bool _onScroll(UserScrollNotification n) {
+    if (n.direction != ScrollDirection.idle) _userScrolledAt = DateTime.now();
+    return false;
+  }
+
+  Widget _again() => Padding(
+        padding: const EdgeInsets.only(top: 18),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            onPressed: _retry,
+            child: const Text('Не тот текст? Искать заново', style: TextStyle(color: C.faint, fontSize: 13)),
+          ),
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -106,11 +180,11 @@ class _LyricsBodyState extends State<_LyricsBody> {
           );
         }
         if (snap.hasError) {
-          return const _Note('База текстов LRCLIB сейчас не отвечает. Откройте панель позже, попробую снова.');
+          return _Note('База текстов LRCLIB сейчас не отвечает.', onRetry: _retry);
         }
         final ly = snap.data;
-        if (ly == null) return const _Note('Текст этой песни не нашёлся в базе LRCLIB.');
-        if (ly.instrumental) return const _Note('Это инструментальная композиция, слов нет.');
+        if (ly == null) return _Note('Текст этой песни не нашёлся в базе LRCLIB.', onRetry: _retry);
+        if (ly.instrumental) return _Note('Это инструментальная композиция, слов нет.', onRetry: _retry);
         if (!ly.synced) {
           return ListView(padding: const EdgeInsets.fromLTRB(22, 4, 22, 32), children: [
             for (final l in ly.lines)
@@ -118,41 +192,44 @@ class _LyricsBodyState extends State<_LyricsBody> {
                 padding: const EdgeInsets.only(bottom: 6),
                 child: Text(l.text, style: const TextStyle(color: C.muted, fontSize: 15, height: 1.5)),
               ),
+            _again(),
           ]);
         }
         while (_keys.length < ly.lines.length) {
           _keys.add(GlobalKey());
         }
-        return ValueListenableBuilder<Duration>(
-          valueListenable: app.player.position,
-          builder: (context, pos, _) {
-            final idx = ly.indexAt(pos + const Duration(milliseconds: 250));
-            _follow(idx);
-            return SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(14, 4, 14, 200),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                for (var i = 0; i < ly.lines.length; i++)
-                  InkWell(
-                    key: _keys[i],
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () => app.player.seek(ly.lines[i].at!),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                      child: AnimatedDefaultTextStyle(
-                        duration: const Duration(milliseconds: 200),
-                        style: TextStyle(
-                          fontSize: 19,
-                          height: 1.35,
-                          fontWeight: FontWeight.w600,
-                          color: i == idx ? C.text : (i < idx ? C.faint : C.muted),
-                        ),
-                        child: Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
+        final idx = _idx;
+        _follow(idx);
+        return NotificationListener<UserScrollNotification>(
+          onNotification: _onScroll,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(14, 4, 14, 200),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              for (var i = 0; i < ly.lines.length; i++)
+                InkWell(
+                  key: _keys[i],
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () {
+                    _userScrolledAt = DateTime(0); // клик по строке — снова следим за песней
+                    app.player.seek(ly.lines[i].at!);
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    child: AnimatedDefaultTextStyle(
+                      duration: const Duration(milliseconds: 200),
+                      style: TextStyle(
+                        fontSize: 19,
+                        height: 1.35,
+                        fontWeight: FontWeight.w600,
+                        color: i == idx ? C.text : (i < idx ? C.faint : C.muted),
                       ),
+                      child: Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
                     ),
                   ),
-              ]),
-            );
-          },
+                ),
+              Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: _again()),
+            ]),
+          ),
         );
       },
     );
