@@ -11,6 +11,7 @@ import 'download_view.dart';
 import 'library_views.dart';
 import 'shell.dart';
 import 'theme.dart';
+import 'wave_view.dart';
 import 'widgets.dart';
 
 /// Ctrl+F: каждое увеличение просит открытый список треков поставить курсор в поиск
@@ -1038,6 +1039,7 @@ List<PopupMenuEntry<String>> trackMenuItems(Track track, String? playlistId) {
   return [
     const PopupMenuItem(value: 'next', child: Text('Играть следующим')),
     const PopupMenuItem(value: 'queue', child: Text('В конец очереди')),
+    const PopupMenuItem(value: 'wave', child: Text('Моя волна по треку')),
     const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
     if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
     const PopupMenuItem(value: 'album', child: Text('Открыть альбом')),
@@ -1065,6 +1067,8 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
     case 'next':
       app.player.playNext(track);
       app.lib.messages.add('«${track.title}» заиграет следующим');
+    case 'wave':
+      startWaveFrom(context, track);
     case 'queue':
       app.player.addToQueue(track);
       app.lib.messages.add('«${track.title}» добавлен в конец очереди');

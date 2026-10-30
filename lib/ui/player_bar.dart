@@ -24,7 +24,7 @@ class PlayerBar extends StatelessWidget {
       decoration: const BoxDecoration(color: C.surface, border: Border(top: BorderSide(color: C.line))),
       padding: const EdgeInsets.symmetric(horizontal: 18),
       child: ListenableBuilder(
-        listenable: Listenable.merge([p, app.lib]),
+        listenable: Listenable.merge([p, app.lib, app.wave]),
         builder: (context, _) {
           final t = p.current;
           final nowPlaying = Row(children: [
@@ -51,6 +51,14 @@ class PlayerBar extends StatelessWidget {
                       Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 13)),
                     ]),
             ),
+            if (t != null && app.wave.active)
+              IconButton(
+                tooltip: 'Не нравится — больше не ставить в волне',
+                visualDensity: VisualDensity.compact,
+                iconSize: 18,
+                onPressed: app.wave.dislike,
+                icon: const Icon(Icons.thumb_down_alt_outlined, color: C.faint),
+              ),
             if (t != null) LikeButton(track: t),
           ]);
 

@@ -23,6 +23,7 @@ import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_pages.dart';
 import 'web_views.dart';
+import 'wave_view.dart';
 import 'widgets.dart';
 
 class Nav {
@@ -254,6 +255,8 @@ class _ShellState extends State<Shell> {
         return UserTracksPage(key: ValueKey('${nav.kind}:${nav.id}'), email: nav.id!, uploads: nav.kind == 'userUploads', compact: compact);
       case 'recent':
         return RecentPage(key: const ValueKey('recent'), compact: compact);
+      case 'wave':
+        return WavePage(key: const ValueKey('wave'), compact: compact);
       case 'new':
         return NewReleasesPage(key: const ValueKey('new'), compact: compact);
       case 'websearch':
@@ -315,6 +318,7 @@ class _Sidebar extends StatelessWidget {
                   ? Center(child: Text('C', style: display(24, weight: FontWeight.w700, color: C.accent)))
                   : const Align(alignment: Alignment.centerLeft, child: Wordmark()),
             ),
+            item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
             item(Icons.library_music_outlined, 'Все треки', const Nav('all')),
             item(Icons.album_outlined, 'Альбомы', const Nav('albums')),
             item(Icons.mic_none_rounded, 'Исполнители', const Nav('artists')),
@@ -373,7 +377,7 @@ class _Sidebar extends StatelessWidget {
             // Сколько места нужно, чтобы верх и низ панели стояли на месте, а прокручивались только плейлисты.
             // Оценка с запасом; если места меньше, прокручивается вся панель целиком
             final live = app.social.friends.where((m) => m.live).length.clamp(0, 5);
-            final need = 820 + (live > 0 ? 40 + 44 * live : 0) + (app.social.following != null ? 36 : 0);
+            final need = 864 + (live > 0 ? 40 + 44 * live : 0) + (app.social.following != null ? 36 : 0);
             if (box.maxHeight >= need) {
               return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 ...head,

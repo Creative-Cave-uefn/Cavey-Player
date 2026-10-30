@@ -14,6 +14,14 @@ import 'stream_proxy.dart';
 
 enum RepeatSetting { off, all, one }
 
+/// Источник бесконечной очереди («Моя волна»): даёт следующие треки и узнаёт, как их слушали
+abstract class QueueFeeder {
+  List<String> more(int n);
+
+  /// Трек сменился: [listened] — сколько он играл, [skipped] — переключили сами, а не доиграл
+  void heard(Track t, Duration listened, {required bool skipped});
+}
+
 /// Очередь и воспроизведение. Звук идёт потоком прямо с Google Диска:
 /// плеер (libmpv) сам запрашивает нужные куски файла с токеном в заголовке.
 class PlayerController extends ChangeNotifier {
@@ -39,6 +47,9 @@ class PlayerController extends ChangeNotifier {
   List<String> _origin = [];
   List<String> queue = [];
   int index = -1;
+
+  /// Пока не null, очередь сама пополняется из него, когда заканчивается
+  QueueFeeder? feeder;
   DateTime? _openedAt;
 
   /// Трек восстановлен из прошлой сессии, но ещё не открыт: откроем по первому нажатию
@@ -157,6 +168,7 @@ class PlayerController extends ChangeNotifier {
             'dur': duration.inMilliseconds,
             'shuffle': shuffle,
             'repeat': repeat.name,
+            if (feeder != null) 'wave': true,
           };
     return lib.saveSettings();
   }
@@ -165,6 +177,7 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> playTracks(List<Track> list, int start) async {
     if (list.isEmpty) return;
+    feeder = null; // выбрали что-то сами — волна выключается
     _origin = [for (final t in list) t.id];
     if (shuffle) {
       final first = _origin[start];
@@ -226,10 +239,72 @@ class PlayerController extends ChangeNotifier {
     _queueChanged();
   }
 
+  // ---------- бесконечная очередь ----------
+
+  /// Включает очередь из [f], начиная с [first]
+  Future<void> playFeed(QueueFeeder f, List<String> first) async {
+    final ids = [for (final id in first) if (lib.data.tracks[id] != null) id];
+    if (ids.isEmpty) return;
+    feeder = f;
+    queue = ids;
+    _origin = List.of(ids);
+    index = 0;
+    await _open();
+    _topUpFeed();
+  }
+
+  /// После перезапуска: волна снова пополняет восстановленную очередь
+  void attachFeeder(QueueFeeder f) {
+    feeder = f;
+    notifyListeners();
+  }
+
+  /// Заменяет всё, что дальше текущего трека (например, сменили характер волны)
+  void replaceUpcoming(List<String> ids) {
+    if (index < 0) return;
+    queue = [...queue.take(index + 1), for (final id in ids) if (lib.data.tracks[id] != null) id];
+    _origin = List.of(queue);
+    _queueChanged();
+  }
+
+  /// Убирает из следующих треки, подходящие под [test]
+  void dropUpcoming(bool Function(String id) test) {
+    if (index < 0) return;
+    final before = queue.length;
+    queue = [...queue.take(index + 1), ...queue.skip(index + 1).where((id) => !test(id))];
+    if (queue.length == before) return;
+    _origin = List.of(queue);
+    _queueChanged();
+  }
+
+  void _topUpFeed() {
+    final f = feeder;
+    if (f == null || index < 0) return;
+    final ahead = queue.length - index - 1;
+    if (ahead >= 3) return;
+    final add = [for (final id in f.more(5 - ahead)) if (lib.data.tracks[id] != null) id];
+    if (add.isEmpty) return;
+    queue.addAll(add);
+    _origin.addAll(add);
+    _queueChanged();
+  }
+
+  void _reportHeard({required bool skipped}) {
+    final f = feeder, cur = current;
+    if (f == null || cur == null || _resumeAt != null) return;
+    try {
+      f.heard(cur, position.value, skipped: skipped);
+    } catch (e) {
+      AppLog.warn('Моя волна', e);
+    }
+    _topUpFeed();
+  }
+
   /// Оставляет только то, что играет сейчас
   void clearUpcoming() {
     final cur = current;
     if (cur == null) return;
+    feeder = null;
     queue = [cur.id];
     _origin = [cur.id];
     index = 0;
@@ -397,6 +472,7 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> next({bool auto = false}) async {
     if (queue.isEmpty) return;
+    _reportHeard(skipped: !auto);
     if (index + 1 < queue.length) {
       index++;
     } else if (repeat == RepeatSetting.all) {
@@ -406,6 +482,7 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     await _open();
+    _topUpFeed();
   }
 
   Future<void> previous() async {
@@ -419,8 +496,12 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> jumpTo(int queueIndex) async {
     if (queueIndex < 0 || queueIndex >= queue.length) return;
-    index = queueIndex;
+    final target = queue[queueIndex];
+    if (queueIndex > index) _reportHeard(skipped: true);
+    final at = queue.indexOf(target); // волна могла убрать треки перед ним
+    index = at >= 0 ? at : queueIndex.clamp(0, queue.length - 1);
     await _open();
+    _topUpFeed();
   }
 
   Future<void> toggle() async {

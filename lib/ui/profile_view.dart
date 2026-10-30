@@ -486,12 +486,19 @@ class ArtistProfilePage extends StatelessWidget {
             app.player.playTracks(ranked, 0);
           },
           onInfo: () => _showInfo(context, app, a, ranked),
-          thirdButton: _roundButton(
-            fav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-            () => lib.toggleFavArtist(a.key),
-            tooltip: fav ? 'Убрать из любимых исполнителей' : 'В любимые исполнители',
-            color: fav ? C.accent : null,
-          ),
+          thirdButton: Row(mainAxisSize: MainAxisSize.min, children: [
+            _roundButton(
+              fav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+              () => lib.toggleFavArtist(a.key),
+              tooltip: fav ? 'Убрать из любимых исполнителей' : 'В любимые исполнители',
+              color: fav ? C.accent : null,
+            ),
+            const SizedBox(width: 10),
+            _roundButton(Icons.waves_rounded, () {
+              app.wave.startFromArtist(a.name);
+              NavScope.of(context).go(const Nav('wave'));
+            }, tooltip: 'Моя волна по исполнителю'),
+          ]),
           sections: [
             WebArtistSections(
               key: ValueKey('web:${a.key}'),

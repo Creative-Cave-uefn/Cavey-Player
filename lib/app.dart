@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 import 'config.dart';
 import 'core/preview.dart';
 import 'core/web_info.dart';
+import 'core/wave.dart';
 import 'core/audio_cache.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
@@ -50,6 +51,7 @@ class AppServices {
   /// Фото, описания и новинки исполнителей из интернета, отрывки треков
   late final WebInfoService web;
   late final PreviewPlayer preview;
+  late final WaveService wave;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
@@ -118,6 +120,7 @@ class AppServices {
         store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
+    app.wave = await WaveService.open(store, lib, player, social, app.web);
     unawaited(tray.start());
     // Ярлык на панели задач запускает вторую копию; она просит первую показать окно
     listenForSecondLaunch(() => unawaited(tray.showWindow()));
@@ -130,6 +133,7 @@ class AppServices {
   Future<void> shutdown() async {
     try {
       await player.flushSession();
+      await wave.flush();
       await lib.flushNow();
     } catch (_) {}
     try {
