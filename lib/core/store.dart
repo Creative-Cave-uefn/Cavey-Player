@@ -58,6 +58,7 @@ class Settings {
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
   bool discord = true;
+  bool betaUpdates = false; // получать бета-версии
 
   Map<String, dynamic> toJson() => {
         'clientId': clientId,
@@ -74,6 +75,7 @@ class Settings {
         'offlineLiked': offlineLiked,
         'offlinePlaylists': offlinePlaylists.toList(),
         'discord': discord,
+        'betaUpdates': betaUpdates,
       };
 
   static Settings fromJson(dynamic j) {
@@ -94,6 +96,7 @@ class Settings {
     s.offlineLiked = j['offlineLiked'] == true;
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
     s.discord = j['discord'] != false;
+    s.betaUpdates = j['betaUpdates'] == true;
     return s;
   }
 }

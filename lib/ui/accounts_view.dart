@@ -195,7 +195,10 @@ class _UpdatesSection extends StatelessWidget {
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('Обновления', style: display(20)),
           const SizedBox(height: 10),
-          Text('Установлена версия ${up.currentVersion}', style: const TextStyle(color: C.muted, fontSize: 15)),
+          Text(
+            up.isBeta ? 'Установлена бета-версия ${up.currentVersion}' : 'Установлена версия ${up.currentVersion}',
+            style: TextStyle(color: up.isBeta ? C.accent : C.muted, fontSize: 15),
+          ),
           const SizedBox(height: 6),
           Text(
             last == null ? status : '$status. Проверено в ${TimeOfDay.fromDateTime(last).format(context)}.',
@@ -218,7 +221,49 @@ class _UpdatesSection extends StatelessWidget {
               icon: const Icon(Icons.refresh_rounded, size: 18),
               label: const Text('Проверить обновления'),
             ),
+            // Бету выключили, а она ещё стоит — можно вернуться сразу, не дожидаясь обычного релиза
+            if (up.isBeta && !up.beta)
+              OutlinedButton.icon(
+                onPressed: up.state == UpdateState.downloading || !up.enabled
+                    ? null
+                    : () async {
+                        final ok = await confirm(
+                          context,
+                          title: 'Вернуться на обычную версию?',
+                          text: 'Cave Player поставит последнюю обычную версию, даже если она старее беты, '
+                              'закроется и откроется уже с ней.',
+                          action: 'Вернуться',
+                        );
+                        if (ok) await up.installStable();
+                      },
+                icon: const Icon(Icons.undo_rounded, size: 18),
+                label: const Text('Вернуться на обычную версию'),
+              ),
           ]),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: 560,
+            child: SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: up.beta,
+              onChanged: !up.enabled
+                  ? null
+                  : (v) async {
+                      final app = Services.of(context);
+                      app.settings.betaUpdates = v;
+                      await app.lib.saveSettings();
+                      await up.setBeta(v);
+                    },
+              title: const Text('Получать бета-версии'),
+              subtitle: Text(
+                up.beta
+                    ? 'Новые функции приходят раньше, но могут работать с ошибками.'
+                        '${up.latestBeta == null ? '' : ' Последняя бета: ${up.latestBeta}.'}'
+                    : 'Новые функции раньше всех. Бета ставится так же сама, как обычные обновления.',
+                style: const TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+              ),
+            ),
+          ),
         ]);
       },
     );

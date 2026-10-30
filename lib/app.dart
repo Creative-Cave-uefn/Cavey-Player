@@ -52,6 +52,7 @@ class AppServices {
         ..clientId = kGoogleClientId
         ..clientSecret = kGoogleClientSecret;
     }
+    updater.beta = settings.betaUpdates;
     final accounts = AccountManager(store, settings);
     await accounts.load();
     final drive = DriveApi(accounts);

@@ -1,6 +1,10 @@
 // Автообновление: раз в несколько часов смотрим последний релиз в публичном
 // репозитории, в фоне скачиваем установщик и ставим его тихо — по кнопке
 // или сами при следующем запуске.
+//
+// Бета-версии: ветка beta публикует пререлизы «beta-v<версия>». Кто включил
+// «Получать бета-версии», получает самую свежую из обычной и бета-версии.
+// Выключил — вернётся на обычную со следующим обычным релизом (или сразу кнопкой).
 
 import 'dart:async';
 import 'dart:convert';
@@ -27,6 +31,50 @@ class Updater extends ChangeNotifier {
   Updater(this.store);
 
   static const _assetName = 'CavePlayer-Setup.exe';
+  static final _betaTag = RegExp(r'^beta-v(\d+(?:\.\d+)*)$');
+
+  /// Получать бета-версии (настройка «Получать бета-версии»)
+  bool beta = false;
+
+  /// Последняя бета-версия, если проверяли
+  String? latestBeta;
+
+  /// Сейчас стоит бета-сборка
+  bool get isBeta => kBuildBeta;
+
+  Future<void> setBeta(bool on) async {
+    beta = on;
+    notifyListeners();
+    if (on) await check();
+  }
+
+  /// Самая свежая бета: пререлиз beta-v… с установщиком
+  Future<Map<String, dynamic>?> _latestBetaRelease() async {
+    final res = await http
+        .get(
+          Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=40'),
+          headers: {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer/$kAppVersion'},
+        )
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode != 200) {
+      AppLog.warn('Бета-версии: $kReleasesRepo ответил ${res.statusCode}');
+      return null;
+    }
+    Map<String, dynamic>? best;
+    var bestV = '';
+    for (final r in (jsonDecode(res.body) as List).whereType<Map<String, dynamic>>()) {
+      if (r['prerelease'] != true) continue;
+      final m = _betaTag.firstMatch('${r['tag_name']}');
+      if (m == null) continue;
+      final hasAsset = (r['assets'] as List? ?? const []).any((a) => a is Map && a['name'] == _assetName);
+      if (hasAsset && (bestV.isEmpty || isNewer(m.group(1)!, bestV))) {
+        best = r;
+        bestV = m.group(1)!;
+      }
+    }
+    latestBeta = best == null ? null : bestV;
+    return best;
+  }
 
   /// Обновления работают в установленной версии, собранной в GitHub Actions
   bool get enabled => kAppVersion.isNotEmpty && Platform.isWindows;
@@ -105,6 +153,17 @@ class Updater extends ChangeNotifier {
           j = r;
         }
       }
+      if (beta) {
+        try {
+          final b = await _latestBetaRelease();
+          if (b != null && (tag.isEmpty || isNewer(latestBeta!, tag))) {
+            tag = latestBeta!;
+            j = b;
+          }
+        } catch (e) {
+          AppLog.warn('Не получилось проверить бета-версии', e);
+        }
+      }
       lastCheck = DateTime.now();
       if (j == null) {
         state = UpdateState.upToDate; // опубликованных обновлений пока нет
@@ -138,6 +197,46 @@ class Updater extends ChangeNotifier {
       error = 'Не получилось проверить обновления: $e';
     }
     notifyListeners();
+  }
+
+  /// Ставит последнюю обычную версию, даже если она старее установленной беты.
+  /// Приложение закроется, установщик откроет обычную версию сам.
+  Future<void> installStable() async {
+    if (!enabled || state == UpdateState.downloading) return;
+    error = null;
+    try {
+      Map? release;
+      var tag = '';
+      for (final repo in kReleasesRepos) {
+        final res = await http.get(
+          Uri.parse('https://api.github.com/repos/$repo/releases/latest'),
+          headers: {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer/$kAppVersion'},
+        );
+        if (res.statusCode != 200) continue;
+        final r = jsonDecode(res.body) as Map<String, dynamic>;
+        final t = ((r['tag_name'] as String?) ?? '').replaceFirst(RegExp(r'^v'), '');
+        final hasAsset = (r['assets'] as List? ?? const []).any((a) => a is Map && a['name'] == _assetName);
+        if (hasAsset && (tag.isEmpty || isNewer(t, tag))) {
+          tag = t;
+          release = r;
+        }
+      }
+      if (release == null) throw Exception('обычных версий пока нет');
+      Map? asset;
+      for (final a in (release['assets'] as List? ?? const [])) {
+        if (a is Map && a['name'] == _assetName) asset = a;
+      }
+      latest = tag;
+      final path = await _download('${asset!['browser_download_url']}', tag, (asset['size'] as num?)?.toInt() ?? 0);
+      await _forget(null);
+      AppLog.info('Возвращаюсь на обычную версию $tag');
+      await _launch(path);
+      exit(0);
+    } catch (e) {
+      state = UpdateState.error;
+      error = 'Не получилось вернуться на обычную версию: $e';
+      notifyListeners();
+    }
   }
 
   Future<String> _download(String url, String version, int size) async {
