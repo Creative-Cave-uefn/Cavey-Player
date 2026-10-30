@@ -129,32 +129,54 @@ class WebInfoService extends ChangeNotifier {
 
   // ---------- Deezer ----------
 
-  // Deezer разрешает около 50 запросов за 5 секунд: не больше 4 одновременно и с паузой между ними
+  // Deezer разрешает около 50 запросов за 5 секунд: не больше 4 одновременно и с паузой между ними.
+  // Две очереди: важные запросы (новинки, страница исполнителя) идут первыми, фото для списка —
+  // фоном. Фоновых ждёт не больше 24: фото строк, которые уже пролистали, просто отбрасываются.
+  static const _parallel = 4;
   int _active = 0;
-  final List<Completer<void>> _waiting = [];
+  final List<Completer<void>> _high = [];
+  final List<Completer<void>> _low = [];
   DateTime _last = DateTime(0);
 
-  Future<void> _slot() async {
-    if (_active >= 4) {
+  Future<void> _slot(bool low) async {
+    final busy = _active >= _parallel || (low && _high.isNotEmpty);
+    if (!busy) {
+      _active++;
+    } else {
       final c = Completer<void>();
-      _waiting.add(c);
-      await c.future;
+      if (low) {
+        _low.add(c);
+        if (_low.length > 24) _low.removeAt(0).completeError(const _Dropped());
+      } else {
+        _high.add(c);
+      }
+      await c.future; // место передаётся из _free, счётчик уже учтён
     }
-    _active++;
     final gap = const Duration(milliseconds: 120) - DateTime.now().difference(_last);
     if (gap > Duration.zero) await Future<void>.delayed(gap);
     _last = DateTime.now();
   }
 
   void _free() {
-    _active--;
-    if (_waiting.isNotEmpty) _waiting.removeAt(0).complete();
+    if (_high.isNotEmpty) {
+      _high.removeAt(0).complete();
+    } else if (_low.isNotEmpty) {
+      _low.removeAt(0).complete();
+    } else {
+      _active--;
+    }
   }
 
-  Future<Map> _deezer(String path, [Map<String, String>? q]) async {
-    await _slot();
+  Future<Map> _deezer(String path, [Map<String, String>? q, bool low = false]) async {
+    await _slot(low);
     try {
-      return await _deezerRaw(path, q);
+      try {
+        return await _deezerRaw(path, q);
+      } on _Quota {
+        // Превысили частоту — Deezer просит подождать несколько секунд
+        await Future<void>.delayed(const Duration(seconds: 5));
+        return await _deezerRaw(path, q);
+      }
     } finally {
       _free();
     }
@@ -163,11 +185,16 @@ class WebInfoService extends ChangeNotifier {
   Future<Map> _deezerRaw(String path, [Map<String, String>? q]) async {
     final res = await _http
         .get(Uri.https('api.deezer.com', path, q), headers: {'Accept-Language': 'ru,en'})
-        .timeout(const Duration(seconds: 15));
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode == 429) throw const _Quota();
     if (res.statusCode != 200) throw HttpException('Deezer ответил ${res.statusCode}');
     final j = jsonDecode(utf8.decode(res.bodyBytes));
     if (j is! Map) throw const FormatException('Deezer: неожиданный ответ');
-    if (j['error'] != null) throw HttpException('Deezer: ${(j['error'] as Map)['message'] ?? j['error']}');
+    final err = j['error'];
+    if (err != null) {
+      if (err is Map && (err['code'] == 4 || '${err['message']}'.toLowerCase().contains('quota'))) throw const _Quota();
+      throw HttpException('Deezer: ${err is Map ? err['message'] : err}');
+    }
     return j;
   }
 
@@ -187,34 +214,41 @@ class WebInfoService extends ChangeNotifier {
     return _fresh<WebArtist?>('artist:${_key(name)}', _artistTtl, (v) => v is Map ? WebArtist.fromJson(v) : null);
   }
 
-  /// Исполнитель на Deezer: точное совпадение имени, иначе самый популярный из похожих
-  Future<WebArtist?> artist(String name) => _artistInflight[_key(name)] ??= () async {
+  /// Исполнитель на Deezer по точному совпадению имени (самый популярный из одноимённых).
+  /// [low] — фоновый запрос (фото в списке). Ошибки сети не запоминаются и дают null
+  Future<WebArtist?> artist(String name, {bool low = false}) async {
+    try {
+      return await _lookup(name, low);
+    } on _Dropped {
+      return null;
+    } catch (e) {
+      AppLog.warn('Deezer: не нашёл «$name»', e);
+      return null;
+    }
+  }
+
+  Future<WebArtist?> _lookup(String name, bool low) => _artistInflight[_key(name)] ??= () async {
         await _load();
         final key = 'artist:${_key(name)}';
         if (_isFresh(key, _artistTtl)) {
           final v = _value(key);
           return v is Map ? WebArtist.fromJson(v) : null;
         }
-        try {
-          final j = await _deezer('/search/artist', {'q': name, 'limit': '8'});
-          final list = [for (final a in (j['data'] as List? ?? const [])) if (a is Map) a];
-          Map? best;
-          for (final a in list) {
-            if (_key('${a['name']}') == _key(name)) {
-              if (best == null || ((a['nb_fan'] as num?) ?? 0) > ((best['nb_fan'] as num?) ?? 0)) best = a;
-            }
+        final j = await _deezer('/search/artist', {'q': name, 'limit': '8'}, low);
+        final list = [for (final a in (j['data'] as List? ?? const [])) if (a is Map) a];
+        Map? best;
+        for (final a in list) {
+          if (_key('${a['name']}') == _key(name)) {
+            if (best == null || ((a['nb_fan'] as num?) ?? 0) > ((best['nb_fan'] as num?) ?? 0)) best = a;
           }
-          final w = best == null
-              ? null
-              : WebArtist((best['id'] as num).toInt(), '${best['name']}', '${best['picture_xl'] ?? best['picture_big'] ?? ''}',
-                  (best['nb_fan'] as num?)?.toInt() ?? 0, '${best['link'] ?? ''}');
-          _put(key, w?.toJson());
-          notifyListeners();
-          return w;
-        } catch (e) {
-          AppLog.warn('Deezer: не нашёл «$name»', e);
-          return null;
         }
+        final w = best == null
+            ? null
+            : WebArtist((best['id'] as num).toInt(), '${best['name']}', '${best['picture_xl'] ?? best['picture_big'] ?? ''}',
+                (best['nb_fan'] as num?)?.toInt() ?? 0, '${best['link'] ?? ''}');
+        _put(key, w?.toJson());
+        notifyListeners();
+        return w;
       }()
           .whenComplete(() => _artistInflight.remove(_key(name)));
 
@@ -323,7 +357,13 @@ class WebInfoService extends ChangeNotifier {
   bool loadingReleases = false;
   int releasesDone = 0;
   int releasesTotal = 0;
+  int releasesFailed = 0;
+  String? releasesError;
   DateTime? releasesAt;
+  bool _stop = false;
+
+  /// Остановить проверку новинок (что успели найти — останется)
+  void stopReleases() => _stop = true;
 
   /// Свежие (за [days] дней) альбомы и синглы исполнителей из библиотеки, которых у вас нет.
   /// Смотрим самых слушаемых в библиотеке исполнителей, не больше [maxArtists].
@@ -331,48 +371,78 @@ class WebInfoService extends ChangeNotifier {
     if (loadingReleases) return;
     final at = releasesAt;
     if (!force && at != null && DateTime.now().difference(at) < const Duration(hours: 6)) return;
-    await _load();
     loadingReleases = true;
-    final artists = List.of(lib.artists)
-      ..removeWhere((a) => a.name == 'Неизвестный исполнитель')
-      ..sort((a, b) => b.tracks.length.compareTo(a.tracks.length));
-    final pick = artists.take(maxArtists).toList();
-    releasesTotal = pick.length;
+    _stop = false;
+    releasesError = null;
+    releasesFailed = 0;
     releasesDone = 0;
     notifyListeners();
-    final since = DateTime.now().subtract(Duration(days: days));
-    final out = <NewRelease>[];
-    var i = 0;
-    Future<void> worker() async {
-      while (i < pick.length) {
-        final a = pick[i++];
-        try {
-          final w = await artist(a.name);
-          if (w != null) {
-            for (final al in await albums(w)) {
-              final d = al.released;
-              if (d == null || d.isBefore(since)) continue;
-              if (!inLibrary(a.key, al)) out.add(NewRelease(a.key, al));
+    try {
+      await _load();
+      final artists = List.of(lib.artists)
+        ..removeWhere((a) => a.name == 'Неизвестный исполнитель')
+        ..sort((a, b) => b.tracks.length.compareTo(a.tracks.length));
+      final pick = artists.take(maxArtists).toList();
+      releasesTotal = pick.length;
+      notifyListeners();
+      AppLog.info('Новинки: проверяю ${pick.length} исполнителей');
+      final since = DateTime.now().subtract(Duration(days: days));
+      final out = <NewRelease>[];
+      var i = 0;
+      var failedInRow = 0;
+      Future<void> worker() async {
+        while (i < pick.length && !_stop && releasesError == null) {
+          final a = pick[i++];
+          try {
+            WebArtist? w;
+            try {
+              w = await _lookup(a.name, false);
+            } on _Dropped {
+              // Ждали фоновый запрос фото, а его отбросили — спрашиваем сами
+              w = await _lookup(a.name, false);
             }
+            if (w != null) {
+              for (final al in await albums(w)) {
+                final d = al.released;
+                if (d == null || d.isBefore(since)) continue;
+                if (!inLibrary(a.key, al)) out.add(NewRelease(a.key, al));
+              }
+            }
+            failedInRow = 0;
+          } catch (e) {
+            releasesFailed++;
+            failedInRow++;
+            AppLog.warn('Новинки: ${a.name}', e);
+            // Несколько ошибок подряд — Deezer недоступен, не ждём остальные таймауты
+            if (failedInRow >= 4) releasesError = 'Deezer не отвечает: $e';
           }
-        } catch (e) {
-          AppLog.warn('Новинки: ${a.name}', e);
+          releasesDone++;
+          // Показываем найденное по ходу, а не только в конце
+          releases = _sorted(out);
+          notifyListeners();
         }
-        releasesDone++;
-        notifyListeners();
-        // Deezer разрешает около 50 запросов за 5 секунд — не торопимся
-        await Future<void>.delayed(const Duration(milliseconds: 250));
       }
-    }
 
-    await Future.wait([worker(), worker(), worker()]);
-    out.sort((a, b) => b.album.date.compareTo(a.album.date));
+      await Future.wait([worker(), worker(), worker()]);
+      releases = _sorted(out);
+      // Проверили почти всех — помним результат 6 часов; иначе в следующий раз проверим снова
+      if (releasesError == null && !_stop && releasesFailed <= releasesTotal ~/ 5) releasesAt = DateTime.now();
+      AppLog.info('Новинки: проверено $releasesDone из $releasesTotal, ошибок $releasesFailed, найдено ${releases.length}'
+          '${_stop ? ' (остановлено)' : ''}${releasesError != null ? ' — $releasesError' : ''}');
+    } catch (e) {
+      releasesError = '$e';
+      AppLog.warn('Новинки', e);
+    } finally {
+      loadingReleases = false;
+      notifyListeners();
+    }
+  }
+
+  static List<NewRelease> _sorted(List<NewRelease> out) {
+    final list = List.of(out)..sort((a, b) => b.album.date.compareTo(a.album.date));
     // Один релиз мог найтись у нескольких соавторов
     final seen = <int>{};
-    releases = [for (final r in out) if (seen.add(r.album.id)) r];
-    releasesAt = DateTime.now();
-    loadingReleases = false;
-    notifyListeners();
+    return [for (final r in list) if (seen.add(r.album.id)) r];
   }
 
   @override
@@ -381,4 +451,16 @@ class WebInfoService extends ChangeNotifier {
     _http.close();
     super.dispose();
   }
+}
+
+/// Фоновый запрос отброшен из очереди (строку уже пролистали)
+class _Dropped implements Exception {
+  const _Dropped();
+}
+
+/// Deezer просит снизить частоту запросов
+class _Quota implements Exception {
+  const _Quota();
+  @override
+  String toString() => 'Deezer: слишком много запросов';
 }

@@ -40,7 +40,8 @@ class _ArtistPhotoState extends State<ArtistPhoto> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final web = Services.of(context).web;
-    if (web.artistCached(widget.name) == null) web.artist(widget.name);
+    // Фото — фоном: важные запросы (новинки, страница исполнителя) идут вперёд
+    if (web.artistCached(widget.name) == null) web.artist(widget.name, low: true);
   }
 
   @override
@@ -396,12 +397,32 @@ class _NewReleasesPageState extends State<NewReleasesPage> {
           ),
           const SizedBox(height: 18),
           if (web.loadingReleases) ...[
-            Text('Проверяю исполнителей: ${web.releasesDone} из ${web.releasesTotal}', style: const TextStyle(color: C.faint)),
+            Row(children: [
+              Expanded(
+                child: Text(
+                  'Проверяю исполнителей: ${web.releasesDone} из ${web.releasesTotal}'
+                  '${web.releasesFailed > 0 ? ', не удалось: ${web.releasesFailed}' : ''}',
+                  style: const TextStyle(color: C.faint),
+                ),
+              ),
+              TextButton(onPressed: web.stopReleases, child: const Text('Остановить')),
+            ]),
             const SizedBox(height: 8),
             LinearProgressIndicator(value: web.releasesTotal == 0 ? null : web.releasesDone / web.releasesTotal),
             const SizedBox(height: 18),
+          ] else if (web.releasesError != null) ...[
+            Text('Проверка прервалась. ${web.releasesError}', style: const TextStyle(color: C.danger)),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(onPressed: () => web.loadReleases(force: true), child: const Text('Попробовать снова')),
+            ),
+            const SizedBox(height: 12),
+          ] else if (web.releasesFailed > 0) ...[
+            Text('Не удалось проверить исполнителей: ${web.releasesFailed} из ${web.releasesTotal}. '
+                'Нажмите ↻, чтобы проверить ещё раз.', style: const TextStyle(color: C.faint, fontSize: 13)),
+            const SizedBox(height: 12),
           ],
-          if (!web.loadingReleases && list.isEmpty)
+          if (!web.loadingReleases && web.releasesError == null && list.isEmpty)
             const EmptyState(
               icon: Icons.new_releases_outlined,
               title: 'Новинок нет',
