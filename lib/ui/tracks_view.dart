@@ -1,4 +1,3 @@
-import 'package:flutter/gestures.dart' show TapGestureRecognizer;
 import 'package:flutter/material.dart';
 
 import '../app.dart';
@@ -824,58 +823,55 @@ class LinkPart {
 }
 
 /// Строка из ссылок: каждая подчёркивается при наведении и открывается по клику.
-/// Остаётся одной строкой с многоточием, как обычный текст.
-class Links extends StatefulWidget {
+/// Остаётся одной строкой: длинные куски обрезаются многоточием.
+class Links extends StatelessWidget {
   final List<LinkPart> parts;
   final TextStyle style;
   const Links({super.key, required this.parts, required this.style});
 
   @override
-  State<Links> createState() => _LinksState();
+  Widget build(BuildContext context) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      for (final p in parts)
+        p.onTap == null
+            ? Text(p.text, maxLines: 1, style: style)
+            : Flexible(child: _Link(text: p.text, onTap: p.onTap!, style: style)),
+    ]);
+  }
 }
 
-class _LinksState extends State<Links> {
-  final List<TapGestureRecognizer> _taps = [];
-  int _hovered = -1;
-
-  void _dropTaps() {
-    for (final r in _taps) {
-      r.dispose();
-    }
-    _taps.clear();
-  }
+/// Одна ссылка. Своё состояние наведения: перерисовывается только она сама,
+/// а область под мышью и обработчик клика при этом не пересоздаются
+class _Link extends StatefulWidget {
+  final String text;
+  final VoidCallback onTap;
+  final TextStyle style;
+  const _Link({required this.text, required this.onTap, required this.style});
 
   @override
-  void dispose() {
-    _dropTaps();
-    super.dispose();
-  }
+  State<_Link> createState() => _LinkState();
+}
+
+class _LinkState extends State<_Link> {
+  bool _hover = false;
 
   @override
   Widget build(BuildContext context) {
-    _dropTaps();
-    final spans = <InlineSpan>[];
-    for (var i = 0; i < widget.parts.length; i++) {
-      final p = widget.parts[i];
-      if (p.onTap == null) {
-        spans.add(TextSpan(text: p.text));
-        continue;
-      }
-      final tap = TapGestureRecognizer()..onTap = p.onTap;
-      _taps.add(tap);
-      final index = i;
-      spans.add(TextSpan(
-        text: p.text,
-        recognizer: tap,
-        mouseCursor: SystemMouseCursors.click,
-        onEnter: (_) => setState(() => _hovered = index),
-        onExit: (_) {
-          if (_hovered == index) setState(() => _hovered = -1);
-        },
-        style: _hovered == index ? const TextStyle(decoration: TextDecoration.underline, color: C.text) : null,
-      ));
-    }
-    return Text.rich(TextSpan(children: spans), maxLines: 1, overflow: TextOverflow.ellipsis, style: widget.style);
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Text(
+          widget.text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _hover ? widget.style.copyWith(decoration: TextDecoration.underline, color: C.text) : widget.style,
+        ),
+      ),
+    );
   }
 }
 
