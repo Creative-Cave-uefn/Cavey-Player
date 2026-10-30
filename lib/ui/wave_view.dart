@@ -33,65 +33,69 @@ class WavePage extends StatelessWidget {
           );
         }
         final active = wave.active && p.current != null;
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 30, pad, 30), children: [
-          _TopBar(compact: compact),
-          SizedBox(height: compact ? 20 : 36),
-          if (active) _NowFlow(compact: compact) else _Idle(compact: compact),
-        ]);
+        // Ничего лишнего: название в одном углу, «Настроить» в другом, всё остальное — по центру экрана
+        return LayoutBuilder(builder: (context, box) {
+          return SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: box.maxHeight, minWidth: box.maxWidth),
+              child: Stack(alignment: Alignment.center, children: [
+                Padding(
+                  padding: EdgeInsets.fromLTRB(pad, 92, pad, 40),
+                  child: active ? _NowFlow(compact: compact) : _Idle(compact: compact),
+                ),
+                Positioned(
+                  left: compact ? 20 : 104,
+                  top: 18,
+                  child: Text('Моя волна', style: display(compact ? 20 : 22, color: C.muted)),
+                ),
+                Positioned(right: 18, top: 12, child: _SettingsButton()), // не const: подсказка и точка обновляются
+              ]),
+            ),
+          );
+        });
       },
     );
   }
 }
 
-/// Заголовок, что сейчас выбрано, и кнопка «Настроить»
-class _TopBar extends StatelessWidget {
-  final bool compact;
-  const _TopBar({required this.compact});
+/// Единственная кнопка настроек в углу. Что сейчас выбрано — в подсказке;
+/// точка — если выбрано настроение, свои исполнители или есть треки на пробе
+class _SettingsButton extends StatelessWidget {
+  const _SettingsButton();
 
   @override
   Widget build(BuildContext context) {
     final wave = Services.of(context).wave;
     final mood = moodById(wave.mood);
-    Widget pill(String text) => Container(
-          height: 34,
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(color: C.raised, borderRadius: BorderRadius.circular(17), border: Border.all(color: C.line)),
-          child: Text(text, style: const TextStyle(fontSize: 13)),
-        );
-    return Wrap(
-      spacing: 8,
-      runSpacing: 10,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      alignment: WrapAlignment.spaceBetween,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(right: 24),
-          child: Text('Моя волна', style: display(compact ? 26 : 32)),
-        ),
-        Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
-          if (!compact) pill(wave.mode.title),
-          if (!compact && mood != null) pill(mood.title),
-          if (!compact && wave.custom.isNotEmpty)
-            pill(wave.custom.length == 1 ? wave.custom.first : '${wave.custom.length} своих исполнителя'),
-          if (wave.trials.isNotEmpty)
-            TextButton(
-              onPressed: () => showWaveSettings(context),
-              style: TextButton.styleFrom(foregroundColor: C.text),
-              child: Text('${wave.trials.length} новых на пробе'),
-            ),
-          FilledButton.icon(
-            onPressed: () => showWaveSettings(context),
-            style: FilledButton.styleFrom(
-              backgroundColor: C.text,
-              foregroundColor: C.bg,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            ),
-            icon: const Icon(Icons.tune_rounded, size: 18),
-            label: const Text('Настроить'),
+    final parts = [
+      wave.mode.title,
+      if (mood != null) mood.title,
+      if (wave.custom.isNotEmpty) wave.custom.join(', '),
+      if (wave.trials.isNotEmpty) '${wave.trials.length} на пробе',
+    ];
+    final marked = mood != null || wave.custom.isNotEmpty || wave.trials.isNotEmpty;
+    return Tooltip(
+      message: 'Настроить волну\n${parts.join(' · ')}',
+      child: Material(
+        color: C.raised,
+        shape: const CircleBorder(side: BorderSide(color: C.line)),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () => showWaveSettings(context),
+          child: SizedBox.square(
+            dimension: 46,
+            child: Stack(alignment: Alignment.center, children: [
+              const Icon(Icons.tune_rounded, size: 20, color: C.text),
+              if (marked)
+                Positioned(
+                  right: 10,
+                  top: 10,
+                  child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: C.accent, shape: BoxShape.circle)),
+                ),
+            ]),
           ),
-        ]),
-      ],
+        ),
+      ),
     );
   }
 }
@@ -171,7 +175,7 @@ class _NowFlow extends StatelessWidget {
         SizedBox(
           width: compact ? 200 : 300,
           child: Text(wave.reasonFor(t.id),
-              textAlign: TextAlign.center, maxLines: 2, style: const TextStyle(color: C.muted, fontSize: 14)),
+              textAlign: TextAlign.center, maxLines: 2, style: const TextStyle(color: C.text, fontSize: 14, fontWeight: FontWeight.w500)),
         ),
         _RoundGlass(
           tooltip: wave.isUpvoted(t.id) ? 'Нравится в волне — нажмите, чтобы отменить' : 'Нравится: больше похожего, без сохранения в любимое',
@@ -210,9 +214,9 @@ class _FlowCard extends StatelessWidget {
     final card = Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0x1FFFFFFF),
+        color: const Color(0x38000000),
         borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: const Color(0x47FFFFFF)),
+        border: Border.all(color: const Color(0x40FFFFFF)),
       ),
       child: LayoutBuilder(builder: (context, box) {
         final s = box.maxWidth;
@@ -229,7 +233,7 @@ class _FlowCard extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: s * 0.058, color: const Color(0xB8FFFFFF))),
+              style: TextStyle(fontSize: s * 0.058, color: C.muted)),
           const Spacer(),
         ]);
       }),

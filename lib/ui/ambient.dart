@@ -112,7 +112,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
                   image: img,
                   fit: BoxFit.cover,
                   filterQuality: FilterQuality.medium,
-                  opacity: const AlwaysStoppedAnimation(0.85),
+                  opacity: const AlwaysStoppedAnimation(0.8),
                 ),
         ),
         // Затемнение: текст читается на любой обложке, снизу темнее — там плеер
@@ -121,7 +121,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: [Color(0x59000000), Color(0x8C000000)],
+              colors: [Color(0x80000000), Color(0xA8000000)],
             ),
           ),
         ),

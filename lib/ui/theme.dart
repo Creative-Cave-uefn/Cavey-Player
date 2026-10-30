@@ -15,8 +15,9 @@ class C {
   static const panel = Color(0xF21A1E33);
   static const panelRaised = Color(0xFF262B45);
   static const text = Color(0xFFEDE9E1);
-  static const muted = Color(0xFF9399B8);
-  static const faint = Color(0xFF626A8F);
+  // Вторичный текст — нейтральный белый с прозрачностью: читается на любой обложке под стеклом
+  static const muted = Color(0xB8FFFFFF);
+  static const faint = Color(0x8CFFFFFF);
   static const accent = Color(0xFFF2C14E);
   static const accentInk = Color(0xFF241C06);
   static const danger = Color(0xFFFF8A80);
