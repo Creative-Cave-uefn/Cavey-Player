@@ -7,6 +7,8 @@ import 'core/audio_cache.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
+import 'core/dl/service.dart';
+import 'core/dl/tools.dart';
 import 'core/drive.dart';
 import 'core/library.dart';
 import 'core/lyrics.dart';
@@ -31,11 +33,12 @@ class AppServices {
   final LyricsService lyrics;
   final SocialController social;
   final DiscordPresence discord;
+  final DownloadService downloads;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
 
-  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.discord, this.keysBuiltIn);
+  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.discord, this.downloads, this.keysBuiltIn);
 
   static Future<AppServices> create() async {
     final store = await AppStore.open();
@@ -75,8 +78,9 @@ class AppServices {
       social.onUserAction();
       showInDiscord();
     };
+    final downloads = DownloadService(lib, Tools(store.sub('tools')), store.sub('downloads'));
     return AppServices._(
-        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, builtIn);
+        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, builtIn);
   }
 }
 

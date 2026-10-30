@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/models.dart';
+import 'download_view.dart';
 import 'library_views.dart';
 import 'shell.dart';
 import 'theme.dart';
@@ -29,6 +30,11 @@ class AllTracksPage extends StatelessWidget {
           compact: compact,
           actions: [
             OutlinedButton.icon(
+              onPressed: () => NavScope.of(context).go(const Nav('download')),
+              icon: const Icon(Icons.cloud_download_outlined, size: 18),
+              label: const Text('Скачать по ссылке'),
+            ),
+            OutlinedButton.icon(
               onPressed: lib.data.sources.isEmpty || lib.upload.running ? null : () => pickAndUpload(context),
               icon: const Icon(Icons.upload_rounded, size: 18),
               label: const Text('Загрузить'),
@@ -46,6 +52,7 @@ class AllTracksPage extends StatelessWidget {
               ),
             ),
           ],
+          banner: const DropHint(),
           empty: lib.scan.running
               ? EmptyState(
                   icon: Icons.downloading_rounded,
@@ -210,6 +217,9 @@ class TracksPage extends StatefulWidget {
   final List<Widget> actions;
   final Widget empty;
 
+  /// Плашка под шапкой (например, «перетащите сюда файлы»)
+  final Widget? banner;
+
   const TracksPage({
     super.key,
     required this.title,
@@ -221,6 +231,7 @@ class TracksPage extends StatefulWidget {
     this.playlistId,
     this.numbered = false,
     this.actions = const [],
+    this.banner,
   });
 
   @override
@@ -391,8 +402,15 @@ class _TracksPageState extends State<TracksPage> {
       ]),
     );
 
+    final banner = widget.banner == null
+        ? null
+        : Padding(padding: EdgeInsets.fromLTRB(pad, 0, pad, 14), child: Align(alignment: Alignment.centerLeft, child: widget.banner));
     if (widget.tracks.isEmpty) {
-      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [header, Expanded(child: widget.empty)]);
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        header,
+        if (banner != null) banner,
+        Expanded(child: widget.empty),
+      ]);
     }
 
     return ListenableBuilder(
@@ -401,6 +419,7 @@ class _TracksPageState extends State<TracksPage> {
         final currentId = app.player.current?.id;
         return CustomScrollView(slivers: [
           SliverToBoxAdapter(child: header),
+          if (banner != null) SliverToBoxAdapter(child: banner),
           if (visible.isEmpty)
             SliverToBoxAdapter(
               child: Padding(

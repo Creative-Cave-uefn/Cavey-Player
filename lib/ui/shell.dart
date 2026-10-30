@@ -10,6 +10,7 @@ import '../core/updater.dart';
 import 'accounts_view.dart';
 import 'albums_view.dart';
 import 'company_view.dart';
+import 'download_view.dart';
 import 'library_views.dart';
 import 'lyrics_panel.dart';
 import 'player_bar.dart';
@@ -134,6 +135,8 @@ class _ShellState extends State<Shell> {
         return LikedPage(key: const ValueKey('liked'), compact: compact);
       case 'playlist':
         return PlaylistPage(key: ValueKey('pl:${nav.id}'), playlistId: nav.id!, compact: compact);
+      case 'download':
+        return DownloadPage(key: const ValueKey('download'), compact: compact);
       case 'company':
         return CompanyPage(key: const ValueKey('company'), compact: compact);
       case 'artists':
@@ -166,7 +169,7 @@ class _Sidebar extends StatelessWidget {
       width: compact ? 72 : 248,
       decoration: const BoxDecoration(color: C.surface, border: Border(right: BorderSide(color: C.line))),
       child: ListenableBuilder(
-        listenable: Listenable.merge([app.lib, nav]),
+        listenable: Listenable.merge([app.lib, nav, app.downloads]),
         builder: (context, _) {
           final lib = app.lib;
           final cur = nav.value;
@@ -189,6 +192,10 @@ class _Sidebar extends StatelessWidget {
             item(Icons.album_outlined, 'Альбомы', const Nav('albums')),
             item(Icons.mic_none_rounded, 'Исполнители', const Nav('artists')),
             item(Icons.schedule_rounded, 'Недавно добавленные', const Nav('recent')),
+            item(Icons.cloud_download_outlined, 'Скачать', const Nav('download'),
+                trailing: app.downloads.busy
+                    ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : null),
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
             item(Icons.groups_outlined, 'Компания', const Nav('company')),
             NowListeningSidebar(compact: compact),

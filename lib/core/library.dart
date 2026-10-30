@@ -845,33 +845,9 @@ class LibraryController extends ChangeNotifier {
           ..fileProgress = 0;
         notifyListeners();
         try {
-          final head = await _readHead(file);
-          final tags = parseTags(head, name);
-          final f = await drive.uploadFile(email, folderId, file, onProgress: (p) {
+          await uploadOne(file, sourceId: folderId, folderId: folderId, email: email, onProgress: (p) {
             upload.fileProgress = p;
             notifyListeners();
-          });
-          commit({
-            'op': 'upsertTracks',
-            'tracks': {
-              f.id: Track(
-                id: f.id,
-                source: folderId,
-                title: tags.title,
-                artist: tags.artist,
-                album: tags.album,
-                albumArtist: tags.albumArtist,
-                no: tags.track,
-                year: tags.year,
-                pic: tags.pic,
-                cover: null,
-                modified: f.modifiedTime,
-                size: f.size,
-                by: me ?? email,
-                path: '',
-                added: f.createdTime,
-              ).toJson(),
-            },
           });
           upload.done++;
         } catch (e) {
@@ -895,6 +871,43 @@ class LibraryController extends ChangeNotifier {
         ..current = '';
       notifyListeners();
     }
+  }
+
+  /// Загружает один файл в папку на Диске и сразу добавляет его в библиотеку.
+  /// [sourceId] — папка библиотеки, [folderId] — она же или подпапка внутри неё.
+  Future<Track> uploadOne(File file,
+      {required String sourceId, required String folderId, String path = '', String? email, void Function(double)? onProgress}) async {
+    final who = email ?? await accessFor(sourceId);
+    final name = file.uri.pathSegments.where((s) => s.isNotEmpty).last;
+    final tags = parseTags(await _readHead(file), name);
+    final f = await drive.uploadFile(who, folderId, file, onProgress: onProgress);
+    final t = Track(
+      id: f.id,
+      source: sourceId,
+      title: tags.title,
+      artist: tags.artist,
+      album: tags.album,
+      albumArtist: tags.albumArtist,
+      no: tags.track,
+      year: tags.year,
+      pic: tags.pic,
+      cover: null,
+      modified: f.modifiedTime,
+      size: f.size,
+      by: me ?? who,
+      path: path,
+      added: f.createdTime,
+    );
+    commit({'op': 'upsertTracks', 'tracks': {f.id: t.toJson()}});
+    return t;
+  }
+
+  /// Подпапка с таким именем внутри [parentId]; создаётся, если её нет
+  Future<String> ensureSubfolder(String sourceId, String parentId, String name) async {
+    final email = await accessFor(sourceId);
+    final found = (await drive.listChildren(email, parentId, nameEquals: name)).where((f) => f.isFolder).toList();
+    if (found.isNotEmpty) return found.first.id;
+    return drive.createFolder(email, name, parent: parentId);
   }
 
   /// Вызывается после удачной загрузки — для ленты событий
