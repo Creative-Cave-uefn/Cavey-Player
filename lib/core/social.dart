@@ -352,6 +352,19 @@ class SocialController extends ChangeNotifier {
     return list.length > 100 ? list.sublist(0, 100) : list;
   }
 
+  /// Сколько раз трек прослушан: всей компанией или одним человеком [email].
+  /// История хранится две недели, поэтому считается за этот срок.
+  int playsOf(String trackId, {String? email}) {
+    var n = 0;
+    for (final m in members.values) {
+      if (email != null && m.email != email) continue;
+      for (final day in m.plays.values) {
+        n += day[trackId] ?? 0;
+      }
+    }
+    return n;
+  }
+
   List<ChartEntry> chart({int days = 7, int limit = 30}) {
     final since = _day(DateTime.now().subtract(Duration(days: days - 1)));
     final plays = <String, int>{};

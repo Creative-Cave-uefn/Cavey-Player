@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/models.dart';
+import 'shell.dart';
 import 'theme.dart';
 
 String plural(int n, String one, String few, String many) {
@@ -157,16 +158,24 @@ class FriendTag extends StatelessWidget {
     final lib = Services.of(context).lib;
     return Tooltip(
       message: 'Загрузил(а) ${lib.nameOf(email)}',
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FriendDot(email),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(lib.firstNameOf(email),
-                overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+      // Клик открывает страницу этого человека
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => NavScope.of(context).go(Nav('user', email)),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              FriendDot(email),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(lib.firstNameOf(email),
+                    overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

@@ -101,12 +101,16 @@ class _ListenerCard extends StatelessWidget {
         border: Border.all(color: following ? C.accent : C.line),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Avatar(email: member.email, name: member.name, size: 26),
-          const SizedBox(width: 10),
-          Expanded(child: Text(member.name.isEmpty ? member.email : member.name, overflow: TextOverflow.ellipsis)),
-          Text(member.live ? 'слушает' : 'на паузе', style: TextStyle(color: member.live ? C.accent : C.faint, fontSize: 12)),
-        ]),
+        InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () => NavScope.of(context).go(Nav('user', member.email)),
+          child: Row(children: [
+            Avatar(email: member.email, name: member.name, size: 26),
+            const SizedBox(width: 10),
+            Expanded(child: Text(member.name.isEmpty ? member.email : member.name, overflow: TextOverflow.ellipsis)),
+            Text(member.live ? 'слушает' : 'на паузе', style: TextStyle(color: member.live ? C.accent : C.faint, fontSize: 12)),
+          ]),
+        ),
         const SizedBox(height: 12),
         Row(children: [
           CoverImage(track: track, size: 52, radius: 6),
@@ -274,7 +278,7 @@ class NowListeningSidebar extends StatelessWidget {
             Tooltip(
               message: '${m.now!.title} — ${m.now!.artist}',
               child: InkWell(
-                onTap: () => NavScope.of(context).go(const Nav('company')),
+                onTap: () => NavScope.of(context).go(Nav('user', m.email)),
                 child: Padding(
                   padding: EdgeInsets.symmetric(horizontal: compact ? 0 : 22, vertical: 5),
                   child: Row(

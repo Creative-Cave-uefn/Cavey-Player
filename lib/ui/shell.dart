@@ -15,6 +15,7 @@ import 'download_view.dart';
 import 'library_views.dart';
 import 'lyrics_panel.dart';
 import 'player_bar.dart';
+import 'profile_view.dart';
 import 'sources_view.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
@@ -237,7 +238,14 @@ class _ShellState extends State<Shell> {
       case 'artists':
         return ArtistsPage(key: const ValueKey('artists'), compact: compact);
       case 'artist':
-        return ArtistPage(key: ValueKey('artist:${nav.id}'), artistKey: nav.id!, compact: compact);
+        return ArtistProfilePage(key: ValueKey('artist:${nav.id}'), artistKey: nav.id!, compact: compact);
+      case 'artistTracks':
+        return ArtistPage(key: ValueKey('artistTracks:${nav.id}'), artistKey: nav.id!, compact: compact);
+      case 'user':
+        return UserProfilePage(key: ValueKey('user:${nav.id}'), email: nav.id!, compact: compact);
+      case 'userLikes':
+      case 'userUploads':
+        return UserTracksPage(key: ValueKey('${nav.kind}:${nav.id}'), email: nav.id!, uploads: nav.kind == 'userUploads', compact: compact);
       case 'recent':
         return RecentPage(key: const ValueKey('recent'), compact: compact);
       case 'duplicates':
@@ -293,6 +301,7 @@ class _Sidebar extends StatelessWidget {
                     : null),
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
             item(Icons.groups_outlined, 'Компания', const Nav('company')),
+            if (lib.me != null) item(Icons.person_outline_rounded, 'Моя страница', Nav('user', lib.me)),
             NowListeningSidebar(compact: compact),
             const SizedBox(height: 18),
             if (!compact)
