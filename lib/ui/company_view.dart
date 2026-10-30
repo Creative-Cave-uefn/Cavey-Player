@@ -213,7 +213,7 @@ class _NoticeBell extends StatefulWidget {
 
 class _NoticeBellState extends State<_NoticeBell> {
   /// Что считать прочитанным: всё, что старше последнего открытия колокольчика
-  DateTime? _seen(Services app) => DateTime.tryParse(app.lib.settings.bellSeen ?? '');
+  DateTime? _seen(AppServices app) => DateTime.tryParse(app.settings.bellSeen ?? '');
 
   @override
   Widget build(BuildContext context) {
@@ -231,7 +231,7 @@ class _NoticeBellState extends State<_NoticeBell> {
       alignmentOffset: const Offset(-330, 4),
       onOpen: () {
         // Открыли — всё считается прочитанным, колокольчик гаснет
-        app.lib.settings.bellSeen = DateTime.now().toUtc().toIso8601String();
+        app.settings.bellSeen = DateTime.now().toUtc().toIso8601String();
         unawaited(app.lib.saveSettings());
       },
       onClose: () {
