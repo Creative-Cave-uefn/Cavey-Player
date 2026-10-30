@@ -401,7 +401,6 @@ class PlayerController extends ChangeNotifier {
   Future<void> _open({Duration? at, bool play = true}) async {
     final t = current;
     if (t == null) return;
-    altSource = null; // новый трек — снова обычный звук, пока караоке не подготовит свою копию
     final seq = ++_openSeq;
     _resumeAt = null;
     _userPaused = false;
@@ -615,37 +614,8 @@ class PlayerController extends ChangeNotifier {
     await lib.saveSettings();
   }
 
-  // ---------- другой звук того же трека (караоке) ----------
-
-  /// Играет не сам файл трека, а его обработанная копия (например, без голоса)
-  String? altSource;
-
-  /// Включить обработанную копию трека с того же места
-  Future<void> swapSource(String path) async {
-    final pos = position.value;
-    final wasPlaying = playing || _resumeAt != null;
-    altSource = path;
-    notifyListeners();
-    try {
-      await _p.open(Media(Uri.file(path).toString()), play: false);
-      await _p.stream.duration.firstWhere((d) => d > Duration.zero).timeout(const Duration(seconds: 10), onTimeout: () => Duration.zero);
-      await _p.seek(pos);
-      if (wasPlaying) await _p.play();
-    } catch (e) {
-      AppLog.warn('Плеер: обработанная копия', e);
-    }
-  }
-
-  /// Вернуть обычный звук трека с того же места
-  Future<void> restoreSource() async {
-    if (altSource == null) return;
-    altSource = null;
-    await _open(at: position.value, play: playing);
-  }
-
   /// Фильтры звука. Встроенный в плеер звуковой движок (сборка media_kit) собран без фильтров ffmpeg,
-  /// кроме эквалайзера, — поэтому loudnorm и подобные здесь не запускаются. Караоке без голоса
-  /// делается отдельной копией трека через ffmpeg (см. KaraokeService)
+  /// кроме эквалайзера, — поэтому loudnorm здесь не запускается
   Future<void> _applyNormalize() async {
     final native = _p.platform;
     if (native is! NativePlayer) return;
