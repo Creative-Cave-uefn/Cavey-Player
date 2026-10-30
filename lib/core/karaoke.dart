@@ -187,7 +187,29 @@ class KaraokeService extends ChangeNotifier {
   final Tools tools;
   KaraokeService(this.dir, this.lib, this.drive, this.cache, this.tools);
 
-  static const _whisperUrl = 'https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip';
+  /// Новые версии whisper.cpp выходят «предварительными», а ссылка latest/download ведёт только на стабильные —
+  /// там нужного архива может не быть (так и было: 404). Поэтому берём список выпусков и ищем архив сами
+  static const _releasesApi = 'https://api.github.com/repos/ggml-org/whisper.cpp/releases?per_page=15';
+  static const _assetNames = ['whisper-bin-x64.zip', 'whisper-blas-bin-x64.zip'];
+
+  Future<String> _whisperUrl() async {
+    final res = await http.get(Uri.parse(_releasesApi), headers: {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer'});
+    if (res.statusCode != 200) throw Exception('GitHub не отдал список версий whisper.cpp (${res.statusCode})');
+    final list = jsonDecode(utf8.decode(res.bodyBytes));
+    if (list is! List) throw Exception('GitHub прислал непонятный ответ');
+    for (final name in _assetNames) {
+      for (final r in list) {
+        if (r is! Map || r['draft'] == true) continue;
+        for (final a in (r['assets'] as List? ?? const [])) {
+          if (a is Map && a['name'] == name) {
+            AppLog.info('Караоке: whisper.cpp ${r['tag_name']} — $name');
+            return '${a['browser_download_url']}';
+          }
+        }
+      }
+    }
+    throw Exception('в последних версиях whisper.cpp нет сборки для Windows');
+  }
   static String modelUrl(String m) => 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-$m.bin';
 
   // ---------- настройки ----------
@@ -227,7 +249,7 @@ class KaraokeService extends ChangeNotifier {
     await dir.create(recursive: true);
     if (!_cli.existsSync()) {
       final zip = File('${dir.path}${Platform.pathSeparator}whisper.zip');
-      await _download(_whisperUrl, zip, 'whisper.cpp');
+      await _download(await _whisperUrl(), zip, 'whisper.cpp');
       _status('Распаковываю whisper.cpp…');
       await _bin.create(recursive: true);
       final input = InputFileStream(zip.path);
@@ -389,12 +411,12 @@ class KaraokeService extends ChangeNotifier {
           await _compute(t, ly, key);
         } catch (e) {
           AppLog.warn('Караоке: не посчиталось «${t.title}»', e);
-          _status('');
+          _status('Не получилось: ${'$e'.replaceFirst('Exception: ', '')}');
         }
       }
     } finally {
       _busy = false;
-      if (status.isNotEmpty && !status.startsWith('Скачиваю')) _status('');
+      if (status.isNotEmpty && !status.startsWith('Скачиваю') && !status.startsWith('Не получилось')) _status('');
     }
   }
 

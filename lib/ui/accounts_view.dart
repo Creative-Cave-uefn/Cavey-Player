@@ -557,7 +557,9 @@ class _KaraokeSection extends StatelessWidget {
           if (k.status.isNotEmpty) ...[
             const SizedBox(height: 10),
             Row(children: [
-              SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2, value: k.progress)),
+              k.status.startsWith('Не получилось')
+                  ? const Icon(Icons.error_outline_rounded, size: 16, color: C.danger)
+                  : SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2, value: k.progress)),
               const SizedBox(width: 10),
               Expanded(child: Text(k.status, style: const TextStyle(color: C.muted, fontSize: 13))),
             ]),
