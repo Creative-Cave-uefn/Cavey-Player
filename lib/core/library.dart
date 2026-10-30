@@ -226,13 +226,13 @@ class LibraryController extends ChangeNotifier {
         throw LibraryException('По ссылке файл, а нужна папка «Cave Player»');
       }
       final found = await drive.listChildren(a.email, id, nameEquals: 'library.json');
-      String libId;
-      if (found.isNotEmpty) {
-        libId = found.first.id;
-      } else {
-        final f = await drive.createFile(a.email, id, 'library.json', jsonEncode(LibraryData().toJson()));
-        libId = f['id'] as String;
+      if (found.isEmpty) {
+        // Раньше здесь создавалась новая пустая библиотека: если вставить ссылку на папку с музыкой,
+        // человек оказывался в отдельной пустой библиотеке без плейлистов и друзей
+        throw LibraryException('В этой папке нет общей библиотеки Cave Player (файла library.json). '
+            'Нужна ссылка на папку «Cave Player», а не на папку с музыкой.');
       }
+      final libId = found.first.id;
       settings
         ..hubId = id
         ..hubEmail = a.email
@@ -263,20 +263,22 @@ class LibraryController extends ChangeNotifier {
         // к папке по умолчанию нет доступа — поищем другие
       }
     }
-    final folders = <String>[];
+    // Настоящая библиотека — самый большой library.json: случайный пустой файл, даже свежий, её не перебьёт
+    final found = <(String, int)>[];
     for (final a in accounts.accounts) {
       try {
         for (final f in await drive.findLibraries(a.email)) {
           final parents = f['parents'];
-          if (parents is List && parents.isNotEmpty && !folders.contains('${parents.first}')) {
-            folders.add('${parents.first}');
+          if (parents is List && parents.isNotEmpty && !found.any((x) => x.$1 == '${parents.first}')) {
+            found.add(('${parents.first}', int.tryParse('${f['size'] ?? 0}') ?? 0));
           }
         }
       } catch (_) {
         // этот аккаунт не смог поискать — пробуем остальные
       }
     }
-    for (final id in folders) {
+    found.sort((a, b) => b.$2.compareTo(a.$2));
+    for (final id in [for (final x in found) x.$1]) {
       try {
         await joinHub(id);
         return true;

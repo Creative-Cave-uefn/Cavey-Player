@@ -279,7 +279,7 @@ class DriveApi {
       'GET',
       api('files', {
         'q': "name = 'library.json' and trashed = false",
-        'fields': 'files(id,parents,modifiedTime)',
+        'fields': 'files(id,parents,modifiedTime,size)',
         'orderBy': 'modifiedTime desc',
         'pageSize': '20',
         'corpora': 'allDrives',

@@ -33,12 +33,39 @@ class AppStore {
     }
   }
 
-  Future<void> writeJson(String name, Object value) async {
+  /// Записи в один файл идут по очереди: раньше десять правок подряд писали в один .tmp одновременно
+  /// и спотыкались друг о друга («файл занят другим процессом»)
+  final Map<String, Future<void>> _writes = {};
+
+  Future<void> writeJson(String name, Object value) {
+    final text = jsonEncode(value); // снимок на момент вызова, а не на момент записи
+    final prev = _writes[name] ?? Future<void>.value();
+    final next = prev.catchError((Object _) {}).then((_) => _write(name, text));
+    _writes[name] = next;
+    return next.whenComplete(() {
+      if (identical(_writes[name], next)) _writes.remove(name);
+    });
+  }
+
+  Future<void> _write(String name, String text) async {
     final f = file(name);
     final tmp = File('${f.path}.tmp');
-    await tmp.writeAsString(jsonEncode(value), flush: true);
-    if (await f.exists()) await f.delete();
-    await tmp.rename(f.path);
+    for (var attempt = 0;; attempt++) {
+      try {
+        await tmp.writeAsString(text, flush: true);
+        try {
+          await tmp.rename(f.path); // в Windows это заменяет существующий файл
+        } on FileSystemException {
+          if (await f.exists()) await f.delete();
+          await tmp.rename(f.path);
+        }
+        return;
+      } on FileSystemException {
+        // Файл на мгновение занят (антивирус, индексация): подождём и повторим
+        if (attempt >= 4) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 150 * (attempt + 1)));
+      }
+    }
   }
 }
 
