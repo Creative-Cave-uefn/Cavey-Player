@@ -94,12 +94,9 @@ class PlayerBar extends StatelessWidget {
           );
 
           final soundButton = IconButton(
-            tooltip: p.sleepActive ? _sleepLabel(p) : 'Звук и таймер сна',
+            tooltip: 'Звук',
             onPressed: () => _showSound(context),
-            icon: Icon(
-              p.sleepActive ? Icons.bedtime_rounded : Icons.tune_rounded,
-              color: p.sleepActive || p.rate != 1.0 || p.normalize ? C.accent : C.muted,
-            ),
+            icon: Icon(Icons.tune_rounded, color: p.normalize ? C.accent : C.muted),
           );
 
           final right = Row(mainAxisAlignment: MainAxisAlignment.end, children: [
@@ -140,15 +137,6 @@ class PlayerBar extends StatelessWidget {
     );
   }
 
-  static String _sleepLabel(PlayerController p) {
-    if (p.sleepAfterTrack) return 'Остановлюсь после этого трека';
-    final at = p.sleepAt;
-    if (at == null) return 'Таймер сна выключен';
-    final left = at.difference(DateTime.now());
-    final min = (left.inSeconds / 60).ceil();
-    return 'Пауза через ${min < 1 ? 1 : min} мин';
-  }
-
   void _showSound(BuildContext context) {
     final app = Services.of(context);
     showDialog<void>(
@@ -162,11 +150,6 @@ class PlayerBar extends StatelessWidget {
             listenable: app.player,
             builder: (context, _) {
               final p = app.player;
-              Widget choice(String label, bool selected, VoidCallback onTap) => ChoiceChip(
-                    label: Text(label),
-                    selected: selected,
-                    onSelected: (_) => onTap(),
-                  );
               return Padding(
                 padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
                 child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -179,26 +162,6 @@ class PlayerBar extends StatelessWidget {
                     title: const Text('Выравнивать громкость'),
                     subtitle: const Text('Тихие и громкие треки звучат одинаково', style: TextStyle(color: C.faint, fontSize: 13)),
                   ),
-                  const SizedBox(height: 8),
-                  const Text('Скорость', style: TextStyle(color: C.muted, fontSize: 13)),
-                  const SizedBox(height: 8),
-                  Wrap(spacing: 8, runSpacing: 8, children: [
-                    for (final r in const [0.75, 1.0, 1.25, 1.5, 2.0])
-                      choice(r == 1.0 ? 'Обычная' : '×${r.toString().replaceAll('.', ',')}', p.rate == r, () => p.setRate(r)),
-                  ]),
-                  const SizedBox(height: 20),
-                  Row(children: [
-                    Text('Таймер сна', style: display(18)),
-                    const Spacer(),
-                    if (p.sleepActive) Text(_sleepLabel(p), style: const TextStyle(color: C.accent, fontSize: 13)),
-                  ]),
-                  const SizedBox(height: 10),
-                  Wrap(spacing: 8, runSpacing: 8, children: [
-                    choice('Выкл', !p.sleepActive, () => p.setSleepTimer(null)),
-                    for (final m in const [15, 30, 45, 60, 90])
-                      choice('$m мин', false, () => p.setSleepTimer(Duration(minutes: m))),
-                    choice('После этого трека', p.sleepAfterTrack, p.setSleepAfterTrack),
-                  ]),
                 ]),
               );
             },

@@ -10,6 +10,7 @@ import 'library.dart';
 import 'log.dart';
 import 'models.dart';
 import 'store.dart';
+import 'stream_proxy.dart';
 
 enum RepeatSetting { off, all, one }
 
@@ -33,7 +34,6 @@ class PlayerController extends ChangeNotifier {
   bool buffering = false;
   bool shuffle = false;
   RepeatSetting repeat = RepeatSetting.off;
-  double rate = 1.0;
   String? error;
 
   List<String> _origin = [];
@@ -46,10 +46,17 @@ class PlayerController extends ChangeNotifier {
   Timer? _saveTimer;
   double _volumeBeforeMute = 80;
 
-  // ---------- таймер сна ----------
-  DateTime? sleepAt;
-  bool sleepAfterTrack = false;
-  Timer? _sleepTimer;
+  /// Трек, который сейчас открываем: если за это время открыли другой, старый не трогаем
+  int _openSeq = 0;
+
+  /// Человек сам поставил паузу после открытия трека — не включаем за него
+  bool _userPaused = false;
+
+  /// Стриминг с Диска идёт через локальный прокси (быстрее старт, свежий токен)
+  final StreamProxy _proxy = StreamProxy(urlFor: DriveApi.mediaUrl);
+
+  /// Трек открыт и известна длительность — например, чтобы сразу искать текст
+  void Function(Track track, Duration duration)? onTrackReady;
 
   PlayerController(this.lib, this.accounts, this.settings, this.cache) {
     _subs.add(_p.stream.position.listen((d) {
@@ -242,13 +249,16 @@ class PlayerController extends ChangeNotifier {
   Future<void> _open({Duration? at, bool play = true}) async {
     final t = current;
     if (t == null) return;
+    final seq = ++_openSeq;
     _resumeAt = null;
+    _userPaused = false;
     error = null;
     position.value = at ?? Duration.zero;
     duration = Duration.zero;
     notifyListeners();
+    final started = DateTime.now();
     try {
-      // Сохранённый трек играет с диска, остальные — потоком с Google Диска
+      // Сохранённый трек играет с диска, остальные — потоком с Google Диска через прокси
       final local = cache.fileFor(t.id);
       Media media;
       final fromDisk = cache.has(t.id) && local.existsSync();
@@ -256,10 +266,21 @@ class PlayerController extends ChangeNotifier {
       if (fromDisk) {
         media = Media(local.path);
       } else {
-        final email = await lib.accessFor(t.source);
-        final token = await accounts.token(email);
-        media = Media(DriveApi.mediaUrl(t.id).toString(), httpHeaders: {'Authorization': 'Bearer $token'});
+        try {
+          final url = await _proxy.register(
+            t.id,
+            size: t.size,
+            token: () async => accounts.token(await lib.accessFor(t.source)),
+          );
+          media = Media(url.toString());
+        } catch (e) {
+          // Прокси не запустился — по-старому, напрямую с Диска
+          AppLog.warn('Прокси стриминга недоступен', e);
+          final token = await accounts.token(await lib.accessFor(t.source));
+          media = Media(DriveApi.mediaUrl(t.id).toString(), httpHeaders: {'Authorization': 'Bearer $token'});
+        }
       }
+      if (seq != _openSeq) return; // пока готовили, включили другой трек
       cache.touch(t);
       await _p.open(media, play: at == null && play);
       _openedAt = DateTime.now();
@@ -270,6 +291,8 @@ class PlayerController extends ChangeNotifier {
         await _p.seek(at);
         if (play) await _p.play();
       }
+      if (play) unawaited(_ensurePlaying(seq, t, started));
+      unawaited(_whenReady(seq, t));
       _preloadNext();
       _saveSession();
     } catch (e) {
@@ -282,25 +305,48 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
+  /// Новый трек должен заиграть сам. Если открыть его прямо в момент окончания
+  /// предыдущего, пауза от старого трека иногда приходит позже и останавливает
+  /// новый — тогда включаем ещё раз. Заодно пишем в журнал, сколько ждали звука.
+  Future<void> _ensurePlaying(int seq, Track t, DateTime started) async {
+    var kicked = false;
+    for (final wait in const [300, 700, 1500, 3000]) {
+      await Future<void>.delayed(Duration(milliseconds: wait));
+      if (seq != _openSeq || _userPaused) return;
+      if (_p.state.playing) break;
+      if (!kicked) AppLog.info('«${t.title}» встал на паузу сам — включаю');
+      kicked = true;
+      await _p.play();
+    }
+    // Время до первого звука: позиция сдвинулась с нуля
+    final heard = await _p.stream.position
+        .firstWhere((d) => d > const Duration(milliseconds: 50))
+        .timeout(const Duration(seconds: 20), onTimeout: () => Duration.zero);
+    if (seq != _openSeq) return;
+    final ms = DateTime.now().difference(started).inMilliseconds;
+    AppLog.info(heard == Duration.zero ? '«${t.title}»: звука нет 20 с' : '«${t.title}»: звук через $ms мс');
+  }
+
+  /// Длительность известна — сообщаем (для поиска текста)
+  Future<void> _whenReady(int seq, Track t) async {
+    final d = duration > Duration.zero
+        ? duration
+        : await _p.stream.duration
+            .firstWhere((d) => d > Duration.zero)
+            .timeout(const Duration(seconds: 15), onTimeout: () => Duration.zero);
+    if (seq != _openSeq) return;
+    onTrackReady?.call(t, d);
+  }
+
   void _onCompleted() {
-    if (sleepAfterTrack) {
-      // «После этого трека»: останавливаемся, следующий трек ждёт своей очереди
-      sleepAfterTrack = false;
-      if (index + 1 < queue.length) {
-        index++;
-        _resumeAt = Duration.zero;
-        position.value = Duration.zero;
+    // Даём плееру закончить старый трек, иначе его пауза может догнать новый
+    Future<void>.delayed(const Duration(milliseconds: 60), () {
+      if (repeat == RepeatSetting.one) {
+        unawaited(_open());
+      } else {
+        unawaited(next(auto: true));
       }
-      AppLog.info('Таймер сна: остановка после трека');
-      notifyListeners();
-      _saveSession();
-      return;
-    }
-    if (repeat == RepeatSetting.one) {
-      unawaited(_open());
-    } else {
-      unawaited(next(auto: true));
-    }
+    });
   }
 
   Future<void> next({bool auto = false}) async {
@@ -346,6 +392,7 @@ class PlayerController extends ChangeNotifier {
       await _open(at: position.value);
       return;
     }
+    if (playing) _userPaused = true;
     await _p.playOrPause();
     onUserAction?.call();
   }
@@ -370,7 +417,10 @@ class PlayerController extends ChangeNotifier {
     await seek(to);
   }
 
-  Future<void> pause() => _p.pause();
+  Future<void> pause() {
+    _userPaused = true;
+    return _p.pause();
+  }
   Future<void> play() => _p.play();
 
   /// Перемотка или пауза пользователем — чтобы друзья, слушающие вместе, сразу это увидели
@@ -398,13 +448,6 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
-  /// Скорость воспроизведения; высота голоса сохраняется (mpv подстраивает темп)
-  Future<void> setRate(double r) async {
-    rate = r;
-    await _p.setRate(r);
-    notifyListeners();
-  }
-
   /// Выравнивание громкости: треки с разных источников звучат одинаково громко
   Future<void> setNormalize(bool on) async {
     settings.normalize = on;
@@ -423,34 +466,6 @@ class PlayerController extends ChangeNotifier {
       AppLog.warn('Не получилось включить выравнивание громкости', e);
     }
   }
-
-  // ---------- таймер сна ----------
-
-  /// Пауза через [after]; null — выключить таймер
-  void setSleepTimer(Duration? after) {
-    _sleepTimer?.cancel();
-    sleepAfterTrack = false;
-    sleepAt = after == null ? null : DateTime.now().add(after);
-    if (after != null) {
-      _sleepTimer = Timer(after, () {
-        sleepAt = null;
-        AppLog.info('Таймер сна: пауза');
-        unawaited(_p.pause());
-        notifyListeners();
-      });
-    }
-    notifyListeners();
-  }
-
-  /// Остановиться, когда закончится текущий трек
-  void setSleepAfterTrack() {
-    _sleepTimer?.cancel();
-    sleepAt = null;
-    sleepAfterTrack = true;
-    notifyListeners();
-  }
-
-  bool get sleepActive => sleepAt != null || sleepAfterTrack;
 
   // ---------- режимы ----------
 
@@ -491,8 +506,8 @@ class PlayerController extends ChangeNotifier {
     }
     _saveTimer?.cancel();
     _saveDebounce?.cancel();
-    _sleepTimer?.cancel();
     _p.dispose();
+    unawaited(_proxy.close());
     position.dispose();
     lyricsOpen.dispose();
     super.dispose();

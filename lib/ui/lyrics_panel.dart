@@ -102,8 +102,13 @@ class _LyricsBodyState extends State<_LyricsBody> {
     _idx = -1;
     _shown = -2;
     _future = () async {
-      final d = await _waitDuration(player);
-      final ly = await app.lyrics.forTrack(widget.track, d, refresh: refresh);
+      var d = await _waitDuration(player, const Duration(seconds: 4));
+      var ly = await app.lyrics.forTrack(widget.track, d, refresh: refresh);
+      // Искали, не зная длительности, и не нашли — дождёмся её и попробуем ещё раз
+      if (ly == null && d == Duration.zero && mounted) {
+        d = await _waitDuration(player, const Duration(seconds: 15));
+        if (d > Duration.zero && mounted) ly = await app.lyrics.forTrack(widget.track, d, refresh: true);
+      }
       _synced = (ly != null && ly.synced) ? ly : null;
       _onPosition();
       return ly;
@@ -112,7 +117,7 @@ class _LyricsBodyState extends State<_LyricsBody> {
 
   /// Длительность помогает выбрать правильную версию текста. При стриминге с Диска
   /// она появляется не сразу, поэтому ждём её по событию плеера, а не фиксированное время.
-  static Future<Duration> _waitDuration(PlayerController p) async {
+  static Future<Duration> _waitDuration(PlayerController p, Duration limit) async {
     if (p.duration > Duration.zero) return p.duration;
     final done = Completer<Duration>();
     void check() {
@@ -121,7 +126,7 @@ class _LyricsBodyState extends State<_LyricsBody> {
 
     p.addListener(check);
     try {
-      return await done.future.timeout(const Duration(seconds: 10), onTimeout: () => p.duration);
+      return await done.future.timeout(limit, onTimeout: () => p.duration);
     } finally {
       p.removeListener(check);
     }
