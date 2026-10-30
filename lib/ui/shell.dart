@@ -1,12 +1,13 @@
 import 'dart:async';
 
-import 'package:flutter/gestures.dart' show kBackMouseButton, kForwardMouseButton;
+import 'package:flutter/gestures.dart' show kBackMouseButton, kForwardMouseButton, kSecondaryMouseButton, PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/log.dart';
+import '../core/media_keys.dart';
 import '../core/models.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
@@ -15,6 +16,7 @@ import 'company_view.dart';
 import 'download_view.dart';
 import 'library_views.dart';
 import 'lyrics_panel.dart';
+import 'mouse_gesture.dart';
 import 'player_bar.dart';
 import 'playlists_view.dart';
 import 'profile_view.dart';
@@ -79,6 +81,7 @@ class Shell extends StatefulWidget {
 
 class _ShellState extends State<Shell> {
   final _nav = NavController();
+  final _gesture = MouseGesture();
   StreamSubscription<String>? _msgs;
   bool _dragging = false;
   String? _toast;
@@ -96,6 +99,25 @@ class _ShellState extends State<Shell> {
         if (mounted) setState(() => _toast = null);
       });
     });
+  }
+
+  /// Зажатая правая кнопка + движение: ← предыдущий, → следующий, ↑ ↓ громкость
+  void _onGesture(GestureDir dir) {
+    final app = Services.of(context);
+    final p = app.player;
+    switch (dir) {
+      case GestureDir.left:
+        _gesture.end(); // трек меняем один раз за нажатие, а не по треку на каждые 60 пикселей
+        p.previous();
+      case GestureDir.right:
+        _gesture.end();
+        p.next();
+      case GestureDir.up:
+      case GestureDir.down:
+        final v = (p.volume + (dir == GestureDir.up ? 5 : -5)).clamp(0, 100).toDouble();
+        p.setVolume(v, save: true);
+        app.lib.messages.add('Громкость: ${v.round()}%');
+    }
   }
 
   @override
@@ -116,7 +138,15 @@ class _ShellState extends State<Shell> {
         onPointerDown: (e) {
           if (e.buttons & kBackMouseButton != 0) _nav.back();
           if (e.buttons & kForwardMouseButton != 0) _nav.forward();
+          if (e.kind == PointerDeviceKind.mouse && e.buttons == kSecondaryMouseButton) _gesture.start(e.position);
         },
+        onPointerMove: (e) {
+          if (!_gesture.active) return;
+          final dir = _gesture.move(e.position);
+          if (dir != null) _onGesture(dir);
+        },
+        onPointerUp: (_) => _gesture.end(),
+        onPointerCancel: (_) => _gesture.end(),
         child: Focus(
         onKeyEvent: (node, e) => _onKey(e),
         child: Focus(
@@ -218,9 +248,12 @@ class _ShellState extends State<Shell> {
 
     void Function()? action;
     // Медиаклавиши и сочетания с Ctrl работают всегда
-    if (k == LogicalKeyboardKey.mediaPlayPause && !repeat) action = p.toggle;
-    if (k == LogicalKeyboardKey.mediaTrackNext && !repeat) action = p.next;
-    if (k == LogicalKeyboardKey.mediaTrackPrevious && !repeat) action = p.previous;
+    // (если включён перехват по всей системе, медиаклавиши ловит он, иначе они сработали бы дважды)
+    if (!MediaKeys.running) {
+      if (k == LogicalKeyboardKey.mediaPlayPause && !repeat) action = p.toggle;
+      if (k == LogicalKeyboardKey.mediaTrackNext && !repeat) action = p.next;
+      if (k == LogicalKeyboardKey.mediaTrackPrevious && !repeat) action = p.previous;
+    }
     if (ctrl && k == LogicalKeyboardKey.arrowRight && !repeat) action = p.next;
     if (ctrl && k == LogicalKeyboardKey.arrowLeft && !repeat) action = p.previous;
     if (ctrl && k == LogicalKeyboardKey.keyF && !repeat) action = () => searchRequests.value++;

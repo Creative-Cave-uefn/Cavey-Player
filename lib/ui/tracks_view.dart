@@ -781,10 +781,14 @@ class _TracksPageState extends State<TracksPage> {
               child: Padding(
               padding: EdgeInsets.fromLTRB(pad, widget.compact ? 72 : 96, pad, 36),
               child: Column(children: [
-                Text(widget.title, textAlign: TextAlign.center, style: display(widget.compact ? 30 : 44, weight: FontWeight.w700)),
+                SelectionArea(
+                  child: Text(widget.title, textAlign: TextAlign.center, style: display(widget.compact ? 30 : 44, weight: FontWeight.w700)),
+                ),
                 if (widget.subtitle != null) ...[
                   const SizedBox(height: 10),
-                  Text(widget.subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                  SelectionArea(
+                    child: Text(widget.subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                  ),
                 ],
                 if (widget.tracks.isNotEmpty) ...[
                   const SizedBox(height: 24),
@@ -839,14 +843,16 @@ class _TracksPageState extends State<TracksPage> {
         ],
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(widget.title,
-                maxLines: 2, overflow: TextOverflow.ellipsis, style: display(widget.compact ? 26 : 36, weight: FontWeight.w700)),
+            SelectionArea(
+              child: Text(widget.title,
+                  maxLines: 2, overflow: TextOverflow.ellipsis, style: display(widget.compact ? 26 : 36, weight: FontWeight.w700)),
+            ),
             if (widget.subtitleWidget != null) ...[
               const SizedBox(height: 10),
-              widget.subtitleWidget!,
+              SelectionArea(child: widget.subtitleWidget!),
             ] else if (widget.subtitle != null) ...[
               const SizedBox(height: 10),
-              Text(widget.subtitle!, style: const TextStyle(color: C.muted, fontSize: 15)),
+              SelectionArea(child: Text(widget.subtitle!, style: const TextStyle(color: C.muted, fontSize: 15))),
             ],
             if (widget.tracks.isNotEmpty) ...[
               const SizedBox(height: 22),

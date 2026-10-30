@@ -542,6 +542,21 @@ class _TraySectionState extends State<_TraySection> {
           await app.lib.saveSettings();
         },
       ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: app.settings.globalMediaKeys,
+        activeColor: C.accent,
+        title: const Text('Медиаклавиши, когда окно не активно'),
+        subtitle: const Text(
+          '⏮ ⏯ ⏭ на клавиатуре (в том числе Fn+F-клавиши ноутбука) работают, даже если Cave Player свёрнут или спрятан в трей.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+        ),
+        onChanged: (v) async {
+          setState(() => app.settings.globalMediaKeys = v);
+          app.mediaKeys.refresh();
+          await app.lib.saveSettings();
+        },
+      ),
     ]);
   }
 }

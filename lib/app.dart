@@ -22,7 +22,9 @@ import 'core/store.dart';
 import 'core/single_instance.dart';
 import 'core/taskbar.dart';
 import 'core/tray.dart';
+import 'core/media_keys.dart';
 import 'core/updater.dart';
+import 'core/window_style.dart';
 import 'ui/onboarding.dart';
 import 'ui/shell.dart';
 import 'ui/theme.dart';
@@ -50,6 +52,7 @@ class AppServices {
   /// Фото, описания и новинки исполнителей из интернета, отрывки треков
   late final WebInfoService web;
   late final PreviewPlayer preview;
+  late final MediaKeys mediaKeys;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
@@ -120,6 +123,8 @@ class AppServices {
         store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
+    Updater.beforeExit = tray.dispose;
+    app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
     // Ярлык на панели задач запускает вторую копию; она просит первую показать окно
     listenForSecondLaunch(() => unawaited(tray.showWindow()));
@@ -165,6 +170,7 @@ class CavePlayerApp extends StatelessWidget {
         title: 'Cave Player',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
+        builder: (context, child) => CaptionFrame(child: child ?? const SizedBox()),
         home: ListenableBuilder(
           listenable: Listenable.merge([app.accounts, app.lib]),
           builder: (context, _) {

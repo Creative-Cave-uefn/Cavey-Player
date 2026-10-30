@@ -176,14 +176,18 @@ class _ProfileLayoutState extends State<ProfileLayout> {
               child: Column(children: [
                 SizedBox.square(dimension: photo, child: ClipOval(child: avatar)),
                 const SizedBox(height: 26),
-                Text(name,
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: display(compact ? 28 : 40, weight: FontWeight.w700)),
+                SelectionArea(
+                  child: Text(name,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: display(compact ? 28 : 40, weight: FontWeight.w700)),
+                ),
                 if (subtitle != null) ...[
                   const SizedBox(height: 10),
-                  Text(subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: C.muted, fontSize: 15)),
+                  SelectionArea(
+                    child: Text(subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: C.muted, fontSize: 15)),
+                  ),
                 ],
                 const SizedBox(height: 22),
                 Row(mainAxisAlignment: MainAxisAlignment.center, children: [

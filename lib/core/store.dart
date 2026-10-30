@@ -94,6 +94,8 @@ class Settings {
   bool betaUpdates = false; // получать бета-версии
   bool trayOnClose = true; // крестик прячет окно в трей, музыка играет дальше
   bool trayAsked = false; // уже спрашивали, что делать по крестику
+  bool globalMediaKeys = true; // медиаклавиши работают и когда окно не активно
+  int crossfadeSec = 3; // плавный переход между треками, секунд (0 — выключен)
   bool artistsDesc = false; // «Исполнители» сортируются Я–А
   bool albumsDesc = false; // «Альбомы» сортируются Я–А
 
@@ -125,6 +127,8 @@ class Settings {
         'betaUpdates': betaUpdates,
         'trayOnClose': trayOnClose,
         'trayAsked': trayAsked,
+        'globalMediaKeys': globalMediaKeys,
+        'crossfadeSec': crossfadeSec,
         'artistsDesc': artistsDesc,
         'albumsDesc': albumsDesc,
         'view': view,
@@ -154,6 +158,8 @@ class Settings {
     s.betaUpdates = j['betaUpdates'] == true;
     s.trayOnClose = j['trayOnClose'] != false;
     s.trayAsked = j['trayAsked'] == true;
+    s.globalMediaKeys = j['globalMediaKeys'] != false;
+    s.crossfadeSec = ((j['crossfadeSec'] as num?)?.toInt() ?? 3).clamp(0, 10);
     s.artistsDesc = j['artistsDesc'] == true;
     s.albumsDesc = j['albumsDesc'] == true;
     final vw = j['view'];

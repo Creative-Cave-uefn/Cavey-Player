@@ -398,9 +398,17 @@ class Updater extends ChangeNotifier {
     final meta = await store.readJson('update.json');
     if (meta is! Map || meta['path'] == null) return;
     await store.writeJson('update.json', {...meta, 'attempted': true});
+    // Значок из трея убираем сами и ДО запуска установщика: после exit(0) или принудительного закрытия
+    // Windows оставляет «призрак» значка, пока не наведёшь на него курсор, и после обновлений в трее копятся старые иконки
+    try {
+      await beforeExit?.call().timeout(const Duration(seconds: 2));
+    } catch (_) {}
     await _launch('${meta['path']}');
     exit(0);
   }
+
+  /// Что сделать перед выходом ради установки обновления (убрать значок из трея)
+  static Future<void> Function()? beforeExit;
 
   Future<void> _launch(String path) async {
     await Process.start(
