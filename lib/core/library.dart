@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import '../config.dart';
@@ -108,13 +109,14 @@ class LibraryController extends ChangeNotifier {
     _pollTimer?.cancel();
     _scanTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _poll());
-    _scanTimer = Timer.periodic(const Duration(minutes: 10), (_) => scanAll(quiet: true));
+    _scanTimer = Timer.periodic(const Duration(minutes: 10), (_) => scanAll(quiet: true).then((_) => fillDurations()));
     () async {
       try {
         await reload();
         await _ensureHubSource();
         if (_pending.isNotEmpty) _scheduleFlush();
         await scanAll(quiet: true);
+        unawaited(fillDurations());
       } catch (e) {
         _report(e);
       }
@@ -622,7 +624,7 @@ class LibraryController extends ChangeNotifier {
       final children = await drive.listChildren(email, folder);
       for (final c in children) {
         if (c.isFolder) {
-          if (c.name == dataFolderName && folder == settings.hubId) continue; // служебная папка
+          if ((c.name == dataFolderName || c.name == coversFolderName) && folder == settings.hubId) continue; // служебные папки
           if (depth < 10) queue.add((c.id, path.isEmpty ? c.name : '$path/${c.name}', depth + 1));
         } else if (audioExt.hasMatch(c.name) || c.mimeType.startsWith('audio/')) {
           found.add(_Found(c, folder, path));
@@ -812,8 +814,152 @@ class LibraryController extends ChangeNotifier {
 
   // ---------- правка, скрытие, удаление ----------
 
-  void editTrack(String id, {required String title, required String artist, required String album}) =>
-      commit({'op': 'editTrack', 'id': id, 'fields': {'t': title, 'a': artist, 'al': album}});
+  /// [cover]: id картинки в папке covers, пустая строка — убрать свою обложку, null — не трогать
+  void editTrack(String id, {required String title, required String artist, required String album, String? cover}) =>
+      editTracks([id], {'t': title, 'a': artist, 'al': album, if (cover != null) 'cv': cover});
+
+  /// Массовая правка: только переданные поля — название 't', исполнитель 'a', альбом 'al', обложка 'cv'.
+  /// Если альбом со своей обложкой переезжает целиком, обложка переезжает вместе с ним.
+  void editTracks(Iterable<String> ids, Map<String, String> fields) {
+    if (fields.isEmpty) return;
+    final list = ids.toList();
+    final meta = <String, Map<String, String>>{for (final id in list) id: fields};
+    if (fields.containsKey('a') || fields.containsKey('al')) {
+      final picked = list.toSet();
+      final byAlbum = <String, List<Track>>{};
+      for (final id in list) {
+        final t = data.tracks[id];
+        if (t != null) byAlbum.putIfAbsent(t.albumKey, () => []).add(t);
+      }
+      byAlbum.forEach((oldKey, tracks) {
+        final cover = albumCover(oldKey);
+        if (cover == null) return;
+        if (!data.tracks.values.where((t) => t.albumKey == oldKey).every((t) => picked.contains(t.id))) return;
+        final newKeys = {for (final t in tracks) t.albumKeyWith(newArtist: fields['a'], newAlbum: fields['al'])};
+        if (newKeys.length != 1 || newKeys.first == oldKey || albumCover(newKeys.first) != null) return;
+        meta['album:${newKeys.first}'] = {'cv': cover};
+      });
+    }
+    setMeta(meta);
+  }
+
+  // ---------- данные, которые хранятся в общих правках (edits) ----------
+  // Старые версии приложения про них не знают, но сохраняют: в edits при записи файла ничего не теряется.
+  // Ключи: id трека, 'album:<ключ альбома>', 'pl:<id плейлиста>', 'u:<почта>' (личные настройки).
+
+  void setMeta(Map<String, Map<String, String>> meta) {
+    if (meta.isEmpty) return;
+    commit({'op': 'setMeta', 'meta': meta});
+  }
+
+  String? _metaValue(String id, String key) {
+    final v = data.edits[id]?[key];
+    return (v == null || v.isEmpty) ? null : v;
+  }
+
+  /// Своя обложка: у альбома она важнее, чем у его треков, а у трека — важнее обложки из файла
+  String? customCoverOf(Track t) => _metaValue('album:${t.albumKey}', 'cv') ?? t.customCover;
+  String? albumCover(String albumKey) => _metaValue('album:$albumKey', 'cv');
+  String? playlistCover(String id) => _metaValue('pl:$id', 'cv');
+
+  /// [cover]: id картинки, пустая строка — вернуть обложку из файлов
+  void setAlbumCover(String albumKey, String cover) => setMeta({'album:$albumKey': {'cv': cover}});
+  void setPlaylistCover(String id, String cover) => setMeta({'pl:$id': {'cv': cover}});
+
+  /// Любимые исполнители: у каждого свой список
+  bool isFavArtist(String artistKey) => me != null && _metaValue('u:$me', 'fa:${artistKey.toLowerCase()}') != null;
+
+  void toggleFavArtist(String artistKey) {
+    final m = me;
+    if (m == null) return;
+    setMeta({'u:$m': {'fa:${artistKey.toLowerCase()}': isFavArtist(artistKey) ? '' : '1'}});
+  }
+
+  // ---------- папка с загруженными обложками ----------
+
+  static const coversFolderName = 'cave-covers';
+  String? _coversFolderId;
+
+  Future<String> coversFolder() async {
+    final cached = _coversFolderId;
+    if (cached != null) return cached;
+    final id = await _withHub((email) async {
+      final found = (await drive.listChildren(email, settings.hubId!, nameEquals: coversFolderName))
+          .where((f) => f.isFolder)
+          .toList()
+        ..sort((a, b) => a.createdTime.compareTo(b.createdTime));
+      return found.isNotEmpty ? found.first.id : await drive.createFolder(email, coversFolderName, parent: settings.hubId);
+    });
+    return _coversFolderId = id;
+  }
+
+  /// Кладёт картинку в общую папку обложек и возвращает её id. Одинаковые картинки не дублируются
+  Future<String> uploadCover(Uint8List bytes, String ext) async {
+    final name = '${sha1.convert(bytes)}.$ext';
+    final folder = await coversFolder();
+    final tmp = File('${Directory.systemTemp.path}${Platform.pathSeparator}cave-$name');
+    await tmp.writeAsBytes(bytes, flush: true);
+    try {
+      return await _withHub((email) async {
+        final same = await drive.listChildren(email, folder, nameEquals: name);
+        if (same.isNotEmpty) return same.first.id;
+        return (await drive.uploadFile(email, folder, tmp)).id;
+      });
+    } finally {
+      try {
+        await tmp.delete();
+      } catch (_) {}
+    }
+  }
+
+  Future<Uint8List> downloadCover(String fileId) => _withHub((email) => drive.download(email, fileId));
+
+  // ---------- длительность треков ----------
+
+  bool _durationsRunning = false;
+  final Set<String> _durationFailed = {};
+
+  /// Узнаёт длительность у треков, у которых её ещё нет, и записывает в общие правки:
+  /// следующим друзьям считать уже не придётся. Читает по паре небольших кусков файла.
+  Future<void> fillDurations() async {
+    if (_durationsRunning || !hasHub) return;
+    _durationsRunning = true;
+    try {
+      final todo = [
+        for (final t in allTracks)
+          if (data.edits[t.id]?['d'] == null && !_durationFailed.contains(t.id)) t,
+      ];
+      if (todo.isEmpty) return;
+      var batch = <String, Map<String, String>>{};
+      void save() {
+        if (batch.isEmpty) return;
+        setMeta(batch);
+        batch = {};
+      }
+
+      await _pool<Track>(todo, 2, (t) async {
+        try {
+          final email = await accessFor(t.source);
+          final ms = await probeDurationMs((s, e) => drive.readRange(email, t.id, s, e), t.size);
+          // 0 — «определить не вышло», чтобы не пробовать снова; настоящую длительность запишет плеер
+          batch[t.id] = {'d': '${ms ?? 0}'};
+        } catch (_) {
+          _durationFailed.add(t.id); // сеть или доступ — попробуем при следующем запуске
+          return;
+        }
+        if (batch.length >= 100) save();
+      });
+      save();
+    } finally {
+      _durationsRunning = false;
+    }
+  }
+
+  /// Плеер знает точную длительность: запоминаем её, если для трека ещё ничего нет
+  void noteDuration(Track t, Duration d) {
+    if (d <= Duration.zero || (t.durationMs ?? 0) > 0) return;
+    setMeta({t.id: {'d': '${d.inMilliseconds}'}});
+  }
 
   void hideTrack(String id, bool hide) => commit({'op': 'hideTrack', 'id': id, 'on': hide});
 

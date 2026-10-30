@@ -51,7 +51,13 @@ class CoverImage extends StatefulWidget {
   final Track? track;
   final double size;
   final double radius;
-  const CoverImage({super.key, required this.track, required this.size, this.radius = 6});
+
+  /// Картинка из папки covers на Диске (обложка плейлиста или выбранная вручную) — важнее обложки трека
+  final String? fileId;
+
+  /// Подпись на плашке, пока нет картинки (по умолчанию — альбом трека)
+  final String? label;
+  const CoverImage({super.key, required this.track, required this.size, this.radius = 6, this.fileId, this.label});
 
   @override
   State<CoverImage> createState() => _CoverImageState();
@@ -63,18 +69,22 @@ class _CoverImageState extends State<CoverImage> {
 
   void _ensure() {
     final t = widget.track;
-    final key = t == null ? null : (t.cover ?? 'p_${t.id}');
+    final covers = Services.of(context).covers;
+    final id = widget.fileId;
+    final key = id != null ? 'cv_$id' : (t == null ? null : covers.keyOf(t));
     if (key == _key && _future != null) return;
     _key = key;
-    _future = t == null ? Future.value(null) : Services.of(context).covers.forTrack(t);
+    _future = id != null ? covers.forFile(id) : (t == null ? Future.value(null) : covers.forTrack(t));
   }
 
   @override
   Widget build(BuildContext context) {
     _ensure();
     final t = widget.track;
-    final placeholder = _Placeholder(label: t?.displayAlbum ?? '', size: widget.size);
-    final peek = t == null ? null : Services.of(context).covers.peek(t);
+    final placeholder = _Placeholder(label: widget.label ?? t?.displayAlbum ?? '', size: widget.size);
+    final covers = Services.of(context).covers;
+    final id = widget.fileId;
+    final peek = id != null ? covers.peekFile(id) : (t == null ? null : covers.peek(t));
     final dpr = MediaQuery.devicePixelRatioOf(context);
     return ClipRRect(
       borderRadius: BorderRadius.circular(widget.radius),

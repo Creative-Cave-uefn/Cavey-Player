@@ -1,7 +1,12 @@
+import 'dart:math' show max, min;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/models.dart';
+import 'albums_view.dart';
+import 'cover_picker.dart';
 import 'download_view.dart';
 import 'library_views.dart';
 import 'shell.dart';
@@ -136,6 +141,21 @@ class AlbumPage extends StatelessWidget {
           cover: album.coverTrack,
           numbered: true,
           compact: compact,
+          actions: [
+            PopupMenuButton<String>(
+              tooltip: 'Ещё',
+              icon: const Icon(Icons.more_horiz_rounded),
+              onSelected: (v) {
+                if (v == 'cover') changeAlbumCover(context, album);
+                if (v == 'reset') app.lib.setAlbumCover(album.key, '');
+              },
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: 'cover', child: Text('Изменить обложку…')),
+                if (app.lib.albumCover(album.key) != null)
+                  const PopupMenuItem(value: 'reset', child: Text('Вернуть обложку из файлов')),
+              ],
+            ),
+          ],
           empty: const SizedBox.shrink(),
         );
       },
@@ -160,8 +180,21 @@ class PlaylistPage extends StatelessWidget {
           return const EmptyState(icon: Icons.queue_music_rounded, title: 'Плейлист удалён', text: 'Кто-то из друзей его удалил.');
         }
         final tracks = lib.playlistTracks(playlistId);
+        // Своя обложка, а если её нет — обложка первого трека с картинкой
+        Track? coverTrack;
+        for (final t in tracks) {
+          if (t.hasCover) {
+            coverTrack = t;
+            break;
+          }
+        }
+        coverTrack ??= tracks.isEmpty ? null : tracks.first;
+        final ownCover = lib.playlistCover(playlistId);
         return TracksPage(
           title: p.name,
+          cover: coverTrack,
+          coverFileId: ownCover,
+          coverLabel: p.name,
           subtitle: 'Собирает ${lib.firstNameOf(p.by)}${tracks.isEmpty ? '' : ', ${countTracks(tracks.length)}'}',
           tracks: tracks,
           playlistId: playlistId,
@@ -180,6 +213,17 @@ class PlaylistPage extends StatelessWidget {
                 if (v == 'rename') {
                   final name = await askText(context, title: 'Название плейлиста', action: 'Сохранить', initial: p.name);
                   if (name != null && name.isNotEmpty) lib.renamePlaylist(p.id, name);
+                } else if (v == 'cover') {
+                  final cv = await coverDialog(
+                    context,
+                    title: 'Обложка плейлиста',
+                    current: CoverImage(track: coverTrack, fileId: ownCover, label: p.name, size: 120, radius: 0),
+                    canReset: ownCover != null,
+                    note: 'Её увидят все друзья.',
+                  );
+                  if (cv != null) lib.setPlaylistCover(p.id, cv);
+                } else if (v == 'cover_reset') {
+                  lib.setPlaylistCover(p.id, '');
                 } else if (v == 'delete') {
                   final nav = NavScope.of(context);
                   final ok = await confirm(context,
@@ -192,9 +236,11 @@ class PlaylistPage extends StatelessWidget {
                   }
                 }
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'rename', child: Text('Переименовать')),
-                PopupMenuItem(value: 'delete', child: Text('Удалить плейлист')),
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: 'rename', child: Text('Переименовать')),
+                const PopupMenuItem(value: 'cover', child: Text('Изменить обложку…')),
+                if (ownCover != null) const PopupMenuItem(value: 'cover_reset', child: Text('Убрать свою обложку')),
+                const PopupMenuItem(value: 'delete', child: Text('Удалить плейлист')),
               ],
             ),
           ],
@@ -215,6 +261,10 @@ class TracksPage extends StatefulWidget {
   final String? subtitle;
   final List<Track> tracks;
   final Track? cover;
+
+  /// Загруженная обложка (например, плейлиста): показывается вместо обложки трека
+  final String? coverFileId;
+  final String? coverLabel;
   final String? playlistId;
   final bool numbered;
   final bool compact;
@@ -235,6 +285,8 @@ class TracksPage extends StatefulWidget {
     required this.empty,
     this.subtitle,
     this.cover,
+    this.coverFileId,
+    this.coverLabel,
     this.playlistId,
     this.numbered = false,
     this.actions = const [],
@@ -250,6 +302,12 @@ class _TracksPageState extends State<TracksPage> {
   final _search = TextEditingController();
   final _searchFocus = FocusNode();
   String _query = '';
+
+  // Групповое выделение: Shift + клик по треку включает режим
+  bool _selecting = false;
+  final Set<String> _sel = {};
+  String? _anchor; // от него считается диапазон по Shift
+  List<Track> _visibleNow = const [];
 
   @override
   void initState() {
@@ -270,6 +328,7 @@ class _TracksPageState extends State<TracksPage> {
   @override
   void dispose() {
     searchRequests.removeListener(_focusSearch);
+    HardwareKeyboard.instance.removeHandler(_selectionKey);
     _search.dispose();
     _searchFocus.dispose();
     super.dispose();
@@ -282,7 +341,143 @@ class _TracksPageState extends State<TracksPage> {
   }
 
   /// Перетаскивать можно, когда виден весь плейлист в своём порядке
-  bool get _canReorder => widget.onReorder != null && _sort.isEmpty && _query.trim().isEmpty;
+  bool get _canReorder => widget.onReorder != null && _sort.isEmpty && _query.trim().isEmpty && !_selecting;
+
+  static bool _typing() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    return ctx.widget is EditableText || ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
+  /// В режиме выделения: Esc выходит, Ctrl+A выделяет всё видимое
+  bool _selectionKey(KeyEvent e) {
+    if (!_selecting || e is! KeyDownEvent) return false;
+    if (e.logicalKey == LogicalKeyboardKey.escape) {
+      _exitSelection();
+      return true;
+    }
+    final kb = HardwareKeyboard.instance;
+    if (e.logicalKey == LogicalKeyboardKey.keyA && (kb.isControlPressed || kb.isMetaPressed) && !_typing()) {
+      setState(() => _sel.addAll(_visibleNow.map((t) => t.id)));
+      return true;
+    }
+    return false;
+  }
+
+  void _exitSelection() {
+    HardwareKeyboard.instance.removeHandler(_selectionKey);
+    if (!mounted) return;
+    setState(() {
+      _selecting = false;
+      _sel.clear();
+      _anchor = null;
+    });
+  }
+
+  void _onSelect(List<Track> visible, int i, bool shift) {
+    final id = visible[i].id;
+    setState(() {
+      if (!_selecting) {
+        _selecting = true;
+        _sel
+          ..clear()
+          ..add(id);
+        _anchor = id;
+        HardwareKeyboard.instance.addHandler(_selectionKey);
+        return;
+      }
+      if (shift && _anchor != null) {
+        final a = visible.indexWhere((t) => t.id == _anchor);
+        if (a >= 0) {
+          // Диапазон от якоря до этого трека; якорь остаётся прежним, как в проводнике
+          for (var k = min(a, i); k <= max(a, i); k++) {
+            _sel.add(visible[k].id);
+          }
+          return;
+        }
+      }
+      if (!_sel.remove(id)) _sel.add(id);
+      _anchor = id;
+    });
+  }
+
+  Widget _selectionBar(AppServices app, List<Track> visible, double pad) {
+    final picked = [for (final t in visible) if (_sel.contains(t.id)) t];
+    final ids = [for (final t in picked) t.id];
+    final none = picked.isEmpty;
+    return Positioned(
+      left: pad,
+      right: pad,
+      bottom: 14,
+      child: Center(
+        child: Material(
+          color: C.raised,
+          elevation: 10,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            child: Wrap(spacing: 4, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
+              Text('Выбрано: ${picked.length}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: () => setState(() => _sel.addAll(visible.map((t) => t.id))),
+                child: const Text('Выбрать все'),
+              ),
+              TextButton.icon(
+                onPressed: none ? null : () => app.player.playTracks(picked, 0),
+                icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                label: const Text('Играть'),
+              ),
+              TextButton.icon(
+                onPressed: none
+                    ? null
+                    : () {
+                        for (final t in picked) {
+                          app.player.addToQueue(t);
+                        }
+                        app.lib.messages.add('В очередь добавлено: ${countTracks(picked.length)}');
+                      },
+                icon: const Icon(Icons.queue_music_rounded, size: 18),
+                label: const Text('В очередь'),
+              ),
+              FilledButton.icon(
+                onPressed: none
+                    ? null
+                    : () async {
+                        if (await addToPlaylistDialog(context, ids)) _exitSelection();
+                      },
+                icon: const Icon(Icons.playlist_add_rounded, size: 18),
+                label: const Text('В плейлист…'),
+              ),
+              OutlinedButton.icon(
+                onPressed: none
+                    ? null
+                    : () async {
+                        if (await editTracksDialog(context, picked)) _exitSelection();
+                      },
+                icon: const Icon(Icons.edit_outlined, size: 18),
+                label: const Text('Изменить…'),
+              ),
+              if (widget.playlistId != null)
+                TextButton.icon(
+                  onPressed: none
+                      ? null
+                      : () {
+                          for (final id in ids) {
+                            app.lib.removeFromPlaylist(widget.playlistId!, id);
+                          }
+                          _exitSelection();
+                        },
+                  icon: const Icon(Icons.remove_circle_outline_rounded, size: 18),
+                  label: const Text('Убрать из плейлиста'),
+                ),
+              IconButton(tooltip: 'Готово (Esc)', onPressed: _exitSelection, icon: const Icon(Icons.close_rounded, size: 20)),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
   String _sort = ''; // пусто — порядок как есть
   bool _desc = false;
 
@@ -311,6 +506,7 @@ class _TracksPageState extends State<TracksPage> {
           return r != 0 ? r : byNo(a, b);
         },
       'by' => (Track a, Track b) => byText(nameOf(a.by), nameOf(b.by)),
+      'dur' => (Track a, Track b) => (a.durationMs ?? 0).compareTo(b.durationMs ?? 0),
       _ => (Track a, Track b) => when(a).compareTo(when(b)),
     };
     list = List.of(list)..sort(cmp);
@@ -332,7 +528,7 @@ class _TracksPageState extends State<TracksPage> {
       });
 
   Widget _sortHeader(bool compact) {
-    Widget label(String key, String text) {
+    Widget label(String key, String text, {IconData? icon}) {
       final active = _sort == key;
       return InkWell(
         borderRadius: BorderRadius.circular(4),
@@ -340,7 +536,10 @@ class _TracksPageState extends State<TracksPage> {
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Text(text, style: TextStyle(fontSize: 12, color: active ? C.text : C.faint, fontWeight: FontWeight.w500)),
+            if (icon != null)
+              Icon(icon, size: 15, color: active ? C.text : C.faint)
+            else
+              Text(text, style: TextStyle(fontSize: 12, color: active ? C.text : C.faint, fontWeight: FontWeight.w500)),
             if (active)
               Icon(_desc ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded, size: 13, color: C.accent),
           ]),
@@ -366,6 +565,7 @@ class _TracksPageState extends State<TracksPage> {
           Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: label('by', 'Загрузил(а)'))),
         ],
         SizedBox(width: 88, child: Align(alignment: Alignment.centerRight, child: label('added', 'Новые'))),
+        SizedBox(width: 60, child: Align(alignment: Alignment.centerRight, child: label('dur', 'Длительность', icon: Icons.schedule_rounded))),
       ]),
     );
   }
@@ -374,13 +574,23 @@ class _TracksPageState extends State<TracksPage> {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final visible = _visible(app.lib.firstNameOf);
+    _visibleNow = visible;
     final pad = widget.compact ? 20.0 : 36.0;
+    if (_selecting) {
+      final present = {for (final t in widget.tracks) t.id};
+      _sel.retainAll(present);
+    }
 
     final header = Padding(
       padding: EdgeInsets.fromLTRB(pad, 34, pad, 18),
       child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-        if (widget.cover != null) ...[
-          CoverImage(track: widget.cover, size: widget.compact ? 120 : 176, radius: 12),
+        if (widget.cover != null || widget.coverFileId != null) ...[
+          CoverImage(
+              track: widget.cover,
+              fileId: widget.coverFileId,
+              label: widget.coverLabel,
+              size: widget.compact ? 120 : 176,
+              radius: 12),
           const SizedBox(width: 28),
         ],
         Expanded(
@@ -470,8 +680,11 @@ class _TracksPageState extends State<TracksPage> {
               playlistId: widget.playlistId,
               cached: app.cache.has(visible[i].id),
               onPlay: () => app.player.playTracks(visible, i),
+              selecting: _selecting,
+              selected: _sel.contains(visible[i].id),
+              onSelect: (shift) => _onSelect(visible, i, shift),
             );
-        return CustomScrollView(
+        final list = CustomScrollView(
             // Вернулись назад — список на том же месте
             key: PageStorageKey('tracks:${widget.title}:${widget.playlistId ?? ''}'),
             slivers: [
@@ -518,7 +731,11 @@ class _TracksPageState extends State<TracksPage> {
                     delegate: SliverChildBuilderDelegate(row, childCount: visible.length),
                   ),
           ),
+          // Место под панель действий, чтобы она не закрывала последние треки
+          if (_selecting) const SliverToBoxAdapter(child: SizedBox(height: 70)),
         ]);
+        // Структура не меняется при входе в режим, поэтому список не прыгает
+        return Stack(children: [Positioned.fill(child: list), if (_selecting) _selectionBar(app, visible, pad)]);
       },
     );
   }
@@ -535,6 +752,11 @@ class TrackRow extends StatelessWidget {
   final VoidCallback onPlay;
   final bool cached;
 
+  /// Режим группового выделения: вместо номера — галочка, клик выделяет, а не включает
+  final bool selecting;
+  final bool selected;
+  final void Function(bool shift)? onSelect;
+
   const TrackRow({
     super.key,
     required this.track,
@@ -546,6 +768,9 @@ class TrackRow extends StatelessWidget {
     required this.onPlay,
     this.cached = false,
     this.playlistId,
+    this.selecting = false,
+    this.selected = false,
+    this.onSelect,
   });
 
   @override
@@ -553,17 +778,37 @@ class TrackRow extends StatelessWidget {
     final app = Services.of(context);
     final titleColor = current ? C.accent : C.text;
     return InkWell(
-      onTap: current ? app.player.toggle : onPlay,
+      onTap: () {
+        // Shift + клик включает выделение, в самом режиме клик выделяет трек
+        final shift = HardwareKeyboard.instance.isShiftPressed;
+        if (onSelect != null && (selecting || shift)) {
+          onSelect!(shift);
+          return;
+        }
+        if (current) {
+          app.player.toggle();
+        } else {
+          onPlay();
+        }
+      },
       onHover: (inside) => app.player.hover(track, inside),
       // Правый клик — то же меню, что под «…»
       onSecondaryTapUp: (d) => showTrackMenu(context, track, playlistId, d.globalPosition),
       borderRadius: BorderRadius.circular(8),
-      child: Padding(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: selected ? C.accent.withValues(alpha: 0.14) : null,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
         child: Row(children: [
           SizedBox(
             width: 28,
-            child: current
+            child: selecting
+                ? Icon(selected ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded,
+                    size: 20, color: selected ? C.accent : C.faint)
+                : current
                 ? Icon(playing ? Icons.graphic_eq_rounded : Icons.pause_rounded, size: 18, color: C.accent)
                 : Text(numbered && track.no != null ? '${track.no}' : '${index + 1}',
                     style: const TextStyle(color: C.faint, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()])),
@@ -611,7 +856,19 @@ class TrackRow extends StatelessWidget {
           ],
           LikeButton(track: track),
           TrackMenu(track: track, playlistId: playlistId),
+          // Длительность — в самом правом столбце, правее кнопки «…»
+          SizedBox(
+            width: 60,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Text(
+                (track.durationMs ?? 0) > 0 ? formatDuration(Duration(milliseconds: track.durationMs!)) : '',
+                style: const TextStyle(color: C.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+              ),
+            ),
+          ),
         ]),
+        ),
       ),
     );
   }
@@ -739,7 +996,8 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
   }
 }
 
-Future<void> addToPlaylistDialog(BuildContext context, List<String> trackIds) async {
+/// true, если треки добавлены (в существующий или новый плейлист)
+Future<bool> addToPlaylistDialog(BuildContext context, List<String> trackIds) async {
   final app = Services.of(context);
   final lib = app.lib;
   final choice = await showDialog<String>(
@@ -769,16 +1027,17 @@ Future<void> addToPlaylistDialog(BuildContext context, List<String> trackIds) as
       ],
     ),
   );
-  if (choice == null || !context.mounted) return;
+  if (choice == null || !context.mounted) return false;
   if (choice == '+new') {
     final name = await askText(context, title: 'Новый плейлист', action: 'Создать', hint: 'Название');
-    if (name == null || name.isEmpty) return;
+    if (name == null || name.isEmpty) return false;
     lib.createPlaylist(name, trackIds);
     lib.messages.add('Создан плейлист «$name»');
   } else {
     lib.addToPlaylist(choice, trackIds);
     lib.messages.add('Добавлено в «${lib.playlist(choice)?.name ?? 'плейлист'}»');
   }
+  return true;
 }
 
 /// «Сохранить офлайн» для Любимого и плейлистов: показывает, сколько уже скачано

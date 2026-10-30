@@ -4,8 +4,11 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/library.dart';
 import '../core/models.dart';
 import '../core/tags.dart';
+import 'cover_picker.dart';
+import 'list_filter.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
@@ -13,33 +16,100 @@ import 'widgets.dart';
 
 // ---------- исполнители ----------
 
-class ArtistsPage extends StatelessWidget {
+class ArtistsPage extends StatefulWidget {
   final bool compact;
   const ArtistsPage({super.key, required this.compact});
 
   @override
+  State<ArtistsPage> createState() => _ArtistsPageState();
+}
+
+class _ArtistsPageState extends State<ArtistsPage> {
+  final _search = TextEditingController();
+  final _focus = FocusNode();
+  String _query = '';
+
+  @override
+  void initState() {
+    super.initState();
+    searchRequests.addListener(_focusSearch);
+  }
+
+  @override
+  void dispose() {
+    searchRequests.removeListener(_focusSearch);
+    _search.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _focusSearch() {
+    if (!mounted) return;
+    _focus.requestFocus();
+    _search.selection = TextSelection(baseOffset: 0, extentOffset: _search.text.length);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final pad = compact ? 20.0 : 36.0;
+    final pad = widget.compact ? 20.0 : 36.0;
     return ListenableBuilder(
       listenable: app.lib,
       builder: (context, _) {
-        final artists = app.lib.artists;
+        final all = app.lib.artists;
+        final q = foldText(_query.trim());
+        final desc = app.settings.artistsDesc;
+        final list = q.isEmpty ? List<Artist>.of(all) : all.where((a) => foldText(a.name).contains(q)).toList();
+        int cmp(Artist a, Artist b) {
+          final ua = a.name == 'Неизвестный исполнитель';
+          final ub = b.name == 'Неизвестный исполнитель';
+          if (ua != ub) return ua ? 1 : -1; // «неизвестный» всегда внизу
+          final r = sortKey(a.name).compareTo(sortKey(b.name));
+          return desc ? -r : r;
+        }
+
+        list.sort(cmp);
+        // Любимые исполнители — вверху, над остальными
+        final favs = [for (final a in list) if (app.lib.isFavArtist(a.key)) a];
+        final rest = [for (final a in list) if (!app.lib.isFavArtist(a.key)) a];
+        final rows = <Object>[
+          if (favs.isNotEmpty) 'Любимые',
+          ...favs,
+          if (favs.isNotEmpty && rest.isNotEmpty) 'Все исполнители',
+          ...rest,
+        ];
         return CustomScrollView(slivers: [
           SliverToBoxAdapter(
             child: Padding(
-              padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
+              padding: EdgeInsets.fromLTRB(pad, 34, pad, 18),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('Исполнители', style: display(36, weight: FontWeight.w700)),
-                if (artists.isNotEmpty) ...[
+                if (all.isNotEmpty) ...[
                   const SizedBox(height: 10),
-                  Text('${artists.length} ${plural(artists.length, 'исполнитель', 'исполнителя', 'исполнителей')}',
-                      style: const TextStyle(color: C.muted, fontSize: 15)),
+                  Text(
+                    q.isEmpty
+                        ? '${all.length} ${plural(all.length, 'исполнитель', 'исполнителя', 'исполнителей')}'
+                        : 'Найдено ${list.length} из ${all.length}',
+                    style: const TextStyle(color: C.muted, fontSize: 15),
+                  ),
+                  const SizedBox(height: 18),
+                  SearchSortBar(
+                    controller: _search,
+                    focusNode: _focus,
+                    hint: 'Найти исполнителя',
+                    desc: desc,
+                    onChanged: (v) => setState(() => _query = v),
+                    onToggleSort: () {
+                      app.settings.artistsDesc = !desc;
+                      app.lib.saveSettings();
+                      setState(() {});
+                    },
+                  ),
                 ],
               ]),
             ),
           ),
-          if (artists.isEmpty)
+          if (all.isEmpty)
             const SliverFillRemaining(
               hasScrollBody: false,
               child: EmptyState(
@@ -48,36 +118,59 @@ class ArtistsPage extends StatelessWidget {
                 text: 'Они появятся, когда в библиотеке будут треки.',
               ),
             ),
+          if (all.isNotEmpty && list.isEmpty)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: pad, vertical: 12),
+                child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
+              ),
+            ),
           SliverPadding(
             padding: EdgeInsets.fromLTRB(pad - 12, 0, pad - 12, 32),
-            sliver: SliverFixedExtentList(
-              itemExtent: 64,
+            sliver: SliverList(
               delegate: SliverChildBuilderDelegate(
                 (context, i) {
-                  final a = artists[i];
-                  return InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(children: [
-                        ClipOval(child: CoverImage(track: a.coverTrack, size: 44, radius: 0)),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Text(a.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
-                        ),
-                        Text(
-                          '${countTracks(a.tracks.length)}, ${a.albums} ${plural(a.albums, 'альбом', 'альбома', 'альбомов')}',
-                          style: const TextStyle(color: C.muted, fontSize: 13),
-                        ),
-                      ]),
+                  final row = rows[i];
+                  if (row is String) {
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 14, 12, 6),
+                      child: Text(row, style: const TextStyle(color: C.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+                    );
+                  }
+                  final a = row as Artist;
+                  final fav = app.lib.isFavArtist(a.key);
+                  return SizedBox(
+                    height: 64,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 12),
+                        child: Row(children: [
+                          ClipOval(child: CoverImage(track: a.coverTrack, size: 44, radius: 0)),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Text(a.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+                          ),
+                          Text(
+                            '${countTracks(a.tracks.length)}, ${a.albums} ${plural(a.albums, 'альбом', 'альбома', 'альбомов')}',
+                            style: const TextStyle(color: C.muted, fontSize: 13),
+                          ),
+                          IconButton(
+                            tooltip: fav ? 'Убрать из любимых исполнителей' : 'В любимые исполнители',
+                            onPressed: () => app.lib.toggleFavArtist(a.key),
+                            icon: Icon(fav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                                size: 20, color: fav ? C.accent : C.faint),
+                          ),
+                        ]),
+                      ),
                     ),
                   );
                 },
-                childCount: artists.length,
+                childCount: rows.length,
               ),
             ),
           ),
@@ -347,28 +440,39 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
   final title = TextEditingController(text: t.title);
   final artist = TextEditingController(text: t.artist);
   final album = TextEditingController(text: t.album);
+  final choice = CoverChoice();
+  final albumHasOwn = lib.albumCover(t.albumKey) != null;
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text('Изменить трек', style: display(18)),
       content: SizedBox(
-        width: 400,
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Название', style: TextStyle(color: C.muted, fontSize: 13)),
-          const SizedBox(height: 6),
-          TextField(controller: title, autofocus: true),
-          const SizedBox(height: 14),
-          const Text('Исполнитель', style: TextStyle(color: C.muted, fontSize: 13)),
-          const SizedBox(height: 6),
-          TextField(controller: artist),
-          const SizedBox(height: 14),
-          const Text('Альбом', style: TextStyle(color: C.muted, fontSize: 13)),
-          const SizedBox(height: 6),
-          TextField(controller: album),
-          const SizedBox(height: 14),
-          const Text('Изменения увидят все друзья. Сам файл на Диске не меняется.',
-              style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
-        ]),
+        width: 440,
+        child: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            CoverEditorView(
+              choice: choice,
+              current: CoverImage(track: t, size: 120, radius: 0),
+              canReset: t.customCover != null,
+              note: albumHasOwn ? 'У альбома своя обложка, она показывается поверх обложек его треков.' : null,
+            ),
+            const SizedBox(height: 18),
+            const Text('Название', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(controller: title, autofocus: true),
+            const SizedBox(height: 14),
+            const Text('Исполнитель', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(controller: artist),
+            const SizedBox(height: 14),
+            const Text('Альбом', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(controller: album),
+            const SizedBox(height: 14),
+            const Text('Изменения увидят все друзья. Сам файл на Диске не меняется.',
+                style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+          ]),
+        ),
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: C.muted))),
@@ -381,5 +485,91 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
     lib.messages.add('Название не может быть пустым');
     return;
   }
-  lib.editTrack(t.id, title: title.text.trim(), artist: artist.text.trim(), album: album.text.trim());
+  final cover = context.mounted ? await choice.commit(context) : null;
+  lib.editTrack(t.id, title: title.text.trim(), artist: artist.text.trim(), album: album.text.trim(), cover: cover);
+}
+
+/// Правка сразу нескольких треков: исполнитель, альбом и обложка. Меняется только то, что тронули.
+/// Возвращает true, если правки сохранены.
+Future<bool> editTracksDialog(BuildContext context, List<Track> tracks) async {
+  if (tracks.isEmpty) return false;
+  final app = Services.of(context);
+  final lib = app.lib;
+  String common(String Function(Track) f) {
+    final first = f(tracks.first);
+    return tracks.every((t) => f(t) == first) ? first : '';
+  }
+
+  final artist = TextEditingController(text: common((t) => t.artist));
+  final album = TextEditingController(text: common((t) => t.album));
+  final artistMixed = artist.text.isEmpty && tracks.any((t) => t.artist.isNotEmpty);
+  final albumMixed = album.text.isEmpty && tracks.any((t) => t.album.isNotEmpty);
+  var artistDirty = false;
+  var albumDirty = false;
+  final choice = CoverChoice();
+  final sameCover = tracks.map(app.covers.keyOf).toSet().length == 1;
+  final anyAlbumOwn = tracks.any((t) => lib.albumCover(t.albumKey) != null);
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('Изменить ${countTracks(tracks.length)}', style: display(18)),
+      content: SizedBox(
+        width: 440,
+        child: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            CoverEditorView(
+              choice: choice,
+              current: sameCover
+                  ? CoverImage(track: tracks.first, size: 120, radius: 0)
+                  : Container(
+                      color: C.raised,
+                      alignment: Alignment.center,
+                      padding: const EdgeInsets.all(10),
+                      child: const Text('У треков разные обложки',
+                          textAlign: TextAlign.center, style: TextStyle(color: C.muted, fontSize: 12)),
+                    ),
+              canReset: tracks.any((t) => t.customCover != null),
+              note: anyAlbumOwn ? 'У части альбомов своя обложка, она показывается поверх обложек треков.' : null,
+            ),
+            const SizedBox(height: 18),
+            const Text('Исполнитель', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: artist,
+              onChanged: (_) => artistDirty = true,
+              decoration: InputDecoration(hintText: artistMixed ? 'Разные: оставить как есть' : null),
+            ),
+            const SizedBox(height: 14),
+            const Text('Альбом', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: album,
+              onChanged: (_) => albumDirty = true,
+              decoration: InputDecoration(hintText: albumMixed ? 'Разные: оставить как есть' : null),
+            ),
+            const SizedBox(height: 14),
+            const Text('Меняются только те поля, которые вы тронули. Изменения увидят все друзья, файлы на Диске не меняются.',
+                style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+          ]),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: C.muted))),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
+      ],
+    ),
+  );
+  if (ok != true) return false;
+  final fields = <String, String>{
+    if (artistDirty) 'a': artist.text.trim(),
+    if (albumDirty) 'al': album.text.trim(),
+  };
+  if (choice.changed) {
+    final cv = context.mounted ? await choice.commit(context) : null;
+    if (cv != null) fields['cv'] = cv;
+  }
+  if (fields.isEmpty) return false;
+  lib.editTracks([for (final t in tracks) t.id], fields);
+  lib.messages.add('Изменено: ${countTracks(tracks.length)}');
+  return true;
 }

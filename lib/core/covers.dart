@@ -22,18 +22,74 @@ class CoverService {
 
   static String _key(Track t) => t.cover ?? 'p_${t.id}';
 
+  /// Ключ картинки трека: загруженная обложка (альбома или трека) важнее обложки из файла
+  String keyOf(Track t) {
+    final c = lib.customCoverOf(t);
+    return c != null ? 'cv_$c' : _key(t);
+  }
+
   /// Уже загруженная обложка — чтобы не мигать при перерисовке
-  Uint8List? peek(Track t) => t.hasCover ? _mem[_key(t)] : null;
+  Uint8List? peek(Track t) {
+    final c = lib.customCoverOf(t);
+    if (c != null) return peekFile(c);
+    return t.hasCover ? _mem[_key(t)] : null;
+  }
+
+  Uint8List? peekFile(String fileId) => _mem['cv_$fileId'];
 
   Future<Uint8List?> forTrack(Track t) {
+    final c = lib.customCoverOf(t);
+    if (c != null) return forFile(c);
     if (!t.hasCover) return Future.value(null);
     final key = _key(t);
     if (_mem.containsKey(key)) return Future.value(_mem[key]);
     return _inflight[key] ??= _load(key, t).whenComplete(() => _inflight.remove(key));
   }
 
+  File _file(String key) => File('${dir.path}${Platform.pathSeparator}${key.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_')}.img');
+
+  /// Картинка из папки covers на Диске: обложка, которую выбрал кто-то из друзей
+  Future<Uint8List?> forFile(String fileId) {
+    final key = 'cv_$fileId';
+    if (_mem.containsKey(key)) return Future.value(_mem[key]);
+    return _inflight[key] ??= _loadCustom(key, fileId).whenComplete(() => _inflight.remove(key));
+  }
+
+  /// Только что загруженную картинку сразу кладём в кэш: скачивать её обратно не нужно
+  Future<void> seed(String fileId, Uint8List bytes) async {
+    final key = 'cv_$fileId';
+    _mem[key] = bytes;
+    try {
+      await _file(key).writeAsBytes(bytes, flush: true);
+    } catch (_) {}
+  }
+
+  Future<Uint8List?> _loadCustom(String key, String fileId) async {
+    final file = _file(key);
+    try {
+      Uint8List bytes;
+      if (await file.exists()) {
+        bytes = await file.readAsBytes();
+      } else {
+        await _acquire();
+        try {
+          bytes = await lib.downloadCover(fileId);
+        } finally {
+          _release();
+        }
+        if (bytes.isNotEmpty) await file.writeAsBytes(bytes, flush: true);
+      }
+      if (bytes.isEmpty) return null;
+      _mem[key] = bytes;
+      if (_mem.length > 400) _mem.remove(_mem.keys.first);
+      return bytes;
+    } catch (_) {
+      return null; // нет сети или доступа — неудачу не запоминаем, попробуем в следующий раз
+    }
+  }
+
   Future<Uint8List?> _load(String key, Track t) async {
-    final file = File('${dir.path}${Platform.pathSeparator}${key.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_')}.img');
+    final file = _file(key);
     Uint8List? bytes;
     try {
       if (await file.exists()) {

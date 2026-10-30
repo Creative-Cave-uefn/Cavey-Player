@@ -60,6 +60,8 @@ class Settings {
   bool discord = true;
   bool normalize = false; // выравнивать громкость треков
   bool betaUpdates = false; // получать бета-версии
+  bool artistsDesc = false; // «Исполнители» сортируются Я–А
+  bool albumsDesc = false; // «Альбомы» сортируются Я–А
 
   /// Что играло при закрытии: очередь, место в ней и позиция
   Map<String, dynamic>? session;
@@ -81,6 +83,8 @@ class Settings {
         'discord': discord,
         'normalize': normalize,
         'betaUpdates': betaUpdates,
+        'artistsDesc': artistsDesc,
+        'albumsDesc': albumsDesc,
         if (session != null) 'session': session,
       };
 
@@ -104,6 +108,8 @@ class Settings {
     s.discord = j['discord'] != false;
     s.normalize = j['normalize'] == true;
     s.betaUpdates = j['betaUpdates'] == true;
+    s.artistsDesc = j['artistsDesc'] == true;
+    s.albumsDesc = j['albumsDesc'] == true;
     final ses = j['session'];
     if (ses is Map) s.session = ses.map((k, v) => MapEntry('$k', v));
     return s;

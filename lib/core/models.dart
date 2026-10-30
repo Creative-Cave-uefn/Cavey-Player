@@ -68,6 +68,11 @@ class Track {
   final String path; // папки внутри источника
   final String added; // когда файл появился на Диске
 
+  // Эти поля приходят не из файла, а из общих ручных правок (edits): старые версии
+  // приложения их не знают, но при сохранении библиотеки не теряют
+  int? durationMs; // длительность трека
+  String? customCover; // id картинки в папке covers на Диске — своя обложка трека
+
   Track({
     required this.id,
     required this.source,
@@ -93,7 +98,16 @@ class Track {
   String get displayAlbum => album.isNotEmpty ? album : (path.isNotEmpty ? path.split('/').last : 'Без альбома');
   String get albumKey =>
       '${(albumArtist.isNotEmpty ? albumArtist : artist).toLowerCase()}\u0001${displayAlbum.toLowerCase()}';
-  bool get hasCover => pic != null || cover != null;
+
+  /// Ключ альбома, в который трек попадёт после правки исполнителя или альбома
+  String albumKeyWith({String? newArtist, String? newAlbum}) {
+    final a = newArtist ?? artist;
+    final al = newAlbum ?? album;
+    final shown = al.isNotEmpty ? al : (path.isNotEmpty ? path.split('/').last : 'Без альбома');
+    return '${(albumArtist.isNotEmpty ? albumArtist : a).toLowerCase()}\u0001${shown.toLowerCase()}';
+  }
+
+  bool get hasCover => pic != null || cover != null || customCover != null;
 
   Map<String, dynamic> toJson() => {
         's': source,
@@ -284,6 +298,15 @@ class LibraryData {
           edits[id] = {...?edits[id], ...fields};
           _overlay(id);
         }
+      case 'setMeta':
+        // Правки полей пачкой: {id: {поле: значение}}. id — трек, а также
+        // 'album:<ключ альбома>', 'pl:<id плейлиста>' и 'u:<почта>' для данных, не привязанных к треку
+        (op['meta'] as Map).forEach((k, v) {
+          final id = '$k';
+          final fields = (v as Map).map((a, b) => MapEntry('$a', '$b'));
+          edits[id] = {...?edits[id], ...fields};
+          _overlay(id);
+        });
       case 'hideTrack':
         if (op['on'] == true) {
           hidden.add(op['id'] as String);
@@ -305,7 +328,7 @@ class LibraryData {
     }
   }
 
-  /// Накладывает ручные правки (название, исполнитель, альбом) поверх тегов файла
+  /// Накладывает ручные правки (название, исполнитель, альбом, длительность, обложка) поверх тегов файла
   void _overlay(String id) {
     final t = tracks[id];
     final e = edits[id];
@@ -320,6 +343,11 @@ class LibraryData {
         j[entry.value] = v;
       }
     }
-    tracks[id] = Track.fromJson(id, j);
+    final n = Track.fromJson(id, j);
+    final d = int.tryParse(e['d'] ?? '');
+    n.durationMs = (d != null && d > 0) ? d : null;
+    final cv = e['cv'];
+    n.customCover = (cv != null && cv.isNotEmpty) ? cv : null;
+    tracks[id] = n;
   }
 }

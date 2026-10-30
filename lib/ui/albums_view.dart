@@ -1,12 +1,45 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/library.dart';
+import 'cover_picker.dart';
+import 'list_filter.dart';
 import 'shell.dart';
 import 'theme.dart';
+import 'tracks_view.dart';
 import 'widgets.dart';
 
-class AlbumsPage extends StatelessWidget {
+class AlbumsPage extends StatefulWidget {
   const AlbumsPage({super.key});
+
+  @override
+  State<AlbumsPage> createState() => _AlbumsPageState();
+}
+
+class _AlbumsPageState extends State<AlbumsPage> {
+  final _search = TextEditingController();
+  final _focus = FocusNode();
+  String _query = '';
+
+  @override
+  void initState() {
+    super.initState();
+    searchRequests.addListener(_focusSearch);
+  }
+
+  @override
+  void dispose() {
+    searchRequests.removeListener(_focusSearch);
+    _search.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _focusSearch() {
+    if (!mounted) return;
+    _focus.requestFocus();
+    _search.selection = TextSelection(baseOffset: 0, extentOffset: _search.text.length);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -14,20 +47,52 @@ class AlbumsPage extends StatelessWidget {
     return ListenableBuilder(
       listenable: app.lib,
       builder: (context, _) {
-        final albums = app.lib.albums;
+        final all = app.lib.albums;
+        final q = foldText(_query.trim());
+        final desc = app.settings.albumsDesc;
+        final albums = q.isEmpty
+            ? List<Album>.of(all)
+            : all.where((a) => foldText(a.title).contains(q) || foldText(a.artist).contains(q)).toList();
+        int cmp(Album a, Album b) {
+          final ua = a.title == 'Без альбома';
+          final ub = b.title == 'Без альбома';
+          if (ua != ub) return ua ? 1 : -1; // «без альбома» всегда внизу
+          final r = sortKey(a.title).compareTo(sortKey(b.title));
+          if (r != 0) return desc ? -r : r;
+          return sortKey(a.artist).compareTo(sortKey(b.artist));
+        }
+
+        albums.sort(cmp);
         final pad = MediaQuery.sizeOf(context).width < 860 ? 20.0 : 36.0;
         final header = Padding(
           padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Альбомы', style: display(36, weight: FontWeight.w700)),
-            if (albums.isNotEmpty) ...[
+            if (all.isNotEmpty) ...[
               const SizedBox(height: 10),
-              Text('${albums.length} ${plural(albums.length, 'альбом', 'альбома', 'альбомов')}',
-                  style: const TextStyle(color: C.muted, fontSize: 15)),
+              Text(
+                q.isEmpty
+                    ? '${all.length} ${plural(all.length, 'альбом', 'альбома', 'альбомов')}'
+                    : 'Найдено ${albums.length} из ${all.length}',
+                style: const TextStyle(color: C.muted, fontSize: 15),
+              ),
+              const SizedBox(height: 18),
+              SearchSortBar(
+                controller: _search,
+                focusNode: _focus,
+                hint: 'Найти альбом или исполнителя',
+                desc: desc,
+                onChanged: (v) => setState(() => _query = v),
+                onToggleSort: () {
+                  app.settings.albumsDesc = !desc;
+                  app.lib.saveSettings();
+                  setState(() {});
+                },
+              ),
             ],
           ]),
         );
-        if (albums.isEmpty) {
+        if (all.isEmpty) {
           return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             header,
             const Expanded(
@@ -41,6 +106,13 @@ class AlbumsPage extends StatelessWidget {
         }
         return CustomScrollView(slivers: [
           SliverToBoxAdapter(child: header),
+          if (albums.isEmpty)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: pad, vertical: 12),
+                child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
+              ),
+            ),
           SliverPadding(
             padding: EdgeInsets.fromLTRB(pad, 0, pad, 32),
             sliver: SliverGrid(
@@ -56,6 +128,8 @@ class AlbumsPage extends StatelessWidget {
                   return InkWell(
                     borderRadius: BorderRadius.circular(10),
                     onTap: () => NavScope.of(context).go(Nav('album', a.key)),
+                    // Правый клик: сменить обложку альбома
+                    onSecondaryTapUp: (d) => showAlbumMenu(context, a, d.globalPosition),
                     child: LayoutBuilder(
                       builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 10),
@@ -79,4 +153,34 @@ class AlbumsPage extends StatelessWidget {
       },
     );
   }
+}
+
+/// Окно «Обложка альбома»: загруженная картинка показывается у всех треков альбома
+Future<void> changeAlbumCover(BuildContext context, Album a) async {
+  final lib = Services.of(context).lib;
+  final v = await coverDialog(
+    context,
+    title: 'Обложка альбома',
+    current: CoverImage(track: a.coverTrack, size: 120, radius: 0),
+    canReset: lib.albumCover(a.key) != null,
+    note: 'Её увидят все друзья, и она показывается у каждого трека этого альбома.',
+  );
+  if (v != null) lib.setAlbumCover(a.key, v);
+}
+
+/// Меню альбома по правому клику, в точке клика
+Future<void> showAlbumMenu(BuildContext context, Album a, Offset at) async {
+  final lib = Services.of(context).lib;
+  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+  final v = await showMenu<String>(
+    context: context,
+    position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
+    items: [
+      const PopupMenuItem(value: 'cover', child: Text('Изменить обложку…')),
+      if (lib.albumCover(a.key) != null) const PopupMenuItem(value: 'reset', child: Text('Вернуть обложку из файлов')),
+    ],
+  );
+  if (!context.mounted) return;
+  if (v == 'cover') await changeAlbumCover(context, a);
+  if (v == 'reset') lib.setAlbumCover(a.key, '');
 }

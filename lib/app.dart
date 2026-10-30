@@ -62,7 +62,10 @@ class AppServices {
     final player = PlayerController(lib, accounts, settings, cache);
     final lyrics = LyricsService(store.sub('lyrics'));
     // Текст ищем сразу, как трек открылся: панель потом покажет его без ожидания
-    player.onTrackReady = (t, d) => lyrics.forTrack(t, d).then<void>((_) {}, onError: (Object _) {});
+    player.onTrackReady = (t, d) {
+      lyrics.forTrack(t, d).then<void>((_) {}, onError: (Object _) {});
+      lib.noteDuration(t, d);
+    };
     accounts.addListener(lib.saveSettings);
     await lib.start();
     updater.start();
