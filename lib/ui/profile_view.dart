@@ -161,19 +161,9 @@ class _ProfileLayoutState extends State<ProfileLayout> {
     final pad = compact ? 20.0 : 40.0;
     final photo = compact ? 160.0 : 220.0;
     Widget page(Color? tint) {
-      // Фон окна уже окрашен профилем — сверху лишь лёгкая дымка его цвета
-      final top = (tint ?? C.raised).withValues(alpha: 0.35);
+      // Фон окна уже окрашен профилем целиком — своей дымки внутри страницы нет (её края были видны)
       return Stack(children: [
-        if (bannerFileId != null)
-          _backdrop(Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId)))
-        else
-          _backdrop(
-            DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [top, Colors.transparent], stops: const [0.0, 0.75]),
-              ),
-            ),
-          ),
+        if (bannerFileId != null) _backdrop(Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId))),
         CustomScrollView(controller: _scroll, slivers: [
           SliverToBoxAdapter(
             child: Padding(

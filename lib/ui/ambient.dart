@@ -99,6 +99,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
   ui.Image? _image;
   Color? _color;
   final Map<String, DateTime> _retried = {};
+  Timer? _tick;
   int _seq = 0;
   VoidCallback? _unlisten;
 
@@ -123,8 +124,11 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
 
     player.addListener(changed);
     covers.addListener(coversReady);
+    // Подстраховка: раз в 2 секунды сверяемся с текущим треком. Если ничего не поменялось — сразу выходим
+    _tick = Timer.periodic(const Duration(seconds: 2), (_) => _sync());
     AmbientScope.override.addListener(changed);
     _unlisten = () {
+      _tick?.cancel();
       player.removeListener(changed);
       covers.removeListener(coversReady);
       AmbientScope.override.removeListener(changed);
@@ -266,90 +270,11 @@ class _AmbientBackgroundState extends State<AmbientBackground> {
                   opacity: const AlwaysStoppedAnimation(0.8),
                 ),
         ),
-        // Затемнение: текст читается на любой обложке, снизу темнее — там плеер
-        const DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0x80000000), Color(0xA8000000)],
-            ),
-          ),
-        ),
-        // Едва заметное зерно: разбивает полосы, которые иначе видны на плавных тёмных переходах
-        const _Grain(),
+        // Затемнение ровным цветом, а не градиентом: на тёмных градиентах были видны ступеньки
+        const ColoredBox(color: Color(0x94000000)),
       ]),
     );
   }
-}
-
-/// Шум поверх фона (дизеринг). Картинка 128×128 создаётся один раз и повторяется плиткой
-class _Grain extends StatefulWidget {
-  const _Grain();
-
-  @override
-  State<_Grain> createState() => _GrainState();
-}
-
-class _GrainState extends State<_Grain> {
-  static ui.Image? _tile;
-  static Future<ui.Image>? _making;
-
-  @override
-  void initState() {
-    super.initState();
-    if (_tile == null) {
-      (_making ??= _make()).then((img) {
-        _tile = img;
-        if (mounted) setState(() {});
-      });
-    }
-  }
-
-  static Future<ui.Image> _make() {
-    const n = 128;
-    final px = Uint8List(n * n * 4);
-    var seed = 0x2545F491;
-    for (var i = 0; i < n * n; i++) {
-      // Простой быстрый генератор: шум не обязан быть «честным», лишь бы без узора
-      seed ^= seed << 13;
-      seed ^= seed >> 17;
-      seed ^= seed << 5;
-      seed &= 0xFFFFFFFF;
-      final v = seed & 0xFF;
-      final o = i * 4;
-      final light = v > 127;
-      // Пиксели здесь «предумноженные»: яркость не может быть больше прозрачности.
-      // Раньше белый был 255 при прозрачности 10 — и шум выходил сплошным. Теперь максимум ~4%
-      final a = (v % 64) ~/ 6; // прозрачность 0..10 из 255
-      px[o] = px[o + 1] = px[o + 2] = light ? a : 0;
-      px[o + 3] = a;
-    }
-    final done = Completer<ui.Image>();
-    ui.decodeImageFromPixels(px, n, n, ui.PixelFormat.rgba8888, done.complete);
-    return done.future;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final tile = _tile;
-    if (tile == null) return const SizedBox.shrink();
-    return IgnorePointer(child: CustomPaint(painter: _GrainPainter(tile)));
-  }
-}
-
-class _GrainPainter extends CustomPainter {
-  final ui.Image tile;
-  _GrainPainter(this.tile);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..shader = ImageShader(tile, TileMode.repeated, TileMode.repeated, Matrix4.identity().storage);
-    canvas.drawRect(Offset.zero & size, paint);
-  }
-
-  @override
-  bool shouldRepaint(_GrainPainter old) => !identical(old.tile, tile);
 }
 
 /// Профиль без картинки: мягкое свечение его цветом

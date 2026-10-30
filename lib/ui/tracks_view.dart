@@ -740,20 +740,9 @@ class _TracksPageState extends State<TracksPage> {
     final hero = widget.heroColor;
     final heroHeader = hero == null
         ? null
+        // Своей цветной заливки у шапки нет: она рисовалась только внутри страницы и была видна прямоугольником.
+        // Цвет даёт общий фон окна — от обложки текущего трека
         : Stack(children: [
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    // Под стеклом: лёгкая цветная дымка, уходящая в прозрачность, а не в плотный старый фон
-                    colors: [hero.withValues(alpha: 0.4), Colors.transparent],
-                    stops: const [0.0, 1.0],
-                  ),
-                ),
-              ),
-            ),
             SizedBox(
               width: double.infinity,
               child: Padding(
