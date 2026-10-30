@@ -236,27 +236,53 @@ class _Banner extends StatelessWidget {
   Widget build(BuildContext context) {
     final covers = Services.of(context).covers;
     return LayoutBuilder(builder: (context, box) {
-      final h = (box.maxWidth / 3).clamp(300.0, 620.0).toDouble();
-      return ShaderMask(
-        blendMode: BlendMode.dstIn,
-        shaderCallback: (r) => const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Colors.white, Colors.white, Colors.transparent],
-          stops: [0.0, 0.6, 1.0],
-        ).createShader(r),
-        child: SizedBox(
-          width: box.maxWidth,
-          height: h,
-          child: ClipRect(
-            child: Stack(fit: StackFit.expand, children: [
-              ImageFiltered(
-                imageFilter: ui.ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-                // Баннер размыт, поэтому хватает копии в 640 px: она читается с диска мгновенно
-                child: CoverImage(track: null, fileId: fileId, label: '', size: box.maxWidth, height: h, radius: 0, maxPx: 640),
+      // Карточка со скруглёнными углами и отступом от краёв: раньше баннер упирался в панель и шапку окна
+      const margin = 12.0;
+      final w = box.maxWidth - margin * 2;
+      final h = (w / 3).clamp(300.0, 620.0).toDouble();
+      // Края растворяются в фон окна по плавной кривой — без резкой границы и без «лесенки»
+      List<Color> fade(int n, {bool reverse = false}) => [
+            for (var i = 0; i <= n; i++)
+              () {
+                final t = i / n;
+                final e = t * t * (3 - 2 * t);
+                return Colors.white.withValues(alpha: reverse ? 1 - e : e);
+              }(),
+          ];
+      final steps = [for (var i = 0; i <= 12; i++) i / 12];
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(margin, 4, margin, 0),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: ShaderMask(
+            // снизу: плавно в прозрачность с середины
+            blendMode: BlendMode.dstIn,
+            shaderCallback: (r) => LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Colors.white, Colors.white, ...fade(12, reverse: true)],
+              stops: [0.0, 0.45, for (final s in steps) 0.45 + s * 0.55],
+            ).createShader(r),
+            child: ShaderMask(
+              // по бокам: мягко растворяется у левого и правого края
+              blendMode: BlendMode.dstIn,
+              shaderCallback: (r) => LinearGradient(
+                colors: [...fade(12), ...fade(12, reverse: true)],
+                stops: [for (final s in steps) s * 0.12, for (final s in steps) 0.88 + s * 0.12],
+              ).createShader(r),
+              child: SizedBox(
+                width: w,
+                height: h,
+                child: Stack(fit: StackFit.expand, children: [
+                  ImageFiltered(
+                    imageFilter: ui.ImageFilter.blur(sigmaX: 6, sigmaY: 6, tileMode: TileMode.clamp),
+                    // Баннер размыт, поэтому хватает копии в 640 px: она читается с диска мгновенно
+                    child: CoverImage(track: null, fileId: fileId, label: '', size: w, height: h, radius: 0, maxPx: 640),
+                  ),
+                  ColoredBox(color: Colors.black.withValues(alpha: 0.4)),
+                ]),
               ),
-              ColoredBox(color: Colors.black.withValues(alpha: 0.45)),
-            ]),
+            ),
           ),
         ),
       );
