@@ -126,7 +126,7 @@ class AppServices {
         store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
-    app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
+    app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')))..attach(player);
     app.wave = await WaveService.open(store, lib, player, social, app.web, downloads);
     unawaited(tray.start());
     // Ярлык на панели задач запускает вторую копию; она просит первую показать окно

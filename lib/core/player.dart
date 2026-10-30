@@ -401,6 +401,7 @@ class PlayerController extends ChangeNotifier {
   Future<void> _open({Duration? at, bool play = true}) async {
     final t = current;
     if (t == null) return;
+    altSource = null; // новый трек — снова обычный звук, пока караоке не подготовит свою копию
     final seq = ++_openSeq;
     _resumeAt = null;
     _userPaused = false;
@@ -614,26 +615,41 @@ class PlayerController extends ChangeNotifier {
     await lib.saveSettings();
   }
 
-  /// Караоке: приглушить голос. Голос обычно записан по центру стерео, поэтому вычитаем один канал
-  /// из другого — центр гасится, остаются инструменты по краям. Работает не на всех треках
-  bool vocalCut = false;
+  // ---------- другой звук того же трека (караоке) ----------
 
-  Future<void> setVocalCut(bool on) async {
-    if (vocalCut == on) return;
-    vocalCut = on;
+  /// Играет не сам файл трека, а его обработанная копия (например, без голоса)
+  String? altSource;
+
+  /// Включить обработанную копию трека с того же места
+  Future<void> swapSource(String path) async {
+    final pos = position.value;
+    final wasPlaying = playing || _resumeAt != null;
+    altSource = path;
     notifyListeners();
-    await _applyNormalize();
+    try {
+      await _p.open(Media(Uri.file(path).toString()), play: false);
+      await _p.stream.duration.firstWhere((d) => d > Duration.zero).timeout(const Duration(seconds: 10), onTimeout: () => Duration.zero);
+      await _p.seek(pos);
+      if (wasPlaying) await _p.play();
+    } catch (e) {
+      AppLog.warn('Плеер: обработанная копия', e);
+    }
   }
 
-  /// Фильтры звука: приглушение голоса и выравнивание громкости, в одной цепочке
+  /// Вернуть обычный звук трека с того же места
+  Future<void> restoreSource() async {
+    if (altSource == null) return;
+    altSource = null;
+    await _open(at: position.value, play: playing);
+  }
+
+  /// Фильтры звука. Встроенный в плеер звуковой движок (сборка media_kit) собран без фильтров ffmpeg,
+  /// кроме эквалайзера, — поэтому loudnorm и подобные здесь не запускаются. Караоке без голоса
+  /// делается отдельной копией трека через ffmpeg (см. KaraokeService)
   Future<void> _applyNormalize() async {
     final native = _p.platform;
     if (native is! NativePlayer) return;
     final filters = [
-      // stereotools: середину стерео (там обычно голос) почти в ноль, края — как есть.
-      // Вычитание каналов через pan плеер не принимал («Audio filter initialized failed»)
-      if (vocalCut) 'lavfi=[stereotools=mlev=0.015625]',
-      // loudnorm в однопроходном режиме работает на лету; после него возвращаем обычную частоту
       if (settings.normalize) 'lavfi=[loudnorm=I=-16:LRA=11:TP=-1.5,aresample=48000]',
     ];
     try {

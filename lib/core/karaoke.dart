@@ -19,6 +19,7 @@ import 'library.dart';
 import 'log.dart';
 import 'lyrics.dart';
 import 'models.dart';
+import 'player.dart';
 
 /// Слово, которое распознал Whisper
 class HeardWord {
@@ -506,6 +507,93 @@ class KaraokeService extends ChangeNotifier {
         } catch (_) {}
       }
     }
+  }
+
+  // ---------- караоке без голоса ----------
+
+  /// Голос приглушён: играет копия трека, где ffmpeg погасил середину стерео (там обычно голос).
+  /// Встроенный в плеер движок фильтров не умеет, поэтому копия готовится заранее, за пару секунд
+  bool vocalCut = false;
+  PlayerController? _player;
+  String? _cutFor;
+
+  void attach(PlayerController p) {
+    _player = p;
+    p.addListener(() {
+      // Сменился трек — готовим копию и для него
+      final t = p.current;
+      if (vocalCut && t != null && t.id != _cutFor) {
+        _cutFor = t.id;
+        unawaited(_applyCut());
+      }
+    });
+  }
+
+  Future<void> setVocalCut(bool on) async {
+    final p = _player;
+    if (p == null || vocalCut == on) return;
+    vocalCut = on;
+    notifyListeners();
+    if (!on) {
+      _cutFor = null;
+      await p.restoreSource();
+      return;
+    }
+    _cutFor = p.current?.id;
+    await _applyCut();
+  }
+
+  Future<void> _applyCut() async {
+    final p = _player;
+    final t = p?.current;
+    if (p == null || t == null) return;
+    try {
+      _status('Убираю голос из «${t.title}»…');
+      final f = await _instrumental(t);
+      if (!vocalCut || p.current?.id != t.id) return;
+      await p.swapSource(f.path);
+      _status('');
+    } catch (e) {
+      AppLog.warn('Караоке: без голоса «${t.title}»', e);
+      _status('Не получилось убрать голос: ${'$e'.replaceFirst('Exception: ', '')}');
+    }
+  }
+
+  Directory get _cutDir => Directory('${dir.path}${Platform.pathSeparator}novocal');
+
+  Future<File> _instrumental(Track t) async {
+    await _cutDir.create(recursive: true);
+    final out = File('${_cutDir.path}${Platform.pathSeparator}${t.id}.ogg');
+    if (out.existsSync() && out.lengthSync() > 0) return out;
+    final src = File('${_cutDir.path}${Platform.pathSeparator}src.audio');
+    try {
+      final cached = cache.fileFor(t.id);
+      if (cache.has(t.id) && cached.existsSync()) {
+        await cached.copy(src.path);
+      } else {
+        final email = await lib.accessFor(t.source);
+        await src.writeAsBytes(await drive.download(email, t.id));
+      }
+      if (!tools.ffmpeg.existsSync()) await tools.ensure((l) => _status(l));
+      // stereotools: середину стерео почти в ноль, края — как есть. Opus 160 кбит/с — без заметной потери
+      await Tools.run(tools.ffmpeg.path, [
+        '-y', '-i', src.path, '-vn',
+        '-af', 'stereotools=mlev=0.015625',
+        '-c:a', 'libopus', '-b:a', '160k', out.path,
+      ]);
+      if (!out.existsSync() || out.lengthSync() == 0) throw Exception('ffmpeg не подготовил копию');
+    } finally {
+      if (src.existsSync()) await src.delete();
+    }
+    // Держим 20 последних копий
+    final all = _cutDir.listSync().whereType<File>().where((f) => f.path.endsWith('.ogg')).toList()
+      ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+    for (final f in all.skip(20)) {
+      try {
+        f.deleteSync();
+      } catch (_) {}
+    }
+    return out;
   }
 
   /// Слова из JSON whisper.cpp: transcription[].offsets.from/to в миллисекундах

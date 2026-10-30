@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/karaoke.dart';
 import '../core/player.dart';
 import 'ambient.dart';
 import 'lyrics_panel.dart';
@@ -22,7 +23,7 @@ class CinemaPage extends StatefulWidget {
 
 class _CinemaPageState extends State<CinemaPage> {
   bool _lyrics = true;
-  PlayerController? _player;
+  KaraokeService? _karaoke;
 
   @override
   void initState() {
@@ -33,16 +34,16 @@ class _CinemaPageState extends State<CinemaPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _player = Services.of(context).player;
+    _karaoke = Services.of(context).karaoke;
   }
 
   @override
   void dispose() {
-    final p = _player;
+    final k = _karaoke;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       AmbientScope.vivid.value = false;
       // Приглушение голоса — часть караоке: вне кинотеатра оно только сбивало бы с толку
-      p?.setVocalCut(false);
+      k?.setVocalCut(false);
     });
     super.dispose();
   }
@@ -57,7 +58,7 @@ class _CinemaPageState extends State<CinemaPage> {
     final app = Services.of(context);
     final p = app.player;
     return ListenableBuilder(
-      listenable: Listenable.merge([p, app.lib]),
+      listenable: Listenable.merge([p, app.lib, app.karaoke]),
       builder: (context, _) {
         final t = p.current;
         return Stack(children: [
@@ -114,12 +115,17 @@ class _CinemaPageState extends State<CinemaPage> {
             right: 20,
             bottom: 18,
             child: Row(children: [
+              if (app.karaoke.status.contains('голос'))
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Text(app.karaoke.status, style: const TextStyle(color: C.muted, fontSize: 13)),
+                ),
               IconButton(
-                tooltip: p.vocalCut
+                tooltip: app.karaoke.vocalCut
                     ? 'Вернуть голос'
                     : 'Караоке: приглушить голос (работает не на всех треках — гасит то, что записано по центру)',
-                onPressed: () => p.setVocalCut(!p.vocalCut),
-                icon: Icon(Icons.mic_external_on_rounded, color: p.vocalCut ? C.accent : C.muted),
+                onPressed: () => app.karaoke.setVocalCut(!app.karaoke.vocalCut),
+                icon: Icon(Icons.mic_external_on_rounded, color: app.karaoke.vocalCut ? C.accent : C.muted),
               ),
               IconButton(
                 tooltip: _lyrics ? 'Скрыть текст' : 'Показать текст',
