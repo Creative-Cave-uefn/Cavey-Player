@@ -384,8 +384,8 @@ class DownloadService extends ChangeNotifier {
       await yt.tag(e.path, meta);
       final dir = File(e.path).parent.path;
       final file = YouTube.moveTo(e.path, dir, clampName(meta.label), n != null && number != null ? '${n.toString().padLeft(2, '0')} - ' : '');
-      final t = await _upload(job, yt, File(file), folderId: folderId, path: path);
-      ids?.add(t.id);
+      final uploaded = await _upload(job, yt, File(file), folderId: folderId, path: path);
+      ids?.add(uploaded.id);
     }
     return entries.isNotEmpty;
   }
