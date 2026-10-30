@@ -436,6 +436,11 @@ class _Tune extends StatelessWidget {
           side: BorderSide.none,
           showCheckmark: false,
         );
+    // Своя подписка на волну: этот блок создаётся как const и сам по себе при выборе не перерисовывался
+    return ListenableBuilder(listenable: wave, builder: (context, _) => _build(context, wave, chip));
+  }
+
+  Widget _build(BuildContext context, WaveService wave, Widget Function(String, bool, VoidCallback) chip) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text('Настроение', style: display(16)),
       const SizedBox(height: 10),
