@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../config.dart';
@@ -75,10 +76,18 @@ class Lyrics {
 /// LRCLIB не отвечает (нет сети или сервис перегружен) — это не то же самое, что «текста нет»
 class LyricsUnavailable implements Exception {}
 
-class LyricsService {
+/// Ищет и хранит тексты. Сообщает слушателям, когда любой поиск закончился:
+/// панель показывает текст, как только он появился, кто бы его ни загрузил.
+class LyricsService extends ChangeNotifier {
   final Directory dir;
   final Map<String, Lyrics?> _mem = {};
   final Map<String, Future<Lyrics?>> _inflight = {};
+
+  /// Последний поиск не удался (LRCLIB не ответил) — до повторной попытки
+  final Set<String> _failed = {};
+
+  /// Не нашли, когда длительность трека была неизвестна: с длительностью стоит поискать ещё раз
+  final Set<String> _noDuration = {};
   final http.Client _http = http.Client();
 
   static const _timeout = Duration(seconds: 8);
@@ -92,21 +101,46 @@ class LyricsService {
     return sha1.convert(utf8.encode(s)).toString().substring(0, 24);
   }
 
+  /// Текст уже известен (в том числе «не нашёлся» — тогда [cached] вернёт null)
+  bool known(Track t) => _mem.containsKey(keyFor(t));
+  Lyrics? cached(Track t) => _mem[keyFor(t)];
+  bool loading(Track t) => _inflight.containsKey(keyFor(t));
+  bool failed(Track t) => _failed.contains(keyFor(t));
+
   /// [refresh] — забыть сохранённый ответ и спросить LRCLIB заново
   Future<Lyrics?> forTrack(Track t, Duration duration, {bool refresh = false}) {
     final key = keyFor(t);
     final running = _inflight[key];
     if (running != null) return running;
+    // Не нашли без длительности, а теперь она известна — ищем ещё раз
+    if (!refresh && duration > Duration.zero && _mem.containsKey(key) && _mem[key] == null && _noDuration.contains(key)) {
+      refresh = true;
+    }
     if (refresh) {
       _mem.remove(key);
     } else if (_mem.containsKey(key)) {
       return Future.value(_mem[key]);
     }
-    // Ошибку сети не запоминаем: в следующий раз попробуем снова
-    return _inflight[key] = _load(key, t, duration, refresh).then((l) {
+    _failed.remove(key);
+    final f = _load(key, t, duration, refresh).then((l) {
       _mem[key] = l;
+      if (l == null && duration <= Duration.zero) {
+        _noDuration.add(key);
+      } else {
+        _noDuration.remove(key);
+      }
       return l;
-    }).whenComplete(() => _inflight.remove(key));
+    }, onError: (Object e) {
+      // Ошибку сети не запоминаем: в следующий раз попробуем снова
+      _failed.add(key);
+      throw e;
+    }).whenComplete(() {
+      _inflight.remove(key);
+      notifyListeners();
+    });
+    _inflight[key] = f;
+    notifyListeners();
+    return f;
   }
 
   File _file(String key) => File('${dir.path}${Platform.pathSeparator}$key.json');

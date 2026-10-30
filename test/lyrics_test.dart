@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cave_player/core/lyrics.dart';
 import 'package:cave_player/core/models.dart';
@@ -90,6 +93,28 @@ void main() {
     test('ключ кэша меняется после правки названия', () {
       expect(LyricsService.keyFor(track('A', 'B')), isNot(LyricsService.keyFor(track('A2', 'B'))));
       expect(LyricsService.keyFor(track('A', 'B')), LyricsService.keyFor(track(' a ', 'b')));
+    });
+  });
+
+  group('сервис текстов', () {
+    test('сообщает, когда текст появился, и отдаёт его из памяти', () async {
+      final dir = await Directory.systemTemp.createTemp('lyrics');
+      final service = LyricsService(dir);
+      final t = track('Песня', 'Группа');
+      File('${dir.path}${Platform.pathSeparator}${LyricsService.keyFor(t)}.json')
+          .writeAsStringSync(jsonEncode({'syncedLyrics': '[00:01.00]Раз'}));
+      var calls = 0;
+      service.addListener(() => calls++);
+      expect(service.known(t), isFalse);
+      final f = service.forTrack(t, const Duration(seconds: 100));
+      expect(service.loading(t), isTrue);
+      final ly = await f;
+      expect(ly?.lines.single.text, 'Раз');
+      expect(service.known(t), isTrue);
+      expect(service.loading(t), isFalse);
+      expect(service.cached(t)?.synced, isTrue);
+      expect(calls, greaterThanOrEqualTo(2)); // начал искать и нашёл
+      await dir.delete(recursive: true);
     });
   });
 }
