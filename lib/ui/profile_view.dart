@@ -230,7 +230,7 @@ class _ProfileLayoutState extends State<ProfileLayout> {
             initialData: tintNow,
             builder: (context, snap) => page(snap.data ?? tintNow),
           );
-    return AmbientOverride(source: ambient, child: body);
+    return AmbientOverride(source: widget.ambient, child: body);
   }
 }
 
