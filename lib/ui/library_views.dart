@@ -13,6 +13,7 @@ import 'list_filter.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'web_views.dart';
 import 'widgets.dart';
 
 // ---------- исполнители ----------
@@ -148,7 +149,7 @@ class _ArtistsPageState extends State<ArtistsPage> {
                       child: Padding(
                         padding: const EdgeInsets.only(left: 12),
                         child: Row(children: [
-                          ClipOval(child: CoverImage(track: a.coverTrack, size: 44, radius: 0)),
+                          ArtistPhoto(name: a.name, size: 44, fallback: ClipOval(child: CoverImage(track: a.coverTrack, size: 44, radius: 0))),
                           const SizedBox(width: 16),
                           Expanded(
                             child: Text(a.name,

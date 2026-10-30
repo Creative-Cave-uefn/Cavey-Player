@@ -19,6 +19,7 @@ import 'profile_view.dart';
 import 'sources_view.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'web_views.dart';
 import 'widgets.dart';
 
 class Nav {
@@ -248,6 +249,8 @@ class _ShellState extends State<Shell> {
         return UserTracksPage(key: ValueKey('${nav.kind}:${nav.id}'), email: nav.id!, uploads: nav.kind == 'userUploads', compact: compact);
       case 'recent':
         return RecentPage(key: const ValueKey('recent'), compact: compact);
+      case 'new':
+        return NewReleasesPage(key: const ValueKey('new'), compact: compact);
       case 'duplicates':
         return const DuplicatesPage(key: ValueKey('duplicates'));
       case 'sources':
@@ -295,6 +298,7 @@ class _Sidebar extends StatelessWidget {
             item(Icons.album_outlined, 'Альбомы', const Nav('albums')),
             item(Icons.mic_none_rounded, 'Исполнители', const Nav('artists')),
             item(Icons.schedule_rounded, 'Недавно добавленные', const Nav('recent')),
+            item(Icons.new_releases_outlined, 'Новинки', const Nav('new')),
             item(Icons.cloud_download_outlined, 'Скачать', const Nav('download'),
                 trailing: app.downloads.busy
                     ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))

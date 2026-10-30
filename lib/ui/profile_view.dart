@@ -11,6 +11,7 @@ import '../core/models.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'web_views.dart';
 import 'widgets.dart';
 
 // Страницы исполнителя и пользователя: общая раскладка — цветной фон, круглое фото,
@@ -414,7 +415,8 @@ class ArtistProfilePage extends StatelessWidget {
         final albumsN = a.albums;
         return ProfileLayout(
           compact: compact,
-          avatar: CoverImage(track: a.coverTrack, size: 220, radius: 0),
+          // Фото из интернета; пока его нет — обложка одного из треков
+          avatar: ArtistPhoto(name: a.name, size: 220, fallback: CoverImage(track: a.coverTrack, size: 220, radius: 0)),
           tintFuture: _trackTint(app, a.coverTrack),
           tintNow: _tintCache[app.covers.keyOf(a.coverTrack)],
           name: a.name,
@@ -451,6 +453,9 @@ class ArtistProfilePage extends StatelessWidget {
                 tiles: [for (final al in guest) _albumTile(context, al)],
               ),
             ],
+            // Из интернета: описание и то, чего нет в библиотеке, с отрывками и «Скачать»
+            const SizedBox(height: 28),
+            ArtistWebSection(key: ValueKey('web:${a.key}'), artist: a, compact: compact, padded: false),
           ],
         );
       },

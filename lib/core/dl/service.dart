@@ -175,6 +175,15 @@ class DownloadService extends ChangeNotifier {
       log('Поддерживаются ссылки на трек и на альбом Яндекс Музыки.');
       return false;
     }
+    if (q.contains('deezer.com/')) {
+      if (q.contains('/album/')) {
+        final res = await deezerAlbum(q);
+        return res != null && await _album(job, yt, temp, res.$1, res.$2, log);
+      }
+      if (q.contains('/track/')) return _single(job, yt, temp, await deezerTrack(q), 'Deezer', log);
+      log('Поддерживаются ссылки на трек и на альбом Deezer.');
+      return false;
+    }
     if (q.contains('open.spotify.com') || q.startsWith('spotify:')) {
       if (q.contains('/album/') || q.startsWith('spotify:album:')) {
         final res = await spotifyAlbum(q);

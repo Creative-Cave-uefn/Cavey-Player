@@ -1,0 +1,384 @@
+// Сведения об исполнителях из интернета: фото, альбомы и новинки, 30-секундные
+// отрывки — из открытого API Deezer (без ключа), короткое описание — из Википедии.
+// Всё кэшируется на диске: повторно спрашиваем не чаще раза в день (альбомы)
+// или в неделю (фото и описание), чтобы не упираться в ограничения сервисов.
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+
+import 'library.dart';
+import 'log.dart';
+import 'models.dart';
+
+class WebArtist {
+  final int id;
+  final String name;
+  final String picture;
+  final int fans;
+  final String link;
+  const WebArtist(this.id, this.name, this.picture, this.fans, this.link);
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'pic': picture, 'fans': fans, 'link': link};
+  static WebArtist fromJson(Map j) =>
+      WebArtist((j['id'] as num).toInt(), '${j['name']}', '${j['pic'] ?? ''}', (j['fans'] as num?)?.toInt() ?? 0, '${j['link'] ?? ''}');
+}
+
+class WebAlbum {
+  final int id;
+  final String title;
+  final String cover;
+  final String date; // ГГГГ-ММ-ДД
+  final String type; // album, single, ep, compile
+  final String artist;
+  final String link;
+  const WebAlbum(this.id, this.title, this.cover, this.date, this.type, this.artist, this.link);
+
+  String get year => date.length >= 4 ? date.substring(0, 4) : '';
+  String get typeLabel => switch (type) { 'single' => 'Сингл', 'ep' => 'EP', 'compile' => 'Сборник', _ => 'Альбом' };
+  DateTime? get released => DateTime.tryParse(date);
+
+  Map<String, dynamic> toJson() => {'id': id, 't': title, 'c': cover, 'd': date, 'k': type, 'a': artist, 'l': link};
+  static WebAlbum fromJson(Map j) => WebAlbum((j['id'] as num).toInt(), '${j['t']}', '${j['c'] ?? ''}', '${j['d'] ?? ''}',
+      '${j['k'] ?? 'album'}', '${j['a'] ?? ''}', '${j['l'] ?? ''}');
+}
+
+class WebTrack {
+  final int id;
+  final String title;
+  final String artist;
+  final String preview; // 30 секунд mp3, может быть пустым
+  final int seconds;
+  final String link;
+  const WebTrack(this.id, this.title, this.artist, this.preview, this.seconds, this.link);
+}
+
+class WebBio {
+  final String text;
+  final String url;
+  const WebBio(this.text, this.url);
+}
+
+/// Новинка: альбом исполнителя из библиотеки, которого в библиотеке ещё нет
+class NewRelease {
+  final String artistKey;
+  final WebAlbum album;
+  const NewRelease(this.artistKey, this.album);
+}
+
+class WebInfoService extends ChangeNotifier {
+  final Directory dir;
+  final LibraryController lib;
+  final http.Client _http = http.Client();
+
+  WebInfoService(this.dir, this.lib) {
+    unawaited(_load().then((_) => notifyListeners()));
+  }
+
+  static const _artistTtl = Duration(days: 7);
+  static const _albumsTtl = Duration(hours: 20);
+
+  // ---------- кэш на диске ----------
+
+  Map<String, dynamic> _cache = {};
+  bool _loaded = false;
+  Timer? _saveTimer;
+
+  File get _file => File('${dir.path}${Platform.pathSeparator}web_cache.json');
+
+  Future<void> _load() async {
+    if (_loaded) return;
+    _loaded = true;
+    try {
+      if (await _file.exists()) _cache = (jsonDecode(await _file.readAsString()) as Map).cast<String, dynamic>();
+    } catch (_) {
+      _cache = {};
+    }
+  }
+
+  void _save() {
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(seconds: 2), () async {
+      try {
+        await _file.writeAsString(jsonEncode(_cache));
+      } catch (e) {
+        AppLog.warn('Не получилось сохранить кэш веб-сведений', e);
+      }
+    });
+  }
+
+  /// Запись есть и не устарела (значение может быть null — «не нашлось»)
+  bool _isFresh(String key, Duration ttl) {
+    final e = _cache[key];
+    if (e is! Map) return false;
+    final at = DateTime.tryParse('${e['at']}');
+    return at != null && DateTime.now().difference(at) <= ttl;
+  }
+
+  Object? _value(String key) => (_cache[key] as Map?)?['v'];
+
+  T? _fresh<T>(String key, Duration ttl, T Function(Object?) read) => _isFresh(key, ttl) ? read(_value(key)) : null;
+
+  void _put(String key, Object? value) {
+    _cache[key] = {'at': DateTime.now().toIso8601String(), 'v': value};
+    _save();
+  }
+
+  // ---------- Deezer ----------
+
+  // Deezer разрешает около 50 запросов за 5 секунд: не больше 4 одновременно и с паузой между ними
+  int _active = 0;
+  final List<Completer<void>> _waiting = [];
+  DateTime _last = DateTime(0);
+
+  Future<void> _slot() async {
+    if (_active >= 4) {
+      final c = Completer<void>();
+      _waiting.add(c);
+      await c.future;
+    }
+    _active++;
+    final gap = const Duration(milliseconds: 120) - DateTime.now().difference(_last);
+    if (gap > Duration.zero) await Future<void>.delayed(gap);
+    _last = DateTime.now();
+  }
+
+  void _free() {
+    _active--;
+    if (_waiting.isNotEmpty) _waiting.removeAt(0).complete();
+  }
+
+  Future<Map> _deezer(String path, [Map<String, String>? q]) async {
+    await _slot();
+    try {
+      return await _deezerRaw(path, q);
+    } finally {
+      _free();
+    }
+  }
+
+  Future<Map> _deezerRaw(String path, [Map<String, String>? q]) async {
+    final res = await _http
+        .get(Uri.https('api.deezer.com', path, q), headers: {'Accept-Language': 'ru,en'})
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) throw HttpException('Deezer ответил ${res.statusCode}');
+    final j = jsonDecode(utf8.decode(res.bodyBytes));
+    if (j is! Map) throw const FormatException('Deezer: неожиданный ответ');
+    if (j['error'] != null) throw HttpException('Deezer: ${(j['error'] as Map)['message'] ?? j['error']}');
+    return j;
+  }
+
+  static String _key(String name) => name.trim().toLowerCase();
+  static String _normTitle(String s) => s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[\(\[][^\)\]]*[\)\]]'), ' ')
+      .replaceAll('ё', 'е')
+      .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
+      .trim();
+
+  final Map<String, Future<WebArtist?>> _artistInflight = {};
+
+  /// Уже известное (из кэша) — для мгновенного показа
+  WebArtist? artistCached(String name) {
+    if (!_loaded) return null;
+    return _fresh('artist:${_key(name)}', _artistTtl, (v) => v is Map ? WebArtist.fromJson(v) : null);
+  }
+
+  /// Исполнитель на Deezer: точное совпадение имени, иначе самый популярный из похожих
+  Future<WebArtist?> artist(String name) => _artistInflight[_key(name)] ??= () async {
+        await _load();
+        final key = 'artist:${_key(name)}';
+        if (_isFresh(key, _artistTtl)) {
+          final v = _value(key);
+          return v is Map ? WebArtist.fromJson(v) : null;
+        }
+        try {
+          final j = await _deezer('/search/artist', {'q': name, 'limit': '8'});
+          final list = [for (final a in (j['data'] as List? ?? const [])) if (a is Map) a];
+          Map? best;
+          for (final a in list) {
+            if (_key('${a['name']}') == _key(name)) {
+              if (best == null || ((a['nb_fan'] as num?) ?? 0) > ((best['nb_fan'] as num?) ?? 0)) best = a;
+            }
+          }
+          final w = best == null
+              ? null
+              : WebArtist((best['id'] as num).toInt(), '${best['name']}', '${best['picture_xl'] ?? best['picture_big'] ?? ''}',
+                  (best['nb_fan'] as num?)?.toInt() ?? 0, '${best['link'] ?? ''}');
+          _put(key, w?.toJson());
+          notifyListeners();
+          return w;
+        } catch (e) {
+          AppLog.warn('Deezer: не нашёл «$name»', e);
+          return null;
+        }
+      }()
+          .whenComplete(() => _artistInflight.remove(_key(name)));
+
+  /// Альбомы и синглы исполнителя, новые сверху
+  Future<List<WebAlbum>> albums(WebArtist a) async {
+    await _load();
+    final key = 'albums:${a.id}';
+    final hit = _fresh(key, _albumsTtl, (v) => [for (final x in (v as List)) WebAlbum.fromJson(x as Map)]);
+    if (hit != null) return hit;
+    final j = await _deezer('/artist/${a.id}/albums', {'limit': '100'});
+    final list = [
+      for (final x in (j['data'] as List? ?? const []))
+        if (x is Map)
+          WebAlbum((x['id'] as num).toInt(), '${x['title']}', '${x['cover_xl'] ?? x['cover_big'] ?? ''}', '${x['release_date'] ?? ''}',
+              '${x['record_type'] ?? 'album'}', a.name, '${x['link'] ?? ''}')
+    ]..sort((p, q) => q.date.compareTo(p.date));
+    _put(key, [for (final x in list) x.toJson()]);
+    return list;
+  }
+
+  final Map<int, List<WebTrack>> _tracks = {};
+
+  /// Треки альбома с отрывками
+  Future<List<WebTrack>> albumTracks(int albumId) async {
+    final hit = _tracks[albumId];
+    if (hit != null) return hit;
+    final j = await _deezer('/album/$albumId/tracks', {'limit': '100'});
+    final list = [
+      for (final x in (j['data'] as List? ?? const []))
+        if (x is Map)
+          WebTrack((x['id'] as num).toInt(), '${x['title']}', '${(x['artist'] as Map?)?['name'] ?? ''}', '${x['preview'] ?? ''}',
+              (x['duration'] as num?)?.toInt() ?? 0, '${x['link'] ?? ''}')
+    ];
+    return _tracks[albumId] = list;
+  }
+
+  // ---------- что уже есть в библиотеке ----------
+
+  /// Альбом уже есть у вас: совпадает название альбома у этого исполнителя
+  /// или (для синглов) есть такая песня
+  bool inLibrary(String artistKey, WebAlbum a) {
+    final mine = lib.artist(artistKey);
+    if (mine == null) return false;
+    final want = _normTitle(a.title);
+    if (want.isEmpty) return false;
+    for (final t in mine.tracks) {
+      if (_normTitle(t.displayAlbum) == want) return true;
+    }
+    if (a.type == 'single' || a.type == 'ep') {
+      for (final t in mine.tracks) {
+        if (_normTitle(t.title) == want) return true;
+      }
+    }
+    return false;
+  }
+
+  /// Песня уже есть в библиотеке
+  bool trackInLibrary(WebTrack t) => lib.existing(t.artist, t.title) != null;
+
+  // ---------- Википедия ----------
+
+  static final _musicWords = RegExp(
+    r'музык|певе[цч]|певиц|рэп|рок|групп|исполнител|композитор|диджей|продюсер|гитарист|'
+    r'singer|band|musician|rapper|composer|record producer|\bdj\b|songwriter|duo|group',
+    caseSensitive: false,
+  );
+
+  WebBio? bioCached(String name) {
+    if (!_loaded) return null;
+    return _fresh('bio:${_key(name)}', _artistTtl, (v) => v is Map ? WebBio('${v['t']}', '${v['u']}') : null);
+  }
+
+  /// Короткое описание из Википедии (сначала русской). Берём, только если статья про музыканта
+  Future<WebBio?> bio(String name) async {
+    await _load();
+    final key = 'bio:${_key(name)}';
+    if (_isFresh(key, _artistTtl)) {
+      final v = _value(key);
+      return v is Map ? WebBio('${v['t']}', '${v['u']}') : null;
+    }
+    WebBio? found;
+    for (final lang in const ['ru', 'en']) {
+      try {
+        final res = await _http
+            .get(Uri.https('$lang.wikipedia.org', '/api/rest_v1/page/summary/${Uri.encodeComponent(name.replaceAll(' ', '_'))}'))
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode != 200) continue;
+        final j = jsonDecode(utf8.decode(res.bodyBytes));
+        if (j is! Map || j['type'] != 'standard') continue;
+        final desc = '${j['description'] ?? ''}';
+        final text = '${j['extract'] ?? ''}'.trim();
+        if (text.isEmpty || !_musicWords.hasMatch('$desc ${text.length > 300 ? text.substring(0, 300) : text}')) continue;
+        final url = '${((j['content_urls'] as Map?)?['desktop'] as Map?)?['page'] ?? ''}';
+        found = WebBio(text, url);
+        break;
+      } catch (_) {}
+    }
+    _put(key, found == null ? null : {'t': found.text, 'u': found.url});
+    notifyListeners();
+    return found;
+  }
+
+  // ---------- новинки ----------
+
+  List<NewRelease> releases = const [];
+  bool loadingReleases = false;
+  int releasesDone = 0;
+  int releasesTotal = 0;
+  DateTime? releasesAt;
+
+  /// Свежие (за [days] дней) альбомы и синглы исполнителей из библиотеки, которых у вас нет.
+  /// Смотрим самых слушаемых в библиотеке исполнителей, не больше [maxArtists].
+  Future<void> loadReleases({bool force = false, int days = 120, int maxArtists = 60}) async {
+    if (loadingReleases) return;
+    final at = releasesAt;
+    if (!force && at != null && DateTime.now().difference(at) < const Duration(hours: 6)) return;
+    await _load();
+    loadingReleases = true;
+    final artists = List.of(lib.artists)
+      ..removeWhere((a) => a.name == 'Неизвестный исполнитель')
+      ..sort((a, b) => b.tracks.length.compareTo(a.tracks.length));
+    final pick = artists.take(maxArtists).toList();
+    releasesTotal = pick.length;
+    releasesDone = 0;
+    notifyListeners();
+    final since = DateTime.now().subtract(Duration(days: days));
+    final out = <NewRelease>[];
+    var i = 0;
+    Future<void> worker() async {
+      while (i < pick.length) {
+        final a = pick[i++];
+        try {
+          final w = await artist(a.name);
+          if (w != null) {
+            for (final al in await albums(w)) {
+              final d = al.released;
+              if (d == null || d.isBefore(since)) continue;
+              if (!inLibrary(a.key, al)) out.add(NewRelease(a.key, al));
+            }
+          }
+        } catch (e) {
+          AppLog.warn('Новинки: ${a.name}', e);
+        }
+        releasesDone++;
+        notifyListeners();
+        // Deezer разрешает около 50 запросов за 5 секунд — не торопимся
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+    }
+
+    await Future.wait([worker(), worker(), worker()]);
+    out.sort((a, b) => b.album.date.compareTo(a.album.date));
+    // Один релиз мог найтись у нескольких соавторов
+    final seen = <int>{};
+    releases = [for (final r in out) if (seen.add(r.album.id)) r];
+    releasesAt = DateTime.now();
+    loadingReleases = false;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _saveTimer?.cancel();
+    _http.close();
+    super.dispose();
+  }
+}

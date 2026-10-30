@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'config.dart';
+import 'core/preview.dart';
+import 'core/web_info.dart';
 import 'core/audio_cache.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
@@ -43,6 +45,10 @@ class AppServices {
   final DiscordPresence discord;
   final DownloadService downloads;
   final TrayController tray;
+
+  /// Фото, описания и новинки исполнителей из интернета, отрывки треков
+  late final WebInfoService web;
+  late final PreviewPlayer preview;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
@@ -109,6 +115,8 @@ class AppServices {
     );
     app = AppServices._(
         store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
+    app.web = WebInfoService(store.sub('web'), lib);
+    app.preview = PreviewPlayer(player);
     unawaited(tray.start());
     // Кнопки «Назад / Пауза / Дальше» в превью на панели задач живут до выхода из приложения
     unawaited(TaskbarController(player).start());

@@ -277,6 +277,12 @@ class TracksPage extends StatefulWidget {
   /// Перестановка перетаскиванием (в плейлистах): трек и тот, за которым он теперь стоит
   final void Function(Track track, Track? after)? onReorder;
 
+  /// Своя картинка в шапке вместо обложки (например, фото исполнителя)
+  final Widget? image;
+
+  /// Блок под списком треков (например, то, чего нет в библиотеке)
+  final Widget? footer;
+
   const TracksPage({
     super.key,
     required this.title,
@@ -292,6 +298,8 @@ class TracksPage extends StatefulWidget {
     this.actions = const [],
     this.banner,
     this.onReorder,
+    this.image,
+    this.footer,
   });
 
   @override
@@ -584,7 +592,10 @@ class _TracksPageState extends State<TracksPage> {
     final header = Padding(
       padding: EdgeInsets.fromLTRB(pad, 34, pad, 18),
       child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-        if (widget.cover != null || widget.coverFileId != null) ...[
+        if (widget.image != null) ...[
+          widget.image!,
+          const SizedBox(width: 28),
+        ] else if (widget.cover != null || widget.coverFileId != null) ...[
           CoverImage(
               track: widget.cover,
               fileId: widget.coverFileId,
@@ -659,6 +670,9 @@ class _TracksPageState extends State<TracksPage> {
         ? null
         : Padding(padding: EdgeInsets.fromLTRB(pad, 0, pad, 14), child: Align(alignment: Alignment.centerLeft, child: widget.banner));
     if (widget.tracks.isEmpty) {
+      if (widget.footer != null) {
+        return ListView(children: [header, if (banner != null) banner, widget.footer!]);
+      }
       return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         header,
         if (banner != null) banner,
@@ -731,6 +745,7 @@ class _TracksPageState extends State<TracksPage> {
                     delegate: SliverChildBuilderDelegate(row, childCount: visible.length),
                   ),
           ),
+          if (widget.footer != null) SliverToBoxAdapter(child: widget.footer!),
           // Место под панель действий, чтобы она не закрывала последние треки
           if (_selecting) const SliverToBoxAdapter(child: SizedBox(height: 70)),
         ]);
