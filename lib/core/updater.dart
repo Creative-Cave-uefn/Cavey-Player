@@ -6,6 +6,9 @@
 // «test-<ветка>-v<версия>». Обычные версии их не видят; в настройках можно
 // поставить любую. Тестовая сборка дальше обновляется сборками своей ветки,
 // а когда ветку удалят — возвращается к обычным версиям.
+//
+// Бета-версии: ветка beta публикует пререлизы «beta-v<версия>». Кто включил
+// «Получать бета-версии», получает самую свежую из обычной и бета-версии.
 
 import 'dart:async';
 import 'dart:convert';
@@ -29,6 +32,7 @@ class BuildInfo {
   final DateTime? published;
   final String url;
   final int size;
+  final bool beta;
 
   const BuildInfo({
     required this.version,
@@ -38,9 +42,11 @@ class BuildInfo {
     required this.published,
     required this.url,
     required this.size,
+    this.beta = false,
   });
 
-  bool get stable => branch.isEmpty;
+  /// Обычная версия для всех (не бета и не тестовая сборка ветки)
+  bool get stable => branch.isEmpty && !beta;
 
   /// Первая строка описания — обычно заголовок коммита
   String get summary => notes.split('\n').firstWhere((l) => l.trim().isNotEmpty, orElse: () => '').trim();
@@ -67,6 +73,22 @@ class Updater extends ChangeNotifier {
 
   static const _assetName = 'CavePlayer-Setup.exe';
   static final _testTag = RegExp(r'^test-(.+)-v(\d+(?:\.\d+)*)$');
+  static final _betaTag = RegExp(r'^beta-v(\d+(?:\.\d+)*)$');
+
+  /// Получать бета-версии (настройка «Получать бета-версии»)
+  bool beta = false;
+
+  /// Последняя бета-версия, если проверяли
+  String? latestBeta;
+
+  /// Сейчас стоит бета-сборка
+  bool get isBeta => kBuildBeta;
+
+  Future<void> setBeta(bool on) async {
+    beta = on;
+    notifyListeners();
+    if (on) await check();
+  }
   static Map<String, String> get _headers =>
       {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer/${kAppVersion.isEmpty ? 'dev' : kAppVersion}'};
 
@@ -163,16 +185,20 @@ class Updater extends ChangeNotifier {
     return best;
   }
 
-  /// Все тестовые сборки (пререлизы test-*) в публичном репозитории, новые сверху
-  Future<List<BuildInfo>> _fetchTestBuilds() async {
+  /// Пререлизы публичного репозитория: тестовые сборки веток и бета-версии
+  Future<List<Map>> _fetchPrereleases() async {
     final res = await http
         .get(Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=60'), headers: _headers)
         .timeout(const Duration(seconds: 20));
     if (res.statusCode == 404) return const [];
     if (res.statusCode != 200) throw HttpException('GitHub ответил ${res.statusCode}');
+    return [for (final r in (jsonDecode(res.body) as List).whereType<Map>()) if (r['prerelease'] == true) r];
+  }
+
+  /// Тестовые сборки (test-*), новые сверху
+  static List<BuildInfo> _testBuildsFrom(List<Map> releases) {
     final list = <BuildInfo>[];
-    for (final r in (jsonDecode(res.body) as List).whereType<Map>()) {
-      if (r['prerelease'] != true) continue;
+    for (final r in releases) {
       final m = _testTag.firstMatch('${r['tag_name']}');
       final a = _asset(r);
       if (m == null || a == null) continue;
@@ -193,6 +219,29 @@ class Updater extends ChangeNotifier {
     return list;
   }
 
+  /// Самая свежая бета (beta-v*)
+  static BuildInfo? _latestBetaFrom(List<Map> releases) {
+    BuildInfo? best;
+    for (final r in releases) {
+      final m = _betaTag.firstMatch('${r['tag_name']}');
+      final a = _asset(r);
+      if (m == null || a == null) continue;
+      final v = m.group(1)!;
+      if (best != null && !isNewer(v, best.version)) continue;
+      best = BuildInfo(
+        version: v,
+        branch: '',
+        slug: 'beta',
+        beta: true,
+        notes: (r['body'] as String?) ?? '',
+        published: DateTime.tryParse('${r['published_at']}'),
+        url: '${a['browser_download_url']}',
+        size: (a['size'] as num?)?.toInt() ?? 0,
+      );
+    }
+    return best;
+  }
+
   /// Обновляет список тестовых сборок для настроек
   Future<void> loadTestBuilds() async {
     if (loadingBuilds) return;
@@ -200,7 +249,9 @@ class Updater extends ChangeNotifier {
     buildsError = null;
     notifyListeners();
     try {
-      testBuilds = await _fetchTestBuilds();
+      final pre = await _fetchPrereleases();
+      testBuilds = _testBuildsFrom(pre);
+      latestBeta = _latestBetaFrom(pre)?.version;
     } catch (e) {
       buildsError = 'Не получилось загрузить список: $e';
     }
@@ -223,18 +274,23 @@ class Updater extends ChangeNotifier {
     notifyListeners();
     try {
       BuildInfo? target;
+      List<Map>? pre;
+      if (isTestBuild || beta) {
+        pre = await _fetchPrereleases();
+        testBuilds = _testBuildsFrom(pre);
+        latestBeta = _latestBetaFrom(pre)?.version;
+      }
       if (isTestBuild) {
-        // Тестовая сборка следит за своей веткой; ветки больше нет — возвращаемся к обычным версиям
+        // Тестовая сборка следит за своей веткой
         final mine = slugOf(channel);
-        final builds = await _fetchTestBuilds();
-        testBuilds = builds;
-        target = builds.where((b) => b.slug == mine).firstOrNull;
-        if (target == null) {
-          AppLog.info('Обновления: тестовых сборок ветки $channel больше нет, слежу за обычными версиями');
-          target = await _latestStable();
-        }
-      } else {
+        target = testBuilds.where((b) => b.slug == mine).firstOrNull;
+        if (target == null) AppLog.info('Обновления: тестовых сборок ветки $channel больше нет, слежу за обычными версиями');
+      }
+      if (target == null) {
+        // Обычная версия, а с галочкой «бета» — самая свежая из обычной и беты
         target = await _latestStable();
+        final b = pre == null || !beta ? null : _latestBetaFrom(pre);
+        if (b != null && (target == null || isNewer(b.version, target.version))) target = b;
       }
       lastCheck = DateTime.now();
       if (target == null) {
@@ -243,7 +299,8 @@ class Updater extends ChangeNotifier {
         return;
       }
       latest = target.version;
-      AppLog.info('Обновления: последняя версия ${target.version}${target.stable ? '' : ' (${target.branch})'}, у меня $kAppVersion');
+      AppLog.info('Обновления: последняя версия ${target.version}'
+          '${target.beta ? ' (бета)' : target.stable ? '' : ' (${target.branch})'}, у меня $kAppVersion');
       if (!isNewer(target.version, kAppVersion)) {
         state = UpdateState.upToDate;
         notifyListeners();
@@ -275,10 +332,10 @@ class Updater extends ChangeNotifier {
     latest = b.version;
     error = null;
     try {
-      final path = await _download(b.url, b.stable ? b.version : '${b.version}-${b.slug}', b.size);
+      final path = await _download(b.url, b.branch.isEmpty ? b.version : '${b.version}-${b.slug}', b.size);
       // Скачанное раньше автообновление больше не нужно
       await _forget(null);
-      AppLog.info('Ставлю ${b.stable ? 'версию' : 'тестовую сборку ${b.branch}'} ${b.version}');
+      AppLog.info('Ставлю ${b.beta ? 'бета-версию' : b.stable ? 'версию' : 'тестовую сборку ${b.branch}'} ${b.version}');
       await _launch(path);
       exit(0);
     } catch (e) {

@@ -232,8 +232,10 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
           Text(
             up.isTestBuild
                 ? 'Установлена тестовая сборка ${up.currentVersion} ветки «${up.channel}»'
-                : 'Установлена версия ${up.currentVersion}',
-            style: TextStyle(color: up.isTestBuild ? C.accent : C.muted, fontSize: 15),
+                : up.isBeta
+                    ? 'Установлена бета-версия ${up.currentVersion}'
+                    : 'Установлена версия ${up.currentVersion}',
+            style: TextStyle(color: up.isTestBuild || up.isBeta ? C.accent : C.muted, fontSize: 15),
           ),
           const SizedBox(height: 6),
           Text(
@@ -257,7 +259,8 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
               icon: const Icon(Icons.refresh_rounded, size: 18),
               label: const Text('Проверить обновления'),
             ),
-            if (up.isTestBuild)
+            // С тестовой сборки или с беты, когда галочку сняли, — можно вернуться сразу
+            if (up.isTestBuild || (up.isBeta && !up.beta))
               OutlinedButton.icon(
                 onPressed: busy || !up.enabled
                     ? null
@@ -274,6 +277,30 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
                 label: const Text('Вернуться на обычную версию'),
               ),
           ]),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: 560,
+            child: SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: up.beta,
+              onChanged: !up.enabled
+                  ? null
+                  : (v) async {
+                      final app = Services.of(context);
+                      app.settings.betaUpdates = v;
+                      await app.lib.saveSettings();
+                      await up.setBeta(v);
+                    },
+              title: const Text('Получать бета-версии'),
+              subtitle: Text(
+                up.beta
+                    ? 'Новые функции приходят раньше, но могут работать с ошибками.'
+                        '${up.latestBeta == null ? '' : ' Последняя бета: ${up.latestBeta}.'}'
+                    : 'Новые функции раньше всех. Бета ставится так же сама, как обычные обновления.',
+                style: const TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+              ),
+            ),
+          ),
           const SizedBox(height: 26),
           Row(children: [
             Text('Тестовые сборки', style: display(17)),

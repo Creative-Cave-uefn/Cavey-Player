@@ -1,8 +1,9 @@
 name: Сборка для Windows
 
 on:
-  # main — обычные обновления для всех; остальные ветки — тестовые сборки,
-  # которые можно выбрать в плеере: Настройки → Обновления → Тестовые сборки
+  # main — обычные обновления для всех; beta — бета-версии для тех, кто включил
+  # «Получать бета-версии»; остальные ветки — тестовые сборки, которые можно выбрать
+  # в плеере: Настройки → Обновления → Тестовые сборки
   push:
     branches: ['**']
   workflow_dispatch:
@@ -86,7 +87,11 @@ jobs:
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
-          if ("${{ github.ref }}" -eq 'refs/heads/main') {
+          $ref = "${{ github.ref }}"
+          # Бета не вшивает канал: получать её или нет, решает галочка в настройках
+          $beta = if ($ref -eq 'refs/heads/beta') { 'true' } else { 'false' }
+          "BUILD_BETA=$beta" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if ($ref -eq 'refs/heads/main' -or $ref -eq 'refs/heads/beta') {
             "BUILD_CHANNEL=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             "BUILD_SLUG=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           } else {
@@ -106,6 +111,7 @@ jobs:
             --build-name $env:APP_VERSION --build-number ${{ github.run_number }} `
             "--dart-define=APP_VERSION=$env:APP_VERSION" `
             "--dart-define=BUILD_CHANNEL=$env:BUILD_CHANNEL" `
+            "--dart-define=BUILD_BETA=$env:BUILD_BETA" `
             "--dart-define=CAVE_LIBRARY_ID=${{ vars.CAVE_LIBRARY_ID }}" `
             "--dart-define=DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}" `
             "--dart-define=GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID" `
@@ -184,7 +190,7 @@ jobs:
       # Тестовая сборка ветки: пререлиз в cave-player-releases. Обычные пользователи его не получают
       # (автообновление смотрит только на последний обычный релиз), выбрать его можно в настройках плеера.
       - name: Опубликовать тестовую сборку
-        if: github.ref != 'refs/heads/main' && startsWith(github.ref, 'refs/heads/')
+        if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/beta' && startsWith(github.ref, 'refs/heads/')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
@@ -209,6 +215,34 @@ jobs:
             exit 1
           }
           Write-Output "::notice::Тестовая сборка $env:APP_VERSION ветки $env:BUILD_CHANNEL опубликована"
+
+      # Бета: пререлиз beta-v<версия>. Его получают те, у кого включено «Получать бета-версии»
+      - name: Опубликовать бету
+        if: github.ref == 'refs/heads/beta'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          NOTES: ${{ github.event.head_commit.message }}
+        run: |
+          if (-not $env:GH_TOKEN) {
+            Write-Output "::notice::Секрет RELEASES_TOKEN не задан, бета не опубликована"
+            exit 0
+          }
+          $repo = 'Creative-Cave-uefn/cave-player-releases'
+          $notes = if ($env:NOTES) { $env:NOTES } else { "Бета Cave Player $env:APP_VERSION" }
+          $out = gh release create "beta-v$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
+            --repo $repo --prerelease `
+            --title "Бета · $env:APP_VERSION" --notes $notes 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::Бета не опубликована: $($out.Trim() -replace "`r?`n", ' ')"
+            exit 1
+          }
+          # Храним пять последних бет, старые убираем
+          $betas = @(gh release list --repo $repo --limit 200 --json tagName --jq '.[].tagName' 2>$null) |
+            Where-Object { $_ -match '^beta-v\d' } |
+            Sort-Object { [version]($_ -replace '^beta-v', '') } -Descending
+          foreach ($tag in ($betas | Select-Object -Skip 5)) { gh release delete $tag --repo $repo --cleanup-tag --yes | Out-Null }
+          Write-Output "::notice::Бета $env:APP_VERSION опубликована"
 
   # Ветку удалили (например, после слияния в main) — её тестовая сборка больше не нужна
   cleanup:

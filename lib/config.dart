@@ -26,3 +26,7 @@ const kDiscordClientId = String.fromEnvironment('DISCORD_CLIENT_ID');
 // Канал сборки: пусто для обычных версий из main, имя ветки — для тестовых сборок.
 // Тестовая сборка обновляется до свежих сборок своей ветки, а когда ветку удалят — до обычных версий.
 const kBuildChannel = String.fromEnvironment('BUILD_CHANNEL');
+
+// Бета-сборка из ветки beta. Получать бета-версии или нет, человек выбирает в настройках,
+// поэтому канал здесь не вшивается — флаг нужен только чтобы показать, что стоит бета.
+const kBuildBeta = bool.fromEnvironment('BUILD_BETA');

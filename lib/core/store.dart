@@ -59,6 +59,7 @@ class Settings {
   Set<String> offlinePlaylists = {};
   bool discord = true;
   bool normalize = false; // выравнивать громкость треков
+  bool betaUpdates = false; // получать бета-версии
 
   /// Что играло при закрытии: очередь, место в ней и позиция
   Map<String, dynamic>? session;
@@ -79,6 +80,7 @@ class Settings {
         'offlinePlaylists': offlinePlaylists.toList(),
         'discord': discord,
         'normalize': normalize,
+        'betaUpdates': betaUpdates,
         if (session != null) 'session': session,
       };
 
@@ -101,6 +103,7 @@ class Settings {
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
     s.discord = j['discord'] != false;
     s.normalize = j['normalize'] == true;
+    s.betaUpdates = j['betaUpdates'] == true;
     final ses = j['session'];
     if (ses is Map) s.session = ses.map((k, v) => MapEntry('$k', v));
     return s;
