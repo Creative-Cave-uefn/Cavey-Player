@@ -58,6 +58,10 @@ class Settings {
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
   bool discord = true;
+  bool normalize = false; // выравнивать громкость треков
+
+  /// Что играло при закрытии: очередь, место в ней и позиция
+  Map<String, dynamic>? session;
 
   Map<String, dynamic> toJson() => {
         'clientId': clientId,
@@ -74,6 +78,8 @@ class Settings {
         'offlineLiked': offlineLiked,
         'offlinePlaylists': offlinePlaylists.toList(),
         'discord': discord,
+        'normalize': normalize,
+        if (session != null) 'session': session,
       };
 
   static Settings fromJson(dynamic j) {
@@ -94,6 +100,9 @@ class Settings {
     s.offlineLiked = j['offlineLiked'] == true;
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
     s.discord = j['discord'] != false;
+    s.normalize = j['normalize'] == true;
+    final ses = j['session'];
+    if (ses is Map) s.session = ses.map((k, v) => MapEntry('$k', v));
     return s;
   }
 }

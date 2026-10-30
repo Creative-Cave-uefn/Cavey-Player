@@ -229,6 +229,17 @@ class LibraryData {
             }
           }
         }
+      case 'movePlaylistItem':
+        // Ставим трек после [after] (null — в начало). Опора на соседа, а не на номер,
+        // чтобы одновременные правки друзей не перемешали плейлист
+        for (final p in playlists) {
+          if (p.id != op['id']) continue;
+          final track = op['track'] as String;
+          if (!p.items.remove(track)) continue;
+          final after = op['after'] as String?;
+          final at = after == null ? 0 : p.items.indexOf(after) + 1;
+          p.items.insert(at < 0 ? 0 : at, track);
+        }
       case 'removeFromPlaylist':
         for (final p in playlists) {
           if (p.id == op['id']) p.items.remove(op['track']);

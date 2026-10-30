@@ -8,6 +8,9 @@ import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
+/// Ctrl+F: каждое увеличение просит открытый список треков поставить курсор в поиск
+final searchRequests = ValueNotifier<int>(0);
+
 class AllTracksPage extends StatelessWidget {
   final bool compact;
   const AllTracksPage({super.key, required this.compact});
@@ -163,6 +166,7 @@ class PlaylistPage extends StatelessWidget {
           tracks: tracks,
           playlistId: playlistId,
           compact: compact,
+          onReorder: (track, after) => lib.movePlaylistItem(playlistId, track.id, after?.id),
           actions: [
             OfflineButton(
               on: app.cache.isPlaylistOffline(playlistId),
@@ -220,6 +224,9 @@ class TracksPage extends StatefulWidget {
   /// Плашка под шапкой (например, «перетащите сюда файлы»)
   final Widget? banner;
 
+  /// Перестановка перетаскиванием (в плейлистах): трек и тот, за которым он теперь стоит
+  final void Function(Track track, Track? after)? onReorder;
+
   const TracksPage({
     super.key,
     required this.title,
@@ -232,6 +239,7 @@ class TracksPage extends StatefulWidget {
     this.numbered = false,
     this.actions = const [],
     this.banner,
+    this.onReorder,
   });
 
   @override
@@ -240,7 +248,31 @@ class TracksPage extends StatefulWidget {
 
 class _TracksPageState extends State<TracksPage> {
   final _search = TextEditingController();
+  final _searchFocus = FocusNode();
   String _query = '';
+
+  @override
+  void initState() {
+    super.initState();
+    searchRequests.addListener(_focusSearch);
+  }
+
+  @override
+  void dispose() {
+    searchRequests.removeListener(_focusSearch);
+    _search.dispose();
+    _searchFocus.dispose();
+    super.dispose();
+  }
+
+  void _focusSearch() {
+    if (!mounted) return;
+    _searchFocus.requestFocus();
+    _search.selection = TextSelection(baseOffset: 0, extentOffset: _search.text.length);
+  }
+
+  /// Перетаскивать можно, когда виден весь плейлист в своём порядке
+  bool get _canReorder => widget.onReorder != null && _sort.isEmpty && _query.trim().isEmpty;
   String _sort = ''; // пусто — порядок как есть
   bool _desc = false;
 
@@ -382,6 +414,7 @@ class _TracksPageState extends State<TracksPage> {
             width: 240,
             child: TextField(
               controller: _search,
+              focusNode: _searchFocus,
               onChanged: (v) => setState(() => _query = v),
               decoration: InputDecoration(
                 hintText: 'Найти трек или исполнителя',
@@ -417,6 +450,17 @@ class _TracksPageState extends State<TracksPage> {
       listenable: Listenable.merge([app.player, app.cache]),
       builder: (context, _) {
         final currentId = app.player.current?.id;
+        Widget row(BuildContext context, int i) => TrackRow(
+              track: visible[i],
+              index: i,
+              numbered: widget.numbered,
+              current: visible[i].id == currentId,
+              playing: app.player.playing,
+              compact: widget.compact,
+              playlistId: widget.playlistId,
+              cached: app.cache.has(visible[i].id),
+              onPlay: () => app.player.playTracks(visible, i),
+            );
         return CustomScrollView(slivers: [
           SliverToBoxAdapter(child: header),
           if (banner != null) SliverToBoxAdapter(child: banner),
@@ -434,23 +478,32 @@ class _TracksPageState extends State<TracksPage> {
             ),
           SliverPadding(
             padding: EdgeInsets.fromLTRB(pad - 12, 0, pad - 12, 24),
-            sliver: SliverFixedExtentList(
-              itemExtent: 58,
-              delegate: SliverChildBuilderDelegate(
-                (context, i) => TrackRow(
-                  track: visible[i],
-                  index: i,
-                  numbered: widget.numbered,
-                  current: visible[i].id == currentId,
-                  playing: app.player.playing,
-                  compact: widget.compact,
-                  playlistId: widget.playlistId,
-                  cached: app.cache.has(visible[i].id),
-                  onPlay: () => app.player.playTracks(visible, i),
-                ),
-                childCount: visible.length,
-              ),
-            ),
+            sliver: _canReorder
+                ? SliverReorderableList(
+                    itemCount: visible.length,
+                    itemExtent: 58,
+                    proxyDecorator: (child, i, anim) => Material(
+                      color: C.raised,
+                      elevation: 6,
+                      borderRadius: BorderRadius.circular(8),
+                      child: child,
+                    ),
+                    onReorder: (from, to) {
+                      if (to > from) to--;
+                      if (from == to) return;
+                      final rest = List.of(visible)..removeAt(from);
+                      widget.onReorder!(visible[from], to == 0 ? null : rest[to - 1]);
+                    },
+                    itemBuilder: (context, i) => ReorderableDelayedDragStartListener(
+                      key: ValueKey(visible[i].id),
+                      index: i,
+                      child: SizedBox(height: 58, child: row(context, i)),
+                    ),
+                  )
+                : SliverFixedExtentList(
+                    itemExtent: 58,
+                    delegate: SliverChildBuilderDelegate(row, childCount: visible.length),
+                  ),
           ),
         ]);
       },
@@ -610,6 +663,9 @@ class TrackMenu extends StatelessWidget {
           case 'next':
             app.player.playNext(track);
             app.lib.messages.add('«${track.title}» заиграет следующим');
+          case 'queue':
+            app.player.addToQueue(track);
+            app.lib.messages.add('«${track.title}» добавлен в конец очереди');
           case 'playlist':
             await addToPlaylistDialog(context, [track.id]);
           case 'remove':
@@ -627,6 +683,7 @@ class TrackMenu extends StatelessWidget {
       },
       itemBuilder: (_) => [
         const PopupMenuItem(value: 'next', child: Text('Играть следующим')),
+        const PopupMenuItem(value: 'queue', child: Text('В конец очереди')),
         const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
         if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
         const PopupMenuItem(value: 'album', child: Text('Открыть альбом')),

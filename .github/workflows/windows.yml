@@ -1,12 +1,22 @@
 name: Сборка для Windows
 
 on:
+  # main — обычные обновления для всех; остальные ветки — тестовые сборки,
+  # которые можно выбрать в плеере: Настройки → Обновления → Тестовые сборки
   push:
-    branches: [main]
+    branches: ['**']
   workflow_dispatch:
+  # Ветку удалили — убираем её тестовую сборку
+  delete:
+
+# Новый пуш в ту же ветку отменяет недоделанную тестовую сборку; сборки main доводятся до конца
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build:
+    if: github.event_name != 'delete'
     # Право публиковать релизы в этом же репозитории встроенным токеном
     permissions:
       contents: write
@@ -69,6 +79,23 @@ jobs:
             exit $code
           }
 
+      # Канал сборки: пусто для main, имя ветки для тестовых. Плеер по нему понимает,
+      # за какой веткой следить при автообновлении
+      - name: Канал сборки
+        shell: pwsh
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if ("${{ github.ref }}" -eq 'refs/heads/main') {
+            "BUILD_CHANNEL=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "BUILD_SLUG=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          } else {
+            $slug = ($env:BRANCH.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+            if (-not $slug) { $slug = 'branch' }
+            "BUILD_CHANNEL=$env:BRANCH" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "BUILD_SLUG=$slug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
       - name: Сборка
         shell: pwsh
         env:
@@ -78,6 +105,7 @@ jobs:
           $out = flutter build windows --release `
             --build-name $env:APP_VERSION --build-number ${{ github.run_number }} `
             "--dart-define=APP_VERSION=$env:APP_VERSION" `
+            "--dart-define=BUILD_CHANNEL=$env:BUILD_CHANNEL" `
             "--dart-define=CAVE_LIBRARY_ID=${{ vars.CAVE_LIBRARY_ID }}" `
             "--dart-define=DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}" `
             "--dart-define=GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID" `
@@ -152,3 +180,51 @@ jobs:
             Write-Output "::error::Релиз не опубликован: $($out.Trim() -replace "`r?`n", ' ')"
             exit 1
           }
+
+      # Тестовая сборка ветки: пререлиз в cave-player-releases. Обычные пользователи его не получают
+      # (автообновление смотрит только на последний обычный релиз), выбрать его можно в настройках плеера.
+      - name: Опубликовать тестовую сборку
+        if: github.ref != 'refs/heads/main' && startsWith(github.ref, 'refs/heads/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          NOTES: ${{ github.event.head_commit.message }}
+        run: |
+          if (-not $env:GH_TOKEN) {
+            Write-Output "::notice::Секрет RELEASES_TOKEN не задан, тестовая сборка не опубликована"
+            exit 0
+          }
+          $repo = 'Creative-Cave-uefn/cave-player-releases'
+          $prefix = "test-$env:BUILD_SLUG-v"
+          # Старые сборки этой ветки больше не нужны: оставляем только свежую
+          $old = @(gh release list --repo $repo --limit 200 --json tagName --jq '.[].tagName' 2>$null) |
+            Where-Object { $_ -and $_.StartsWith($prefix) }
+          foreach ($tag in $old) { gh release delete $tag --repo $repo --cleanup-tag --yes | Out-Null }
+          $notes = if ($env:NOTES) { $env:NOTES } else { "Тестовая сборка ветки $env:BUILD_CHANNEL" }
+          $out = gh release create "$prefix$env:APP_VERSION" dist/CavePlayer-Setup.exe `
+            --repo $repo --prerelease `
+            --title "Тест: $env:BUILD_CHANNEL · $env:APP_VERSION" --notes $notes 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::Тестовая сборка не опубликована: $($out.Trim() -replace "`r?`n", ' ')"
+            exit 1
+          }
+          Write-Output "::notice::Тестовая сборка $env:APP_VERSION ветки $env:BUILD_CHANNEL опубликована"
+
+  # Ветку удалили (например, после слияния в main) — её тестовая сборка больше не нужна
+  cleanup:
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Удалить тестовую сборку ветки
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          BRANCH: ${{ github.event.ref }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::notice::Секрет RELEASES_TOKEN не задан"; exit 0; fi
+          slug=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+          [ -z "$slug" ] && slug=branch
+          gh release list --repo Creative-Cave-uefn/cave-player-releases --limit 200 --json tagName \
+            --jq ".[].tagName | select(startswith(\"test-$slug-v\"))" |
+          while read -r tag; do
+            [ -n "$tag" ] && gh release delete "$tag" --repo Creative-Cave-uefn/cave-player-releases --cleanup-tag --yes
+          done

@@ -93,7 +93,17 @@ class PlayerBar extends StatelessWidget {
             ),
           );
 
+          final soundButton = IconButton(
+            tooltip: p.sleepActive ? _sleepLabel(p) : 'Звук и таймер сна',
+            onPressed: () => _showSound(context),
+            icon: Icon(
+              p.sleepActive ? Icons.bedtime_rounded : Icons.tune_rounded,
+              color: p.sleepActive || p.rate != 1.0 || p.normalize ? C.accent : C.muted,
+            ),
+          );
+
           final right = Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            soundButton,
             lyricsButton,
             IconButton(
               tooltip: 'Очередь',
@@ -116,6 +126,7 @@ class PlayerBar extends StatelessWidget {
             return Row(children: [
               Expanded(flex: 4, child: nowPlaying),
               Expanded(flex: 5, child: controls),
+              soundButton,
               lyricsButton,
             ]);
           }
@@ -129,6 +140,74 @@ class PlayerBar extends StatelessWidget {
     );
   }
 
+  static String _sleepLabel(PlayerController p) {
+    if (p.sleepAfterTrack) return 'Остановлюсь после этого трека';
+    final at = p.sleepAt;
+    if (at == null) return 'Таймер сна выключен';
+    final left = at.difference(DateTime.now());
+    final min = (left.inSeconds / 60).ceil();
+    return 'Пауза через ${min < 1 ? 1 : min} мин';
+  }
+
+  void _showSound(BuildContext context) {
+    final app = Services.of(context);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Dialog(
+        alignment: Alignment.bottomRight,
+        insetPadding: const EdgeInsets.fromLTRB(24, 24, 24, 110),
+        child: SizedBox(
+          width: 380,
+          child: ListenableBuilder(
+            listenable: app.player,
+            builder: (context, _) {
+              final p = app.player;
+              Widget choice(String label, bool selected, VoidCallback onTap) => ChoiceChip(
+                    label: Text(label),
+                    selected: selected,
+                    onSelected: (_) => onTap(),
+                  );
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+                child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Звук', style: display(18)),
+                  const SizedBox(height: 6),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: p.normalize,
+                    onChanged: p.setNormalize,
+                    title: const Text('Выравнивать громкость'),
+                    subtitle: const Text('Тихие и громкие треки звучат одинаково', style: TextStyle(color: C.faint, fontSize: 13)),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Скорость', style: TextStyle(color: C.muted, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    for (final r in const [0.75, 1.0, 1.25, 1.5, 2.0])
+                      choice(r == 1.0 ? 'Обычная' : '×${r.toString().replaceAll('.', ',')}', p.rate == r, () => p.setRate(r)),
+                  ]),
+                  const SizedBox(height: 20),
+                  Row(children: [
+                    Text('Таймер сна', style: display(18)),
+                    const Spacer(),
+                    if (p.sleepActive) Text(_sleepLabel(p), style: const TextStyle(color: C.accent, fontSize: 13)),
+                  ]),
+                  const SizedBox(height: 10),
+                  Wrap(spacing: 8, runSpacing: 8, children: [
+                    choice('Выкл', !p.sleepActive, () => p.setSleepTimer(null)),
+                    for (final m in const [15, 30, 45, 60, 90])
+                      choice('$m мин', false, () => p.setSleepTimer(Duration(minutes: m))),
+                    choice('После этого трека', p.sleepAfterTrack, p.setSleepAfterTrack),
+                  ]),
+                ]),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showQueue(BuildContext context) {
     final app = Services.of(context);
     showDialog<void>(
@@ -137,38 +216,63 @@ class PlayerBar extends StatelessWidget {
         alignment: Alignment.bottomRight,
         insetPadding: const EdgeInsets.fromLTRB(24, 24, 24, 110),
         child: SizedBox(
-          width: 400,
-          height: 480,
+          width: 420,
+          height: 520,
           child: ListenableBuilder(
             listenable: app.player,
             builder: (context, _) {
               final p = app.player;
               final cur = p.current;
+              final count = p.queue.length - p.index - 1 < 0 ? 0 : p.queue.length - p.index - 1;
               return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                Padding(padding: const EdgeInsets.fromLTRB(20, 20, 20, 12), child: Text('Очередь', style: display(18))),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 20, 12, 12),
+                  child: Row(children: [
+                    Expanded(child: Text('Очередь', style: display(18))),
+                    if (count > 0)
+                      TextButton(onPressed: p.clearUpcoming, child: const Text('Очистить')),
+                  ]),
+                ),
                 if (cur != null)
                   ListTile(
                     leading: CoverImage(track: cur, size: 40),
                     title: Text(cur.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.accent)),
                     subtitle: Text(cur.displayArtist, maxLines: 1, style: const TextStyle(color: C.muted)),
                   ),
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(20, 10, 20, 6),
-                  child: Text('Дальше', style: TextStyle(color: C.muted, fontSize: 13)),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 20, 6),
+                  child: Text(count == 0 ? 'Дальше ничего нет' : 'Дальше · перетаскивайте, чтобы поменять порядок',
+                      style: const TextStyle(color: C.muted, fontSize: 13)),
                 ),
                 Expanded(
-                  child: ListView.builder(
-                    itemCount: p.queue.length - p.index - 1 < 0 ? 0 : p.queue.length - p.index - 1,
+                  child: ReorderableListView.builder(
+                    buildDefaultDragHandles: false,
+                    itemCount: count,
+                    onReorder: (from, to) {
+                      if (to > from) to--;
+                      p.moveInQueue(p.index + 1 + from, p.index + 1 + to);
+                    },
                     itemBuilder: (context, i) {
                       final qi = p.index + 1 + i;
                       final t = app.lib.data.tracks[p.queue[qi]];
-                      if (t == null) return const SizedBox.shrink();
-                      return ListTile(
-                        dense: true,
-                        leading: CoverImage(track: t, size: 36),
-                        title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text(t.displayArtist, maxLines: 1, style: const TextStyle(color: C.muted)),
-                        onTap: () => p.jumpTo(qi),
+                      return ReorderableDragStartListener(
+                        key: ValueKey('q$qi:${p.queue[qi]}'),
+                        index: i,
+                        child: t == null
+                            ? const SizedBox(height: 1)
+                            : ListTile(
+                                dense: true,
+                                leading: CoverImage(track: t, size: 36),
+                                title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                subtitle: Text(t.displayArtist, maxLines: 1, style: const TextStyle(color: C.muted)),
+                                trailing: IconButton(
+                                  tooltip: 'Убрать из очереди',
+                                  visualDensity: VisualDensity.compact,
+                                  icon: const Icon(Icons.close_rounded, size: 18, color: C.faint),
+                                  onPressed: () => p.removeAt(qi),
+                                ),
+                                onTap: () => p.jumpTo(qi),
+                              ),
                       );
                     },
                   ),

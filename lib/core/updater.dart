@@ -1,6 +1,11 @@
 // Автообновление: раз в несколько часов смотрим последний релиз в публичном
 // репозитории, в фоне скачиваем установщик и ставим его тихо — по кнопке
 // или сами при следующем запуске.
+//
+// Тестовые сборки: каждая ветка, кроме main, собирается в пререлиз
+// «test-<ветка>-v<версия>». Обычные версии их не видят; в настройках можно
+// поставить любую. Тестовая сборка дальше обновляется сборками своей ветки,
+// а когда ветку удалят — возвращается к обычным версиям.
 
 import 'dart:async';
 import 'dart:convert';
@@ -15,6 +20,32 @@ import 'store.dart';
 
 enum UpdateState { idle, checking, downloading, ready, upToDate, error }
 
+/// Одна сборка из релизов: обычная версия или тестовая сборка ветки
+class BuildInfo {
+  final String version;
+  final String branch; // пусто — обычная версия
+  final String slug; // имя ветки в теге
+  final String notes;
+  final DateTime? published;
+  final String url;
+  final int size;
+
+  const BuildInfo({
+    required this.version,
+    required this.branch,
+    required this.slug,
+    required this.notes,
+    required this.published,
+    required this.url,
+    required this.size,
+  });
+
+  bool get stable => branch.isEmpty;
+
+  /// Первая строка описания — обычно заголовок коммита
+  String get summary => notes.split('\n').firstWhere((l) => l.trim().isNotEmpty, orElse: () => '').trim();
+}
+
 class Updater extends ChangeNotifier {
   final AppStore store;
   UpdateState state = UpdateState.idle;
@@ -24,13 +55,32 @@ class Updater extends ChangeNotifier {
   DateTime? lastCheck;
   Timer? _timer;
 
+  /// Тестовые сборки для списка в настройках
+  List<BuildInfo> testBuilds = const [];
+  bool loadingBuilds = false;
+  String? buildsError;
+
+  /// Сейчас ставим выбранную вручную сборку
+  BuildInfo? installing;
+
   Updater(this.store);
 
   static const _assetName = 'CavePlayer-Setup.exe';
+  static final _testTag = RegExp(r'^test-(.+)-v(\d+(?:\.\d+)*)$');
+  static Map<String, String> get _headers =>
+      {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer/${kAppVersion.isEmpty ? 'dev' : kAppVersion}'};
 
   /// Обновления работают в установленной версии, собранной в GitHub Actions
   bool get enabled => kAppVersion.isNotEmpty && Platform.isWindows;
   String get currentVersion => kAppVersion.isEmpty ? 'сборка для разработки' : kAppVersion;
+
+  /// Эта программа — тестовая сборка ветки
+  bool get isTestBuild => kBuildChannel.isNotEmpty;
+  String get channel => kBuildChannel;
+  static String slugOf(String branch) {
+    final s = branch.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), '-').replaceAll(RegExp(r'^-+|-+$'), '');
+    return s.isEmpty ? 'branch' : s;
+  }
 
   /// Сравнение версий вида 0.2.15
   static bool isNewer(String a, String b) {
@@ -69,6 +119,97 @@ class Updater extends ChangeNotifier {
     _timer = Timer.periodic(const Duration(hours: 4), (_) => check());
   }
 
+  // ---------- где лежат сборки ----------
+
+  static Map? _asset(Map release) {
+    for (final a in (release['assets'] as List? ?? const [])) {
+      if (a is Map && a['name'] == _assetName) return a;
+    }
+    return null;
+  }
+
+  /// Самая свежая обычная версия во всех местах, где лежат релизы
+  Future<BuildInfo?> _latestStable() async {
+    BuildInfo? best;
+    var reachable = 0;
+    for (final repo in kReleasesRepos) {
+      final res = await http
+          .get(Uri.parse('https://api.github.com/repos/$repo/releases/latest'), headers: _headers)
+          .timeout(const Duration(seconds: 20));
+      // 404 — репозитория нет, он приватный или релизов ещё нет
+      if (res.statusCode == 404) continue;
+      if (res.statusCode != 200) {
+        AppLog.warn('Обновления: $repo ответил ${res.statusCode}');
+        continue;
+      }
+      reachable++;
+      final r = jsonDecode(res.body) as Map<String, dynamic>;
+      final v = ((r['tag_name'] as String?) ?? '').replaceFirst(RegExp(r'^v'), '');
+      final a = _asset(r);
+      if (a == null || v.isEmpty) continue;
+      if (best == null || isNewer(v, best.version)) {
+        best = BuildInfo(
+          version: v,
+          branch: '',
+          slug: '',
+          notes: (r['body'] as String?) ?? '',
+          published: DateTime.tryParse('${r['published_at']}'),
+          url: '${a['browser_download_url']}',
+          size: (a['size'] as num?)?.toInt() ?? 0,
+        );
+      }
+    }
+    if (best == null) AppLog.info('Обновления: обычных релизов нет (проверено мест: $reachable из ${kReleasesRepos.length})');
+    return best;
+  }
+
+  /// Все тестовые сборки (пререлизы test-*) в публичном репозитории, новые сверху
+  Future<List<BuildInfo>> _fetchTestBuilds() async {
+    final res = await http
+        .get(Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=60'), headers: _headers)
+        .timeout(const Duration(seconds: 20));
+    if (res.statusCode == 404) return const [];
+    if (res.statusCode != 200) throw HttpException('GitHub ответил ${res.statusCode}');
+    final list = <BuildInfo>[];
+    for (final r in (jsonDecode(res.body) as List).whereType<Map>()) {
+      if (r['prerelease'] != true) continue;
+      final m = _testTag.firstMatch('${r['tag_name']}');
+      final a = _asset(r);
+      if (m == null || a == null) continue;
+      // Название вида «Тест: feature/x · 0.2.40» — в нём настоящее имя ветки
+      final title = '${r['name'] ?? ''}';
+      final named = RegExp(r'^Тест:\s*(.+?)\s*·').firstMatch(title)?.group(1);
+      list.add(BuildInfo(
+        version: m.group(2)!,
+        branch: (named == null || named.isEmpty) ? m.group(1)! : named,
+        slug: m.group(1)!,
+        notes: (r['body'] as String?) ?? '',
+        published: DateTime.tryParse('${r['published_at']}'),
+        url: '${a['browser_download_url']}',
+        size: (a['size'] as num?)?.toInt() ?? 0,
+      ));
+    }
+    list.sort((a, b) => isNewer(a.version, b.version) ? -1 : (isNewer(b.version, a.version) ? 1 : 0));
+    return list;
+  }
+
+  /// Обновляет список тестовых сборок для настроек
+  Future<void> loadTestBuilds() async {
+    if (loadingBuilds) return;
+    loadingBuilds = true;
+    buildsError = null;
+    notifyListeners();
+    try {
+      testBuilds = await _fetchTestBuilds();
+    } catch (e) {
+      buildsError = 'Не получилось загрузить список: $e';
+    }
+    loadingBuilds = false;
+    notifyListeners();
+  }
+
+  // ---------- автообновление ----------
+
   Future<void> check() async {
     if (!enabled) {
       state = UpdateState.error;
@@ -81,63 +222,85 @@ class Updater extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      // Смотрим все места, где могут лежать релизы, и берём самую свежую версию с установщиком
-      Map<String, dynamic>? j;
-      var tag = '';
-      var reachable = 0;
-      for (final repo in kReleasesRepos) {
-        final res = await http.get(
-          Uri.parse('https://api.github.com/repos/$repo/releases/latest'),
-          headers: {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer/$kAppVersion'},
-        );
-        // 404 — репозитория нет, он приватный или релизов ещё нет
-        if (res.statusCode == 404) continue;
-        if (res.statusCode != 200) {
-          AppLog.warn('Обновления: $repo ответил ${res.statusCode}');
-          continue;
+      BuildInfo? target;
+      if (isTestBuild) {
+        // Тестовая сборка следит за своей веткой; ветки больше нет — возвращаемся к обычным версиям
+        final mine = slugOf(channel);
+        final builds = await _fetchTestBuilds();
+        testBuilds = builds;
+        target = builds.where((b) => b.slug == mine).firstOrNull;
+        if (target == null) {
+          AppLog.info('Обновления: тестовых сборок ветки $channel больше нет, слежу за обычными версиями');
+          target = await _latestStable();
         }
-        reachable++;
-        final r = jsonDecode(res.body) as Map<String, dynamic>;
-        final t = ((r['tag_name'] as String?) ?? '').replaceFirst(RegExp(r'^v'), '');
-        final hasAsset = (r['assets'] as List? ?? const []).any((a) => a is Map && a['name'] == _assetName);
-        if (hasAsset && (tag.isEmpty || isNewer(t, tag))) {
-          tag = t;
-          j = r;
-        }
+      } else {
+        target = await _latestStable();
       }
       lastCheck = DateTime.now();
-      if (j == null) {
+      if (target == null) {
         state = UpdateState.upToDate; // опубликованных обновлений пока нет
-        AppLog.info('Обновления: доступных релизов нет (проверено мест: $reachable из ${kReleasesRepos.length})');
         notifyListeners();
         return;
       }
-      latest = tag;
-      AppLog.info('Обновления: последняя версия $tag, у меня $kAppVersion');
-      if (tag.isEmpty || !isNewer(tag, kAppVersion)) {
+      latest = target.version;
+      AppLog.info('Обновления: последняя версия ${target.version}${target.stable ? '' : ' (${target.branch})'}, у меня $kAppVersion');
+      if (!isNewer(target.version, kAppVersion)) {
         state = UpdateState.upToDate;
         notifyListeners();
         return;
       }
       final meta = await store.readJson('update.json');
-      if (meta is Map && meta['version'] == tag && File('${meta['path']}').existsSync()) {
+      if (meta is Map && meta['version'] == target.version && File('${meta['path']}').existsSync()) {
         state = UpdateState.ready;
         notifyListeners();
         return;
       }
-      Map? asset;
-      for (final a in (j['assets'] as List? ?? const [])) {
-        if (a is Map && a['name'] == _assetName) asset = a;
-      }
-      if (asset == null) throw Exception('в релизе $tag нет $_assetName');
-      final path = await _download('${asset['browser_download_url']}', tag, (asset['size'] as num?)?.toInt() ?? 0);
-      await store.writeJson('update.json', {'version': tag, 'path': path});
+      final path = await _download(target.url, target.version, target.size);
+      await store.writeJson('update.json', {'version': target.version, 'path': path});
       state = UpdateState.ready;
     } catch (e) {
       state = UpdateState.error;
       error = 'Не получилось проверить обновления: $e';
     }
     notifyListeners();
+  }
+
+  // ---------- установка выбранной сборки ----------
+
+  /// Ставит выбранную тестовую сборку (или обычную версию — [b] без ветки), даже если она старее текущей.
+  /// Приложение закроется, установщик откроет новую версию сам.
+  Future<void> install(BuildInfo b) async {
+    if (!enabled || state == UpdateState.downloading) return;
+    installing = b;
+    latest = b.version;
+    error = null;
+    try {
+      final path = await _download(b.url, b.stable ? b.version : '${b.version}-${b.slug}', b.size);
+      // Скачанное раньше автообновление больше не нужно
+      await _forget(null);
+      AppLog.info('Ставлю ${b.stable ? 'версию' : 'тестовую сборку ${b.branch}'} ${b.version}');
+      await _launch(path);
+      exit(0);
+    } catch (e) {
+      state = UpdateState.error;
+      error = 'Не получилось скачать сборку ${b.version}: $e';
+      installing = null;
+      notifyListeners();
+    }
+  }
+
+  /// Вернуться с тестовой сборки на последнюю обычную версию
+  Future<void> installStable() async {
+    if (!enabled) return;
+    try {
+      final b = await _latestStable();
+      if (b == null) throw Exception('обычных версий пока нет');
+      await install(b);
+    } catch (e) {
+      state = UpdateState.error;
+      error = 'Не получилось вернуться на обычную версию: $e';
+      notifyListeners();
+    }
   }
 
   Future<String> _download(String url, String version, int size) async {

@@ -71,18 +71,10 @@ class _ShellState extends State<Shell> {
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final player = app.player;
     return NavScope(
       nav: _nav,
-      child: CallbackShortcuts(
-        bindings: {
-          const SingleActivator(LogicalKeyboardKey.space): player.toggle,
-          const SingleActivator(LogicalKeyboardKey.mediaPlayPause): player.toggle,
-          const SingleActivator(LogicalKeyboardKey.mediaTrackNext): player.next,
-          const SingleActivator(LogicalKeyboardKey.mediaTrackPrevious): player.previous,
-          const SingleActivator(LogicalKeyboardKey.arrowRight, control: true): player.next,
-          const SingleActivator(LogicalKeyboardKey.arrowLeft, control: true): player.previous,
-        },
+      child: Focus(
+        onKeyEvent: (node, e) => _onKey(e),
         child: Focus(
           autofocus: true,
           child: DropTarget(
@@ -123,6 +115,53 @@ class _ShellState extends State<Shell> {
         ),
       ),
     );
+  }
+
+  /// Курсор в поле ввода: буквы, пробел и стрелки нужны тексту, а не плееру
+  static bool _typing() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    if (ctx == null) return false;
+    return ctx.widget is EditableText || ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
+  KeyEventResult _onKey(KeyEvent e) {
+    if (e is! KeyDownEvent && e is! KeyRepeatEvent) return KeyEventResult.ignored;
+    final app = Services.of(context);
+    final p = app.player;
+    final k = e.logicalKey;
+    final kb = HardwareKeyboard.instance;
+    final ctrl = kb.isControlPressed || kb.isMetaPressed;
+    final plain = !ctrl && !kb.isAltPressed && !kb.isShiftPressed;
+    final repeat = e is KeyRepeatEvent;
+
+    void Function()? action;
+    // Медиаклавиши и сочетания с Ctrl работают всегда
+    if (k == LogicalKeyboardKey.mediaPlayPause && !repeat) action = p.toggle;
+    if (k == LogicalKeyboardKey.mediaTrackNext && !repeat) action = p.next;
+    if (k == LogicalKeyboardKey.mediaTrackPrevious && !repeat) action = p.previous;
+    if (ctrl && k == LogicalKeyboardKey.arrowRight && !repeat) action = p.next;
+    if (ctrl && k == LogicalKeyboardKey.arrowLeft && !repeat) action = p.previous;
+    if (ctrl && k == LogicalKeyboardKey.keyF && !repeat) action = () => searchRequests.value++;
+
+    if (action == null && plain && !_typing()) {
+      if (k == LogicalKeyboardKey.space && !repeat) action = p.toggle;
+      if (k == LogicalKeyboardKey.arrowRight) action = () => p.seekBy(const Duration(seconds: 10));
+      if (k == LogicalKeyboardKey.arrowLeft) action = () => p.seekBy(const Duration(seconds: -10));
+      if (k == LogicalKeyboardKey.arrowUp) action = () => p.setVolume(p.volume + 5, save: true);
+      if (k == LogicalKeyboardKey.arrowDown) action = () => p.setVolume(p.volume - 5, save: true);
+      if (k == LogicalKeyboardKey.keyM && !repeat) action = p.toggleMute;
+      if (k == LogicalKeyboardKey.keyL && !repeat) {
+        action = () {
+          final t = p.current;
+          if (t == null) return;
+          app.lib.toggleLike(t.id);
+          app.lib.messages.add(app.lib.isLiked(t.id) ? '«${t.title}» в любимом' : '«${t.title}» убран из любимого');
+        };
+      }
+    }
+    if (action == null) return KeyEventResult.ignored;
+    action();
+    return KeyEventResult.handled;
   }
 
   Widget _content(Nav nav, bool compact) {

@@ -677,6 +677,10 @@ class LibraryController extends ChangeNotifier {
   void renamePlaylist(String id, String name) => commit({'op': 'renamePlaylist', 'id': id, 'name': name});
   void deletePlaylist(String id) => commit({'op': 'deletePlaylist', 'id': id});
   void addToPlaylist(String id, List<String> items) => commit({'op': 'addToPlaylist', 'id': id, 'items': items});
+  /// Переставляет трек в плейлисте: [after] — трек, за которым он должен стоять (null — в начало)
+  void movePlaylistItem(String id, String trackId, String? after) =>
+      commit({'op': 'movePlaylistItem', 'id': id, 'track': trackId, 'after': after});
+
   void removeFromPlaylist(String id, String trackId) =>
       commit({'op': 'removeFromPlaylist', 'id': id, 'track': trackId});
 

@@ -64,6 +64,7 @@ class AppServices {
     await lib.start();
     updater.start();
     await cache.init();
+    player.restoreSession();
     final social = SocialController(lib, drive, player)..start();
     final discord = DiscordPresence();
     void showInDiscord() => discord.update(

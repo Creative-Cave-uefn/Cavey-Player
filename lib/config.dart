@@ -22,3 +22,7 @@ const kDefaultLibraryId = String.fromEnvironment('CAVE_LIBRARY_ID');
 // ID приложения в Discord Developer Portal для статуса «Слушает в Cave Player».
 // Без него статус в Discord просто не показывается.
 const kDiscordClientId = String.fromEnvironment('DISCORD_CLIENT_ID');
+
+// Канал сборки: пусто для обычных версий из main, имя ветки — для тестовых сборок.
+// Тестовая сборка обновляется до свежих сборок своей ветки, а когда ветку удалят — до обычных версий.
+const kBuildChannel = String.fromEnvironment('BUILD_CHANNEL');

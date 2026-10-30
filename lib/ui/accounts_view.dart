@@ -174,8 +174,41 @@ class _AccountsPageState extends State<AccountsPage> {
   }
 }
 
-class _UpdatesSection extends StatelessWidget {
+class _UpdatesSection extends StatefulWidget {
   const _UpdatesSection();
+  @override
+  State<_UpdatesSection> createState() => _UpdatesSectionState();
+}
+
+class _UpdatesSectionState extends State<_UpdatesSection> {
+  bool _loaded = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_loaded) return;
+    _loaded = true;
+    final up = Services.of(context).updater;
+    // После кадра: список сам сообщает о загрузке, а во время сборки виджетов это запрещено
+    if (up.enabled) WidgetsBinding.instance.addPostFrameCallback((_) => up.loadTestBuilds());
+  }
+
+  Future<void> _install(BuildInfo b) async {
+    final up = Services.of(context).updater;
+    final older = !Updater.isNewer(b.version, kAppVersion);
+    final ok = await confirm(
+      context,
+      title: b.stable ? 'Вернуться на обычную версию ${b.version}?' : 'Поставить тестовую сборку ${b.version}?',
+      text: [
+        if (!b.stable) 'Ветка «${b.branch}». Тестовые сборки могут работать с ошибками.',
+        if (!b.stable) 'Дальше Cave Player будет обновляться сборками этой ветки, а когда её удалят — вернётся к обычным версиям.',
+        if (older) 'Эта версия старее установленной — Cave Player поставит её поверх.',
+        'Cave Player закроется и откроется уже с новой версией.',
+      ].join('\n\n'),
+      action: 'Поставить',
+    );
+    if (ok) await up.install(b);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -184,18 +217,24 @@ class _UpdatesSection extends StatelessWidget {
       listenable: up,
       builder: (context, _) {
         final last = up.lastCheck;
+        final busy = up.state == UpdateState.checking || up.state == UpdateState.downloading;
         final status = switch (up.state) {
           UpdateState.checking => 'Проверяю…',
           UpdateState.downloading => 'Скачиваю версию ${up.latest} (${(up.progress * 100).round()}%)',
           UpdateState.ready => 'Версия ${up.latest} скачана и готова к установке',
-          UpdateState.upToDate => 'У вас последняя версия',
+          UpdateState.upToDate => up.isTestBuild ? 'У вас последняя сборка этой ветки' : 'У вас последняя версия',
           UpdateState.error => up.error ?? 'Не получилось проверить',
           UpdateState.idle => 'Обновления проверяются сами раз в 4 часа',
         };
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('Обновления', style: display(20)),
           const SizedBox(height: 10),
-          Text('Установлена версия ${up.currentVersion}', style: const TextStyle(color: C.muted, fontSize: 15)),
+          Text(
+            up.isTestBuild
+                ? 'Установлена тестовая сборка ${up.currentVersion} ветки «${up.channel}»'
+                : 'Установлена версия ${up.currentVersion}',
+            style: TextStyle(color: up.isTestBuild ? C.accent : C.muted, fontSize: 15),
+          ),
           const SizedBox(height: 6),
           Text(
             last == null ? status : '$status. Проверено в ${TimeOfDay.fromDateTime(last).format(context)}.',
@@ -214,13 +253,111 @@ class _UpdatesSection extends StatelessWidget {
                 label: const Text('Перезапустить и обновить'),
               ),
             OutlinedButton.icon(
-              onPressed: up.state == UpdateState.checking || up.state == UpdateState.downloading ? null : up.check,
+              onPressed: busy ? null : up.check,
               icon: const Icon(Icons.refresh_rounded, size: 18),
               label: const Text('Проверить обновления'),
             ),
+            if (up.isTestBuild)
+              OutlinedButton.icon(
+                onPressed: busy || !up.enabled
+                    ? null
+                    : () async {
+                        final ok = await confirm(
+                          context,
+                          title: 'Вернуться на обычную версию?',
+                          text: 'Cave Player поставит последнюю обычную версию и дальше будет обновляться как у всех.',
+                          action: 'Вернуться',
+                        );
+                        if (ok) await up.installStable();
+                      },
+                icon: const Icon(Icons.undo_rounded, size: 18),
+                label: const Text('Вернуться на обычную версию'),
+              ),
           ]),
+          const SizedBox(height: 26),
+          Row(children: [
+            Text('Тестовые сборки', style: display(17)),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: 'Обновить список',
+              visualDensity: VisualDensity.compact,
+              onPressed: up.loadingBuilds || !up.enabled ? null : up.loadTestBuilds,
+              icon: up.loadingBuilds
+                  ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh_rounded, size: 18),
+            ),
+          ]),
+          const SizedBox(height: 4),
+          const Text(
+            'Сборки из веток, которые ещё не попали в основную версию. Можно поставить, чтобы проверить новое до выхода для всех.',
+            style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
+          ),
+          const SizedBox(height: 10),
+          if (!up.enabled)
+            const Text('Доступно в версии, установленной через CavePlayer-Setup.exe.', style: TextStyle(color: C.faint, fontSize: 13))
+          else if (up.buildsError != null)
+            Text(up.buildsError!, style: const TextStyle(color: C.danger, fontSize: 13))
+          else if (up.testBuilds.isEmpty && !up.loadingBuilds)
+            const Text('Сейчас тестовых сборок нет.', style: TextStyle(color: C.faint, fontSize: 13))
+          else
+            for (final b in up.testBuilds)
+              _BuildRow(
+                info: b,
+                current: up.isTestBuild && b.version == kAppVersion,
+                busy: busy,
+                installing: up.installing == b,
+                onInstall: () => _install(b),
+              ),
         ]);
       },
+    );
+  }
+}
+
+class _BuildRow extends StatelessWidget {
+  final BuildInfo info;
+  final bool current;
+  final bool busy;
+  final bool installing;
+  final VoidCallback onInstall;
+  const _BuildRow({required this.info, required this.current, required this.busy, required this.installing, required this.onInstall});
+
+  @override
+  Widget build(BuildContext context) {
+    final b = info;
+    final when = b.published?.toLocal();
+    final date = when == null ? '' : ' · ${when.day.toString().padLeft(2, '0')}.${when.month.toString().padLeft(2, '0')} ${TimeOfDay.fromDateTime(when).format(context)}';
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 640),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: current ? C.raised : null,
+        border: Border.all(color: current ? C.accent : C.line),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(children: [
+        const Icon(Icons.science_outlined, size: 20, color: C.muted),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(b.branch, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 2),
+            Text('Версия ${b.version}$date', style: const TextStyle(color: C.faint, fontSize: 12)),
+            if (b.summary.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(b.summary, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+            ],
+          ]),
+        ),
+        const SizedBox(width: 12),
+        if (current)
+          const Text('установлена', style: TextStyle(color: C.accent, fontSize: 13))
+        else if (installing)
+          const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
+        else
+          OutlinedButton(onPressed: busy ? null : onInstall, child: const Text('Поставить')),
+      ]),
     );
   }
 }
