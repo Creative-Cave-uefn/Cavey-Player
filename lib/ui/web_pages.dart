@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
+import '../core/models.dart';
 import '../core/web_info.dart';
 import 'ambient.dart';
 import 'profile_view.dart';
@@ -32,18 +33,70 @@ Widget netCover(String url, double size, {double radius = 8, bool round = false}
   return round ? ClipOval(child: img) : ClipRRect(borderRadius: BorderRadius.circular(radius), child: img);
 }
 
-/// Отрывок: кнопка с кольцом прогресса
+/// Скачанная копия трека из интернета в библиотеке, если она есть
+Track? downloadedOf(AppServices app, WebTrack t) => app.lib.existing(t.artist, t.title);
+
+/// Играет ли сейчас этот трек: отрывком или целиком из библиотеки
+bool webTrackPlaying(AppServices app, WebTrack t) {
+  if (app.preview.current == t.id) return true;
+  final mine = downloadedOf(app, t);
+  return mine != null && app.player.current?.id == mine.id;
+}
+
+/// Включить трек из интернета. Уже скачан — играет целиком из библиотеки, а очередью становятся
+/// остальные скачанные из того же списка [list] (альбом, топ-песни, результаты поиска).
+/// Не скачан — отрывок на 30 секунд из Deezer
+void playWeb(BuildContext context, WebTrack t, [List<WebTrack>? list]) {
+  final app = Services.of(context);
+  final mine = downloadedOf(app, t);
+  if (mine == null) {
+    app.preview.toggle(t);
+    return;
+  }
+  final p = app.player;
+  if (p.current?.id == mine.id) {
+    p.toggle();
+    return;
+  }
+  app.preview.stop();
+  final queue = <Track>[];
+  for (final w in list ?? [t]) {
+    final m = downloadedOf(app, w);
+    if (m != null && !queue.any((q) => q.id == m.id)) queue.add(m);
+  }
+  if (!queue.any((q) => q.id == mine.id)) queue.insert(0, mine);
+  if (p.shuffle) p.toggleShuffle();
+  p.playTracks(queue, queue.indexWhere((q) => q.id == mine.id));
+}
+
+/// Кнопка «играть»: скачанный трек — целиком, иначе отрывок с кольцом прогресса
 class PreviewButton extends StatelessWidget {
   final WebTrack track;
-  const PreviewButton({super.key, required this.track});
+  final List<WebTrack>? list;
+  const PreviewButton({super.key, required this.track, this.list});
 
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    if (track.preview.isEmpty) return const SizedBox(width: 36);
     return ListenableBuilder(
-      listenable: app.preview,
+      listenable: Listenable.merge([app.preview, app.player, app.lib]),
       builder: (context, _) {
+        final mine = downloadedOf(app, track);
+        if (mine != null) {
+          final current = app.player.current?.id == mine.id;
+          final playing = current && app.player.playing;
+          return SizedBox.square(
+            dimension: 36,
+            child: IconButton(
+              tooltip: playing ? 'Пауза' : 'Играть целиком — трек уже скачан',
+              iconSize: 22,
+              padding: EdgeInsets.zero,
+              onPressed: () => playWeb(context, track, list),
+              icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded, color: current ? C.accent : C.text),
+            ),
+          );
+        }
+        if (track.preview.isEmpty) return const SizedBox(width: 36);
         final playing = app.preview.current == track.id;
         return SizedBox.square(
           dimension: 36,
@@ -86,23 +139,26 @@ class TrackGetButton extends StatelessWidget {
   }
 }
 
-/// Строка трека: обложка, название, исполнитель и альбом ссылками, отрывок, скачать
+/// Строка трека: обложка, название, исполнитель и альбом ссылками, «играть», скачать.
+/// [list] — весь список, в котором строка: скачанные из него становятся очередью
 class WebTrackLine extends StatelessWidget {
   final WebTrack track;
   final bool showCover;
-  const WebTrackLine({super.key, required this.track, this.showCover = true});
+  final List<WebTrack>? list;
+  const WebTrackLine({super.key, required this.track, this.showCover = true, this.list});
 
   @override
   Widget build(BuildContext context) {
     final nav = NavScope.of(context);
     final app = Services.of(context);
     return ListenableBuilder(
-      listenable: app.preview,
+      listenable: Listenable.merge([app.preview, app.player]),
       builder: (context, _) {
-        final playing = app.preview.current == track.id;
+        final playing = webTrackPlaying(app, track);
+        final canPlay = track.preview.isNotEmpty || downloadedOf(app, track) != null;
         return InkWell(
           borderRadius: BorderRadius.circular(8),
-          onTap: track.preview.isEmpty ? null : () => app.preview.toggle(track),
+          onTap: canPlay ? () => playWeb(context, track, list) : null,
           child: SizedBox(
             height: 58,
             child: Row(children: [
@@ -137,7 +193,7 @@ class WebTrackLine extends StatelessWidget {
               ),
               Text(formatDuration(Duration(seconds: track.seconds)), style: const TextStyle(color: C.faint, fontSize: 12)),
               const SizedBox(width: 6),
-              PreviewButton(track: track),
+              PreviewButton(track: track, list: list),
               TrackGetButton(track: track),
             ]),
           ),
@@ -166,7 +222,7 @@ class WebTrackGrid extends StatelessWidget {
                 c * 3 + r < shown.length
                     ? Container(
                         decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
-                        child: WebTrackLine(track: shown[c * 3 + r]),
+                        child: WebTrackLine(track: shown[c * 3 + r], list: tracks),
                       )
                     : const SizedBox(height: 58),
             ]),
@@ -541,7 +597,7 @@ class _WebSectionPageState extends State<WebSectionPage> {
                 decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
                 child: Row(children: [
                   SizedBox(width: 32, child: Text('${i + 1}', style: const TextStyle(color: C.faint, fontSize: 13))),
-                  Expanded(child: WebTrackLine(track: d.top[i])),
+                  Expanded(child: WebTrackLine(track: d.top[i], list: d.top)),
                 ]),
               )
           else if (widget.kind == 'related')
@@ -626,7 +682,7 @@ class _WebAlbumPageState extends State<WebAlbumPage> {
               decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
               child: Row(children: [
                 SizedBox(width: 32, child: Text('${i + 1}', style: const TextStyle(color: C.faint, fontSize: 13))),
-                Expanded(child: WebTrackLine(track: tracks[i], showCover: false)),
+                Expanded(child: WebTrackLine(track: tracks[i], showCover: false, list: tracks)),
               ]),
             ),
         ]);
@@ -726,7 +782,7 @@ class _WebSearchPageState extends State<WebSearchPage> {
                 for (final t in r.tracks)
                   Container(
                     decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
-                    child: WebTrackLine(track: t),
+                    child: WebTrackLine(track: t, list: r.tracks),
                   ),
               ],
               if (r.albums.isNotEmpty) ...[

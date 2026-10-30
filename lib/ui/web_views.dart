@@ -9,6 +9,7 @@ import '../core/library.dart';
 import '../core/web_info.dart';
 import 'list_filter.dart';
 import 'shell.dart';
+import 'web_pages.dart';
 import 'tracks_view.dart' show searchRequests;
 import 'theme.dart';
 import 'widgets.dart';
@@ -297,7 +298,7 @@ class _WebAlbumTileState extends State<WebAlbumTile> {
               final tracks = snap.data ?? const <WebTrack>[];
               return Padding(
                 padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                child: Column(children: [for (var i = 0; i < tracks.length; i++) WebTrackRow(track: tracks[i], n: i + 1)]),
+                child: Column(children: [for (var i = 0; i < tracks.length; i++) WebTrackRow(track: tracks[i], n: i + 1, list: tracks)]),
               );
             },
           ),
@@ -315,36 +316,22 @@ class _WebAlbumTileState extends State<WebAlbumTile> {
 class WebTrackRow extends StatelessWidget {
   final WebTrack track;
   final int n;
-  const WebTrackRow({super.key, required this.track, required this.n});
+  final List<WebTrack>? list;
+  const WebTrackRow({super.key, required this.track, required this.n, this.list});
 
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final have = app.web.trackInLibrary(track);
     return ListenableBuilder(
-      listenable: app.preview,
+      listenable: Listenable.merge([app.preview, app.player]),
       builder: (context, _) {
-        final playing = app.preview.current == track.id;
+        final playing = webTrackPlaying(app, track);
         return SizedBox(
           height: 44,
           child: Row(children: [
             SizedBox(width: 28, child: Text('$n', style: const TextStyle(color: C.faint, fontSize: 13))),
-            SizedBox.square(
-              dimension: 36,
-              child: track.preview.isEmpty
-                  ? const SizedBox.shrink()
-                  : Stack(alignment: Alignment.center, children: [
-                      if (playing)
-                        CircularProgressIndicator(value: app.preview.progress, strokeWidth: 2, color: C.accent),
-                      IconButton(
-                        tooltip: playing ? 'Остановить отрывок' : 'Послушать отрывок (30 с)',
-                        iconSize: 20,
-                        padding: EdgeInsets.zero,
-                        onPressed: () => app.preview.toggle(track),
-                        icon: Icon(playing ? Icons.stop_rounded : Icons.play_arrow_rounded, color: playing ? C.accent : C.muted),
-                      ),
-                    ]),
-            ),
+            PreviewButton(track: track, list: list),
             const SizedBox(width: 8),
             Expanded(
               child: Text(track.title,
