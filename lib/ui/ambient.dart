@@ -319,8 +319,11 @@ class _GrainState extends State<_Grain> {
       final v = seed & 0xFF;
       final o = i * 4;
       final light = v > 127;
-      px[o] = px[o + 1] = px[o + 2] = light ? 255 : 0;
-      px[o + 3] = (v % 64) ~/ 6; // прозрачность 0..10 из 255 — на глаз зерна не видно
+      // Пиксели здесь «предумноженные»: яркость не может быть больше прозрачности.
+      // Раньше белый был 255 при прозрачности 10 — и шум выходил сплошным. Теперь максимум ~4%
+      final a = (v % 64) ~/ 6; // прозрачность 0..10 из 255
+      px[o] = px[o + 1] = px[o + 2] = light ? a : 0;
+      px[o + 3] = a;
     }
     final done = Completer<ui.Image>();
     ui.decodeImageFromPixels(px, n, n, ui.PixelFormat.rgba8888, done.complete);
