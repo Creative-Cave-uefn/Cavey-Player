@@ -10,6 +10,7 @@ import 'core/web_info.dart';
 import 'core/karaoke.dart';
 import 'core/wave.dart';
 import 'core/audio_cache.dart';
+import 'core/automix.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
@@ -136,6 +137,15 @@ class AppServices {
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
+    // Умный переход: профили звука треков и темп из Deezer (если уже узнали)
+    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')));
+    final tempo = <String, double?>{};
+    player.tempoOf = (t) {
+      if (tempo.containsKey(t.id)) return tempo[t.id];
+      tempo[t.id] = null;
+      if (t.artists.isNotEmpty) app.web.bpm(t.artists.first, t.title).then((b) => tempo[t.id] = b).catchError((Object _) => null);
+      return null;
+    };
     app.wave = await WaveService.open(store, lib, player, social, app.web, downloads);
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();

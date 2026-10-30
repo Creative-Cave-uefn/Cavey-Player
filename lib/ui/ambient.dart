@@ -9,6 +9,7 @@ import 'package:flutter/scheduler.dart';
 
 import '../app.dart';
 import '../core/player.dart';
+import '../core/store.dart';
 import 'theme.dart';
 
 /// Откуда фон берёт картинку. Профиль (исполнитель, человек) важнее трека:
@@ -47,6 +48,19 @@ class AmbientScope {
 
   /// Ярче и сочнее, меньше затемнения — для кинотеатра
   static final ValueNotifier<bool> vivid = ValueNotifier(false);
+
+  /// Настройка фона: (яркость, контраст), 1 — как есть. Меняется в настройках и сразу видна
+  static final ValueNotifier<(double, double)> look = ValueNotifier((1.0, 1.0));
+
+  static (double, double) lookOf(Settings s) =>
+      (s.viewNum('ambient.bright', 1).clamp(0.4, 1.8).toDouble(), s.viewNum('ambient.contrast', 1).clamp(0.5, 1.8).toDouble());
+
+  /// Яркость умножает цвет, контраст растягивает его от середины
+  static ColorFilter filter(double bright, double contrast) {
+    final k = bright * contrast;
+    final o = 128 * (1 - contrast);
+    return ColorFilter.matrix([k, 0, 0, 0, o, 0, k, 0, 0, o, 0, 0, k, 0, o, 0, 0, 0, 1, 0]);
+  }
 
   /// Цветное свечение, которое просит страница (шапка «Любимого», профиль без баннера).
   /// Рисуется на всём окне, а не внутри страницы — поэтому без обрезанных краёв
@@ -141,99 +155,9 @@ class _AmbientOverrideState extends State<AmbientOverride> {
   Widget build(BuildContext context) => widget.child;
 }
 
-/// Палитра фона: несколько главных цветов картинки и тёмная основа под ними
-class AmbientPalette {
-  final Color base;
-  final List<Color> blobs; // всегда [blobCount] цветов, самые заметные первыми
-  const AmbientPalette(this.base, this.blobs);
-
-  static const blobCount = 5;
-
-  static AmbientPalette lerp(AmbientPalette a, AmbientPalette b, double t) => AmbientPalette(
-        Color.lerp(a.base, b.base, t)!,
-        [for (var i = 0; i < blobCount; i++) Color.lerp(a.blobs[i], b.blobs[i], t)!],
-      );
-
-  /// Пока ничего не играет — фирменные синие тона
-  static const brand = AmbientPalette(Color(0xFF0E1230), [
-    Color(0xFF2E3A8C),
-    Color(0xFF4A2F7A),
-    Color(0xFF1F4F7A),
-    Color(0xFF33407F),
-    Color(0xFF26305E),
-  ]);
-
-  /// Один цвет (друг без фото) — оттенки вокруг него
-  factory AmbientPalette.of(Color c) {
-    final h = HSLColor.fromColor(c);
-    Color v(double dh, double l) =>
-        h.withHue((h.hue + dh) % 360).withSaturation(math.min(1.0, h.saturation * 1.1 + 0.1)).withLightness(l).toColor();
-    return AmbientPalette(v(0, 0.1), [v(0, 0.45), v(-18, 0.38), v(22, 0.34), v(0, 0.3), v(-8, 0.42)]);
-  }
-
-  /// Главные цвета картинки: k-средних по крошечной копии (32×32), потом цвета делаем сочнее
-  static Future<AmbientPalette?> fromImage(ui.Image img) async {
-    final data = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
-    if (data == null) return null;
-    final px = <(double, double, double)>[];
-    final bytes = data.buffer.asUint8List();
-    for (var i = 0; i + 3 < bytes.length; i += 4) {
-      if (bytes[i + 3] < 128) continue;
-      px.add((bytes[i].toDouble(), bytes[i + 1].toDouble(), bytes[i + 2].toDouble()));
-    }
-    if (px.isEmpty) return null;
-    return _cluster(px); // 1024 точки — быстрее, чем запускать отдельный поток
-  }
-
-  static AmbientPalette _cluster(List<(double, double, double)> px) {
-    const k = 6;
-    var centers = [for (var i = 0; i < k; i++) px[(i * px.length / k).floor()]];
-    var counts = List<int>.filled(k, 0);
-    for (var iter = 0; iter < 8; iter++) {
-      final sum = List.generate(k, (_) => [0.0, 0.0, 0.0]);
-      counts = List<int>.filled(k, 0);
-      for (final p in px) {
-        var best = 0;
-        var bd = double.infinity;
-        for (var j = 0; j < k; j++) {
-          final c = centers[j];
-          final d = (p.$1 - c.$1) * (p.$1 - c.$1) * 0.3 + (p.$2 - c.$2) * (p.$2 - c.$2) * 0.59 + (p.$3 - c.$3) * (p.$3 - c.$3) * 0.11;
-          if (d < bd) {
-            bd = d;
-            best = j;
-          }
-        }
-        sum[best][0] += p.$1;
-        sum[best][1] += p.$2;
-        sum[best][2] += p.$3;
-        counts[best]++;
-      }
-      centers = [
-        for (var j = 0; j < k; j++) counts[j] == 0 ? centers[j] : (sum[j][0] / counts[j], sum[j][1] / counts[j], sum[j][2] / counts[j]),
-      ];
-    }
-    final hsl = [
-      for (var j = 0; j < k; j++)
-        (HSLColor.fromColor(Color.fromARGB(255, centers[j].$1.round(), centers[j].$2.round(), centers[j].$3.round())), counts[j]),
-    ];
-    // Заметность: доля на картинке плюс насыщенность — яркое пятно на обложке важнее серого фона
-    double weight((HSLColor, int) e) => e.$2 / px.length * (0.35 + e.$1.saturation) * (e.$1.lightness < 0.06 ? 0.3 : 1);
-    hsl.sort((a, b) => weight(b).compareTo(weight(a)));
-    Color pop(HSLColor c, double minL, double maxL) => c
-        .withSaturation(math.min(1.0, c.saturation * 1.35 + 0.08))
-        .withLightness(c.lightness.clamp(minL, maxL).toDouble())
-        .toColor();
-    final blobs = [for (var i = 0; i < blobCount; i++) pop(hsl[i % hsl.length].$1, 0.3, 0.6)];
-    // Основа — самый частый цвет, но глубоко затемнённый: на нём читается текст
-    final common = (List.of(hsl)..sort((a, b) => b.$2.compareTo(a.$2))).first.$1;
-    final base = common.withSaturation(math.min(1.0, common.saturation * 1.2 + 0.1)).withLightness(0.13).toColor();
-    return AmbientPalette(base, blobs);
-  }
-}
-
-/// Фон всего окна: «живые» цветные пятна из главных цветов обложки трека или фото профиля.
-/// Пятна — это градиенты, а не растянутая картинка: они рисуются гладко, без ступенек в цвете,
-/// и считать для новой обложки нужно только палитру — смена фона почти мгновенная
+/// Фон всего окна: размытая картинка (обложка трека или фото профиля), плавно сменяется.
+/// Картинка размывается один раз в маленькую (160×160) и дальше просто растягивается:
+/// на каждом кадре ничего не размываем, поэтому прокрутка и анимации не тормозят.
 class AmbientBackground extends StatefulWidget {
   const AmbientBackground({super.key});
 
@@ -241,9 +165,11 @@ class AmbientBackground extends StatefulWidget {
   State<AmbientBackground> createState() => _AmbientBackgroundState();
 }
 
-class _AmbientBackgroundState extends State<AmbientBackground> with TickerProviderStateMixin {
-  static final Map<String, AmbientPalette> _cache = {};
-  static final List<String> _order = [];
+class _AmbientBackgroundState extends State<AmbientBackground> with SingleTickerProviderStateMixin {
+  static final Map<String, ui.Image> _cache = {};
+
+  /// Мягкое «пятно» той же картинки с прозрачными краями — для плавающих слоёв
+  static final Expando<ui.Image> _blob = Expando();
 
   // ---------- движение ----------
   /// Время фона в секундах: идёт быстрее на быстрых треках, медленнее на медленных и на паузе, но всегда идёт
@@ -254,20 +180,6 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
   double? _bpm;
   String? _bpmFor;
   PlayerController? _player;
-
-  // ---------- смена палитры ----------
-  AmbientPalette _from = AmbientPalette.brand;
-  AmbientPalette _to = AmbientPalette.brand;
-  late final AnimationController _mix = AnimationController(vsync: this, duration: const Duration(milliseconds: 900), value: 1);
-
-  AmbientPalette get _current => AmbientPalette.lerp(_from, _to, Curves.easeInOut.transform(_mix.value));
-
-  void _show(AmbientPalette p) {
-    if (!mounted) return;
-    _from = _current;
-    _to = p;
-    _mix.forward(from: 0);
-  }
 
   void _onTick(Duration elapsed) {
     final dt = (elapsed - _lastTick).inMicroseconds / 1e6;
@@ -294,8 +206,11 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
     });
   }
 
+  static final List<String> _order = [];
+
   String? _key;
-  bool _found = false; // для текущего ключа палитра уже есть
+  ui.Image? _image;
+  Color? _color;
   final Map<String, DateTime> _retried = {};
   Timer? _tick;
   int _seq = 0;
@@ -306,6 +221,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
     super.didChangeDependencies();
     if (_unlisten != null) return;
     final player = _player = Services.of(context).player;
+    AmbientScope.look.value = AmbientScope.lookOf(Services.of(context).settings);
     final covers = Services.of(context).covers;
     void changed() {
       _sync();
@@ -315,10 +231,10 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
     // Обложка догрузилась позже, чем трек включился: фон без картинки пробует ещё раз
     void coversReady() {
       final k = _key;
-      if (_found || k == null) return;
-      // Сигналы от обложек частые (прокрутка списков) — повторяем не чаще раза в 4 секунды
+      if (_image != null || _color != null || k == null) return;
+      // Сигналы от обложек частые (прокрутка списков) — повторяем не чаще раза в 8 секунд
       final last = _retried[k];
-      if (last != null && DateTime.now().difference(last) < const Duration(seconds: 4)) return;
+      if (last != null && DateTime.now().difference(last) < const Duration(seconds: 8)) return;
       _retried[k] = DateTime.now();
       _key = null;
       _sync();
@@ -344,7 +260,6 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
   void dispose() {
     _unlisten?.call();
     _ticker?.dispose();
-    _mix.dispose();
     _clock.dispose();
     super.dispose();
   }
@@ -353,7 +268,8 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
     final app = Services.of(context);
     final t = app.player.current;
     if (t == null) return null;
-    // Маленькая копия обложки — та же, что в списке и в плеере: она уже в памяти, фон меняется сразу
+    // Маленькая копия (160 px) — та же, что в списке и в плеере: она уже в памяти, фон меняется сразу.
+    // Раньше бралась полная обложка: её качали с Диска заново, и при быстрой смене треков фон не успевал
     final covers = app.covers;
     return AmbientSource(covers.keyOf(t), bytes: () async => covers.peek(t, px: 160) ?? await covers.forTrack(t, px: 160));
   }
@@ -362,61 +278,61 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
     final src = AmbientScope.override.value ?? _trackSource();
     if (src?.key == _key) return;
     _key = src?.key;
-    _found = false;
     final seq = ++_seq;
     var s = src;
     while (s != null) {
       final hit = _cache[s.key];
       if (hit != null) {
-        _found = true;
-        _show(hit);
+        setState(() {
+          _image = hit;
+          _color = null;
+        });
         return;
       }
-      AmbientPalette? pal;
+      ui.Image? img;
       try {
         final b = s.bytes;
         final u = s.url;
-        ui.Image? img;
         if (b != null) {
           final bytes = await b();
-          if (bytes != null) img = await _decode(bytes);
+          if (bytes != null) img = await _blurred(await _decode(bytes));
         } else if (u != null) {
           final link = await u();
-          if (link != null && link.isNotEmpty) img = await _fromUrl(link);
-        }
-        if (img != null) {
-          try {
-            pal = await AmbientPalette.fromImage(img);
-          } finally {
-            img.dispose();
-          }
+          if (link != null && link.isNotEmpty) img = await _blurred(await _fromUrl(link));
         }
       } catch (_) {}
-      // Готовую палитру запоминаем, даже если трек уже сменился: вернёмся к нему — фон появится сразу
-      if (pal != null && !_cache.containsKey(s.key)) {
-        _cache[s.key] = pal;
+      // Готовую картинку запоминаем, даже если трек уже сменился: вернёмся к нему — фон появится сразу
+      if (img != null && !_cache.containsKey(s.key)) {
+        _cache[s.key] = img;
         _order.add(s.key);
-        if (_order.length > 64) _cache.remove(_order.removeAt(0));
+        if (_order.length > 24) _cache.remove(_order.removeAt(0));
       }
       if (!mounted || seq != _seq) return;
-      if (pal != null) {
-        _found = true;
-        _show(pal);
+      if (img != null) {
+        setState(() {
+          _image = img;
+          _color = null;
+        });
         return;
       }
       if (s.color != null) {
-        _found = true;
-        _show(AmbientPalette.of(s.color!));
+        setState(() {
+          _image = null;
+          _color = s!.color;
+        });
         return;
       }
       s = s.fallback;
     }
     if (!mounted || seq != _seq) return;
-    if (src == null) _show(AmbientPalette.brand); // трек без обложки оставляет прежние цвета — меньше мигания
+    setState(() {
+      _image = null;
+      _color = null;
+    });
   }
 
   static Future<ui.Image?> _decode(Uint8List bytes) async {
-    final codec = await ui.instantiateImageCodec(bytes, targetWidth: 32, targetHeight: 32);
+    final codec = await ui.instantiateImageCodec(bytes, targetWidth: 64);
     final frame = await codec.getNextFrame();
     codec.dispose();
     return frame.image;
@@ -425,7 +341,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
   /// Фото по адресу: маленькой копией, через обычный кеш картинок Flutter
   static Future<ui.Image?> _fromUrl(String url) {
     final done = Completer<ui.Image?>();
-    final stream = ResizeImage(NetworkImage(url), width: 32, height: 32).resolve(ImageConfiguration.empty);
+    final stream = ResizeImage(NetworkImage(url), width: 64).resolve(ImageConfiguration.empty);
     late final ImageStreamListener listener;
     listener = ImageStreamListener((info, _) {
       if (!done.isCompleted) done.complete(info.image.clone());
@@ -439,18 +355,73 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
     return done.future.timeout(const Duration(seconds: 15), onTimeout: () => null);
   }
 
+  static Future<ui.Image?> _blurred(ui.Image? src) async {
+    if (src == null) return null;
+    try {
+      const size = 288.0; // крупнее — меньше ступенек при растягивании на всё окно
+      final rec = ui.PictureRecorder();
+      final canvas = Canvas(rec);
+      final paint = Paint()
+        ..filterQuality = FilterQuality.medium
+        ..imageFilter = ui.ImageFilter.blur(sigmaX: 30, sigmaY: 30, tileMode: TileMode.clamp);
+      // Чуть шире холста, чтобы края размытия не темнели
+      canvas.drawImageRect(src, Rect.fromLTWH(0, 0, src.width.toDouble(), src.height.toDouble()),
+          const Rect.fromLTWH(-44, -44, size + 88, size + 88), paint);
+      final base = await rec.endRecording().toImage(size.toInt(), size.toInt());
+      // Пятно: та же картинка, но края уходят в прозрачность — плавающие слои без видимых границ
+      final rec2 = ui.PictureRecorder();
+      final c2 = Canvas(rec2);
+      const r = Rect.fromLTWH(0, 0, size, size);
+      c2.drawImage(base, Offset.zero, Paint());
+      c2.drawRect(
+        r,
+        Paint()
+          ..blendMode = BlendMode.dstIn
+          ..shader = RadialGradient(colors: smoothFadeColors(Colors.white), stops: smoothFadeStops()).createShader(r),
+      );
+      _blob[base] = await rec2.endRecording().toImage(size.toInt(), size.toInt());
+      return base;
+    } catch (_) {
+      return null;
+    } finally {
+      src.dispose();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final img = _image;
     return RepaintBoundary(
       child: Stack(fit: StackFit.expand, children: [
+        const ColoredBox(color: C.bg),
+        ValueListenableBuilder<(double, double)>(
+          valueListenable: AmbientScope.look,
+          // Всегда ColorFiltered (а не только при настройке): иначе смена дерева сбросила бы картинку фона
+          builder: (context, look, child) => ColorFiltered(colorFilter: AmbientScope.filter(look.$1, look.$2), child: child),
+          child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 600),
+          switchInCurve: Curves.easeOut,
+          switchOutCurve: Curves.easeIn,
+          layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
+          child: img == null
+              ? (_color != null ? _ColorGlow(key: ValueKey(_color), color: _color!) : const _BrandGlow(key: ValueKey('brand')))
+              : CustomPaint(
+                  key: ValueKey(img),
+                  painter: _LivingPainter(img, _blob[img] ?? img, _clock),
+                  child: const SizedBox.expand(),
+                ),
+        ),
+        ),
+        // В кинотеатре фон ярче: часть затемнения убираем
         ValueListenableBuilder<bool>(
           valueListenable: AmbientScope.vivid,
-          builder: (context, vivid, _) => CustomPaint(
-            painter: _LivingPainter(this, _clock, _mix, vivid: vivid),
-            child: const SizedBox.expand(),
+          builder: (context, vivid, _) => AnimatedOpacity(
+            duration: const Duration(milliseconds: 600),
+            opacity: vivid ? 0 : 1,
+            child: const ColoredBox(color: Color(0x4D000000)),
           ),
         ),
-        // Затемнение только снизу, где плеер, и совсем лёгкое сверху — цвета остаются сочными
+        // Затемнение: снизу темнее — там плеер. Переход по плавной кривой, без ступенек
         DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -458,7 +429,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
               end: Alignment.bottomCenter,
               colors: [
                 for (var i = 0; i <= 16; i++)
-                  Color.lerp(const Color(0x14000000), const Color(0x59000000), () {
+                  Color.lerp(const Color(0x4D000000), const Color(0x80000000), () {
                     final t = i / 16;
                     return t * t * (3 - 2 * t);
                   }())!,
@@ -478,6 +449,41 @@ class _AmbientBackgroundState extends State<AmbientBackground> with TickerProvid
       ]),
     );
   }
+}
+
+/// Профиль без картинки: мягкое свечение его цветом
+class _ColorGlow extends StatelessWidget {
+  final Color color;
+  const _ColorGlow({super.key, required this.color});
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: RadialGradient(
+            center: const Alignment(-0.2, -0.7),
+            radius: 1.3,
+            colors: [color.withValues(alpha: 0.75), color.withValues(alpha: 0.25), C.bg],
+            stops: const [0.0, 0.55, 1.0],
+          ),
+        ),
+      );
+}
+
+/// Пока ничего не играет: мягкое свечение фирменных цветов
+class _BrandGlow extends StatelessWidget {
+  const _BrandGlow({super.key});
+
+  @override
+  Widget build(BuildContext context) => const DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment(-0.3, -0.6),
+            radius: 1.3,
+            colors: [Color(0xFF2A3266), Color(0xFF151A36), C.bg],
+            stops: [0.0, 0.5, 1.0],
+          ),
+        ),
+      );
 }
 
 /// Стеклянная панель: полупрозрачная, со светлой обводкой
@@ -560,48 +566,43 @@ class _SmoothGlowState extends State<SmoothGlow> with SingleTickerProviderStateM
 }
 
 
-/// «Живой» фон, как в Apple Music: цветные пятна плывут по восьмёркам навстречу друг другу,
-/// дышат и меняют размер. Узор не повторяется ровно: у пятен разные периоды. Каждое пятно — радиальный
-/// градиент с плавным краем, поэтому нет ни границ, ни ступенек в цвете
+/// «Живой» фон, как в Apple Music: размытая обложка в несколько слоёв — большой слой медленно вращается,
+/// два пятна плывут по восьмёркам навстречу друг другу. Узор не повторяется ровно: у слоёв разные периоды
 class _LivingPainter extends CustomPainter {
-  final _AmbientBackgroundState state;
+  final ui.Image base;
+  final ui.Image blob;
   final ValueListenable<double> clock;
-  final bool vivid;
-  _LivingPainter(this.state, this.clock, Animation<double> mix, {required this.vivid}) : super(repaint: Listenable.merge([clock, mix]));
+  _LivingPainter(this.base, this.blob, this.clock) : super(repaint: clock);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final pal = state._current;
     final t = clock.value;
     final w = size.width, h = size.height;
     final m = math.max(w, h);
     final c = size.center(Offset.zero);
-    final full = Offset.zero & size;
-    // Основа: в кинотеатре светлее
-    final base = vivid ? Color.lerp(pal.base, pal.blobs.first, 0.25)! : pal.base;
-    canvas.drawRect(full, Paint()..color = base);
+    final paint = Paint()..filterQuality = FilterQuality.medium;
 
-    final stops = smoothFadeStops(steps: 24);
-    void blob(Color color, Offset off, double radius, double alpha) {
-      final center = c + off;
-      final r = m * radius;
-      final paint = Paint()
-        ..shader = RadialGradient(colors: smoothFadeColors(color.withValues(alpha: alpha), steps: 24), stops: stops)
-            .createShader(Rect.fromCircle(center: center, radius: r));
-      canvas.drawCircle(center, r, paint);
+    void layer(ui.Image img, double rot, Offset off, double scale, double alpha) {
+      canvas.save();
+      canvas.translate(c.dx + off.dx, c.dy + off.dy);
+      canvas.rotate(rot);
+      final s = m * scale;
+      paint.color = Color.fromRGBO(255, 255, 255, alpha);
+      canvas.drawImageRect(img, Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+          Rect.fromCenter(center: Offset.zero, width: s, height: s), paint);
+      canvas.restore();
     }
 
-    double breathe(double speed, double phase) => 1 + 0.14 * math.sin(t * speed + phase);
-    final a = vivid ? 1.0 : 0.85;
-    final b = pal.blobs;
-    // Большие пятна — медленно, маленькие — быстрее и шире по окну
-    blob(b[0], Offset(math.sin(t * 0.21) * w * 0.22, math.cos(t * 0.17) * h * 0.2 - h * 0.15), 0.85 * breathe(0.35, 0), a);
-    blob(b[1], Offset(math.sin(t * 0.33 + 1) * w * 0.38, math.sin(t * 0.66 + 2) * h * 0.3), 0.7 * breathe(0.5, 1), a * 0.9);
-    blob(b[2], Offset(math.cos(t * 0.29 + 3) * w * 0.4, math.sin(t * 0.58) * h * 0.34), 0.6 * breathe(0.6, 2), a * 0.85);
-    blob(b[3], Offset(math.sin(t * 0.25 + 4) * w * 0.33, math.cos(t * 0.5 + 1) * h * 0.36), 0.55 * breathe(0.45, 3), a * 0.8);
-    blob(b[4], Offset(math.cos(t * 0.37 + 5) * w * 0.3, math.sin(t * 0.41 + 4) * h * 0.3), 0.45 * breathe(0.7, 4), a * 0.75);
+    // «Дыхание»: слои плавно увеличиваются и уменьшаются — фон живой даже там, где цвета почти одинаковые
+    double breathe(double speed, double phase) => 1 + 0.12 * math.sin(t * speed + phase);
+    // Основа: закрывает всё окно с запасом даже повёрнутая; вращается заметно, а не еле-еле
+    layer(base, t * 0.16, Offset(math.sin(t * 0.33) * w * 0.1, math.cos(t * 0.27) * h * 0.1), 2.0 * breathe(0.4, 0), 0.9);
+    // Пятна: восьмёрки (у y частота вдвое больше, чем у x) с разными периодами и направлениями — широко, через всё окно
+    layer(blob, -t * 0.27 + 1.3, Offset(math.sin(t * 0.45 + 1) * w * 0.38, math.sin(t * 0.9 + 2) * h * 0.3), 1.2 * breathe(0.55, 1), 0.8);
+    layer(blob, t * 0.35 + 2.6, Offset(math.cos(t * 0.38 + 3) * w * 0.4, math.sin(t * 0.76) * h * 0.34), 0.95 * breathe(0.7, 2), 0.65);
+    layer(blob, t * 0.22 + 4.1, Offset(math.sin(t * 0.31 + 4) * w * 0.3, math.cos(t * 0.62 + 1) * h * 0.36), 0.75 * breathe(0.5, 3), 0.5);
   }
 
   @override
-  bool shouldRepaint(_LivingPainter old) => old.vivid != vivid || !identical(old.state, state);
+  bool shouldRepaint(_LivingPainter old) => !identical(old.base, base) || !identical(old.blob, blob);
 }

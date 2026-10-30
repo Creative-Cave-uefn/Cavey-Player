@@ -25,7 +25,8 @@ final selectionBarOpen = ValueNotifier<bool>(false);
 
 class AllTracksPage extends StatelessWidget {
   final bool compact;
-  const AllTracksPage({super.key, required this.compact});
+  final String title;
+  const AllTracksPage({super.key, required this.compact, this.title = 'Песни'});
 
   @override
   Widget build(BuildContext context) {
@@ -37,45 +38,14 @@ class AllTracksPage extends StatelessWidget {
         final tracks = lib.allTracks;
         final albums = lib.albums.length;
         return TracksPage(
-          title: 'Все треки',
+          title: title,
           subtitle: tracks.isEmpty
               ? null
               : '${countTracks(tracks.length)} в $albums ${plural(albums, 'альбоме', 'альбомах', 'альбомах')}',
           tracks: tracks,
           compact: compact,
-          actions: [
-            OutlinedButton.icon(
-              onPressed: () => NavScope.of(context).go(const Nav('download')),
-              icon: const Icon(Icons.cloud_download_outlined, size: 18),
-              label: const Text('Скачать по ссылке'),
-            ),
-            OutlinedButton.icon(
-              onPressed: lib.data.sources.isEmpty || lib.upload.running ? null : () => pickAndUpload(context),
-              icon: const Icon(Icons.upload_rounded, size: 18),
-              label: const Text('Загрузить'),
-            ),
-            Tooltip(
-              message: lib.scan.running
-                  ? (lib.scan.total > 0 ? '${lib.scan.text}: ${lib.scan.done} из ${lib.scan.total}' : lib.scan.text)
-                  : 'Проверить папки на новые треки',
-              child: OutlinedButton.icon(
-                onPressed: lib.scan.running || lib.data.sources.isEmpty ? null : () => lib.scanAll(),
-                icon: lib.scan.running
-                    ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.sync_rounded, size: 18),
-                label: Text(lib.scan.running ? 'Обновляю…' : 'Обновить'),
-              ),
-            ),
-          ],
-          banner: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Wrap(spacing: 10, runSpacing: 10, children: [
-              _SectionChip(icon: Icons.album_outlined, label: 'Альбомы', target: const Nav('albums')),
-              _SectionChip(icon: Icons.mic_none_rounded, label: 'Исполнители', target: const Nav('artists')),
-              _SectionChip(icon: Icons.schedule_rounded, label: 'Недавно добавленное', target: const Nav('recent')),
-            ]),
-            const SizedBox(height: 12),
-            const DropHint(),
-          ]),
+          actions: libraryActions(context),
+          banner: const DropHint(),
           empty: lib.scan.running
               ? EmptyState(
                   icon: Icons.downloading_rounded,
@@ -99,23 +69,33 @@ class AllTracksPage extends StatelessWidget {
   }
 }
 
-/// Плашка-переход под заголовком «Все треки»
-class _SectionChip extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Nav target;
-  const _SectionChip({required this.icon, required this.label, required this.target});
-
-  @override
-  Widget build(BuildContext context) {
-    // Как соседние кнопки «Вперемешку» и «Обновить»: стеклянная, с обводкой. ActionChip в теме Material 3
-    // подставлял свой плотный тёмно-синий цвет и выбивался из стиля
-    return OutlinedButton.icon(
-      onPressed: () => NavScope.of(context).go(target),
-      icon: Icon(icon, size: 18, color: C.accent),
-      label: Text(label),
-    );
-  }
+/// Кнопки библиотеки: скачать по ссылке, загрузить файлы, проверить папки
+List<Widget> libraryActions(BuildContext context) {
+  final lib = Services.of(context).lib;
+  return [
+            OutlinedButton.icon(
+              onPressed: () => NavScope.of(context).go(const Nav('download')),
+              icon: const Icon(Icons.cloud_download_outlined, size: 18),
+              label: const Text('Скачать по ссылке'),
+            ),
+            OutlinedButton.icon(
+              onPressed: lib.data.sources.isEmpty || lib.upload.running ? null : () => pickAndUpload(context),
+              icon: const Icon(Icons.upload_rounded, size: 18),
+              label: const Text('Загрузить'),
+            ),
+            Tooltip(
+              message: lib.scan.running
+                  ? (lib.scan.total > 0 ? '${lib.scan.text}: ${lib.scan.done} из ${lib.scan.total}' : lib.scan.text)
+                  : 'Проверить папки на новые треки',
+              child: OutlinedButton.icon(
+                onPressed: lib.scan.running || lib.data.sources.isEmpty ? null : () => lib.scanAll(),
+                icon: lib.scan.running
+                    ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.sync_rounded, size: 18),
+                label: Text(lib.scan.running ? 'Обновляю…' : 'Обновить'),
+              ),
+            ),
+          ];
 }
 
 class LikedPage extends StatelessWidget {

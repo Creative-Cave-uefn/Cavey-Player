@@ -60,7 +60,10 @@ Color _darken(Color c) {
   return hsl.withLightness(0.32).withSaturation(math.min(hsl.saturation, 0.5)).toColor();
 }
 
-Future<Color?> _trackTint(AppServices app, Track t) async {
+/// Цвет обложки, если уже посчитан (без ожидания)
+Color? trackTintNow(AppServices app, Track t) => _tintCache[app.covers.keyOf(t)];
+
+Future<Color?> trackTint(AppServices app, Track t) async {
   final key = app.covers.keyOf(t);
   final cached = _tintCache[key];
   if (cached != null) return cached;
@@ -582,7 +585,7 @@ class ArtistProfilePage extends StatelessWidget {
             url: () async => (app.web.artistCached(a.name) ?? await app.web.artist(a.name))?.picture,
             fallback: AmbientSource(app.covers.keyOf(a.coverTrack), bytes: () => app.covers.forTrack(a.coverTrack)),
           ),
-          tintFuture: _trackTint(app, a.coverTrack),
+          tintFuture: trackTint(app, a.coverTrack),
           tintNow: _tintCache[app.covers.keyOf(a.coverTrack)],
           name: a.name,
           subtitle: '${countTracks(a.tracks.length)}, $albumsN ${plural(albumsN, 'альбом', 'альбома', 'альбомов')} на Диске',

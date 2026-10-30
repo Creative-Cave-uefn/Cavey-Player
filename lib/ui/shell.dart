@@ -30,6 +30,7 @@ import 'web_views.dart';
 import 'wave_view.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
+import 'library_home.dart';
 
 class Nav {
   final String kind; // all, albums, album, liked, playlist, sources, accounts
@@ -449,7 +450,9 @@ class _ShellState extends State<Shell> {
       case 'playlists':
         return PlaylistsPage(key: const ValueKey('playlists'), compact: compact);
       case 'albums':
-        return const AlbumsPage(key: ValueKey('albums'));
+        return AlbumsPage(key: ValueKey('albums:${nav.id}'), kind: nav.id);
+      case 'songs':
+        return AllTracksPage(key: const ValueKey('songs'), compact: compact);
       case 'album':
         return AlbumPage(key: ValueKey('album:${nav.id}'), albumKey: nav.id!, compact: compact);
       case 'liked':
@@ -499,7 +502,7 @@ class _ShellState extends State<Shell> {
       case 'accounts':
         return const AccountsPage(key: ValueKey('accounts'));
       default:
-        return AllTracksPage(key: const ValueKey('all'), compact: compact);
+        return LibraryHomePage(key: const ValueKey('all'), compact: compact);
     }
   }
 }
@@ -634,8 +637,8 @@ class _Sidebar extends StatelessWidget {
                   : const Align(alignment: Alignment.centerLeft, child: Wordmark()),
             ),
             item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
-            item(Icons.library_music_outlined, 'Все треки', const Nav('all'),
-                also: const ['albums', 'artists', 'recent']),
+            item(Icons.library_music_outlined, 'Медиатека', const Nav('all'),
+                also: const ['albums', 'artists', 'recent', 'songs']),
             const SizedBox(height: 14),
             item(Icons.travel_explore_rounded, 'Поиск в интернете', const Nav('websearch')),
             item(Icons.new_releases_outlined, 'Новинки', const Nav('new')),

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart' show Media, NativePlayer, Player;
 
 import 'audio_cache.dart';
+import 'automix.dart';
 import 'auth.dart';
 import 'crossfade.dart';
 import 'drive.dart';
@@ -375,6 +376,7 @@ class PlayerController extends ChangeNotifier {
     } else if (repeat == RepeatSetting.all && queue.isNotEmpty) {
       nextId = queue.first;
     }
+    _prepareMix();
     if (nextId == null || cache.has(nextId)) return;
     cache.enqueue(nextId);
     final t = lib.data.tracks[nextId];
@@ -419,6 +421,32 @@ class PlayerController extends ChangeNotifier {
   /// Социальные функции (слушаем вместе с другом) могут запретить переход
   bool Function()? crossfadeBlocked;
 
+  /// Умный переход: профили звука треков и темп трека (если известен)
+  MixAnalyzer? mixer;
+  double? Function(Track t)? tempoOf;
+  bool get smartMix => settings.viewOf('mix.smart', '1') == '1';
+
+  /// План умного перехода с текущего трека на следующий; null — профили ещё не готовы, переход обычный
+  MixPlan? _smartPlan() {
+    final m = mixer, cur = current, ni = _autoNextIndex();
+    if (!smartMix || m == null || cur == null || ni == null) return null;
+    final a = m.profile(cur.id), b = m.profile(queue[ni]);
+    if (a == null || b == null) return null;
+    // Профиль от другого файла (трек заменили) — не доверяем
+    if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
+    return MixPlan.make(a, b, maxSec: settings.crossfadeSec.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur));
+  }
+
+  /// Профили звука текущего и следующего трека — считаем заранее, пока трек играет
+  void _prepareMix() {
+    final m = mixer;
+    if (m == null || !smartMix || settings.crossfadeSec <= 0) return;
+    final cur = current;
+    if (cur != null) m.prepare(cur.id);
+    final ni = _autoNextIndex();
+    if (ni != null) m.prepare(queue[ni]);
+  }
+
   Duration _prevPos = Duration.zero;
   bool _fading = false;
   Timer? _fadeTimer;
@@ -446,26 +474,38 @@ class PlayerController extends ChangeNotifier {
     _prevPos = d;
     if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
     if (crossfadeBlocked?.call() ?? false) return;
-    if (!crossfadeDue(seconds: settings.crossfadeSec, duration: duration, position: d, previous: prev)) return;
-    if (_autoNextIndex() == null) return;
-    unawaited(_startCrossfade());
+    if (settings.crossfadeSec <= 0 || _autoNextIndex() == null) return;
+    // Профили смотрим только ближе к концу трека — не на каждом тике позиции
+    final plan = duration - d < const Duration(seconds: 60) ? _smartPlan() : null;
+    final step = d - prev;
+    final due = plan != null
+        ? d >= plan.start && prev < plan.start && step >= Duration.zero && step < const Duration(seconds: 2)
+        : crossfadeDue(seconds: settings.crossfadeSec, duration: duration, position: d, previous: prev);
+    if (!due) return;
+    unawaited(_startCrossfade(plan));
   }
 
-  Future<void> _startCrossfade() async {
+  Future<void> _startCrossfade([MixPlan? plan]) async {
     final nextIndex = _autoNextIndex();
     if (nextIndex == null || _fading) return;
     final nextTrack = lib.data.tracks[queue[nextIndex]];
     if (nextTrack == null) return;
     _fading = true;
     final seq = ++_openSeq;
-    final seconds = settings.crossfadeSec.clamp(1, 10).toInt();
+    final lengthMs = plan?.length.inMilliseconds ?? settings.crossfadeSec.clamp(1, 10).toInt() * 1000;
+    final match = plan?.inGain ?? 1.0;
     try {
-      AppLog.info('Плавный переход на «${nextTrack.title}» ($seconds с)');
+      AppLog.info(plan == null
+          ? 'Плавный переход на «${nextTrack.title}» (${lengthMs ~/ 1000} с)'
+          : 'Умный переход на «${nextTrack.title}»: с ${plan.start.inMilliseconds / 1000} с, ${(lengthMs / 1000).toStringAsFixed(1)} с, '
+              'следующий с ${plan.inStart.inMilliseconds / 1000} с, громкость ×${match.toStringAsFixed(2)}');
       final media = await _mediaFor(nextTrack);
       if (seq != _openSeq || !_fading) return; // пока готовили, человек сам что-то переключил
       final incoming = _q ??= Player();
       await incoming.setVolume(0);
       await incoming.open(media, play: true);
+      // Пустое вступление следующего трека пропускаем
+      if (plan != null && plan.inStart > const Duration(milliseconds: 300)) await incoming.seek(plan.inStart);
       if (seq != _openSeq || !_fading) {
         await incoming.stop();
         return;
@@ -496,14 +536,15 @@ class PlayerController extends ChangeNotifier {
       _topUpFeed();
       final started = DateTime.now();
       _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-        final t = DateTime.now().difference(started).inMilliseconds / (seconds * 1000);
+        final t = DateTime.now().difference(started).inMilliseconds / lengthMs;
         if (t >= 1) {
           _endFade();
           return;
         }
         final g = fadeGains(t);
         _outGain = g.$1;
-        _inGain = g.$2;
+        // Следующий трек входит на громкости уходящего и к концу перехода выходит на свою
+        _inGain = g.$2 * (match + (1 - match) * t);
         _applyVolume();
       });
     } catch (e) {

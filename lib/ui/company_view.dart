@@ -6,6 +6,7 @@ import '../app.dart';
 import '../core/notices.dart';
 import '../core/social.dart';
 import 'shell.dart';
+import 'profile_view.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -105,24 +106,49 @@ class _ListenerCard extends StatelessWidget {
     final now = member.now!;
     final track = app.lib.data.tracks[now.trackId];
     final following = app.social.following == member.email;
-    return Container(
+    // Карточка в цвет обложки трека: свечение из угла поверх стекла, имя — на тёмной плашке, чтобы не сливалось
+    return FutureBuilder<Color?>(
+      future: track == null ? null : trackTint(app, track),
+      initialData: track == null ? null : trackTintNow(app, track),
+      builder: (context, snap) {
+        final tint = snap.data;
+        return AnimatedContainer(
+      duration: const Duration(milliseconds: 400),
       width: 300,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: C.surface,
-        borderRadius: BorderRadius.circular(14),
+        color: tint == null ? C.surface : null,
+        gradient: tint == null
+            ? null
+            : LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color.alphaBlend(tint.withValues(alpha: 0.85), C.surface),
+                  Color.alphaBlend(tint.withValues(alpha: 0.35), C.surface),
+                ],
+              ),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: following ? C.accent : C.line),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         InkWell(
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(20),
           onTap: () => NavScope.of(context).go(Nav('user', member.email)),
-          child: Row(children: [
-            Avatar(email: member.email, name: member.name, size: 26),
-            const SizedBox(width: 10),
-            Expanded(child: Text(member.name.isEmpty ? member.email : member.name, overflow: TextOverflow.ellipsis)),
-            Text(member.live ? 'слушает' : 'на паузе', style: TextStyle(color: member.live ? C.accent : C.faint, fontSize: 12)),
-          ]),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(3, 3, 10, 3),
+            decoration: BoxDecoration(color: const Color(0x47000000), borderRadius: BorderRadius.circular(20)),
+            child: Row(children: [
+              Avatar(email: member.email, name: member.name, size: 26),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(member.name.isEmpty ? member.email : member.name,
+                    overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+              ),
+              Text(member.live ? 'слушает' : 'на паузе',
+                  style: TextStyle(color: member.live ? C.accent : C.faint, fontSize: 12, fontWeight: FontWeight.w600)),
+            ]),
+          ),
         ),
         const SizedBox(height: 12),
         Row(children: [
@@ -151,6 +177,8 @@ class _ListenerCard extends StatelessWidget {
                   ),
         ]),
       ]),
+    );
+      },
     );
   }
 }

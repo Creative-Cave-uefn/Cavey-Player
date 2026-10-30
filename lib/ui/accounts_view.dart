@@ -7,6 +7,7 @@ import '../config.dart';
 import '../core/log.dart';
 import '../core/updater.dart';
 import 'sources_view.dart';
+import 'ambient.dart';
 import 'theme.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
@@ -140,6 +141,8 @@ class _AccountsPageState extends State<AccountsPage> {
           const _DiscordSection(),
           const SizedBox(height: 44),
           const _PlaybackSection(),
+          const SizedBox(height: 44),
+          const _LookSection(),
           const SizedBox(height: 44),
           const _TraySection(),
           const SizedBox(height: 36),
@@ -658,6 +661,80 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           child: Text(sec == 0 ? 'Выключено' : '$sec с', textAlign: TextAlign.right, style: const TextStyle(color: C.muted)),
         ),
       ]),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: app.player.smartMix,
+        onChanged: sec == 0
+            ? null
+            : (v) {
+                setState(() => app.settings.view['mix.smart'] = v ? '1' : '0');
+                app.lib.saveSettings();
+              },
+        title: const Text('Умный переход'),
+        subtitle: const Text(
+          'Как Automix в Spotify: переход начинается там, где песня на самом деле затихает, тишина в начале следующей '
+          'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
+          'Ползунок выше задаёт самый длинный переход. Звук трека разбирается один раз в фоне; пока не готово — обычный переход.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+        ),
+      ),
+    ]);
+  }
+}
+
+/// Яркость и контраст фона окна
+class _LookSection extends StatefulWidget {
+  const _LookSection();
+  @override
+  State<_LookSection> createState() => _LookSectionState();
+}
+
+class _LookSectionState extends State<_LookSection> {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final (bright, contrast) = AmbientScope.lookOf(app.settings);
+    void set(String key, double v) {
+      setState(() => app.settings.view[key] = v.toStringAsFixed(2));
+      AmbientScope.look.value = AmbientScope.lookOf(app.settings);
+    }
+
+    Widget row(String label, String key, double v, double min, double max) => Row(children: [
+          SizedBox(width: 110, child: Text(label, style: const TextStyle(color: C.muted))),
+          Expanded(
+            child: Slider(
+              value: v,
+              min: min,
+              max: max,
+              onChanged: (x) => set(key, x),
+              onChangeEnd: (_) => app.lib.saveSettings(),
+            ),
+          ),
+          SizedBox(width: 56, child: Text('${(v * 100).round()}%', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+        ]);
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Expanded(child: Text('Фон', style: display(20))),
+        if (bright != 1 || contrast != 1)
+          TextButton(
+            onPressed: () {
+              setState(() {
+                app.settings.view.remove('ambient.bright');
+                app.settings.view.remove('ambient.contrast');
+              });
+              AmbientScope.look.value = AmbientScope.lookOf(app.settings);
+              app.lib.saveSettings();
+            },
+            child: const Text('Как было'),
+          ),
+      ]),
+      const SizedBox(height: 6),
+      const Text('Цвета фона из обложки трека или фото профиля: сделайте их ярче или контрастнее.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+      const SizedBox(height: 4),
+      row('Яркость', 'ambient.bright', bright, 0.4, 1.8),
+      row('Контраст', 'ambient.contrast', contrast, 0.5, 1.8),
     ]);
   }
 }

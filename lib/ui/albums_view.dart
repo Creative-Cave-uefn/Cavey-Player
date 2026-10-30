@@ -9,9 +9,12 @@ import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
+import 'library_home.dart';
 
 class AlbumsPage extends StatefulWidget {
-  const AlbumsPage({super.key});
+  /// 'ep' — только синглы и EP (до 6 треков); иначе все альбомы
+  final String? kind;
+  const AlbumsPage({super.key, this.kind});
 
   @override
   State<AlbumsPage> createState() => _AlbumsPageState();
@@ -48,7 +51,8 @@ class _AlbumsPageState extends State<AlbumsPage> {
     return ListenableBuilder(
       listenable: app.lib,
       builder: (context, _) {
-        final all = app.lib.albums;
+        final ep = widget.kind == 'ep';
+        final all = ep ? app.lib.albums.where(isShortRelease).toList() : app.lib.albums;
         final q = foldText(_query.trim());
         final desc = app.settings.albumsDesc;
         final albums = q.isEmpty
@@ -64,12 +68,12 @@ class _AlbumsPageState extends State<AlbumsPage> {
         }
 
         albums.sort(cmp);
-        final prefs = ViewPrefs(app.settings, 'albums', defaultGrid: true);
+        final prefs = ViewPrefs(app.settings, ep ? 'eps' : 'albums', defaultGrid: true);
         final pad = MediaQuery.sizeOf(context).width < 860 ? 20.0 : 36.0;
         final header = Padding(
           padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Альбомы', style: display(36, weight: FontWeight.w700)),
+            Text(ep ? 'Синглы и EP' : 'Альбомы', style: display(36, weight: FontWeight.w700)),
             if (all.isNotEmpty) ...[
               const SizedBox(height: 10),
               Text(
