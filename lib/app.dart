@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'config.dart';
+import 'core/preview.dart';
+import 'core/web_info.dart';
 import 'core/audio_cache.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
@@ -15,10 +19,17 @@ import 'core/lyrics.dart';
 import 'core/player.dart';
 import 'core/social.dart';
 import 'core/store.dart';
+import 'core/single_instance.dart';
+import 'core/taskbar.dart';
+import 'core/tray.dart';
 import 'core/updater.dart';
 import 'ui/onboarding.dart';
 import 'ui/shell.dart';
 import 'ui/theme.dart';
+import 'ui/tray_dialog.dart';
+
+/// Нужен, чтобы показать окно вопроса, когда окна самого приложения в дереве ещё нет под рукой
+final navigatorKey = GlobalKey<NavigatorState>();
 
 class AppServices {
   final AppStore store;
@@ -34,11 +45,16 @@ class AppServices {
   final SocialController social;
   final DiscordPresence discord;
   final DownloadService downloads;
+  final TrayController tray;
+
+  /// Фото, описания и новинки исполнителей из интернета, отрывки треков
+  late final WebInfoService web;
+  late final PreviewPlayer preview;
 
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
 
-  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.discord, this.downloads, this.keysBuiltIn);
+  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.discord, this.downloads, this.tray, this.keysBuiltIn);
 
   static Future<AppServices> create() async {
     final store = await AppStore.open();
@@ -62,9 +78,14 @@ class AppServices {
     final player = PlayerController(lib, accounts, settings, cache);
     final lyrics = LyricsService(store.sub('lyrics'));
     // Текст ищем сразу, как трек открылся: панель потом покажет его без ожидания
-    player.onTrackReady = (t, d) => lyrics.forTrack(t, d).then<void>((_) {}, onError: (Object _) {});
+    player.onTrackReady = (t, d) {
+      lyrics.forTrack(t, d).then<void>((_) {}, onError: (Object _) {});
+      lib.noteDuration(t, d);
+    };
     accounts.addListener(lib.saveSettings);
     await lib.start();
+    // Картинки первых треков читаем с диска заранее, чтобы список открылся уже с обложками
+    unawaited(covers.warm(lib.allTracks));
     updater.start();
     await cache.init();
     player.restoreSession();
@@ -83,8 +104,41 @@ class AppServices {
       showInDiscord();
     };
     final downloads = DownloadService(lib, Tools(store.sub('tools')), store.sub('downloads'));
-    return AppServices._(
-        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, builtIn);
+    late final AppServices app;
+    final tray = TrayController(
+      player: player,
+      settings: settings,
+      save: lib.saveSettings,
+      onQuit: () => app.shutdown(),
+      askFirstTime: () async {
+        final context = navigatorKey.currentContext;
+        if (context == null) return true;
+        return askTrayOnClose(context);
+      },
+    );
+    app = AppServices._(
+        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
+    app.web = WebInfoService(store.sub('web'), lib);
+    app.preview = PreviewPlayer(player);
+    unawaited(tray.start());
+    // Ярлык на панели задач запускает вторую копию; она просит первую показать окно
+    listenForSecondLaunch(() => unawaited(tray.showWindow()));
+    // Кнопки «Назад / Пауза / Дальше» в превью на панели задач живут до выхода из приложения
+    unawaited(TaskbarController(player).start());
+    return app;
+  }
+
+  /// Полный выход (из меню трея или по крестику, если трей выключен): сохраняем, что не сохранено, и закрываемся
+  Future<void> shutdown() async {
+    try {
+      await player.flushSession();
+      await lib.flushNow();
+    } catch (_) {}
+    try {
+      await tray.dispose();
+      await windowManager.destroy();
+    } catch (_) {}
+    exit(0);
   }
 }
 
@@ -107,6 +161,7 @@ class CavePlayerApp extends StatelessWidget {
     return Services(
       app: app,
       child: MaterialApp(
+        navigatorKey: navigatorKey,
         title: 'Cave Player',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),

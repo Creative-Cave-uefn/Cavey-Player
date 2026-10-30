@@ -120,6 +120,13 @@ class DriveApi {
     }
   }
 
+  /// Сколько места на Google Диске занято у аккаунта и сколько всего (limit пуст, если лимита нет)
+  Future<StorageQuota> storageQuota(String email) async {
+    final res = await send(email, 'GET', api('about', {'fields': 'storageQuota'}));
+    final q = (jsonDecode(res.body) as Map)['storageQuota'] as Map? ?? const {};
+    return StorageQuota(int.tryParse('${q['usage'] ?? 0}') ?? 0, int.tryParse('${q['limit'] ?? ''}'));
+  }
+
   Future<Map<String, dynamic>> getFile(String email, String id, {String fields = 'id,name,mimeType,modifiedTime'}) async {
     final res = await send(email, 'GET', api('files/$id', {'fields': fields}));
     return jsonDecode(res.body) as Map<String, dynamic>;
@@ -259,6 +266,11 @@ class DriveApi {
     return DriveFile.fromJson(jsonDecode(res.body) as Map);
   }
 
+  /// Удаляет файл с Диска безвозвратно (может только владелец)
+  Future<void> deleteFile(String email, String id) async {
+    await send(email, 'DELETE', api('files/$id'));
+  }
+
   /// Перемещает файл в корзину Диска
   Future<void> trash(String email, String id) async {
     await send(email, 'PATCH', api('files/$id'),
@@ -272,7 +284,7 @@ class DriveApi {
       'GET',
       api('files', {
         'q': "name = 'library.json' and trashed = false",
-        'fields': 'files(id,parents,modifiedTime)',
+        'fields': 'files(id,parents,modifiedTime,size)',
         'orderBy': 'modifiedTime desc',
         'pageSize': '20',
         'corpora': 'allDrives',
@@ -308,4 +320,10 @@ class DriveApi {
     );
     return ((jsonDecode(res.body) as Map)['modifiedTime'] as String?) ?? '';
   }
+}
+
+class StorageQuota {
+  final int used;
+  final int? limit;
+  const StorageQuota(this.used, this.limit);
 }

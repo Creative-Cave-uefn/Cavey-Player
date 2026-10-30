@@ -108,14 +108,15 @@ class PlayerController extends ChangeNotifier {
     final s = settings.session;
     if (s == null) return;
     try {
-      final q = [for (final x in (s['queue'] as List? ?? const [])) '$x'].where((id) => lib.data.tracks[id] != null).toList();
+      String fix(Object? x) => lib.data.resolve('$x'); // копию могли объединить с другой
+      final q = [for (final x in (s['queue'] as List? ?? const [])) fix(x)].where((id) => lib.data.tracks[id] != null).toList();
       if (q.isEmpty) return;
-      final curId = s['current'] as String?;
+      final curId = s['current'] == null ? null : fix(s['current']);
       var i = curId == null ? -1 : q.indexOf(curId);
       if (i < 0) i = ((s['index'] as num?)?.toInt() ?? 0).clamp(0, q.length - 1);
       queue = q;
       index = i;
-      _origin = [for (final x in (s['origin'] as List? ?? const [])) '$x'].where((id) => lib.data.tracks[id] != null).toList();
+      _origin = [for (final x in (s['origin'] as List? ?? const [])) fix(x)].where((id) => lib.data.tracks[id] != null).toList();
       if (_origin.isEmpty) _origin = List.of(queue);
       shuffle = s['shuffle'] == true;
       repeat = RepeatSetting.values.firstWhere((r) => r.name == s['repeat'], orElse: () => RepeatSetting.off);
@@ -133,23 +134,31 @@ class PlayerController extends ChangeNotifier {
 
   void _saveSession() {
     _saveDebounce?.cancel();
-    _saveDebounce = Timer(const Duration(milliseconds: 600), () {
-      final cur = current;
-      settings.session = cur == null
-          ? null
-          : {
-              // Очень длинные очереди обрезаем: хватит того, что вокруг текущего трека
-              'queue': queue.length > 2000 ? queue.sublist(index > 500 ? index - 500 : 0).take(2000).toList() : queue,
-              'origin': _origin.length > 2000 ? const <String>[] : _origin,
-              'current': cur.id,
-              'index': index,
-              'pos': (_resumeAt ?? position.value).inMilliseconds,
-              'dur': duration.inMilliseconds,
-              'shuffle': shuffle,
-              'repeat': repeat.name,
-            };
-      unawaited(lib.saveSettings());
-    });
+    _saveDebounce = Timer(const Duration(milliseconds: 600), () => unawaited(_writeSession()));
+  }
+
+  /// Записывает очередь и позицию сразу — перед выходом из приложения
+  Future<void> flushSession() {
+    _saveDebounce?.cancel();
+    return _writeSession();
+  }
+
+  Future<void> _writeSession() {
+    final cur = current;
+    settings.session = cur == null
+        ? null
+        : {
+            // Очень длинные очереди обрезаем: хватит того, что вокруг текущего трека
+            'queue': queue.length > 2000 ? queue.sublist(index > 500 ? index - 500 : 0).take(2000).toList() : queue,
+            'origin': _origin.length > 2000 ? const <String>[] : _origin,
+            'current': cur.id,
+            'index': index,
+            'pos': (_resumeAt ?? position.value).inMilliseconds,
+            'dur': duration.inMilliseconds,
+            'shuffle': shuffle,
+            'repeat': repeat.name,
+          };
+    return lib.saveSettings();
   }
 
   // ---------- очередь ----------

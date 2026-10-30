@@ -84,6 +84,47 @@ Future<(String, List<TrackMeta>)?> yandexAlbum(String url) async {
   return ('$artist - ${res['title']}'.replaceAll(RegExp(r'^[ \-]+|[ \-]+$'), ''), metas);
 }
 
+// ---------- Deezer ----------
+// Открытый API без ключа: трек и альбом целиком, с номерами, годом и обложкой
+
+TrackMeta _deezerMeta(Map t, {Map? album, int? number, int? total}) {
+  final alb = album ?? (t['album'] as Map?) ?? const {};
+  final contributors = [for (final c in (t['contributors'] as List? ?? const [])) if (c is Map) '${c['name']}'];
+  final main = '${(t['artist'] as Map?)?['name'] ?? ''}';
+  final date = '${t['release_date'] ?? alb['release_date'] ?? ''}';
+  final n = number ?? (t['track_position'] as num?)?.toInt();
+  return TrackMeta(
+    artist: main,
+    artistTag: contributors.length > 1 ? contributors.join(', ') : main,
+    albumArtist: '${(alb['artist'] as Map?)?['name'] ?? main}',
+    title: '${t['title'] ?? ''}',
+    album: '${alb['title'] ?? ''}',
+    year: date.length >= 4 ? date.substring(0, 4) : '',
+    track: n != null && total != null ? '$n/$total' : (n?.toString() ?? ''),
+    duration: (t['duration'] as num?)?.toDouble(),
+    coverUrl: (alb['cover_xl'] ?? alb['cover_big']) as String?,
+  );
+}
+
+Future<TrackMeta?> deezerTrack(String url) async {
+  final m = RegExp(r'/track/(\d+)').firstMatch(url);
+  if (m == null) return null;
+  final t = jsonDecode(await fetchText('https://api.deezer.com/track/${m.group(1)}')) as Map;
+  if (t['error'] != null) return null;
+  return _deezerMeta(t);
+}
+
+Future<(String, List<TrackMeta>)?> deezerAlbum(String url) async {
+  final m = RegExp(r'/album/(\d+)').firstMatch(url);
+  if (m == null) return null;
+  final a = jsonDecode(await fetchText('https://api.deezer.com/album/${m.group(1)}')) as Map;
+  if (a['error'] != null) return null;
+  final tracks = [for (final t in ((a['tracks'] as Map?)?['data'] as List? ?? const [])) if (t is Map) t];
+  final metas = [for (var i = 0; i < tracks.length; i++) _deezerMeta(tracks[i], album: a, number: i + 1, total: tracks.length)];
+  final artist = '${(a['artist'] as Map?)?['name'] ?? ''}';
+  return ('$artist - ${a['title']}'.replaceAll(RegExp(r'^[ \-]+|[ \-]+$'), ''), metas);
+}
+
 // ---------- Spotify ----------
 
 const _genericMarkers = ['spotify is all the music', 'listening is everything', 'web player', 'music for everyone'];

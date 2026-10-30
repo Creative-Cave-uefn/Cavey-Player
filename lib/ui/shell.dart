@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/log.dart';
+import '../core/models.dart';
 import '../core/updater.dart';
 import 'accounts_view.dart';
 import 'albums_view.dart';
@@ -15,9 +16,13 @@ import 'download_view.dart';
 import 'library_views.dart';
 import 'lyrics_panel.dart';
 import 'player_bar.dart';
+import 'playlists_view.dart';
+import 'profile_view.dart';
 import 'sources_view.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'web_pages.dart';
+import 'web_views.dart';
 import 'widgets.dart';
 
 class Nav {
@@ -76,20 +81,26 @@ class _ShellState extends State<Shell> {
   final _nav = NavController();
   StreamSubscription<String>? _msgs;
   bool _dragging = false;
+  String? _toast;
+  Timer? _toastTimer;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _msgs ??= Services.of(context).lib.messages.stream.listen((m) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(m), duration: const Duration(seconds: 4)));
+      // Своя плашка вместо SnackBar: маленькая, по центру и над плеером, ничего не перекрывает
+      setState(() => _toast = m);
+      _toastTimer?.cancel();
+      _toastTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted) setState(() => _toast = null);
+      });
     });
   }
 
   @override
   void dispose() {
+    _toastTimer?.cancel();
     _msgs?.cancel();
     _nav.dispose();
     super.dispose();
@@ -132,14 +143,15 @@ class _ShellState extends State<Shell> {
                         builder: (context, nav, _) => Stack(children: [
                           Positioned.fill(child: _content(nav, compact)),
                           Positioned(
-                            top: 4,
-                            left: compact ? 6 : 14,
+                            top: 10,
+                            left: compact ? 16 : 28,
                             child: Row(children: [
                               _HistoryButton(
                                 icon: Icons.chevron_left_rounded,
                                 tooltip: 'Назад (Alt+←)',
                                 onPressed: _nav.canBack ? _nav.back : null,
                               ),
+                              const SizedBox(width: 6),
                               _HistoryButton(
                                 icon: Icons.chevron_right_rounded,
                                 tooltip: 'Вперёд (Alt+→)',
@@ -160,6 +172,24 @@ class _ShellState extends State<Shell> {
               ]);
             }),
           ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: selectionBarOpen,
+                  // Над плеером, а если открыта панель выбора треков — выше неё
+                  builder: (context, bar, child) => Padding(padding: EdgeInsets.only(bottom: bar ? 92 + 84 : 92 + 14), child: child),
+                  child: IgnorePointer(
+                    child: Center(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 160),
+                        child: _toast == null ? const SizedBox.shrink(key: ValueKey('none')) : _ToastCard(_toast!, key: ValueKey(_toast)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
               if (_dragging) const Positioned.fill(child: IgnorePointer(child: _DropOverlay())),
             ]),
           ),
@@ -222,6 +252,8 @@ class _ShellState extends State<Shell> {
 
   Widget _content(Nav nav, bool compact) {
     switch (nav.kind) {
+      case 'playlists':
+        return PlaylistsPage(key: const ValueKey('playlists'), compact: compact);
       case 'albums':
         return const AlbumsPage(key: ValueKey('albums'));
       case 'album':
@@ -237,9 +269,32 @@ class _ShellState extends State<Shell> {
       case 'artists':
         return ArtistsPage(key: const ValueKey('artists'), compact: compact);
       case 'artist':
-        return ArtistPage(key: ValueKey('artist:${nav.id}'), artistKey: nav.id!, compact: compact);
+        return ArtistProfilePage(key: ValueKey('artist:${nav.id}'), artistKey: nav.id!, compact: compact);
+      case 'artistTracks':
+        return ArtistPage(key: ValueKey('artistTracks:${nav.id}'), artistKey: nav.id!, compact: compact);
+      case 'user':
+        return UserProfilePage(key: ValueKey('user:${nav.id}'), email: nav.id!, compact: compact);
+      case 'userLikes':
+      case 'userUploads':
+        return UserTracksPage(key: ValueKey('${nav.kind}:${nav.id}'), email: nav.id!, uploads: nav.kind == 'userUploads', compact: compact);
       case 'recent':
         return RecentPage(key: const ValueKey('recent'), compact: compact);
+      case 'new':
+        return NewReleasesPage(key: const ValueKey('new'), compact: compact);
+      case 'websearch':
+        return WebSearchPage(key: const ValueKey('websearch'), compact: compact);
+      case 'webartist':
+        return WebArtistPage(key: ValueKey('webartist:${nav.id}'), artistId: int.tryParse(nav.id ?? '') ?? 0, compact: compact);
+      case 'webalbum':
+        return WebAlbumPage(key: ValueKey('webalbum:${nav.id}'), albumId: int.tryParse(nav.id ?? '') ?? 0, compact: compact);
+      case 'websection':
+        final parts = (nav.id ?? '').split(':');
+        return WebSectionPage(
+          key: ValueKey('websection:${nav.id}'),
+          artistId: int.tryParse(parts.first) ?? 0,
+          kind: parts.length > 1 ? parts[1] : 'album',
+          compact: compact,
+        );
       case 'duplicates':
         return const DuplicatesPage(key: ValueKey('duplicates'));
       case 'sources':
@@ -249,6 +304,37 @@ class _ShellState extends State<Shell> {
       default:
         return AllTracksPage(key: const ValueKey('all'), compact: compact);
     }
+  }
+}
+
+/// Небольшое уведомление по центру над плеером
+class _ToastCard extends StatelessWidget {
+  final String text;
+  const _ToastCard(this.text, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // Material нужен, чтобы у текста вне Scaffold не было жёлтого подчёркивания
+    return Material(
+      type: MaterialType.transparency,
+      child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 620),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
+        decoration: BoxDecoration(
+          color: C.raised,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: C.line),
+          boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 14, offset: Offset(0, 4))],
+        ),
+        child: Text(text,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: C.text, fontSize: 16, fontWeight: FontWeight.w500, decoration: TextDecoration.none)),
+      ),
+      ),
+    );
   }
 }
 
@@ -264,78 +350,65 @@ class _Sidebar extends StatelessWidget {
       width: compact ? 72 : 248,
       decoration: const BoxDecoration(color: C.surface, border: Border(right: BorderSide(color: C.line))),
       child: ListenableBuilder(
-        listenable: Listenable.merge([app.lib, nav, app.downloads]),
+        listenable: Listenable.merge([app.lib, nav, app.downloads, app.social]),
         builder: (context, _) {
           final lib = app.lib;
           final cur = nav.value;
-          Widget item(IconData icon, String label, Nav target, {Widget? trailing}) => _NavItem(
+          Widget item(IconData icon, String label, Nav target, {Widget? trailing, List<String> also = const []}) => _NavItem(
                 icon: icon,
                 label: label,
                 compact: compact,
-                selected: cur.same(target),
+                selected: cur.same(target) || also.contains(cur.kind),
                 trailing: trailing,
                 onTap: () => nav.go(target),
               );
-          return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+
+          final mode = app.settings.viewOf('sidebar.playlists', 'list'); // list | covers | both
+          final head = <Widget>[
             Padding(
               padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 26, 0, 22),
               child: compact
                   ? Center(child: Text('C', style: display(24, weight: FontWeight.w700, color: C.accent)))
                   : const Align(alignment: Alignment.centerLeft, child: Wordmark()),
             ),
-            item(Icons.library_music_outlined, 'Все треки', const Nav('all')),
-            item(Icons.album_outlined, 'Альбомы', const Nav('albums')),
-            item(Icons.mic_none_rounded, 'Исполнители', const Nav('artists')),
-            item(Icons.schedule_rounded, 'Недавно добавленные', const Nav('recent')),
+            item(Icons.library_music_outlined, 'Все треки', const Nav('all'),
+                also: const ['albums', 'artists', 'recent']),
+            const SizedBox(height: 14),
+            item(Icons.travel_explore_rounded, 'Поиск в интернете', const Nav('websearch')),
+            item(Icons.new_releases_outlined, 'Новинки', const Nav('new')),
             item(Icons.cloud_download_outlined, 'Скачать', const Nav('download'),
                 trailing: app.downloads.busy
                     ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
                     : null),
+            const SizedBox(height: 14),
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
+            if (lib.me != null) item(Icons.person_outline_rounded, 'Моя страница', Nav('user', lib.me)),
             item(Icons.groups_outlined, 'Компания', const Nav('company')),
             NowListeningSidebar(compact: compact),
             const SizedBox(height: 18),
-            if (!compact)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(22, 0, 10, 6),
-                child: Row(children: [
-                  const Expanded(child: Text('Плейлисты', style: TextStyle(color: C.muted, fontSize: 13))),
-                  IconButton(
-                    tooltip: 'Новый плейлист',
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.add_rounded, size: 20),
-                    onPressed: () => _newPlaylist(context),
-                  ),
-                ]),
-              )
+            _PlaylistsHeader(compact: compact, selected: cur.same(const Nav('playlists')), mode: mode),
+          ];
+
+          final playlists = <Widget>[
+            if (mode == 'covers')
+              _PlaylistTiles(compact: compact, current: cur)
             else
-              IconButton(
-                tooltip: 'Новый плейлист',
-                icon: const Icon(Icons.playlist_add_rounded),
-                onPressed: () => _newPlaylist(context),
+              for (final p in lib.data.playlists)
+                _PlaylistRow(
+                  playlist: p,
+                  compact: compact,
+                  selected: cur.same(Nav('playlist', p.id)),
+                  withCover: mode == 'both',
+                  onTap: () => nav.go(Nav('playlist', p.id)),
+                ),
+            if (lib.data.playlists.isEmpty && !compact)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(22, 4, 16, 0),
+                child: Text('Пока пусто. Плейлисты видят все друзья.', style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
               ),
-            Expanded(
-              child: ListView(
-                padding: EdgeInsets.zero,
-                children: [
-                  for (final p in lib.data.playlists)
-                    _NavItem(
-                      icon: Icons.queue_music_rounded,
-                      label: p.name,
-                      compact: compact,
-                      selected: cur.same(Nav('playlist', p.id)),
-                      leading: FriendDot(p.by, size: 7),
-                      onTap: () => nav.go(Nav('playlist', p.id)),
-                    ),
-                  if (lib.data.playlists.isEmpty && !compact)
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(22, 4, 16, 0),
-                      child: Text('Пока пусто. Плейлисты видят все друзья.',
-                          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
-                    ),
-                ],
-              ),
-            ),
+          ];
+
+          final foot = <Widget>[
             const Divider(height: 1),
             const SizedBox(height: 8),
             item(Icons.folder_shared_outlined, 'Папки с музыкой', const Nav('sources'),
@@ -350,19 +423,208 @@ class _Sidebar extends StatelessWidget {
             UploadLine(compact: compact),
             _UpdateLine(compact: compact),
             const SizedBox(height: 10),
-          ]);
+          ];
+
+          return LayoutBuilder(builder: (context, box) {
+            // Сколько места нужно, чтобы верх и низ панели стояли на месте, а прокручивались только плейлисты.
+            // Оценка с запасом; если места меньше, прокручивается вся панель целиком
+            final live = app.social.friends.where((m) => m.live).length.clamp(0, 5);
+            final need = 820 + (live > 0 ? 40 + 44 * live : 0) + (app.social.following != null ? 36 : 0);
+            if (box.maxHeight >= need) {
+              return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                ...head,
+                Expanded(child: ListView(padding: EdgeInsets.zero, children: playlists)),
+                ...foot,
+              ]);
+            }
+            return SingleChildScrollView(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...head, ...playlists, const SizedBox(height: 12), ...foot]),
+            );
+          });
         },
       ),
     );
   }
+}
 
-  Future<void> _newPlaylist(BuildContext context) async {
+Future<void> newPlaylistFlow(BuildContext context) async {
+  final app = Services.of(context);
+  final nav = NavScope.of(context);
+  final name = await askText(context, title: 'Новый плейлист', action: 'Создать', hint: 'Название');
+  if (name == null || name.isEmpty) return;
+  final id = app.lib.createPlaylist(name);
+  nav.go(Nav('playlist', id));
+}
+
+/// «Плейлисты»: заголовок — ссылка на страницу со всеми плейлистами; рядом выбор вида и «+»
+class _PlaylistsHeader extends StatelessWidget {
+  final bool compact;
+  final bool selected;
+  final String mode;
+  const _PlaylistsHeader({required this.compact, required this.selected, required this.mode});
+
+  @override
+  Widget build(BuildContext context) {
     final app = Services.of(context);
     final nav = NavScope.of(context);
-    final name = await askText(context, title: 'Новый плейлист', action: 'Создать', hint: 'Название');
-    if (name == null || name.isEmpty) return;
-    final id = app.lib.createPlaylist(name);
-    nav.go(Nav('playlist', id));
+    if (compact) {
+      return Column(children: [
+        IconButton(
+          tooltip: 'Все плейлисты',
+          icon: Icon(Icons.queue_music_rounded, color: selected ? C.accent : C.muted),
+          onPressed: () => nav.go(const Nav('playlists')),
+        ),
+        IconButton(
+          tooltip: 'Новый плейлист',
+          icon: const Icon(Icons.playlist_add_rounded),
+          onPressed: () => newPlaylistFlow(context),
+        ),
+      ]);
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 4, 4),
+      child: Row(children: [
+        Expanded(
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => nav.go(const Nav('playlists')),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+              child: Row(children: [
+                Text('Плейлисты',
+                    style: TextStyle(color: selected ? C.text : C.muted, fontSize: 13, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+                const SizedBox(width: 2),
+                Icon(Icons.chevron_right_rounded, size: 18, color: selected ? C.accent : C.faint),
+              ]),
+            ),
+          ),
+        ),
+        PopupMenuButton<String>(
+          tooltip: 'Вид плейлистов',
+          icon: Icon(
+            switch (mode) { 'covers' => Icons.grid_view_rounded, 'both' => Icons.view_agenda_outlined, _ => Icons.view_list_rounded },
+            size: 18,
+          ),
+          onSelected: (v) {
+            app.settings.view['sidebar.playlists'] = v;
+            app.lib.viewChanged();
+          },
+          itemBuilder: (_) => [
+            for (final o in const [('list', 'Списком'), ('covers', 'Обложками'), ('both', 'Обложки и названия')])
+              CheckedPopupMenuItem(value: o.$1, checked: mode == o.$1, child: Text(o.$2)),
+          ],
+        ),
+        IconButton(
+          tooltip: 'Новый плейлист',
+          visualDensity: VisualDensity.compact,
+          icon: const Icon(Icons.add_rounded, size: 20),
+          onPressed: () => newPlaylistFlow(context),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Строка плейлиста в боковой панели; с миниатюрой обложки или со значком
+class _PlaylistRow extends StatelessWidget {
+  final Playlist playlist;
+  final bool compact;
+  final bool selected;
+  final bool withCover;
+  final VoidCallback onTap;
+  const _PlaylistRow({required this.playlist, required this.compact, required this.selected, required this.withCover, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = playlist;
+    if (!withCover) {
+      return _NavItem(
+        icon: Icons.queue_music_rounded,
+        label: p.name,
+        compact: compact,
+        selected: selected,
+        leading: FriendDot(p.by, size: 7),
+        onTap: onTap,
+      );
+    }
+    final color = selected ? C.text : C.muted;
+    final body = InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        height: 46,
+        padding: EdgeInsets.symmetric(horizontal: compact ? 0 : 8),
+        decoration: BoxDecoration(color: selected ? C.raised : null, borderRadius: BorderRadius.circular(8)),
+        child: Row(
+          mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start,
+          children: [
+            PlaylistCover(playlist: p, size: 34, radius: 5),
+            if (!compact) ...[
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(p.name,
+                    overflow: TextOverflow.ellipsis, style: TextStyle(color: color, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+              ),
+              FriendDot(p.by, size: 7),
+              const SizedBox(width: 4),
+            ],
+          ],
+        ),
+      ),
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
+      child: compact ? Tooltip(message: p.name, child: body) : body,
+    );
+  }
+}
+
+/// Плейлисты плитками из обложек: по две в ряд, в узкой панели по одной
+class _PlaylistTiles extends StatelessWidget {
+  final bool compact;
+  final Nav current;
+  const _PlaylistTiles({required this.compact, required this.current});
+
+  @override
+  Widget build(BuildContext context) {
+    final lib = Services.of(context).lib;
+    final nav = NavScope.of(context);
+    final lists = lib.data.playlists;
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: compact ? 14 : 14, vertical: 2),
+      child: LayoutBuilder(builder: (context, box) {
+        final cols = compact ? 1 : 2;
+        const gap = 10.0;
+        final w = (box.maxWidth - gap * (cols - 1)) / cols;
+        return Wrap(spacing: gap, runSpacing: 10, children: [
+          for (final p in lists)
+            SizedBox(
+              width: w,
+              child: Tooltip(
+                message: p.name,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => nav.go(Nav('playlist', p.id)),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    DecoratedBox(
+                      position: DecorationPosition.foreground,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: current.same(Nav('playlist', p.id)) ? Border.all(color: C.accent, width: 2) : null,
+                      ),
+                      child: PlaylistCover(playlist: p, size: w, radius: 8),
+                    ),
+                    if (!compact) ...[
+                      const SizedBox(height: 4),
+                      Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12)),
+                    ],
+                  ]),
+                ),
+              ),
+            ),
+        ]);
+      }),
+    );
   }
 }
 

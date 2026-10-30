@@ -168,17 +168,27 @@ class _HubScreenState extends State<HubScreen> {
   bool _searching = true;
   String? _error;
 
+  bool _started = false;
+
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _search());
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    // Человек сам отключился от библиотеки: сами её не ищем и не подключаемся
+    if (Services.of(context).settings.autoJoinDisabled) {
+      _searching = false;
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _search());
+    }
   }
 
-  /// Сначала пробуем найти общую библиотеку сами — тогда ссылка не нужна
-  Future<void> _search() async {
+  /// Сначала пробуем найти общую библиотеку сам — тогда ссылка не нужна.
+  /// Кнопка «Поискать ещё раз» — явная просьба, она работает и после отключения.
+  Future<void> _search({bool manual = false}) async {
     if (!mounted) return;
     setState(() => _searching = true);
-    final found = await Services.of(context).lib.autoJoin();
+    final found = await Services.of(context).lib.autoJoin(manual: manual);
     if (!found && mounted) setState(() => _searching = false);
   }
 
@@ -220,7 +230,9 @@ class _HubScreenState extends State<HubScreen> {
       Text(
         'Общая библиотека — это папка «Cave Player» на Google Диске, где хранятся общие плейлисты и лайки. '
         'Её создаёт кто-то один, остальные подключаются сами, как только с ними поделятся папкой. '
-        'Вы вошли как ${me.email}, и с этой почтой общей библиотеки пока не нашлось.',
+        '${app.settings.autoJoinDisabled
+            ? 'Вы отключились от библиотеки, поэтому Cave Player её сам не ищет. Подключитесь по ссылке на папку или нажмите «Найти библиотеку на моих Дисках».'
+            : 'Вы вошли как ${me.email}, и с этой почтой общей библиотеки пока не нашлось.'}',
         style: const TextStyle(color: C.muted, height: 1.5),
       ),
       Align(
@@ -238,9 +250,9 @@ class _HubScreenState extends State<HubScreen> {
       Align(
         alignment: Alignment.centerLeft,
         child: TextButton.icon(
-          onPressed: _busy ? null : _search,
+          onPressed: _busy ? null : () => _search(manual: true),
           icon: const Icon(Icons.refresh_rounded, size: 18),
-          label: const Text('Поискать ещё раз'),
+          label: Text(app.settings.autoJoinDisabled ? 'Найти библиотеку на моих Дисках' : 'Поискать ещё раз'),
         ),
       ),
       const SizedBox(height: 16),

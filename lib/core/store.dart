@@ -33,12 +33,39 @@ class AppStore {
     }
   }
 
-  Future<void> writeJson(String name, Object value) async {
+  /// Записи в один файл идут по очереди: раньше десять правок подряд писали в один .tmp одновременно
+  /// и спотыкались друг о друга («файл занят другим процессом»)
+  final Map<String, Future<void>> _writes = {};
+
+  Future<void> writeJson(String name, Object value) {
+    final text = jsonEncode(value); // снимок на момент вызова, а не на момент записи
+    final prev = _writes[name] ?? Future<void>.value();
+    final next = prev.catchError((Object _) {}).then((_) => _write(name, text));
+    _writes[name] = next;
+    return next.whenComplete(() {
+      if (identical(_writes[name], next)) _writes.remove(name);
+    });
+  }
+
+  Future<void> _write(String name, String text) async {
     final f = file(name);
     final tmp = File('${f.path}.tmp');
-    await tmp.writeAsString(jsonEncode(value), flush: true);
-    if (await f.exists()) await f.delete();
-    await tmp.rename(f.path);
+    for (var attempt = 0;; attempt++) {
+      try {
+        await tmp.writeAsString(text, flush: true);
+        try {
+          await tmp.rename(f.path); // в Windows это заменяет существующий файл
+        } on FileSystemException {
+          if (await f.exists()) await f.delete();
+          await tmp.rename(f.path);
+        }
+        return;
+      } on FileSystemException {
+        // Файл на мгновение занят (антивирус, индексация): подождём и повторим
+        if (attempt >= 4) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 150 * (attempt + 1)));
+      }
+    }
   }
 }
 
@@ -49,6 +76,12 @@ class Settings {
   String? hubId;
   String? hubEmail;
   String? libFileId;
+
+  /// Человек сам нажал «Отключиться от библиотеки»: сами её больше не ищем, пока он не подключится вручную
+  bool autoJoinDisabled = false;
+
+  /// Своя папка cave-data (если задана вручную). Иначе ищется внутри общей папки
+  String? dataFolderOverride;
   String? primaryEmail;
   Map<String, String> sourceAccess = {};
   double volume = 80;
@@ -60,6 +93,15 @@ class Settings {
   bool discord = true;
   bool normalize = false; // выравнивать громкость треков
   bool betaUpdates = false; // получать бета-версии
+  bool trayOnClose = true; // крестик прячет окно в трей, музыка играет дальше
+  bool trayAsked = false; // уже спрашивали, что делать по крестику
+  bool artistsDesc = false; // «Исполнители» сортируются Я–А
+  bool albumsDesc = false; // «Альбомы» сортируются Я–А
+
+  /// Личные настройки вида (сетка или список, размеры, вид плейлистов в боковой панели): ключ → значение
+  Map<String, String> view = {};
+  String viewOf(String key, String def) => view[key] ?? def;
+  double viewNum(String key, double def) => double.tryParse(view[key] ?? '') ?? def;
 
   /// Что играло при закрытии: очередь, место в ней и позиция
   Map<String, dynamic>? session;
@@ -70,6 +112,8 @@ class Settings {
         'hubId': hubId,
         'hubEmail': hubEmail,
         'libFileId': libFileId,
+        'autoJoinDisabled': autoJoinDisabled,
+        'dataFolderOverride': dataFolderOverride,
         'primaryEmail': primaryEmail,
         'sourceAccess': sourceAccess,
         'volume': volume,
@@ -81,6 +125,11 @@ class Settings {
         'discord': discord,
         'normalize': normalize,
         'betaUpdates': betaUpdates,
+        'trayOnClose': trayOnClose,
+        'trayAsked': trayAsked,
+        'artistsDesc': artistsDesc,
+        'albumsDesc': albumsDesc,
+        'view': view,
         if (session != null) 'session': session,
       };
 
@@ -92,6 +141,8 @@ class Settings {
     s.hubId = j['hubId'] as String?;
     s.hubEmail = j['hubEmail'] as String?;
     s.libFileId = j['libFileId'] as String?;
+    s.autoJoinDisabled = j['autoJoinDisabled'] == true;
+    s.dataFolderOverride = j['dataFolderOverride'] as String?;
     s.primaryEmail = j['primaryEmail'] as String?;
     final sa = j['sourceAccess'];
     if (sa is Map) s.sourceAccess = sa.map((k, v) => MapEntry('$k', '$v'));
@@ -104,6 +155,12 @@ class Settings {
     s.discord = j['discord'] != false;
     s.normalize = j['normalize'] == true;
     s.betaUpdates = j['betaUpdates'] == true;
+    s.trayOnClose = j['trayOnClose'] != false;
+    s.trayAsked = j['trayAsked'] == true;
+    s.artistsDesc = j['artistsDesc'] == true;
+    s.albumsDesc = j['albumsDesc'] == true;
+    final vw = j['view'];
+    if (vw is Map) s.view = vw.map((k, v) => MapEntry('$k', '$v'));
     final ses = j['session'];
     if (ses is Map) s.session = ses.map((k, v) => MapEntry('$k', v));
     return s;

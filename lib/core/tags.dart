@@ -364,3 +364,164 @@ TrackTags parseTags(Uint8List b, String fileName) {
     pic: (r.pic != null && r.pic!.length > 0) ? r.pic : null,
   );
 }
+
+// ---------- длительность ----------
+// Определяем по нескольким небольшим кускам файла, целиком его не скачиваем:
+// FLAC — из заголовка, MP3 — из кадра Xing/VBRI (или по битрейту), M4A — из mvhd,
+// Ogg/Opus — по последней странице в конце файла.
+
+/// Читает кусок файла [start, endInclusive]
+typedef RangeReader = Future<Uint8List> Function(int start, int endInclusive);
+
+int? _flacDurationMs(Uint8List b, int s) {
+  final d = s + 8;
+  if (b.length < d + 18 || _ascii(b, s, 4) != 'fLaC' || (b[s + 4] & 0x7F) != 0) return null;
+  final rate = (b[d + 10] << 12) | (b[d + 11] << 4) | (b[d + 12] >> 4);
+  final total = ((b[d + 13] & 0x0F) << 32) | (b[d + 14] << 24) | (b[d + 15] << 16) | (b[d + 16] << 8) | b[d + 17];
+  return (rate > 0 && total > 0) ? total * 1000 ~/ rate : null;
+}
+
+// Битрейты MPEG по номеру в заголовке кадра: ключ — версия (1 или 2, куда входит и 2.5) * 10 + слой
+const _mp3Bitrates = <int, List<int>>{
+  13: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320],
+  12: [0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384],
+  11: [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448],
+  21: [0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256],
+  22: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+  23: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
+};
+const _mp3Rates = <int, List<int>>{
+  1: [44100, 48000, 32000],
+  2: [22050, 24000, 16000],
+  3: [11025, 12000, 8000],
+};
+
+/// [b] — начало звука после тега ID3, [bytesAfterTags] — сколько байт звука в файле (для оценки по битрейту)
+int? _mp3DurationMs(Uint8List b, int bytesAfterTags) {
+  final limit = b.length < 8192 ? b.length : 8192;
+  for (var i = 0; i + 4 <= limit; i++) {
+    if (b[i] != 0xFF || (b[i + 1] & 0xE0) != 0xE0) continue;
+    final vb = (b[i + 1] >> 3) & 3;
+    final lb = (b[i + 1] >> 1) & 3;
+    final bi = b[i + 2] >> 4;
+    final si = (b[i + 2] >> 2) & 3;
+    if (vb == 1 || lb == 0 || bi == 0 || bi == 15 || si == 3) continue;
+    final ver = vb == 3 ? 1 : (vb == 2 ? 2 : 3); // MPEG 1, 2, 2.5
+    final layer = lb == 3 ? 1 : (lb == 2 ? 2 : 3);
+    final kbps = _mp3Bitrates[(ver == 1 ? 1 : 2) * 10 + layer]![bi];
+    final rate = _mp3Rates[ver]![si];
+    final pad = (b[i + 2] >> 1) & 1;
+    final spf = layer == 1 ? 384 : ((layer == 2 || ver == 1) ? 1152 : 576);
+    // Настоящий кадр: следом за ним должен начаться ещё один, иначе это случайные байты
+    final frameLen = layer == 1 ? (12000 * kbps ~/ rate + pad) * 4 : (spf == 1152 ? 144000 : 72000) * kbps ~/ rate + pad;
+    final next = i + frameLen;
+    if (next + 2 <= b.length && (b[next] != 0xFF || (b[next + 1] & 0xE0) != 0xE0)) continue;
+    final mono = (b[i + 3] >> 6) == 3;
+    final crc = (b[i + 1] & 1) == 0;
+    final side = ver == 1 ? (mono ? 17 : 32) : (mono ? 9 : 17);
+    final x = i + 4 + side + (crc ? 2 : 0);
+    if (layer == 3 && x + 12 <= b.length) {
+      final tag = _ascii(b, x, 4);
+      if ((tag == 'Xing' || tag == 'Info') && (_be32(b, x + 4) & 1) != 0) {
+        final frames = _be32(b, x + 8);
+        if (frames > 0) return frames * spf * 1000 ~/ rate;
+      }
+    }
+    final v = i + 36;
+    if (v + 18 <= b.length && _ascii(b, v, 4) == 'VBRI') {
+      final frames = _be32(b, v + 14);
+      if (frames > 0) return frames * spf * 1000 ~/ rate;
+    }
+    return bytesAfterTags > 0 ? bytesAfterTags * 8 ~/ kbps : null;
+  }
+  return null;
+}
+
+/// [o] — начало коробки mvhd (размер, имя, содержимое)
+int? _mvhdDurationMs(Uint8List b, int o) {
+  if (o + 8 > b.length || _ascii(b, o + 4, 4) != 'mvhd') return null;
+  final d = o + 8;
+  if (d + 20 > b.length) return null;
+  final int timescale;
+  final int duration;
+  if (b[d] == 0) {
+    timescale = _be32(b, d + 12);
+    duration = _be32(b, d + 16);
+  } else {
+    if (d + 32 > b.length) return null;
+    timescale = _be32(b, d + 20);
+    duration = (_be32(b, d + 24) << 32) | _be32(b, d + 28);
+  }
+  return (timescale > 0 && duration > 0) ? duration * 1000 ~/ timescale : null;
+}
+
+Future<int?> _mp4DurationMs(Future<Uint8List> Function(int start, int len) rd, int size) async {
+  var pos = 0;
+  for (var n = 0; n < 8 && pos < size; n++) {
+    final h = await rd(pos, 16);
+    if (h.length < 8) return null;
+    var total = _be32(h, 0);
+    var hdr = 8;
+    if (total == 1 && h.length >= 16) {
+      total = (_be32(h, 8) << 32) | _be32(h, 12);
+      hdr = 16;
+    } else if (total == 0) {
+      total = size - pos;
+    }
+    if (_ascii(h, 4, 4) == 'moov') return _mvhdDurationMs(await rd(pos + hdr, 64), 0);
+    if (total < 8) return null;
+    pos += total;
+  }
+  return null;
+}
+
+/// [head] — начало файла, [tail] — его последние ~64 КБ
+int? _oggDurationMs(Uint8List head, Uint8List tail) {
+  var pre = 0;
+  int rate;
+  var i = _indexOf(head, 'OpusHead'.codeUnits);
+  if (i >= 0 && i + 12 <= head.length) {
+    pre = head[i + 10] | (head[i + 11] << 8);
+    rate = 48000;
+  } else {
+    i = _indexOf(head, [1, ...'vorbis'.codeUnits]);
+    if (i < 0 || i + 16 > head.length) return null;
+    rate = _le32(head, i + 12);
+  }
+  if (rate <= 0) return null;
+  var k = -1;
+  for (var j = tail.length - 14; j >= 0; j--) {
+    if (tail[j] == 0x4F && tail[j + 1] == 0x67 && tail[j + 2] == 0x67 && tail[j + 3] == 0x53) {
+      k = j;
+      break;
+    }
+  }
+  if (k < 0) return null;
+  final granule = _le32(tail, k + 6) | (_le32(tail, k + 10) << 32);
+  return granule > pre ? (granule - pre) * 1000 ~/ rate : null;
+}
+
+/// Длительность файла в миллисекундах; null — по этому файлу определить не вышло.
+/// Сетевые ошибки не глотаются: пусть вызывающий решит, повторять ли позже.
+Future<int?> probeDurationMs(RangeReader read, int size) async {
+  if (size <= 0) return null;
+  Future<Uint8List> rd(int start, int len) {
+    if (start >= size) return Future.value(Uint8List(0));
+    final end = start + len - 1;
+    return read(start, end < size - 1 ? end : size - 1);
+  }
+
+  final head = await rd(0, 4096);
+  if (head.length < 12) return null;
+  if (_ascii(head, 0, 4) == 'fLaC') return _flacDurationMs(head, 0);
+  if (_ascii(head, 0, 4) == 'OggS') {
+    final tailStart = size > 65536 ? size - 65536 : 0;
+    return _oggDurationMs(head, await rd(tailStart, 65536));
+  }
+  if (_ascii(head, 4, 4) == 'ftyp') return _mp4DurationMs(rd, size);
+  var start = 0;
+  if (_ascii(head, 0, 3) == 'ID3') start = 10 + _synchsafe(head, 6) + ((head[5] & 0x10) != 0 ? 10 : 0);
+  final body = start == 0 ? head : await rd(start, 8192);
+  if (_ascii(body, 0, 4) == 'fLaC') return _flacDurationMs(body, 0);
+  return _mp3DurationMs(body, size - start);
+}

@@ -4,42 +4,115 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/library.dart';
 import '../core/models.dart';
 import '../core/tags.dart';
+import 'cover_picker.dart';
+import 'list_filter.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'web_views.dart';
 import 'widgets.dart';
 
 // ---------- исполнители ----------
 
-class ArtistsPage extends StatelessWidget {
+class ArtistsPage extends StatefulWidget {
   final bool compact;
   const ArtistsPage({super.key, required this.compact});
 
   @override
+  State<ArtistsPage> createState() => _ArtistsPageState();
+}
+
+class _ArtistsPageState extends State<ArtistsPage> {
+  final _search = TextEditingController();
+  final _focus = FocusNode();
+  String _query = '';
+
+  @override
+  void initState() {
+    super.initState();
+    searchRequests.addListener(_focusSearch);
+  }
+
+  @override
+  void dispose() {
+    searchRequests.removeListener(_focusSearch);
+    _search.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _focusSearch() {
+    if (!mounted) return;
+    _focus.requestFocus();
+    _search.selection = TextSelection(baseOffset: 0, extentOffset: _search.text.length);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final pad = compact ? 20.0 : 36.0;
+    final pad = widget.compact ? 20.0 : 36.0;
     return ListenableBuilder(
       listenable: app.lib,
       builder: (context, _) {
-        final artists = app.lib.artists;
+        final all = app.lib.artists;
+        final q = foldText(_query.trim());
+        final desc = app.settings.artistsDesc;
+        final list = q.isEmpty ? List<Artist>.of(all) : all.where((a) => foldText(a.name).contains(q)).toList();
+        int cmp(Artist a, Artist b) {
+          final ua = a.name == 'Неизвестный исполнитель';
+          final ub = b.name == 'Неизвестный исполнитель';
+          if (ua != ub) return ua ? 1 : -1; // «неизвестный» всегда внизу
+          final r = sortKey(a.name).compareTo(sortKey(b.name));
+          return desc ? -r : r;
+        }
+
+        list.sort(cmp);
+        // Любимые исполнители — вверху, над остальными
+        final favs = [for (final a in list) if (app.lib.isFavArtist(a.key)) a];
+        final rest = [for (final a in list) if (!app.lib.isFavArtist(a.key)) a];
+        final prefs = ViewPrefs(app.settings, 'artists', defaultGrid: false, listDef: 64, listMin: 48, listMax: 96, gridDef: 160);
+        final rows = <Object>[
+          if (favs.isNotEmpty) 'Любимые',
+          if (favs.isNotEmpty) favs,
+          if (favs.isNotEmpty && rest.isNotEmpty) 'Все исполнители',
+          if (rest.isNotEmpty) rest,
+        ];
         return CustomScrollView(slivers: [
           SliverToBoxAdapter(
             child: Padding(
-              padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
+              padding: EdgeInsets.fromLTRB(pad, 34, pad, 18),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('Исполнители', style: display(36, weight: FontWeight.w700)),
-                if (artists.isNotEmpty) ...[
+                if (all.isNotEmpty) ...[
                   const SizedBox(height: 10),
-                  Text('${artists.length} ${plural(artists.length, 'исполнитель', 'исполнителя', 'исполнителей')}',
-                      style: const TextStyle(color: C.muted, fontSize: 15)),
+                  Text(
+                    q.isEmpty
+                        ? '${all.length} ${plural(all.length, 'исполнитель', 'исполнителя', 'исполнителей')}'
+                        : 'Найдено ${list.length} из ${all.length}',
+                    style: const TextStyle(color: C.muted, fontSize: 15),
+                  ),
+                  const SizedBox(height: 18),
+                  SearchSortBar(
+                    controller: _search,
+                    focusNode: _focus,
+                    hint: 'Найти исполнителя',
+                    desc: desc,
+                    onChanged: (v) => setState(() => _query = v),
+                    onToggleSort: () {
+                      app.settings.artistsDesc = !desc;
+                      app.lib.saveSettings();
+                      setState(() {});
+                    },
+                    trailing: ViewControls(prefs: prefs, onChanged: () => setState(() {})),
+                  ),
                 ],
               ]),
             ),
           ),
-          if (artists.isEmpty)
+          if (all.isEmpty)
             const SliverFillRemaining(
               hasScrollBody: false,
               child: EmptyState(
@@ -48,43 +121,114 @@ class ArtistsPage extends StatelessWidget {
                 text: 'Они появятся, когда в библиотеке будут треки.',
               ),
             ),
-          SliverPadding(
-            padding: EdgeInsets.fromLTRB(pad - 12, 0, pad - 12, 32),
-            sliver: SliverFixedExtentList(
-              itemExtent: 64,
-              delegate: SliverChildBuilderDelegate(
-                (context, i) {
-                  final a = artists[i];
-                  return InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(children: [
-                        ClipOval(child: CoverImage(track: a.coverTrack, size: 44, radius: 0)),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Text(a.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
-                        ),
-                        Text(
-                          '${countTracks(a.tracks.length)}, ${a.albums} ${plural(a.albums, 'альбом', 'альбома', 'альбомов')}',
-                          style: const TextStyle(color: C.muted, fontSize: 13),
-                        ),
-                      ]),
-                    ),
-                  );
-                },
-                childCount: artists.length,
+          if (all.isNotEmpty && list.isEmpty)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: pad, vertical: 12),
+                child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
               ),
             ),
-          ),
+          for (final row in rows)
+            if (row is String)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(pad, 14, pad, 6),
+                  child: Text(row, style: const TextStyle(color: C.muted, fontSize: 13, fontWeight: FontWeight.w600)),
+                ),
+              )
+            else
+              _artistsSliver(context, app, row as List<Artist>, prefs, pad),
+          const SliverToBoxAdapter(child: SizedBox(height: 32)),
         ]);
       },
     );
   }
+}
+
+
+/// Исполнители сеткой (круглое фото, имя под ним) или списком; сердечко кладёт в «Любимые»
+Widget _artistsSliver(BuildContext context, AppServices app, List<Artist> items, ViewPrefs prefs, double pad) {
+  Widget heart(Artist a, {double size = 20}) {
+    final fav = app.lib.isFavArtist(a.key);
+    return IconButton(
+      tooltip: fav ? 'Убрать из любимых исполнителей' : 'В любимые исполнители',
+      onPressed: () => app.lib.toggleFavArtist(a.key),
+      icon: Icon(fav ? Icons.favorite_rounded : Icons.favorite_border_rounded, size: size, color: fav ? C.accent : C.faint),
+    );
+  }
+
+  if (prefs.grid) {
+    return SliverPadding(
+      padding: EdgeInsets.symmetric(horizontal: pad),
+      sliver: AdaptiveGridSliver(
+        tile: prefs.size,
+        extra: 62,
+        count: items.length,
+        builder: (context, i) {
+          final a = items[i];
+          return InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+            child: LayoutBuilder(
+              builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                Stack(children: [
+                  ArtistPhoto(name: a.name, size: box.maxWidth, fallback: ClipOval(child: CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 0))),
+                  Positioned(
+                    right: 2,
+                    top: 2,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.45), shape: BoxShape.circle),
+                      child: SizedBox.square(dimension: 34, child: heart(a, size: 18)),
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 10),
+                Text(a.name,
+                    maxLines: 1,
+                    textAlign: TextAlign.center,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                const SizedBox(height: 3),
+                Text(countTracks(a.tracks.length),
+                    maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12)),
+              ]),
+            ),
+          );
+        },
+      ),
+    );
+  }
+  return SliverPadding(
+    padding: EdgeInsets.symmetric(horizontal: pad - 12),
+    sliver: SliverFixedExtentList(
+      itemExtent: prefs.size,
+      delegate: SliverChildBuilderDelegate(
+        (context, i) {
+          final a = items[i];
+          return InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 12),
+              child: Row(children: [
+                ArtistPhoto(name: a.name, size: prefs.size - 20, fallback: ClipOval(child: CoverImage(track: a.coverTrack, size: prefs.size - 20, radius: 0))),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+                ),
+                Text(
+                  '${countTracks(a.tracks.length)}, ${a.albums} ${plural(a.albums, 'альбом', 'альбома', 'альбомов')}',
+                  style: const TextStyle(color: C.muted, fontSize: 13),
+                ),
+                heart(a),
+              ]),
+            ),
+          );
+        },
+        childCount: items.length,
+      ),
+    ),
+  );
 }
 
 class ArtistPage extends StatelessWidget {
@@ -146,8 +290,51 @@ class RecentPage extends StatelessWidget {
 
 // ---------- дубликаты ----------
 
-class DuplicatesPage extends StatelessWidget {
+class DuplicatesPage extends StatefulWidget {
   const DuplicatesPage({super.key});
+  @override
+  State<DuplicatesPage> createState() => _DuplicatesPageState();
+}
+
+class _DuplicatesPageState extends State<DuplicatesPage> {
+  /// Какую копию оставить в каждой группе (ключ — id первой копии группы)
+  final Map<String, String> _keep = {};
+
+  String _keepOf(List<Track> g) {
+    final chosen = _keep[g.first.id];
+    if (chosen != null && g.any((t) => t.id == chosen)) return chosen;
+    return LibraryController.bestOf(g).id;
+  }
+
+  Future<void> _merge(List<List<Track>> groups) async {
+    final app = Services.of(context);
+    final lib = app.lib;
+    var copies = 0;
+    final others = <String>{};
+    for (final g in groups) {
+      final keep = _keepOf(g);
+      for (final t in g) {
+        if (t.id == keep) continue;
+        copies++;
+        if (t.by != lib.me && t.by.isNotEmpty) others.add(lib.firstNameOf(t.by));
+      }
+    }
+    final ok = await confirm(
+      context,
+      title: groups.length == 1 ? 'Объединить и удалить копии?' : 'Объединить ${groups.length} групп и удалить копии?',
+      text: 'Останется выбранная копия: лайки всех друзей, места в плейлистах и прослушивания перейдут на неё. '
+          'Остальные копии ($copies) удалятся с Google Диска безвозвратно, у всех.'
+          '${others.isEmpty ? '' : '\n\nЧужие файлы (${others.join(', ')}) Google Диск даёт удалить только владельцу: '
+              'из библиотеки они пропадут сразу, а с Диска — когда владелец откроет Cave Player.'}',
+      action: 'Удалить копии',
+    );
+    if (!ok) return;
+    for (final g in groups) {
+      final keep = g.firstWhere((t) => t.id == _keepOf(g));
+      lib.mergeAndDelete(keep, g);
+    }
+    lib.messages.add('Объединено, лишних копий удалено: $copies');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -157,37 +344,76 @@ class DuplicatesPage extends StatelessWidget {
       builder: (context, _) {
         final lib = app.lib;
         final groups = lib.duplicates;
+        final merged = [
+          for (final e in lib.data.merged.entries)
+            if (lib.data.tracks[e.key] != null && lib.data.hidden.contains(e.key)) e.key
+        ];
+        String folder(Track t) => lib.data.sources.where((s) => s.id == t.source).map((s) => s.name).firstOrNull ?? 'папке';
+        int inPlaylists(Track t) => lib.data.playlists.where((p) => p.items.contains(t.id)).length;
         return ListView(padding: const EdgeInsets.fromLTRB(36, 34, 36, 40), children: [
           Text('Дубликаты', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
           const Text(
-            'Треки с одинаковыми исполнителем и названием. Лишнюю копию можно скрыть из библиотеки у всех, '
-            'а свою — ещё и отправить в корзину Диска (оттуда её можно восстановить 30 дней).',
+            'Одна и та же песня в нескольких копиях. Выберите, какую оставить, и объедините: лайки и плейлисты '
+            'перейдут на неё, а лишние копии удалятся с Диска. Одинаковые файлы в разных папках объединяются сами. '
+            'Песни, которые уже есть в библиотеке, загрузчик и загрузка с компьютера пропускают.',
             style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 18),
           if (groups.isEmpty)
-            const Text('Дубликатов не нашлось.', style: TextStyle(color: C.muted)),
+            const Text('Дубликатов не нашлось.', style: TextStyle(color: C.muted))
+          else
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.icon(
+                onPressed: () => _merge(groups),
+                icon: const Icon(Icons.merge_rounded, size: 18),
+                label: Text('Объединить все (${groups.length})'),
+              ),
+            ),
           for (final g in groups) ...[
             Padding(
-              padding: const EdgeInsets.only(top: 18, bottom: 6),
-              child: Text('${g.first.displayArtist} — ${g.first.title}',
-                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+              padding: const EdgeInsets.only(top: 22, bottom: 6),
+              child: Row(children: [
+                Expanded(
+                  child: Text('${g.first.displayArtist} — ${g.first.title}',
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                ),
+                TextButton.icon(
+                  onPressed: () => _merge([g]),
+                  icon: const Icon(Icons.merge_rounded, size: 18),
+                  label: const Text('Объединить'),
+                ),
+              ]),
             ),
             for (final t in g)
               Container(
-                padding: const EdgeInsets.symmetric(vertical: 8),
+                padding: const EdgeInsets.symmetric(vertical: 6),
                 decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
                 child: Row(children: [
+                  Radio<String>(
+                    value: t.id,
+                    groupValue: _keepOf(g),
+                    onChanged: (v) => setState(() => _keep[g.first.id] = v!),
+                  ),
                   CoverImage(track: t, size: 36, radius: 4),
                   const SizedBox(width: 14),
                   Expanded(
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(t.displayAlbum, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      Text(
+                        '${t.displayAlbum}${t.id == _keepOf(g) ? '  · останется' : ''}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: t.id == _keepOf(g) ? C.accent : C.text),
+                      ),
                       const SizedBox(height: 2),
                       Text(
-                        '${(t.size / (1024 * 1024)).toStringAsFixed(1)} МБ, '
-                        'в «${lib.data.sources.where((s) => s.id == t.source).map((s) => s.name).firstOrNull ?? 'папке'}»',
+                        [
+                          '${(t.size / (1024 * 1024)).toStringAsFixed(1)} МБ',
+                          'в «${folder(t)}»',
+                          if ((lib.data.likes[t.id]?.length ?? 0) > 0) 'лайков: ${lib.data.likes[t.id]!.length}',
+                          if (inPlaylists(t) > 0) 'в плейлистах: ${inPlaylists(t)}',
+                        ].join(', '),
                         style: const TextStyle(color: C.faint, fontSize: 12),
                       ),
                     ]),
@@ -195,41 +421,65 @@ class DuplicatesPage extends StatelessWidget {
                   FriendTag(t.by),
                   const SizedBox(width: 12),
                   TextButton(onPressed: () => app.player.playTracks([t], 0), child: const Text('Послушать')),
-                  TextButton(
-                    style: TextButton.styleFrom(foregroundColor: C.muted),
-                    onPressed: () => lib.hideTrack(t.id, true),
-                    child: const Text('Скрыть'),
-                  ),
-                  if (t.by == lib.me)
-                    TextButton(
-                      style: TextButton.styleFrom(foregroundColor: C.danger),
-                      onPressed: () async {
-                        final ok = await confirm(context,
-                            title: 'Удалить файл?',
-                            text: '«${t.title}» уйдёт в корзину вашего Google Диска и пропадёт из библиотеки у всех.',
-                            action: 'В корзину');
-                        if (!ok) return;
-                        try {
-                          await lib.trashTrack(t);
-                        } catch (e) {
-                          lib.messages.add('Не получилось удалить: $e');
-                        }
-                      },
-                      child: const Text('В корзину'),
-                    ),
                 ]),
               ),
           ],
-          if (lib.data.hidden.isNotEmpty) ...[
+          if (merged.isNotEmpty) ...[
+            const SizedBox(height: 36),
+            Text('Объединённые копии: ${merged.length}', style: display(17)),
+            const SizedBox(height: 6),
+            const Text('Скрыты из библиотеки, их лайки и плейлисты перешли на оставшуюся копию. '
+                'Раньше копии только скрывались — их можно удалить с Диска.',
+                style: TextStyle(color: C.faint, fontSize: 13)),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(foregroundColor: C.danger),
+                onPressed: () async {
+                  final ok = await confirm(context,
+                      title: 'Удалить скрытые копии с Диска?',
+                      text: 'Копии (${merged.length}) удалятся с Google Диска безвозвратно. Свои — сразу, чужие — когда '
+                          'владелец откроет Cave Player. Лайки и плейлисты уже на оставшихся копиях.',
+                      action: 'Удалить');
+                  if (ok) lib.messages.add('Удаляю копии: ${lib.deleteMergedCopies()}');
+                },
+                icon: const Icon(Icons.delete_forever_rounded, size: 18),
+                label: Text('Удалить с Диска (${merged.length})'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            for (final id in merged.take(200))
+              Builder(builder: (context) {
+                final t = lib.data.tracks[id]!;
+                final into = lib.data.tracks[lib.data.resolve(id)];
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(children: [
+                    Expanded(
+                      child: Text(
+                        '${t.displayArtist} — ${t.title}  ·  ${(t.size / (1024 * 1024)).toStringAsFixed(1)} МБ в «${folder(t)}»'
+                        '${into == null ? '' : '  →  ${(into.size / (1024 * 1024)).toStringAsFixed(1)} МБ в «${folder(into)}»'}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: C.muted, fontSize: 13),
+                      ),
+                    ),
+                    TextButton(onPressed: () => lib.unmergeTrack(id), child: const Text('Вернуть отдельно')),
+                  ]),
+                );
+              }),
+          ],
+          if (lib.data.hidden.length > merged.length) ...[
             const SizedBox(height: 32),
-            Text('Скрытые треки: ${lib.data.hidden.length}', style: const TextStyle(color: C.muted)),
+            Text('Скрытые треки: ${lib.data.hidden.length - merged.length}', style: const TextStyle(color: C.muted)),
             const SizedBox(height: 8),
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton(
                 onPressed: () {
                   for (final id in List.of(lib.data.hidden)) {
-                    lib.hideTrack(id, false);
+                    if (!lib.data.merged.containsKey(id)) lib.hideTrack(id, false);
                   }
                 },
                 child: const Text('Вернуть все скрытые'),
@@ -240,7 +490,6 @@ class DuplicatesPage extends StatelessWidget {
       },
     );
   }
-
 }
 
 // ---------- загрузка ----------
@@ -347,28 +596,39 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
   final title = TextEditingController(text: t.title);
   final artist = TextEditingController(text: t.artist);
   final album = TextEditingController(text: t.album);
+  final choice = CoverChoice();
+  final albumHasOwn = lib.albumCover(t.albumKey) != null;
   final ok = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text('Изменить трек', style: display(18)),
       content: SizedBox(
-        width: 400,
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Название', style: TextStyle(color: C.muted, fontSize: 13)),
-          const SizedBox(height: 6),
-          TextField(controller: title, autofocus: true),
-          const SizedBox(height: 14),
-          const Text('Исполнитель', style: TextStyle(color: C.muted, fontSize: 13)),
-          const SizedBox(height: 6),
-          TextField(controller: artist),
-          const SizedBox(height: 14),
-          const Text('Альбом', style: TextStyle(color: C.muted, fontSize: 13)),
-          const SizedBox(height: 6),
-          TextField(controller: album),
-          const SizedBox(height: 14),
-          const Text('Изменения увидят все друзья. Сам файл на Диске не меняется.',
-              style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
-        ]),
+        width: 440,
+        child: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            CoverEditorView(
+              choice: choice,
+              current: CoverImage(track: t, size: 120, radius: 0),
+              canReset: t.customCover != null,
+              note: albumHasOwn ? 'У альбома своя обложка, она показывается поверх обложек его треков.' : null,
+            ),
+            const SizedBox(height: 18),
+            const Text('Название', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(controller: title, autofocus: true),
+            const SizedBox(height: 14),
+            const Text('Исполнитель', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(controller: artist),
+            const SizedBox(height: 14),
+            const Text('Альбом', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(controller: album),
+            const SizedBox(height: 14),
+            const Text('Изменения увидят все друзья. Сам файл на Диске не меняется.',
+                style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+          ]),
+        ),
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: C.muted))),
@@ -381,5 +641,91 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
     lib.messages.add('Название не может быть пустым');
     return;
   }
-  lib.editTrack(t.id, title: title.text.trim(), artist: artist.text.trim(), album: album.text.trim());
+  final cover = context.mounted ? await choice.commit(context) : null;
+  lib.editTrack(t.id, title: title.text.trim(), artist: artist.text.trim(), album: album.text.trim(), cover: cover);
+}
+
+/// Правка сразу нескольких треков: исполнитель, альбом и обложка. Меняется только то, что тронули.
+/// Возвращает true, если правки сохранены.
+Future<bool> editTracksDialog(BuildContext context, List<Track> tracks) async {
+  if (tracks.isEmpty) return false;
+  final app = Services.of(context);
+  final lib = app.lib;
+  String common(String Function(Track) f) {
+    final first = f(tracks.first);
+    return tracks.every((t) => f(t) == first) ? first : '';
+  }
+
+  final artist = TextEditingController(text: common((t) => t.artist));
+  final album = TextEditingController(text: common((t) => t.album));
+  final artistMixed = artist.text.isEmpty && tracks.any((t) => t.artist.isNotEmpty);
+  final albumMixed = album.text.isEmpty && tracks.any((t) => t.album.isNotEmpty);
+  var artistDirty = false;
+  var albumDirty = false;
+  final choice = CoverChoice();
+  final sameCover = tracks.map(app.covers.keyOf).toSet().length == 1;
+  final anyAlbumOwn = tracks.any((t) => lib.albumCover(t.albumKey) != null);
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('Изменить ${countTracks(tracks.length)}', style: display(18)),
+      content: SizedBox(
+        width: 440,
+        child: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            CoverEditorView(
+              choice: choice,
+              current: sameCover
+                  ? CoverImage(track: tracks.first, size: 120, radius: 0)
+                  : Container(
+                      color: C.raised,
+                      alignment: Alignment.center,
+                      padding: const EdgeInsets.all(10),
+                      child: const Text('У треков разные обложки',
+                          textAlign: TextAlign.center, style: TextStyle(color: C.muted, fontSize: 12)),
+                    ),
+              canReset: tracks.any((t) => t.customCover != null),
+              note: anyAlbumOwn ? 'У части альбомов своя обложка, она показывается поверх обложек треков.' : null,
+            ),
+            const SizedBox(height: 18),
+            const Text('Исполнитель', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: artist,
+              onChanged: (_) => artistDirty = true,
+              decoration: InputDecoration(hintText: artistMixed ? 'Разные: оставить как есть' : null),
+            ),
+            const SizedBox(height: 14),
+            const Text('Альбом', style: TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 6),
+            TextField(
+              controller: album,
+              onChanged: (_) => albumDirty = true,
+              decoration: InputDecoration(hintText: albumMixed ? 'Разные: оставить как есть' : null),
+            ),
+            const SizedBox(height: 14),
+            const Text('Меняются только те поля, которые вы тронули. Изменения увидят все друзья, файлы на Диске не меняются.',
+                style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+          ]),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: C.muted))),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
+      ],
+    ),
+  );
+  if (ok != true) return false;
+  final fields = <String, String>{
+    if (artistDirty) 'a': artist.text.trim(),
+    if (albumDirty) 'al': album.text.trim(),
+  };
+  if (choice.changed) {
+    final cv = context.mounted ? await choice.commit(context) : null;
+    if (cv != null) fields['cv'] = cv;
+  }
+  if (fields.isEmpty) return false;
+  lib.editTracks([for (final t in tracks) t.id], fields);
+  lib.messages.add('Изменено: ${countTracks(tracks.length)}');
+  return true;
 }

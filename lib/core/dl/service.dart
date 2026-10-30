@@ -28,6 +28,7 @@ class DownloadJob {
   int total = 0;
   int done = 0;
   int failed = 0;
+  int skipped = 0; // уже были в библиотеке
   final List<String> log = [];
   final List<String> failedNames = [];
   DownloadJob(this.input, this.sourceId, this.folderName) : title = input;
@@ -174,6 +175,15 @@ class DownloadService extends ChangeNotifier {
       log('Поддерживаются ссылки на трек и на альбом Яндекс Музыки.');
       return false;
     }
+    if (q.contains('deezer.com/')) {
+      if (q.contains('/album/')) {
+        final res = await deezerAlbum(q);
+        return res != null && await _album(job, yt, temp, res.$1, res.$2, log);
+      }
+      if (q.contains('/track/')) return _single(job, yt, temp, await deezerTrack(q), 'Deezer', log);
+      log('Поддерживаются ссылки на трек и на альбом Deezer.');
+      return false;
+    }
     if (q.contains('open.spotify.com') || q.startsWith('spotify:')) {
       if (q.contains('/album/') || q.startsWith('spotify:album:')) {
         final res = await spotifyAlbum(q);
@@ -212,6 +222,13 @@ class DownloadService extends ChangeNotifier {
 
   Future<bool> _sourceTrack(DownloadJob job, YouTube yt, Directory temp, TrackMeta meta,
       {required String folderId, required String path, File? cover, String prefix = ''}) async {
+    // Такая песня уже есть в библиотеке — второй копии не нужно
+    final same = lib.existing(meta.artist, meta.title);
+    if (same != null) {
+      yt.log('Уже есть в библиотеке: ${same.displayArtist} — ${same.title}, пропускаю');
+      job.skipped++;
+      return true;
+    }
     final cands = await yt.ranked(meta);
     if (cands.isEmpty) {
       job.failed++;
@@ -219,7 +236,7 @@ class DownloadService extends ChangeNotifier {
       return false;
     }
     // У каждого трека своя папка: при параллельной загрузке альбома файлы не перепутаются
-    final dir = Directory('${temp.path}${Platform.pathSeparator}${DateTime.now().microsecondsSinceEpoch}');
+    final dir = Directory('${temp.path}${Platform.pathSeparator}${YouTube.unique()}');
     await dir.create();
     for (final c in cands.take(maxDownloadTries)) {
       final d = c.duration;
@@ -260,7 +277,7 @@ class DownloadService extends ChangeNotifier {
       log('[${i + 1}/${metas.length}] ${ok ? 'OK' : 'ОШИБКА'}: ${m.label}');
     });
     _summary(job, log);
-    return job.done > 0;
+    return job.done + job.skipped > 0;
   }
 
   Future<bool> _playlist(DownloadJob job, YouTube yt, Directory temp, String url, void Function(String) log) async {
@@ -299,7 +316,7 @@ class DownloadService extends ChangeNotifier {
       log('[${i + 1}/${items.length}] ${ok ? 'OK' : 'ОШИБКА'}: ${e['title'] ?? e['id']}');
     });
     _summary(job, log);
-    return job.done > 0;
+    return job.done + job.skipped > 0;
   }
 
   /// Просто текст: лучший вариант с YouTube
@@ -345,7 +362,8 @@ class DownloadService extends ChangeNotifier {
   }
 
   void _summary(DownloadJob job, void Function(String) log) {
-    log('Готово: скачано ${job.done} из ${job.total}.');
+    log('Готово: скачано ${job.done} из ${job.total}'
+        '${job.skipped > 0 ? ', уже были в библиотеке: ${job.skipped}' : ''}.');
     if (job.failedNames.isNotEmpty) {
       log('Не удалось скачать:');
       for (final n in job.failedNames) {

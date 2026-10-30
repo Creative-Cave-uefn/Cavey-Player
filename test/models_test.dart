@@ -77,4 +77,89 @@ void main() {
       expect(splitArtists('A, B', 'Песня [ft. b]'), ['A', 'B']);
     });
   });
+
+  group('объединение дубликатов', () {
+    LibraryData lib() {
+      Map<String, dynamic> t(String title) => {'s': 'src', 't': title, 'a': 'A', 'm': '', 'sz': 1};
+      return LibraryData()
+        ..apply({'op': 'upsertTracks', 'tracks': {'keep': t('Song'), 'dup': t('Song'), 'other': t('Other')}})
+        ..apply({'op': 'like', 'id': 'dup', 'email': 'friend', 'on': true})
+        ..apply({'op': 'like', 'id': 'keep', 'email': 'me', 'on': true})
+        ..apply({
+          'op': 'createPlaylist',
+          'playlist': {'id': 'p', 'name': 'P', 'by': 'me', 'at': 0, 'items': ['other', 'dup']},
+        })
+        ..apply({
+          'op': 'createPlaylist',
+          'playlist': {'id': 'q', 'name': 'Q', 'by': 'me', 'at': 0, 'items': ['keep', 'dup']},
+        });
+    }
+
+    test('лайки и плейлисты переходят на оставшуюся копию', () {
+      final d = lib()..apply({'op': 'mergeTracks', 'keep': 'keep', 'drop': ['dup']});
+      expect(d.likes['keep'], {'me', 'friend'});
+      expect(d.likes.containsKey('dup'), isFalse);
+      expect(d.playlists[0].items, ['other', 'keep']); // на том же месте
+      expect(d.playlists[1].items, ['keep']); // без повтора
+      expect(d.hidden, contains('dup'));
+      expect(d.resolve('dup'), 'keep');
+    });
+
+    test('старые ссылки после объединения ведут на оставшуюся копию', () {
+      final d = lib()..apply({'op': 'mergeTracks', 'keep': 'keep', 'drop': ['dup']});
+      d.apply({'op': 'like', 'id': 'dup', 'email': 'late', 'on': true});
+      d.apply({'op': 'addToPlaylist', 'id': 'p', 'items': ['dup']});
+      expect(d.likes['keep'], contains('late'));
+      expect(d.playlists[0].items, ['other', 'keep']);
+    });
+
+    test('повтор не ломает, сохраняется и отменяется', () {
+      final op = {'op': 'mergeTracks', 'keep': 'keep', 'drop': ['dup']};
+      final d = lib()..apply(op)..apply(op);
+      expect(d.likes['keep'], {'me', 'friend'});
+      final again = LibraryData.fromJson(d.toJson());
+      expect(again.resolve('dup'), 'keep');
+      again.apply({'op': 'unmergeTrack', 'id': 'dup'});
+      expect(again.hidden, isNot(contains('dup')));
+      expect(again.resolve('dup'), 'dup');
+    });
+  });
+
+  group('удаление с Диска', () {
+    test('трек пропадает у всех и не возвращается сканированием, пока файл не удалён', () {
+      Map<String, dynamic> t(String title) => {'s': 'src', 't': title, 'a': 'A', 'm': '', 'sz': 1};
+      final d = LibraryData()
+        ..apply({'op': 'upsertTracks', 'tracks': {'x': t('X'), 'y': t('Y')}})
+        ..apply({'op': 'like', 'id': 'x', 'email': 'me', 'on': true})
+        ..apply({
+          'op': 'createPlaylist',
+          'playlist': {'id': 'p', 'name': 'P', 'by': 'me', 'at': 0, 'items': ['x', 'y']},
+        })
+        ..apply({'op': 'deleteTracks', 'ids': {'x': 'owner@mail'}});
+      expect(d.tracks.containsKey('x'), isFalse);
+      expect(d.likes.containsKey('x'), isFalse);
+      expect(d.playlists.single.items, ['y']);
+      expect(d.deleted, {'x': 'owner@mail'});
+      // Сканирование у друга ещё видит файл — не возвращаем
+      d.apply({'op': 'upsertTracks', 'tracks': {'x': t('X')}});
+      expect(d.tracks.containsKey('x'), isFalse);
+      // Владелец удалил файл — отметка снимается
+      d.apply({'op': 'purged', 'ids': ['x']});
+      expect(d.deleted, isEmpty);
+      expect(LibraryData.fromJson(d.toJson()).tracks.keys, ['y']);
+    });
+
+    test('объединить и удалить: лайки переходят, копия удалена, ссылки ведут на оставшуюся', () {
+      Map<String, dynamic> t(String title) => {'s': 'src', 't': title, 'a': 'A', 'm': '', 'sz': 1};
+      final d = LibraryData()
+        ..apply({'op': 'upsertTracks', 'tracks': {'keep': t('Song'), 'dup': t('Song')}})
+        ..apply({'op': 'like', 'id': 'dup', 'email': 'friend', 'on': true})
+        ..apply({'op': 'mergeTracks', 'keep': 'keep', 'drop': ['dup']})
+        ..apply({'op': 'deleteTracks', 'ids': {'dup': 'friend@mail'}});
+      expect(d.tracks.keys, ['keep']);
+      expect(d.likes['keep'], {'friend'});
+      expect(d.hidden, isEmpty);
+      expect(d.resolve('dup'), 'keep');
+    });
+  });
 }

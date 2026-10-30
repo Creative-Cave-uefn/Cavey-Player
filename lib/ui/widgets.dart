@@ -1,9 +1,12 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/covers.dart';
 import '../core/models.dart';
+import 'shell.dart';
 import 'theme.dart';
 
 String plural(int n, String one, String few, String many) {
@@ -11,6 +14,19 @@ String plural(int n, String one, String few, String many) {
   if (m10 == 1 && m100 != 11) return one;
   if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
   return many;
+}
+
+/// Размер в байтах человеческим языком: 1,4 ГБ
+String formatBytes(int b) {
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+  var v = b.toDouble();
+  var i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  final text = i == 0 || v >= 100 ? v.round().toString() : v.toStringAsFixed(1).replaceAll('.', ',');
+  return '$text ${units[i]}';
 }
 
 String countTracks(int n) => '$n ${plural(n, 'трек', 'трека', 'треков')}';
@@ -50,51 +66,132 @@ class Wordmark extends StatelessWidget {
 class CoverImage extends StatefulWidget {
   final Track? track;
   final double size;
+
+  /// Высота, если картинка не квадратная (баннер)
+  final double? height;
   final double radius;
-  const CoverImage({super.key, required this.track, required this.size, this.radius = 6});
+
+  /// Картинка из папки covers на Диске (обложка плейлиста или выбранная вручную) — важнее обложки трека
+  final String? fileId;
+
+  /// Подпись на плашке, пока нет картинки (по умолчанию — альбом трека)
+  final String? label;
+
+  /// Не просить копию крупнее этого размера в пикселях (для размытых баннеров хватает 640)
+  final int? maxPx;
+  const CoverImage({super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx});
 
   @override
   State<CoverImage> createState() => _CoverImageState();
 }
 
 class _CoverImageState extends State<CoverImage> {
-  Future<Uint8List?>? _future;
+  Uint8List? _bytes;
   String? _key;
+  int _px = 0;
+  int _gen = 0;
+  bool _wants = false;
+  CoverService? _svc;
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final svc = Services.of(context).covers;
+    if (!identical(svc, _svc)) {
+      _svc?.removeListener(_onReady);
+      _svc = svc..addListener(_onReady);
+      _key = null;
+    }
+    _ensure();
+  }
+
+  @override
+  void didUpdateWidget(CoverImage old) {
+    super.didUpdateWidget(old);
+    _ensure();
+  }
+
+  @override
+  void dispose() {
+    _svc?.removeListener(_onReady);
+    super.dispose();
+  }
+
+  int get _wantPx {
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
+    final px = (math.max(widget.size, widget.height ?? 0) * dpr).round();
+    final cap = widget.maxPx;
+    return cap != null && px > cap ? cap : px;
+  }
+
+  /// Ключ поменялся (другой трек, другой человек) — старую картинку не показываем ни на кадр
   void _ensure() {
+    final svc = _svc;
+    if (svc == null) return;
     final t = widget.track;
-    final key = t == null ? null : (t.cover ?? 'p_${t.id}');
-    if (key == _key && _future != null) return;
+    final id = widget.fileId;
+    final key = id != null ? 'cv_$id' : (t == null ? null : svc.keyOf(t));
+    final px = _wantPx;
+    final bucket = CoverService.bucketFor(px);
+    if (key == _key && bucket == _px) return;
+    final sameKey = key == _key;
     _key = key;
-    _future = t == null ? Future.value(null) : Services.of(context).covers.forTrack(t);
+    _px = bucket;
+    _wants = id != null || (t != null && svc.wants(t));
+    final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
+    if (!sameKey || peek != null) _bytes = peek;
+    if (peek == null && _wants) _request();
+  }
+
+  void _request() {
+    final svc = _svc;
+    if (svc == null) return;
+    final t = widget.track;
+    final id = widget.fileId;
+    final key = _key;
+    final gen = ++_gen;
+    final px = _wantPx;
+    final f = id != null ? svc.forFile(id, px: px) : (t == null ? Future<Uint8List?>.value(null) : svc.forTrack(t, px: px));
+    f.then((b) {
+      if (!mounted || gen != _gen || key != _key || b == null || identical(b, _bytes)) return;
+      setState(() => _bytes = b);
+    });
+  }
+
+  /// Сервис что-то догрузил или пришло время повторить: если у нас картинки ещё нет, пробуем снова
+  void _onReady() {
+    if (!mounted || _bytes != null || !_wants || _key == null) return;
+    final t = widget.track;
+    final id = widget.fileId;
+    final svc = _svc!;
+    final px = _wantPx;
+    final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
+    if (peek != null) {
+      setState(() => _bytes = peek);
+    } else {
+      _request();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    _ensure();
     final t = widget.track;
-    final placeholder = _Placeholder(label: t?.displayAlbum ?? '', size: widget.size);
-    final peek = t == null ? null : Services.of(context).covers.peek(t);
+    final placeholder = _Placeholder(label: widget.label ?? t?.displayAlbum ?? '', size: widget.size);
     final dpr = MediaQuery.devicePixelRatioOf(context);
+    final bytes = _bytes;
     return ClipRRect(
       borderRadius: BorderRadius.circular(widget.radius),
-      child: SizedBox.square(
-        dimension: widget.size,
-        child: FutureBuilder<Uint8List?>(
-          future: _future,
-          initialData: peek,
-          builder: (context, snap) {
-            final bytes = snap.data;
-            if (bytes == null) return placeholder;
-            return Image.memory(
-              bytes,
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
-              cacheWidth: (widget.size * dpr).round(),
-              errorBuilder: (_, __, ___) => placeholder,
-            );
-          },
-        ),
+      child: SizedBox(
+        width: widget.size,
+        height: widget.height ?? widget.size,
+        child: bytes == null
+            ? placeholder
+            : Image.memory(
+                bytes,
+                fit: BoxFit.cover,
+                cacheWidth: (widget.size * dpr).round(),
+                errorBuilder: (_, __, ___) => placeholder,
+              ),
       ),
     );
   }
@@ -147,21 +244,30 @@ class FriendTag extends StatelessWidget {
     final lib = Services.of(context).lib;
     return Tooltip(
       message: 'Загрузил(а) ${lib.nameOf(email)}',
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FriendDot(email),
-          const SizedBox(width: 8),
-          Flexible(
-            child: Text(lib.firstNameOf(email),
-                overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+      // Клик открывает страницу этого человека
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => NavScope.of(context).go(Nav('user', email)),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              FriendDot(email),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(lib.firstNameOf(email),
+                    overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 }
 
+/// Аватарка человека: своя картинка из профиля, а если её нет — цветной кружок с буквой
 class Avatar extends StatelessWidget {
   final String email;
   final String name;
@@ -170,13 +276,54 @@ class Avatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final letter = (name.trim().isEmpty ? email : name).trim().characters.first.toUpperCase();
+    final lib = Services.of(context).lib;
+    final custom = lib.profileAvatar(email);
+    final shown = lib.profileNick(email) ?? name;
+    final letter = (shown.trim().isEmpty ? email : shown).trim().characters.first.toUpperCase();
+    if (custom != null) {
+      return ClipOval(child: CoverImage(track: null, fileId: custom, label: letter, size: size, radius: 0));
+    }
     return Container(
       width: size,
       height: size,
       alignment: Alignment.center,
       decoration: BoxDecoration(color: friendColor(email), shape: BoxShape.circle),
       child: Text(letter, style: display(size * 0.42, weight: FontWeight.w700, color: C.accentInk)),
+    );
+  }
+}
+
+/// Имя человека, которое открывает его страницу; при наведении подчёркивается
+class UserLink extends StatefulWidget {
+  final String email;
+  final TextStyle style;
+  const UserLink(this.email, {super.key, this.style = const TextStyle(color: C.muted, fontSize: 15)});
+
+  @override
+  State<UserLink> createState() => _UserLinkState();
+}
+
+class _UserLinkState extends State<UserLink> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final lib = Services.of(context).lib;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: () => NavScope.of(context).go(Nav('user', widget.email)),
+        child: Text(
+          lib.firstNameOf(widget.email),
+          style: widget.style.copyWith(
+            color: _hover ? C.text : widget.style.color,
+            decoration: _hover ? TextDecoration.underline : TextDecoration.none,
+            decorationColor: C.text,
+          ),
+        ),
+      ),
     );
   }
 }

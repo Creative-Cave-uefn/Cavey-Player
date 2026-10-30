@@ -68,6 +68,11 @@ class Track {
   final String path; // папки внутри источника
   final String added; // когда файл появился на Диске
 
+  // Эти поля приходят не из файла, а из общих ручных правок (edits): старые версии
+  // приложения их не знают, но при сохранении библиотеки не теряют
+  int? durationMs; // длительность трека
+  String? customCover; // id картинки в папке covers на Диске — своя обложка трека
+
   Track({
     required this.id,
     required this.source,
@@ -93,7 +98,16 @@ class Track {
   String get displayAlbum => album.isNotEmpty ? album : (path.isNotEmpty ? path.split('/').last : 'Без альбома');
   String get albumKey =>
       '${(albumArtist.isNotEmpty ? albumArtist : artist).toLowerCase()}\u0001${displayAlbum.toLowerCase()}';
-  bool get hasCover => pic != null || cover != null;
+
+  /// Ключ альбома, в который трек попадёт после правки исполнителя или альбома
+  String albumKeyWith({String? newArtist, String? newAlbum}) {
+    final a = newArtist ?? artist;
+    final al = newAlbum ?? album;
+    final shown = al.isNotEmpty ? al : (path.isNotEmpty ? path.split('/').last : 'Без альбома');
+    return '${(albumArtist.isNotEmpty ? albumArtist : a).toLowerCase()}\u0001${shown.toLowerCase()}';
+  }
+
+  bool get hasCover => pic != null || cover != null || customCover != null;
 
   Map<String, dynamic> toJson() => {
         's': source,
@@ -163,6 +177,25 @@ class LibraryData {
   final Map<String, Map<String, String>> edits = {}; // ручные правки тегов
   final Set<String> hidden = {}; // скрытые треки (например, дубликаты)
 
+  /// Объединённые дубликаты: id скрытой копии → id той, что осталась.
+  /// По нему старые ссылки (лайки, плейлисты, прослушивания) ведут на оставшуюся копию
+  final Map<String, String> merged = {};
+
+  /// Удалённые файлы: id → почта владельца. Сканирование их не возвращает,
+  /// а приложение владельца удаляет файл с Диска и снимает отметку
+  final Map<String, String> deleted = {};
+
+  /// Куда ведёт id после объединений (цепочки тоже)
+  String resolve(String id) {
+    var cur = id;
+    for (var i = 0; i < 10; i++) {
+      final next = merged[cur];
+      if (next == null || next == cur) return cur;
+      cur = next;
+    }
+    return cur;
+  }
+
   Map<String, dynamic> toJson() => {
         'v': 1,
         'sources': sources.map((s) => s.toJson()).toList(),
@@ -172,6 +205,8 @@ class LibraryData {
         'members': members,
         'edits': edits,
         'hidden': hidden.toList(),
+        if (merged.isNotEmpty) 'merged': merged,
+        if (deleted.isNotEmpty) 'deleted': deleted,
       };
 
   static LibraryData fromJson(dynamic j) {
@@ -206,6 +241,10 @@ class LibraryData {
     for (final h in (j['hidden'] as List? ?? const [])) {
       d.hidden.add('$h');
     }
+    final mg = j['merged'];
+    if (mg is Map) mg.forEach((k, v) => d.merged['$k'] = '$v');
+    final del = j['deleted'];
+    if (del is Map) del.forEach((k, v) => d.deleted['$k'] = '$v');
     for (final id in d.edits.keys) {
       d._overlay(id);
     }
@@ -234,6 +273,7 @@ class LibraryData {
         }
       case 'upsertTracks':
         (op['tracks'] as Map).forEach((k, v) {
+          if (deleted.containsKey('$k')) return; // уже удалён — не возвращаем
           tracks['$k'] = Track.fromJson('$k', v as Map);
           _overlay('$k');
         });
@@ -258,7 +298,12 @@ class LibraryData {
         for (final p in playlists) {
           if (p.id == op['id']) {
             for (final t in (op['items'] as List)) {
-              if (!p.items.contains(t)) p.items.add('$t');
+              final id = resolve('$t');
+              if (p.items.contains(id)) continue;
+              p.items.add(id);
+              // Когда трек попал в плейлист — в edits, чтобы старые версии приложения это не стирали
+              final at = op['at'];
+              if (at != null) edits['pl:${p.id}'] = {...?edits['pl:${p.id}'], 't:$id': '$at'};
             }
           }
         }
@@ -267,7 +312,7 @@ class LibraryData {
         // чтобы одновременные правки друзей не перемешали плейлист
         for (final p in playlists) {
           if (p.id != op['id']) continue;
-          final track = op['track'] as String;
+          final track = resolve(op['track'] as String);
           if (!p.items.remove(track)) continue;
           final after = op['after'] as String?;
           final at = after == null ? 0 : p.items.indexOf(after) + 1;
@@ -275,7 +320,65 @@ class LibraryData {
         }
       case 'removeFromPlaylist':
         for (final p in playlists) {
-          if (p.id == op['id']) p.items.remove(op['track']);
+          if (p.id == op['id']) {
+            p.items.remove(op['track']);
+            final gone = resolve(op['track'] as String);
+            p.items.remove(gone);
+            edits['pl:${p.id}']?.remove('t:$gone');
+          }
+        }
+      case 'mergeTracks':
+        // Дубликаты в одну копию без потерь: лайки и места в плейлистах переходят
+        // на оставшуюся, остальные скрываются и запоминаются как её псевдонимы
+        {
+          final keep = resolve(op['keep'] as String);
+          for (final raw in (op['drop'] as List)) {
+            final d = '$raw';
+            if (d == keep || (merged.containsKey(d) && resolve(d) == keep)) continue;
+            merged[d] = keep;
+            final who = likes.remove(d);
+            if (who != null && who.isNotEmpty) likes.putIfAbsent(keep, () => <String>{}).addAll(who);
+            for (final p in playlists) {
+              final i = p.items.indexOf(d);
+              if (i < 0) continue;
+              if (p.items.contains(keep)) {
+                p.items.removeAt(i);
+              } else {
+                p.items[i] = keep;
+              }
+            }
+            final e = edits[d];
+            if (e != null && edits[keep] == null) {
+              edits[keep] = Map.of(e);
+              _overlay(keep);
+            }
+            hidden.add(d);
+          }
+        }
+      case 'deleteTracks':
+        // Удаление с Диска: трек сразу пропадает у всех, файл удаляет приложение владельца
+        (op['ids'] as Map).forEach((k, v) {
+          final id = '$k';
+          deleted[id] = '$v';
+          tracks.remove(id);
+          hidden.remove(id);
+          likes.remove(id);
+          edits.remove(id);
+          for (final p in playlists) {
+            p.items.remove(id);
+          }
+        });
+      case 'purged':
+        // Файл удалён с Диска — отметка больше не нужна
+        for (final id in (op['ids'] as List)) {
+          deleted.remove('$id');
+        }
+      case 'unmergeTrack':
+        // Вернуть копию отдельным треком (лайки и плейлисты остаются на той, куда перешли)
+        {
+          final id = op['id'] as String;
+          merged.remove(id);
+          hidden.remove(id);
         }
       case 'editTrack':
         {
@@ -284,6 +387,15 @@ class LibraryData {
           edits[id] = {...?edits[id], ...fields};
           _overlay(id);
         }
+      case 'setMeta':
+        // Правки полей пачкой: {id: {поле: значение}}. id — трек, а также
+        // 'album:<ключ альбома>', 'pl:<id плейлиста>' и 'u:<почта>' для данных, не привязанных к треку
+        (op['meta'] as Map).forEach((k, v) {
+          final id = '$k';
+          final fields = (v as Map).map((a, b) => MapEntry('$a', '$b'));
+          edits[id] = {...?edits[id], ...fields};
+          _overlay(id);
+        });
       case 'hideTrack':
         if (op['on'] == true) {
           hidden.add(op['id'] as String);
@@ -292,7 +404,7 @@ class LibraryData {
         }
       case 'like':
         {
-          final id = op['id'] as String;
+          final id = resolve(op['id'] as String);
           final who = op['email'] as String;
           final set = likes.putIfAbsent(id, () => <String>{});
           if (op['on'] == true) {
@@ -305,7 +417,7 @@ class LibraryData {
     }
   }
 
-  /// Накладывает ручные правки (название, исполнитель, альбом) поверх тегов файла
+  /// Накладывает ручные правки (название, исполнитель, альбом, длительность, обложка) поверх тегов файла
   void _overlay(String id) {
     final t = tracks[id];
     final e = edits[id];
@@ -320,6 +432,11 @@ class LibraryData {
         j[entry.value] = v;
       }
     }
-    tracks[id] = Track.fromJson(id, j);
+    final n = Track.fromJson(id, j);
+    final d = int.tryParse(e['d'] ?? '');
+    n.durationMs = (d != null && d > 0) ? d : null;
+    final cv = e['cv'];
+    n.customCover = (cv != null && cv.isNotEmpty) ? cv : null;
+    tracks[id] = n;
   }
 }

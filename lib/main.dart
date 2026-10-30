@@ -1,15 +1,20 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
 import 'core/log.dart';
+import 'core/single_instance.dart';
 
 Future<void> main() async {
   runZonedGuarded(() async {
     WidgetsFlutterBinding.ensureInitialized();
+    // Уже запущена другая копия (возможно, спрятанная в трее) — показываем её и выходим
+    if (!claimSingleInstance()) exit(0);
     await AppLog.init();
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
@@ -20,6 +25,11 @@ Future<void> main() async {
       return true;
     };
     MediaKit.ensureInitialized();
+    try {
+      await windowManager.ensureInitialized();
+    } catch (e) {
+      AppLog.warn('Окно: управление не запустилось', e);
+    }
     final app = await AppServices.create();
     runApp(CavePlayerApp(app: app));
   }, (error, stack) => AppLog.error('Необработанная ошибка', error, stack));
