@@ -397,6 +397,11 @@ class SocialController extends ChangeNotifier {
     if (me == null || !_loadedMine) return;
     final seen = lib.settings.noticeSeen;
     final now = DateTime.now().toUtc();
+    // Колокольчик: всё, что было до этого момента, считается прочитанным
+    if (lib.settings.bellSeen == null) {
+      lib.settings.bellSeen = seen ?? now.toIso8601String();
+      unawaited(lib.saveSettings());
+    }
     if (seen == null) {
       lib.settings.noticeSeen = now.toIso8601String();
       unawaited(lib.saveSettings());

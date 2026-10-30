@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/dl/service.dart';
+import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -203,6 +204,16 @@ class _JobCard extends StatelessWidget {
                 const SizedBox(height: 6),
                 LinearProgressIndicator(value: progress),
               ],
+              if (job.playlistId != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: TextButton.icon(
+                    style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 30)),
+                    onPressed: () => NavScope.of(context).go(Nav('playlist', job.playlistId!)),
+                    icon: const Icon(Icons.queue_music_rounded, size: 16),
+                    label: Text('Открыть плейлист «${job.playlistName}»'),
+                  ),
+                ),
             ]),
           ),
           children: [

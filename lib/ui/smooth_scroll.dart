@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -35,18 +36,52 @@ class CaveBinding extends WidgetsFlutterBinding {
   }
 }
 
-class _Target {
-  final double target;
-  final Duration at;
-  const _Target(this.target, this.at);
+/// Плавное «доезжание» одного списка до целевой позиции: на каждом кадре проходит долю оставшегося пути.
+/// Новые щелчки колеса просто сдвигают цель, поэтому быстрая прокрутка остаётся непрерывной (без рывков на каждом щелчке).
+class _Glide {
+  final ScrollPosition pos;
+  double target;
+  Ticker? _ticker;
+  Duration _last = Duration.zero;
+  _Glide(this.pos, this.target);
+
+  /// За сколько секунд остаётся 1/e пути; ~0,06 с даёт общее время успокоения около 180 мс
+  static const tau = 0.06;
+
+  void start() {
+    if (_ticker != null) return;
+    _last = Duration.zero;
+    _ticker = Ticker(_tick)..start();
+  }
+
+  void _tick(Duration elapsed) {
+    final dt = _last == Duration.zero ? 1 / 60 : (elapsed - _last).inMicroseconds / 1e6;
+    _last = elapsed;
+    try {
+      if (!pos.hasPixels) return stop();
+      final left = target - pos.pixels;
+      if (left.abs() < 0.5) {
+        pos.jumpTo(target);
+        return stop();
+      }
+      final k = 1 - math.exp(-dt / tau);
+      pos.jumpTo((pos.pixels + left * k).clamp(pos.minScrollExtent, pos.maxScrollExtent).toDouble());
+    } catch (_) {
+      stop();
+    }
+  }
+
+  void stop() {
+    _ticker?.dispose();
+    _ticker = null;
+    SmoothScroll._glides.remove(pos);
+  }
 }
 
 class SmoothScroll {
   SmoothScroll._();
 
-  /// Длительность одного шага колеса
-  static const stepDuration = Duration(milliseconds: 180);
-  static final _targets = Expando<_Target>();
+  static final _glides = <ScrollPosition, _Glide>{};
   static _Auto? _auto;
 
   /// true — событие обработано здесь и дальше не идёт
@@ -68,12 +103,32 @@ class SmoothScroll {
     return false;
   }
 
+  /// Список, к которому относится объект под курсором: сам окно прокрутки или, если курсор над пустым местом
+  /// между строками, обёртки Scrollable над ним (они лежат цепочкой по одному ребёнку).
+  static ScrollPosition? _viewportOf(RenderObject start) {
+    RenderObject? node = start;
+    for (var depth = 0; node != null && depth < 8; depth++) {
+      if (node is RenderViewportBase) {
+        final off = node.offset;
+        return off is ScrollPosition && off.hasPixels ? off : null;
+      }
+      RenderObject? only;
+      var count = 0;
+      node.visitChildren((c) {
+        only = c;
+        count++;
+      });
+      node = count == 1 ? only : null;
+    }
+    return null;
+  }
+
   static ScrollPosition? _positionAt(HitTestResult r, {Axis? only}) {
     for (final entry in r.path) {
       final t = entry.target;
-      if (t is! RenderViewportBase) continue;
-      final off = t.offset;
-      if (off is! ScrollPosition || !off.hasPixels) continue;
+      if (t is! RenderObject) continue;
+      final off = _viewportOf(t);
+      if (off == null) continue;
       if (only != null && off.axis != only) continue;
       return off;
     }
@@ -86,20 +141,22 @@ class SmoothScroll {
             k == LogicalKeyboardKey.shiftLeft || k == LogicalKeyboardKey.shiftRight || k == LogicalKeyboardKey.shift);
     for (final entry in r.path) {
       final t = entry.target;
-      if (t is! RenderViewportBase) continue;
-      final pos = t.offset;
-      if (pos is! ScrollPosition || !pos.hasPixels) continue;
+      if (t is! RenderObject) continue;
+      final pos = _viewportOf(t);
+      if (pos == null) continue;
       final axis = shift ? flipAxis(pos.axis) : pos.axis;
       var d = axis == Axis.horizontal ? e.scrollDelta.dx : e.scrollDelta.dy;
       if (axisDirectionIsReversed(pos.axisDirection)) d = -d;
       if (d == 0) continue;
-      final prev = _targets[pos];
-      final running = prev != null && (e.timeStamp - prev.at) < const Duration(milliseconds: 300);
-      final base = running ? prev.target : pos.pixels;
+      final glide = _glides[pos];
+      final base = glide?.target ?? pos.pixels;
       final target = (base + d).clamp(pos.minScrollExtent, pos.maxScrollExtent).toDouble();
       if ((target - base).abs() < 0.5) continue; // здесь дальше некуда — пусть крутится внешний список
-      _targets[pos] = _Target(target, e.timeStamp);
-      unawaited(pos.animateTo(target, duration: stepDuration, curve: Curves.easeOutCubic));
+      if (glide != null) {
+        glide.target = target;
+      } else {
+        _glides[pos] = _Glide(pos, target)..start();
+      }
       return true;
     }
     return false;

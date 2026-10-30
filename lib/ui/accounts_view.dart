@@ -6,6 +6,7 @@ import '../app.dart';
 import '../config.dart';
 import '../core/log.dart';
 import '../core/updater.dart';
+import 'sources_view.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -131,6 +132,8 @@ class _AccountsPageState extends State<AccountsPage> {
           if (_error != null)
             Padding(padding: const EdgeInsets.only(top: 12), child: Text(_error!, style: const TextStyle(color: C.danger))),
           const SizedBox(height: 44),
+          const LibrarySection(),
+          const SizedBox(height: 44),
           const _UpdatesSection(),
           const SizedBox(height: 44),
           const _DiscordSection(),
@@ -140,8 +143,6 @@ class _AccountsPageState extends State<AccountsPage> {
           const _TraySection(),
           const SizedBox(height: 44),
           const _CacheSection(),
-          const SizedBox(height: 44),
-          const _LogSection(),
           if (!app.keysBuiltIn) ...[
             const SizedBox(height: 44),
             Text('Ключ приложения Google', style: display(20)),
@@ -173,8 +174,35 @@ class _AccountsPageState extends State<AccountsPage> {
               ),
             ),
           ],
+          const SizedBox(height: 44),
+          const _DebugSection(),
         ]);
       },
+    );
+  }
+}
+
+/// Всё, что обычному человеку трогать не нужно: тестовые сборки, хранение данных, журнал
+class _DebugSection extends StatelessWidget {
+  const _DebugSection();
+
+  @override
+  Widget build(BuildContext context) {
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 20),
+        expandedCrossAxisAlignment: CrossAxisAlignment.start,
+        title: Text('Отладка (не лезь - убьёт)', style: display(20, color: C.muted)),
+        children: const [
+          _TestBuildsSection(),
+          SizedBox(height: 32),
+          LibraryDebug(),
+          SizedBox(height: 32),
+          _LogSection(),
+        ],
+      ),
     );
   }
 }
@@ -186,35 +214,6 @@ class _UpdatesSection extends StatefulWidget {
 }
 
 class _UpdatesSectionState extends State<_UpdatesSection> {
-  bool _loaded = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_loaded) return;
-    _loaded = true;
-    final up = Services.of(context).updater;
-    // После кадра: список сам сообщает о загрузке, а во время сборки виджетов это запрещено
-    if (up.enabled) WidgetsBinding.instance.addPostFrameCallback((_) => up.loadTestBuilds());
-  }
-
-  Future<void> _install(BuildInfo b) async {
-    final up = Services.of(context).updater;
-    final older = !Updater.isNewer(b.version, kAppVersion);
-    final ok = await confirm(
-      context,
-      title: b.stable ? 'Вернуться на обычную версию ${b.version}?' : 'Поставить тестовую сборку ${b.version}?',
-      text: [
-        if (!b.stable) 'Ветка «${b.branch}». Тестовые сборки могут работать с ошибками.',
-        if (!b.stable) 'Дальше Cave Player будет обновляться сборками этой ветки, а когда её удалят — вернётся к обычным версиям.',
-        if (older) 'Эта версия старее установленной — Cave Player поставит её поверх.',
-        'Cave Player закроется и откроется уже с новой версией.',
-      ].join('\n\n'),
-      action: 'Поставить',
-    );
-    if (ok) await up.install(b);
-  }
-
   @override
   Widget build(BuildContext context) {
     final up = Services.of(context).updater;
@@ -306,7 +305,56 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
               ),
             ),
           ),
-          const SizedBox(height: 26),
+        ]);
+      },
+    );
+  }
+}
+
+class _TestBuildsSection extends StatefulWidget {
+  const _TestBuildsSection();
+  @override
+  State<_TestBuildsSection> createState() => _TestBuildsSectionState();
+}
+
+class _TestBuildsSectionState extends State<_TestBuildsSection> {
+  bool _loaded = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_loaded) return;
+    _loaded = true;
+    final up = Services.of(context).updater;
+    // После кадра: список сам сообщает о загрузке, а во время сборки виджетов это запрещено
+    if (up.enabled) WidgetsBinding.instance.addPostFrameCallback((_) => up.loadTestBuilds());
+  }
+
+  Future<void> _install(BuildInfo b) async {
+    final up = Services.of(context).updater;
+    final older = !Updater.isNewer(b.version, kAppVersion);
+    final ok = await confirm(
+      context,
+      title: b.stable ? 'Вернуться на обычную версию ${b.version}?' : 'Поставить тестовую сборку ${b.version}?',
+      text: [
+        if (!b.stable) 'Ветка «${b.branch}». Тестовые сборки могут работать с ошибками.',
+        if (!b.stable) 'Дальше Cave Player будет обновляться сборками этой ветки, а когда её удалят — вернётся к обычным версиям.',
+        if (older) 'Эта версия старее установленной — Cave Player поставит её поверх.',
+        'Cave Player закроется и откроется уже с новой версией.',
+      ].join('\n\n'),
+      action: 'Поставить',
+    );
+    if (ok) await up.install(b);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final up = Services.of(context).updater;
+    return ListenableBuilder(
+      listenable: up,
+      builder: (context, _) {
+        final busy = up.state == UpdateState.checking || up.state == UpdateState.downloading;
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Text('Тестовые сборки', style: display(17)),
             const SizedBox(width: 8),
@@ -466,7 +514,7 @@ class _LogSectionState extends State<_LogSection> {
     final app = Services.of(context);
     final errors = AppLog.recentErrors();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Журнал ошибок', style: display(20)),
+      Text('Журнал ошибок', style: display(17)),
       const SizedBox(height: 10),
       Text(
         errors == 0

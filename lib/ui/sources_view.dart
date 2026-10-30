@@ -9,13 +9,14 @@ import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-class SourcesPage extends StatefulWidget {
-  const SourcesPage({super.key});
+/// Папки с музыкой, приглашение друзей и отключение: раздел страницы «Настройки»
+class LibrarySection extends StatefulWidget {
+  const LibrarySection({super.key});
   @override
-  State<SourcesPage> createState() => _SourcesPageState();
+  State<LibrarySection> createState() => _LibrarySectionState();
 }
 
-class _SourcesPageState extends State<SourcesPage> {
+class _LibrarySectionState extends State<LibrarySection> {
   final _link = TextEditingController();
   bool _adding = false;
   final _friend = TextEditingController();
@@ -72,14 +73,14 @@ class _SourcesPageState extends State<SourcesPage> {
         final lib = app.lib;
         final hubLink = folderUrl(app.settings.hubId ?? '');
         final last = DateTime.tryParse(app.settings.lastScan ?? '');
-        return ListView(padding: const EdgeInsets.fromLTRB(36, 34, 36, 40), children: [
-          Text('Папки с музыкой', style: display(36, weight: FontWeight.w700)),
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Папки с музыкой', style: display(20)),
           const SizedBox(height: 10),
           const Text(
             'Библиотека собирается из папок на Google Дисках. Папки могут лежать у разных людей и на разных аккаунтах.',
             style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
-          const SizedBox(height: 28),
+          const SizedBox(height: 18),
           _Panel(children: [
             Row(children: [
               Expanded(
@@ -104,7 +105,7 @@ class _SourcesPageState extends State<SourcesPage> {
             const SizedBox(height: 10),
             const Text(
               'Подойдёт своя папка или та, которой с вами поделились. Если она открыта для другого вашего '
-              'аккаунта, сначала подключите его на вкладке «Аккаунты».',
+              'аккаунта, сначала подключите его в разделе «Аккаунты» выше.',
               style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
             ),
           ]),
@@ -243,47 +244,6 @@ class _SourcesPageState extends State<SourcesPage> {
             ]),
           ]),
           const SizedBox(height: 44),
-          Theme(
-            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: ExpansionTile(
-              tilePadding: EdgeInsets.zero,
-              childrenPadding: const EdgeInsets.only(bottom: 20),
-              title: Text('Отладка (не лезь - убьёт)', style: display(20, color: C.muted)),
-              children: [
-                const Text('Где хранятся данные', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
-                const SizedBox(height: 8),
-                const Text(
-                  'Откуда программа берёт общие плейлисты, друзей и статусы. Если у вас не появляются друзья и плейлисты, '
-                  'проверьте здесь, в той ли папке вы сидите.',
-                  style: TextStyle(color: C.muted, height: 1.5),
-                ),
-                const SizedBox(height: 14),
-                const _LocationPanel(),
-                const SizedBox(height: 28),
-                const Text('Убрать папку из библиотеки', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
-                const SizedBox(height: 8),
-                const Text(
-                  'Опасно: треки этой папки пропадут из библиотеки у всех друзей. Файлы на Диске останутся. '
-                  'Чтобы не нажать случайно, нужно ввести название папки.',
-                  style: TextStyle(color: C.danger, height: 1.5),
-                ),
-                const SizedBox(height: 8),
-                for (final s in lib.data.sources)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(s.name),
-                    trailing: TextButton(
-                      style: TextButton.styleFrom(foregroundColor: C.danger),
-                      onPressed: () async {
-                        if (await _confirmByName(context, s.name)) lib.removeSource(s.id);
-                      },
-                      child: const Text('Убрать'),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 24),
           Text('Отключение', style: display(20)),
           const SizedBox(height: 10),
           const Text(
@@ -308,6 +268,56 @@ class _SourcesPageState extends State<SourcesPage> {
               child: const Text('Отключиться от этой библиотеки'),
             ),
           ),
+        ]);
+      },
+    );
+  }
+}
+
+/// Где хранятся данные и удаление папки из общей библиотеки: живёт в «Отладке» на странице настроек
+class LibraryDebug extends StatelessWidget {
+  const LibraryDebug({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return ListenableBuilder(
+      listenable: app.lib,
+      builder: (context, _) {
+        final lib = app.lib;
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Где хранятся данные', style: display(17)),
+          const SizedBox(height: 8),
+          const Text(
+            'Откуда программа берёт общие плейлисты, друзей и статусы. Если у вас не появляются друзья и плейлисты, '
+            'проверьте здесь, в той ли папке вы сидите.',
+            style: TextStyle(color: C.muted, height: 1.5),
+          ),
+          const SizedBox(height: 14),
+          const _LocationPanel(),
+          const SizedBox(height: 28),
+          Text('Убрать папку из библиотеки', style: display(17)),
+          const SizedBox(height: 8),
+          const Text(
+            'Опасно: треки этой папки пропадут из библиотеки у всех друзей. Файлы на Диске останутся. '
+            'Чтобы не нажать случайно, нужно ввести название папки.',
+            style: TextStyle(color: C.danger, height: 1.5),
+          ),
+          const SizedBox(height: 8),
+          if (lib.data.sources.isEmpty)
+            const Text('Папок пока нет.', style: TextStyle(color: C.faint, fontSize: 13)),
+          for (final s in lib.data.sources)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(s.name),
+              trailing: TextButton(
+                style: TextButton.styleFrom(foregroundColor: C.danger),
+                onPressed: () async {
+                  if (await _confirmByName(context, s.name)) lib.removeSource(s.id);
+                },
+                child: const Text('Убрать'),
+              ),
+            ),
         ]);
       },
     );

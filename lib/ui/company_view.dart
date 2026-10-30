@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app.dart';
@@ -34,23 +36,17 @@ class CompanyPage extends StatelessWidget {
         final now = social.listeningNow;
         final chart = social.chart();
         final feed = social.feed;
-        final notices = social.notices.take(8).toList();
+        final notices = social.notices.take(20).toList();
         return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Text('Компания', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
           const Text('Что слушают друзья, что у вас в чарте и что нового в библиотеке.',
               style: TextStyle(color: C.muted, fontSize: 15)),
-          if (notices.isNotEmpty) ...[
-            const SizedBox(height: 32),
-            Text('Вам', style: display(20)),
-            const SizedBox(height: 6),
-            const Text('Кто добавил ваши загрузки в любимое и плейлисты и кто поделился с вами треками.',
-                style: TextStyle(color: C.faint, fontSize: 13)),
-            const SizedBox(height: 10),
-            for (final n in notices) _NoticeRow(notice: n),
-          ],
           const SizedBox(height: 32),
-          Text('Участники', style: display(20)),
+          Row(children: [
+            Expanded(child: Text('Участники', style: display(20))),
+            _NoticeBell(notices: notices),
+          ]),
           const SizedBox(height: 6),
           const Text('Нажмите на человека, чтобы открыть его страницу.', style: TextStyle(color: C.faint, fontSize: 13)),
           const SizedBox(height: 14),
@@ -201,6 +197,81 @@ class _ChartRow extends StatelessWidget {
             child: Text('${entry.plays} ${plural(entry.plays, 'прослушивание', 'прослушивания', 'прослушиваний')}',
                 textAlign: TextAlign.right, style: const TextStyle(color: C.faint, fontSize: 12)),
           ),
+        ]),
+      ),
+    );
+  }
+}
+
+/// Колокольчик с уведомлениями «Вам»: загорается зелёным, пока есть непрочитанные; по нажатию раскрывается окошко
+class _NoticeBell extends StatefulWidget {
+  final List<Notice> notices;
+  const _NoticeBell({required this.notices});
+  @override
+  State<_NoticeBell> createState() => _NoticeBellState();
+}
+
+class _NoticeBellState extends State<_NoticeBell> {
+  /// Что считать прочитанным: всё, что старше последнего открытия колокольчика
+  DateTime? _seen(Services app) => DateTime.tryParse(app.lib.settings.bellSeen ?? '');
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final seen = _seen(app);
+    final unread = seen == null ? 0 : widget.notices.where((n) => n.at.isAfter(seen)).length;
+    final lit = unread > 0;
+    return MenuAnchor(
+      style: MenuStyle(
+        backgroundColor: const WidgetStatePropertyAll(C.surface),
+        side: const WidgetStatePropertyAll(BorderSide(color: C.line)),
+        shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+        padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+      ),
+      alignmentOffset: const Offset(-330, 4),
+      onOpen: () {
+        // Открыли — всё считается прочитанным, колокольчик гаснет
+        app.lib.settings.bellSeen = DateTime.now().toUtc().toIso8601String();
+        unawaited(app.lib.saveSettings());
+      },
+      onClose: () {
+        if (mounted) setState(() {});
+      },
+      menuChildren: [
+        SizedBox(
+          width: 380,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 380),
+            child: widget.notices.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(20),
+                    child: Text('Пока ничего нет. Здесь появятся добавления ваших загрузок в любимое и плейлисты, а также треки, которыми с вами поделились.',
+                        style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+                  )
+                : ListView(
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                    shrinkWrap: true,
+                    children: [for (final n in widget.notices) _NoticeRow(notice: n)],
+                  ),
+          ),
+        ),
+      ],
+      builder: (context, controller, _) => IconButton(
+        tooltip: lit ? 'Новых уведомлений: $unread' : 'Уведомления',
+        onPressed: () => controller.isOpen ? controller.close() : controller.open(),
+        icon: Stack(clipBehavior: Clip.none, children: [
+          Icon(lit ? Icons.notifications_active_rounded : Icons.notifications_none_rounded,
+              color: lit ? const Color(0xFF5BD68B) : C.muted),
+          if (lit)
+            Positioned(
+              right: -2,
+              top: -2,
+              child: Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(color: const Color(0xFF5BD68B), shape: BoxShape.circle, border: Border.all(color: C.bg, width: 1.5)),
+              ),
+            ),
         ]),
       ),
     );

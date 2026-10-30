@@ -4,9 +4,14 @@ import 'dart:io';
 // В мессенджерах такие ссылки не кликабельны, поэтому есть и обычная https-ссылка на страницу-переадресацию
 // (docs/open/index.html), которая сама открывает caveplayer://.
 
-/// Адрес страницы-переадресации (с косой чертой на конце). Пусто — страница ещё не опубликована.
-/// Задаётся при сборке: --dart-define=SHARE_URL=https://…/open/
-const kShareRedirectUrl = String.fromEnvironment('SHARE_URL');
+/// Адрес страницы-переадресации по умолчанию: GitHub Pages публичного репозитория релизов
+const kDefaultShareUrl = 'https://creative-cave-uefn.github.io/cave-player-releases/open/';
+
+const _shareFromBuild = String.fromEnvironment('SHARE_URL');
+
+/// Адрес страницы-переадресации (с косой чертой на конце). Можно заменить при сборке:
+/// --dart-define=SHARE_URL=https://…/open/ (переменная SHARE_URL в настройках репозитория)
+const kShareRedirectUrl = _shareFromBuild == '' ? kDefaultShareUrl : _shareFromBuild;
 
 const _scheme = 'caveplayer';
 

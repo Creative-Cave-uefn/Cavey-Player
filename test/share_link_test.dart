@@ -17,6 +17,13 @@ void main() {
     expect(webLinkFor('abc', base: ''), isNull);
   });
 
+  test('Без переменной сборки ссылка для мессенджеров всё равно есть', () {
+    final web = webLinkFor('abc');
+    expect(web, isNotNull);
+    expect(web!.startsWith(kDefaultShareUrl), isTrue);
+    expect(trackIdFromLink(web), 'abc');
+  });
+
   test('Чужие и испорченные ссылки не принимаются', () {
     expect(trackIdFromLink('https://example.com/'), isNull);
     expect(trackIdFromLink('caveplayer://album/abc'), isNull);

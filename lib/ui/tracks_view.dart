@@ -86,7 +86,7 @@ class AllTracksPage extends StatelessWidget {
                       ? 'Добавьте папку с музыкой с Google Диска — свою или ту, которой поделился друг.'
                       : 'В добавленных папках пока нет аудиофайлов. Загрузите музыку на Диск и обновите библиотеку.',
                   action: FilledButton(
-                    onPressed: () => NavScope.of(context).go(const Nav('sources')),
+                    onPressed: () => NavScope.of(context).go(const Nav('accounts')),
                     child: Text(lib.data.sources.isEmpty ? 'Добавить папку' : 'Открыть папки'),
                   ),
                 ),
@@ -573,6 +573,28 @@ class _TracksPageState extends State<TracksPage> {
                   icon: const Icon(Icons.remove_circle_outline_rounded, size: 18),
                   label: const Text('Убрать из плейлиста'),
                 ),
+              TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: C.danger),
+                onPressed: none
+                    ? null
+                    : () async {
+                        final foreign = picked.where((t) => t.by.isNotEmpty && t.by != app.lib.me).length;
+                        final ok = await confirm(
+                          context,
+                          title: 'Удалить выбранное: ${countTracks(picked.length)}?',
+                          text: 'Треки пропадут из библиотеки у всех, а файлы удалятся с Google Диска безвозвратно.'
+                              '${foreign > 0 ? '\n\nЧужих файлов среди них: $foreign. Google Диск даёт удалить файл только владельцу, '
+                                  'поэтому они удалятся с Диска, когда их владелец откроет Cave Player.' : ''}',
+                          action: 'Удалить',
+                        );
+                        if (!ok) return;
+                        app.lib.deleteTracks(picked);
+                        app.lib.messages.add('Удалено: ${countTracks(picked.length)}');
+                        _exitSelection();
+                      },
+                icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                label: const Text('Удалить выбранное'),
+              ),
               IconButton(tooltip: 'Готово (Esc)', onPressed: _exitSelection, icon: const Icon(Icons.close_rounded, size: 20)),
             ]),
           ),
@@ -1222,6 +1244,7 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
       for (var i = 0; i < names.length && i < 5; i++)
         PopupMenuItem(value: 'artist:$i', child: Text('Открыть: ${names[i]}', overflow: TextOverflow.ellipsis)),
     const PopupMenuItem(value: 'copy', child: Text('Копировать название')),
+    const PopupMenuItem(value: 'share', child: Text('Поделиться…')),
     const PopupMenuDivider(),
     if (canSelect) PopupMenuItem(value: 'select', child: Text(selected ? 'Снять выбор' : 'Выбрать')),
     const PopupMenuItem(value: 'edit', child: Text('Изменить метаданные…')),
@@ -1254,6 +1277,8 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
     case 'copy':
       await Clipboard.setData(ClipboardData(text: '${track.title} — ${track.displayArtist}'));
       app.lib.messages.add('Название скопировано');
+    case 'share':
+      await showShareDialog(context, track);
     case 'playlist':
       await addToPlaylistDialog(context, [track.id]);
     case 'remove':

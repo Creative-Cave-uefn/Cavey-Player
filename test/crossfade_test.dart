@@ -1,4 +1,5 @@
 import 'package:cave_player/core/crossfade.dart';
+import 'package:cave_player/core/media_keys.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -50,6 +51,25 @@ void main() {
       expect(m.$1 * m.$1 + m.$2 * m.$2, closeTo(1, 1e-9));
       expect(fadeGains(-3).$1, closeTo(1, 1e-9));
       expect(fadeGains(7).$2, closeTo(1, 1e-9));
+    });
+  });
+
+  group('Кому достаются медиаклавиши', () {
+    final now = DateTime(2026, 10, 31, 12);
+    bool owned({bool enabled = true, bool hasTrack = true, bool playing = false, DateTime? pausedAt}) =>
+        mediaKeysOwned(enabled: enabled, hasTrack: hasTrack, playing: playing, pausedAt: pausedAt, now: now);
+
+    test('Пока трек играет — нам, даже если фоном что-то ещё', () {
+      expect(owned(playing: true), isTrue);
+    });
+    test('Выключено в настройках или нет трека — не нам', () {
+      expect(owned(enabled: false, playing: true), isFalse);
+      expect(owned(hasTrack: false, playing: true), isFalse);
+    });
+    test('После паузы ещё 10 минут нам (чтобы продолжить клавишей), потом отдаём другим', () {
+      expect(owned(pausedAt: now.subtract(const Duration(minutes: 3))), isTrue);
+      expect(owned(pausedAt: now.subtract(const Duration(minutes: 11))), isFalse);
+      expect(owned(), isFalse);
     });
   });
 }

@@ -7,9 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/log.dart';
-import '../core/desktop_notify.dart';
 import '../core/media_keys.dart';
-import '../core/notices.dart';
 import '../core/share_link.dart';
 import '../core/models.dart';
 import '../core/updater.dart';
@@ -20,10 +18,10 @@ import 'download_view.dart';
 import 'library_views.dart';
 import 'lyrics_panel.dart';
 import 'mouse_gesture.dart';
+import 'notice_tower.dart';
 import 'player_bar.dart';
 import 'playlists_view.dart';
 import 'profile_view.dart';
-import 'sources_view.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_pages.dart';
@@ -90,7 +88,6 @@ class _ShellState extends State<Shell> {
   String? _toast;
   String? _toastActionLabel;
   VoidCallback? _toastAction;
-  StreamSubscription<Notice>? _notices;
   ValueNotifier<String?>? _linkSource;
   Timer? _toastTimer;
 
@@ -102,7 +99,6 @@ class _ShellState extends State<Shell> {
       // Своя плашка вместо SnackBar: маленькая, по центру и над плеером, ничего не перекрывает
       _showToast(m);
     });
-    _notices ??= Services.of(context).social.noticeStream.stream.listen(_onNotice);
     if (_linkSource == null) {
       _linkSource = Services.of(context).incomingLink..addListener(_onLink);
       WidgetsBinding.instance.addPostFrameCallback((_) => _onLink()); // ссылка, с которой запустили программу
@@ -143,23 +139,6 @@ class _ShellState extends State<Shell> {
     unawaited(app.player.playTracks([track], 0));
   }
 
-  /// Уведомление «Вам»: в окне — плашка (с кнопкой «Слушать», если с вами поделились), в трее — уведомление Windows
-  Future<void> _onNotice(Notice n) async {
-    final app = Services.of(context);
-    final text = app.social.noticeLine(n);
-    if (await windowIsHidden()) {
-      unawaited(desktopToast(text));
-      return;
-    }
-    if (!mounted) return;
-    final track = app.lib.data.tracks[app.lib.data.resolve(n.trackIds.first)];
-    final listen = n.kind == NoticeKind.share && track != null;
-    _showToast(text,
-        actionLabel: listen ? 'Слушать' : null,
-        action: listen ? () => app.player.playTracks([track], 0) : null,
-        time: listen ? const Duration(seconds: 9) : const Duration(seconds: 5));
-  }
-
   /// Зажатая правая кнопка + движение: ← предыдущий, → следующий, ↑ ↓ громкость
   void _onGesture(GestureDir dir) {
     final app = Services.of(context);
@@ -183,7 +162,6 @@ class _ShellState extends State<Shell> {
   void dispose() {
     _toastTimer?.cancel();
     _msgs?.cancel();
-    _notices?.cancel();
     _linkSource?.removeListener(_onLink);
     _nav.dispose();
     super.dispose();
@@ -282,6 +260,15 @@ class _ShellState extends State<Shell> {
                       ),
                     ),
                   ),
+                ),
+              ),
+              Positioned(
+                right: 16,
+                bottom: 92 + 10,
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: selectionBarOpen,
+                  builder: (context, bar, child) => Padding(padding: EdgeInsets.only(bottom: bar ? 76 : 0), child: child),
+                  child: const NoticeTower(),
                 ),
               ),
               if (_dragging) const Positioned.fill(child: IgnorePointer(child: _DropOverlay())),
@@ -394,8 +381,7 @@ class _ShellState extends State<Shell> {
         );
       case 'duplicates':
         return const DuplicatesPage(key: ValueKey('duplicates'));
-      case 'sources':
-        return const SourcesPage(key: ValueKey('sources'));
+      case 'sources': // старая вкладка «Папки с музыкой» теперь внутри настроек
       case 'accounts':
         return const AccountsPage(key: ValueKey('accounts'));
       default:
@@ -577,15 +563,12 @@ class _Sidebar extends StatelessWidget {
             NowListeningSidebar(compact: compact),
             const Divider(height: 1),
             const SizedBox(height: 8),
-            item(Icons.folder_shared_outlined, 'Папки с музыкой', const Nav('sources'),
-                trailing: lib.scan.running
-                    ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                    : null),
             item(Icons.settings_outlined, 'Настройки', const Nav('accounts'),
                 trailing: app.accounts.accounts.any((a) => a.needsSignIn)
                     ? const Icon(Icons.error_outline_rounded, size: 16, color: C.danger)
-                    : null),
-            _SyncLine(compact: compact),
+                    : lib.scan.running
+                        ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                        : null),
             UploadLine(compact: compact),
             _UpdateLine(compact: compact),
             const SizedBox(height: 10),
@@ -829,36 +812,6 @@ class _UpdateLine extends StatelessWidget {
           child: Tooltip(message: 'Перезапустить Cave Player с новой версией', child: button),
         );
       },
-    );
-  }
-}
-
-class _SyncLine extends StatelessWidget {
-  final bool compact;
-  const _SyncLine({required this.compact});
-
-  @override
-  Widget build(BuildContext context) {
-    final lib = Services.of(context).lib;
-    final err = lib.syncError;
-    if (err == null && !lib.hasUnsavedChanges) return const SizedBox.shrink();
-    final text = err != null ? 'Нет связи с Диском' : 'Сохраняю на Диск…';
-    final icon = err != null ? Icons.cloud_off_rounded : Icons.cloud_upload_outlined;
-    return Tooltip(
-      message: err ?? text,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 8, 12, 0),
-        child: Row(
-          mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start,
-          children: [
-            Icon(icon, size: 16, color: err != null ? C.danger : C.faint),
-            if (!compact) ...[
-              const SizedBox(width: 10),
-              Text(text, style: TextStyle(fontSize: 12, color: err != null ? C.danger : C.faint)),
-            ],
-          ],
-        ),
-      ),
     );
   }
 }

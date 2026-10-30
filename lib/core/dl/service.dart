@@ -36,6 +36,10 @@ class DownloadJob {
 
   /// Сделать из скачанного плейлиста плейлист в Cave Player (для ссылок на плейлисты)
   final bool makePlaylist;
+
+  /// Плейлист Cave Player, собранный из этого задания
+  String? playlistId;
+  String? playlistName;
   DownloadJob(this.input, this.sourceId, this.folderName, {this.makePlaylist = true}) : title = input;
 
   void add(String line) {
@@ -337,6 +341,14 @@ class DownloadService extends ChangeNotifier {
     final ids = List<String?>.filled(items.length, null);
     await _pool(List.generate(items.length, (i) => i), albumWorkers, (i) async {
       final e = items[i];
+      // Такая песня уже лежит в библиотеке — не качаем второй раз, в плейлист встанет имеющийся трек
+      final have = _existingForVideo(e);
+      if (have != null) {
+        ids[i] = have.id;
+        job.skipped++;
+        log('[${i + 1}/${items.length}] Уже есть в библиотеке: ${have.displayArtist} — ${have.title}');
+        return;
+      }
       final dir = Directory('${temp.path}${Platform.pathSeparator}p$i');
       await dir.create();
       final entries = await yt.download('${dir.path}${Platform.pathSeparator}%(id)s.%(ext)s', 'https://www.youtube.com/watch?v=${e['id']}');
@@ -352,6 +364,16 @@ class DownloadService extends ChangeNotifier {
     _summary(job, log);
     if (job.makePlaylist) await _makePlaylist(job, yt, title, ids, listCover, log);
     return job.done + job.skipped > 0;
+  }
+
+  /// Трек библиотеки, который совпадает с роликом из списка YouTube (по исполнителю и названию), или null
+  Track? _existingForVideo(Map e) {
+    final channel = '${e['channel'] ?? e['uploader'] ?? ''}'.replaceAll(RegExp(r'\s*-\s*Topic$'), '');
+    final (a, t) = splitArtistTitle(stripLeadNum(channel), stripLeadNum('${e['title'] ?? ''}'));
+    final artist = stripLeadNum(a);
+    final title = cleanTitle(stripLeadNum(t));
+    if (artist.isEmpty || title.isEmpty) return null;
+    return lib.existing(artist, title);
   }
 
   /// Просто текст: лучший вариант с YouTube
@@ -411,6 +433,8 @@ class DownloadService extends ChangeNotifier {
     }
     final id = addToNamedPlaylist(lib, name, found);
     final created = id.created;
+    job.playlistId = id.id;
+    job.playlistName = name;
     if (created && coverUrl != null) {
       try {
         final file = await yt.cover(coverUrl);

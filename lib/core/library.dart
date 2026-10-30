@@ -837,7 +837,7 @@ class LibraryController extends ChangeNotifier {
         suspiciousSources[s.id] = removed.length;
         AppLog.warn('«${s.name}»: не найдено ${removed.length} из ${existing.length} треков, из библиотеки не убираю');
         messages.add('«${s.name}»: не нашёл ${removed.length} треков. Из общей библиотеки они не убраны — '
-            'проверьте доступ к папке или подтвердите очистку на странице «Папки с музыкой».');
+            'проверьте доступ к папке или подтвердите очистку в настройках, в разделе «Папки с музыкой».');
       } else {
         suspiciousSources.remove(s.id);
         commit({'op': 'removeTracks', 'ids': removed});
