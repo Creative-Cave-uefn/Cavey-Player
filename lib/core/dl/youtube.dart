@@ -239,6 +239,7 @@ class YouTube {
       ('album', meta.album),
       ('date', meta.year),
       ('track', meta.track),
+      ('disc', meta.disc),
     ]) {
       if (kv.$2.isNotEmpty) args.addAll(['-metadata', '${kv.$1}=${kv.$2}']);
     }

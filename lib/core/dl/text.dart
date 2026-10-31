@@ -9,6 +9,7 @@ class TrackMeta {
   String album;
   String year;
   String track; // «3/12» или «3»
+  String disc; // «2/4» или «2»; пусто — один диск
   double? duration; // секунды
   String? coverUrl;
 
@@ -20,6 +21,7 @@ class TrackMeta {
     this.album = '',
     this.year = '',
     this.track = '',
+    this.disc = '',
     this.duration,
     this.coverUrl,
   });

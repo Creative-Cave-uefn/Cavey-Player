@@ -677,14 +677,7 @@ class _WebAlbumPageState extends State<WebAlbumPage> {
             ),
           ]),
           const SizedBox(height: 26),
-          for (var i = 0; i < tracks.length; i++)
-            Container(
-              decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
-              child: Row(children: [
-                SizedBox(width: 32, child: Text('${i + 1}', style: const TextStyle(color: C.faint, fontSize: 13))),
-                Expanded(child: WebTrackLine(track: tracks[i], showCover: false, list: tracks)),
-              ]),
-            ),
+          ...webAlbumRows(tracks),
         ]);
       },
     );
@@ -799,4 +792,37 @@ class _WebSearchPageState extends State<WebSearchPage> {
         ),
     ]);
   }
+}
+
+/// Строки треков альбома из интернета. У многодисковых изданий — разделы «Диск 1», «Диск 2»…
+/// и нумерация внутри диска
+List<Widget> webAlbumRows(List<WebTrack> tracks, {bool cover = false}) {
+  final discs = tracks.map((t) => t.disc).toSet();
+  final multi = discs.length > 1;
+  final out = <Widget>[];
+  var disc = -1;
+  var n = 0;
+  for (final t in tracks) {
+    if (multi && t.disc != disc) {
+      disc = t.disc;
+      n = 0;
+      out.add(Padding(
+        padding: EdgeInsets.only(top: out.isEmpty ? 0 : 22, bottom: 6),
+        child: Row(children: [
+          const Icon(Icons.album_outlined, size: 18, color: C.muted),
+          const SizedBox(width: 8),
+          Text('Диск $disc', style: display(16)),
+        ]),
+      ));
+    }
+    n++;
+    out.add(Container(
+      decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
+      child: Row(children: [
+        SizedBox(width: 32, child: Text('$n', style: const TextStyle(color: C.faint, fontSize: 13))),
+        Expanded(child: WebTrackLine(track: t, showCover: cover, list: tracks)),
+      ]),
+    ));
+  }
+  return out;
 }

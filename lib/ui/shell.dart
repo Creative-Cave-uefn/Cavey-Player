@@ -303,7 +303,13 @@ class _ShellState extends State<Shell> {
                       child: Row(children: [
                         Expanded(
                           child: Stack(children: [
-                            Positioned.fill(child: _content(nav, compact)),
+                            // Свой слой для подсветки строк с обрезкой по краю: иначе подсветка рисуется
+                            // на общем слое окна и вылезает поверх плеера у нижних строк
+                            Positioned.fill(
+                              child: ClipRect(
+                                child: Material(type: MaterialType.transparency, child: _content(nav, compact)),
+                              ),
+                            ),
                             if (!cinema && !waveLive) // З4: стрелок на странице волны нет
                             Positioned(
                               top: 4,

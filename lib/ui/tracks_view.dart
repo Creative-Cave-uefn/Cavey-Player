@@ -12,6 +12,8 @@ import 'download_view.dart';
 import 'library_views.dart';
 import 'shell.dart';
 import 'share_dialog.dart';
+import 'album_edit.dart';
+import 'album_missing.dart';
 import 'theme.dart';
 import 'wave_view.dart';
 import 'widgets.dart';
@@ -150,13 +152,16 @@ class AlbumPage extends StatelessWidget {
         }
         final tail = [if (album.year.isNotEmpty) album.year, countTracks(album.tracks.length)];
         final nav = NavScope.of(context);
+        // Все причастные к альбому исполнители — ссылками, самые частые первыми
         final artistParts = <LinkPart>[];
-        final names = splitArtists(album.artist);
-        for (var i = 0; i < names.length; i++) {
+        final names = album.artists.isEmpty ? splitArtists(album.artist) : album.artists;
+        const shown = 6;
+        for (var i = 0; i < names.length && i < shown; i++) {
           if (i > 0) artistParts.add(const LinkPart(', '));
           final key = names[i].toLowerCase();
           artistParts.add(LinkPart(names[i], () => nav.go(Nav('artist', key))));
         }
+        if (names.length > shown) artistParts.add(LinkPart(' и ещё ${names.length - shown}'));
         return TracksPage(
           title: album.title,
           // Исполнитель альбома — ссылка на его страницу
@@ -168,15 +173,20 @@ class AlbumPage extends StatelessWidget {
           cover: album.coverTrack,
           numbered: true,
           compact: compact,
+          onEditCover: () => editAlbumDialog(context, album),
+          editCoverTooltip: 'Изменить альбом',
+          footer: MissingAlbumTracks(album: album),
           actions: [
             GlassMenuButton<String>(
               tooltip: 'Ещё',
               icon: const Icon(Icons.more_horiz_rounded),
               onSelected: (v) {
+                if (v == 'edit') editAlbumDialog(context, album);
                 if (v == 'cover') changeAlbumCover(context, album);
                 if (v == 'reset') app.lib.setAlbumCover(album.key, '');
               },
               itemBuilder: (_) => [
+                const PopupMenuItem(value: 'edit', child: Text('Изменить альбом…')),
                 const PopupMenuItem(value: 'cover', child: Text('Изменить обложку…')),
                 if (app.lib.albumCover(album.key) != null)
                   const PopupMenuItem(value: 'reset', child: Text('Вернуть обложку из файлов')),
@@ -232,6 +242,8 @@ class PlaylistPage extends StatelessWidget {
           tracks: tracks,
           playlistId: playlistId,
           compact: compact,
+          onEditCover: () => editPlaylistDialog(context, p, coverTrack: coverTrack),
+          editCoverTooltip: 'Изменить плейлист',
           onReorder: (track, after) => lib.movePlaylistItem(playlistId, track.id, after?.id),
           actions: [
             OfflineButton(
@@ -332,6 +344,10 @@ class TracksPage extends StatefulWidget {
   /// Шапка как в профилях: цветной градиент сверху, заголовок и кнопки по центру
   final Color? heroColor;
 
+  /// Карандаш на обложке в шапке (появляется при наведении): правка альбома или плейлиста
+  final VoidCallback? onEditCover;
+  final String editCoverTooltip;
+
   const TracksPage({
     super.key,
     required this.title,
@@ -351,6 +367,8 @@ class TracksPage extends StatefulWidget {
     this.image,
     this.footer,
     this.heroColor,
+    this.onEditCover,
+    this.editCoverTooltip = 'Изменить',
   });
 
   @override
@@ -827,12 +845,14 @@ class _TracksPageState extends State<TracksPage> {
           widget.image!,
           const SizedBox(width: 28),
         ] else if (widget.cover != null || widget.coverFileId != null) ...[
-          CoverImage(
-              track: widget.cover,
-              fileId: widget.coverFileId,
-              label: widget.coverLabel,
-              size: widget.compact ? 120 : 176,
-              radius: 12),
+          HeaderCover(
+            track: widget.cover,
+            fileId: widget.coverFileId,
+            label: widget.coverLabel,
+            size: widget.compact ? 120 : 176,
+            onEdit: widget.onEditCover,
+            editTooltip: widget.editCoverTooltip,
+          ),
           const SizedBox(width: 28),
         ],
         Expanded(

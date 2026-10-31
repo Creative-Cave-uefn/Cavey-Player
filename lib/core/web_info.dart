@@ -80,8 +80,11 @@ class WebTrack {
   final int albumId;
   final String album;
   final String cover;
+
+  /// Номер диска в альбоме (у многодисковых изданий), 1 — если не знаем
+  final int disc;
   const WebTrack(this.id, this.title, this.artist, this.preview, this.seconds, this.link,
-      {this.artistId = 0, this.albumId = 0, this.album = '', this.cover = ''});
+      {this.artistId = 0, this.albumId = 0, this.album = '', this.cover = '', this.disc = 1});
 
   /// Из ответа Deezer; [album] — если трек пришёл в составе альбома
   static WebTrack fromDeezer(Map x, {Map? album}) {
@@ -98,6 +101,7 @@ class WebTrack {
       albumId: (al?['id'] as num?)?.toInt() ?? 0,
       album: '${al?['title'] ?? ''}',
       cover: '${al?['cover_medium'] ?? al?['cover_big'] ?? ''}',
+      disc: (x['disk_number'] as num?)?.toInt() ?? 1,
     );
   }
 }
@@ -384,13 +388,36 @@ class WebInfoService extends ChangeNotifier {
   Future<List<WebTrack>> albumTracks(int albumId) async {
     final hit = _tracks[albumId];
     if (hit != null) return hit;
-    final j = await _deezer('/album/$albumId/tracks', {'limit': '100'});
-    final list = [
-      for (final x in (j['data'] as List? ?? const []))
-        if (x is Map)
-          WebTrack.fromDeezer(x)
-    ];
+    final list = [for (final x in await _allAlbumTracks(albumId)) WebTrack.fromDeezer(x)];
     return _tracks[albumId] = list;
+  }
+
+  /// Все треки альбома: страница за страницей, пока не наберётся «total» (многодисковые издания — сотни треков)
+  Future<List<Map>> _allAlbumTracks(int albumId, {Map? first, int? total}) async {
+    final out = <Map>[];
+    final seen = <Object?>{};
+    void addAll(Map? page) {
+      for (final x in (page?['data'] as List? ?? const [])) {
+        if (x is Map && seen.add(x['id'])) out.add(x);
+      }
+    }
+
+    final want = (first?['total'] as num?)?.toInt() ?? total;
+    if (first != null && want != null && (first['data'] as List? ?? const []).length >= want) {
+      addAll(first);
+      return out;
+    }
+    var index = 0;
+    for (var guard = 0; guard < 40; guard++) {
+      final page = await _deezer('/album/$albumId/tracks', {'limit': '100', 'index': '$index'});
+      final data = page['data'] as List? ?? const [];
+      addAll(page);
+      index += data.length;
+      final all = (page['total'] as num?)?.toInt() ?? 0;
+      if (data.isEmpty || index >= all) break;
+    }
+    if (out.isEmpty) addAll(first);
+    return out;
   }
 
   // ---------- страницы исполнителя и альбома, поиск ----------
@@ -442,10 +469,8 @@ class WebInfoService extends ChangeNotifier {
     if (known != null && cached != null) return (known, cached);
     final j = await _deezer('/album/$id');
     final album = WebAlbum.fromDeezer(j);
-    final tracks = [
-      for (final x in ((j['tracks'] as Map?)?['data'] as List? ?? const []))
-        if (x is Map) WebTrack.fromDeezer(x, album: j)
-    ];
+    // В сведениях об альбоме только первые 25 треков; остальные диски догружаем страницами
+    final tracks = [for (final x in await _allAlbumTracks(id, first: j['tracks'] as Map?, total: (j['nb_tracks'] as num?)?.toInt())) WebTrack.fromDeezer(x, album: j)];
     _albumsById[id] = album;
     _tracks[id] = tracks;
     return (album, tracks);
@@ -467,6 +492,46 @@ class WebInfoService extends ChangeNotifier {
       artists: [for (final x in data(r[2])) WebArtist.fromDeezer(x)],
     );
   }
+
+  final Map<String, Future<WebAlbum?>> _findAlbum = {};
+
+  /// Ищет в Deezer тот же альбом, что в библиотеке: название должно совпасть (без скобок, регистра и знаков),
+  /// исполнитель — совпасть или входить в название исполнителя Deezer. Не нашёлся уверенно — null
+  Future<WebAlbum?> findAlbum(String title, List<String> artists) {
+    final key = '${_normTitle(title)}|${artists.take(3).map(_key).join(',')}';
+    return _findAlbum[key] ??= () async {
+      final want = _normTitle(title);
+      if (want.isEmpty) return null;
+      final names = [for (final a in artists.take(3)) _normTitle(a)]..removeWhere((n) => n.isEmpty);
+      bool artistOk(WebAlbum a) {
+        final have = _normTitle(a.artist);
+        if (names.isEmpty) return true;
+        return names.any((n) => have == n || have.contains(n) || n.contains(have));
+      }
+
+      final queries = [
+        if (names.isNotEmpty) 'artist:"${artists.first}" album:"$title"',
+        '${artists.isEmpty ? '' : artists.first} $title'.trim(),
+      ];
+      for (final q in queries) {
+        try {
+          final j = await _deezer('/search/album', {'q': q, 'limit': '15'}, true);
+          final list = [for (final x in (j['data'] as List? ?? const [])) if (x is Map) WebAlbum.fromDeezer(x)];
+          // Самый полный вариант: у переизданий бывает больше треков
+          final hits = list.where((a) => _normTitle(a.title) == want && artistOk(a)).toList()
+            ..sort((a, b) => b.tracks.compareTo(a.tracks));
+          if (hits.isNotEmpty) return hits.first;
+        } catch (_) {
+          return null;
+        }
+      }
+      return null;
+    }();
+  }
+
+  /// Нормализованное название трека для сравнения: без скобок («(Remastered)», «(feat. …)»), feat. и знаков
+  static String trackTitleKey(String s) =>
+      _normTitle(s.replaceAll(RegExp(r'\s+(feat\.?|ft\.?|featuring)\s+.*$', caseSensitive: false), ''));
 
   // ---------- что уже есть в библиотеке ----------
 

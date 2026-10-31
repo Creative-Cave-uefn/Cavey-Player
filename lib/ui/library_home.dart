@@ -43,10 +43,8 @@ class LibraryHomePage extends StatelessWidget {
         final seen = <String>{};
         final byKey = {for (final a in albums) a.key: a};
         for (final t in lib.recent) {
-          if (seen.add(t.albumKey)) {
-            final a = byKey[t.albumKey];
-            if (a != null) recentAlbums.add(a);
-          }
+          final a = lib.album(t.albumKey);
+          if (a != null && seen.add(a.key)) recentAlbums.add(a);
           if (recentAlbums.length >= 18) break;
         }
 
@@ -57,7 +55,8 @@ class LibraryHomePage extends StatelessWidget {
           for (final day in me.plays.values) {
             day.forEach((id, n) {
               final t = lib.data.tracks[lib.data.resolve(id)];
-              if (t != null) plays[t.albumKey] = (plays[t.albumKey] ?? 0) + n;
+              final k = t == null ? null : lib.album(t.albumKey)?.key;
+              if (k != null) plays[k] = (plays[k] ?? 0) + n;
             });
           }
         }

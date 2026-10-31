@@ -150,7 +150,7 @@ Future<PlaylistInfo?> yandexPlaylist(String url) async {
 // ---------- Deezer ----------
 // Открытый API без ключа: трек и альбом целиком, с номерами, годом и обложкой
 
-TrackMeta _deezerMeta(Map t, {Map? album, int? number, int? total}) {
+TrackMeta _deezerMeta(Map t, {Map? album, int? number, int? total, int discs = 1}) {
   final alb = album ?? (t['album'] as Map?) ?? const {};
   final contributors = [for (final c in (t['contributors'] as List? ?? const [])) if (c is Map) '${c['name']}'];
   final main = '${(t['artist'] as Map?)?['name'] ?? ''}';
@@ -164,6 +164,7 @@ TrackMeta _deezerMeta(Map t, {Map? album, int? number, int? total}) {
     album: '${alb['title'] ?? ''}',
     year: date.length >= 4 ? date.substring(0, 4) : '',
     track: n != null && total != null ? '$n/$total' : (n?.toString() ?? ''),
+    disc: discs > 1 && t['disk_number'] is num ? '${(t['disk_number'] as num).toInt()}/$discs' : '',
     duration: (t['duration'] as num?)?.toDouble(),
     coverUrl: (alb['cover_xl'] ?? alb['cover_big']) as String?,
   );
@@ -219,13 +220,62 @@ Future<TrackMeta?> deezerFind(String text) async {
   return deezerTrack('https://www.deezer.com/track/$id');
 }
 
+/// Сколько дисков в альбоме по номерам дисков у треков
+int albumDiscCount(List<Map> tracks) {
+  var most = 1;
+  for (final t in tracks) {
+    final d = (t['disk_number'] as num?)?.toInt() ?? 1;
+    if (d > most) most = d;
+  }
+  return most;
+}
+
+/// Все треки альбома Deezer: страница за страницей, пока не наберётся «total».
+/// [first] — кусок, который уже пришёл в сведениях об альбоме (не больше 25 треков)
+Future<List<Map>> deezerAlbumTracks(String albumId, {Map? first, int? total}) async {
+  final out = <Map>[];
+  final seen = <Object?>{};
+  void addAll(Map? page) {
+    for (final t in (page?['data'] as List? ?? const [])) {
+      if (t is Map && seen.add(t['id'])) out.add(t);
+    }
+  }
+
+  final want = (first?['total'] as num?)?.toInt() ?? total;
+  if (first != null && want != null && (first['data'] as List? ?? const []).length >= want) {
+    addAll(first);
+    return out;
+  }
+  for (var index = 0, guard = 0; guard < 40; guard++) {
+    final page = jsonDecode(await fetchText('https://api.deezer.com/album/$albumId/tracks?limit=100&index=$index')) as Map;
+    if (page['error'] != null) break;
+    final data = page['data'] as List? ?? const [];
+    addAll(page);
+    index += data.length;
+    final all = (page['total'] as num?)?.toInt() ?? 0;
+    if (data.isEmpty || index >= all) break;
+  }
+  if (out.isEmpty) addAll(first);
+  return out;
+}
+
 Future<(String, List<TrackMeta>)?> deezerAlbum(String url) async {
   final m = RegExp(r'/album/(\d+)').firstMatch(url);
   if (m == null) return null;
   final a = jsonDecode(await fetchText('https://api.deezer.com/album/${m.group(1)}')) as Map;
   if (a['error'] != null) return null;
-  final tracks = [for (final t in ((a['tracks'] as Map?)?['data'] as List? ?? const [])) if (t is Map) t];
-  final metas = [for (var i = 0; i < tracks.length; i++) _deezerMeta(tracks[i], album: a, number: i + 1, total: tracks.length)];
+  // В сведениях об альбоме Deezer отдаёт только первые 25 треков: остальные (и другие диски) — постранично
+  final tracks = await deezerAlbumTracks(m.group(1)!, first: a['tracks'] as Map?, total: (a['nb_tracks'] as num?)?.toInt());
+  final discs = albumDiscCount(tracks);
+  final metas = <TrackMeta>[];
+  for (var i = 0; i < tracks.length; i++) {
+    final t = tracks[i];
+    final d = (t['disk_number'] as num?)?.toInt() ?? 1;
+    // Номер трека — внутри своего диска; на одном диске — по порядку, как раньше
+    final onDisc = tracks.where((x) => ((x['disk_number'] as num?)?.toInt() ?? 1) == d).length;
+    final n = discs > 1 ? ((t['track_position'] as num?)?.toInt() ?? i + 1) : i + 1;
+    metas.add(_deezerMeta(t, album: a, number: n, total: discs > 1 ? onDisc : tracks.length, discs: discs));
+  }
   final artist = '${(a['artist'] as Map?)?['name'] ?? ''}';
   return ('$artist - ${a['title']}'.replaceAll(RegExp(r'^[ \-]+|[ \-]+$'), ''), metas);
 }
