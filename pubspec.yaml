@@ -38,7 +38,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/vk_bridge.py
+    - assets/deezer_bridge.py
     - assets/app_icon.ico
     - assets/taskbar/prev.ico
     - assets/taskbar/play.ico

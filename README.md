@@ -14,9 +14,9 @@
 
 ## Источники музыки
 
-В разделе «Скачать» и настройках доступен **один активный загрузчик**: YouTube, Soulseek через Sockseek, Bandcamp или VK Музыка.
+В разделе «Скачать» и настройках доступен **один активный загрузчик**: YouTube, Soulseek через Sockseek, Bandcamp или Deezer.
 Bandcamp принимает прямые ссылки на треки и альбомы и сохраняет доступный аудиопоток в MP3; платные оригиналы и lossless-файлы не предоставляются.
-VK Музыка использует VKpyMusic 4.0.2; для Windows необходим установленный Python 3.10+ (рекомендуется 3.13), а для входа — локальная интерактивная авторизация VK. Доступность треков зависит от VK и прав аккаунта. SoundCloud выключен, Zotify удалён. Подробнее: [docs/downloaders.md](docs/downloaders.md) и [docs/vk-music.md](docs/vk-music.md).
+Deezer использует kmille/deezer-downloader 2.15.0, устанавливаемый в локальный Python-venv (Python 3.10+). Для подключения требуется собственный ARL-cookie Deezer; он остаётся в локальном конфиге. Поддерживаются точный поиск и ссылки на треки, альбомы и плейлисты Deezer. SoundCloud выключен, Zotify удалён. Подробнее: [docs/downloaders.md](docs/downloaders.md) и [docs/deezer.md](docs/deezer.md).
 
 ## Что умеет
 

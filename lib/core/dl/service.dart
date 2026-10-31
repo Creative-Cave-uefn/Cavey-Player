@@ -1,5 +1,5 @@
 // Очередь загрузок Cave Player: один выбранный источник (YouTube, Sockseek,
-// Bandcamp, VK) → аудиофайл → папка библиотеки на Google Диске.
+// Bandcamp, Deezer) → аудиофайл → папка библиотеки на Google Диске.
 
 import 'dart:async';
 import 'dart:convert';
@@ -17,7 +17,7 @@ import 'tools.dart';
 import 'youtube.dart';
 import 'bandcamp.dart';
 import 'sockseek.dart';
-import 'vk.dart';
+import 'deezer.dart';
 
 const albumWorkers = 3;
 
@@ -158,12 +158,12 @@ class DownloadService extends ChangeNotifier {
     await temp.create(recursive: true);
     AppLog.info('Загрузчик: ${job.input}');
     try {
-      if (lib.settings.downloadProvider == 'vk') {
-        final result = await _vk(job, temp, log);
+      if (lib.settings.downloadProvider == 'deezer') {
+        final result = await _deezer(job, temp, log);
         job.state = result ? JobState.done : JobState.failed;
         if (job.done > 0 && !job.quiet) {
           lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
-          lib.messages.add('VK: добавлено треков — ${job.done} из ${job.total}');
+          lib.messages.add('Deezer: добавлено треков — ${job.done} из ${job.total}');
         }
         return;
       }
@@ -228,14 +228,14 @@ class DownloadService extends ChangeNotifier {
     }
   }
 
-  /// VK is an exclusive optional source. No YouTube fallback or automatic source switching.
-  Future<bool> _vk(DownloadJob job, Directory temp, void Function(String) log) async {
-    if (!VkMusic.accepts(job.input)) {
-      throw FormatException('VK: вставьте «Исполнитель - Название», ссылку на аудио или плейлист VK.');
+  /// Deezer is an exclusive optional source. No YouTube fallback or automatic source switching.
+  Future<bool> _deezer(DownloadJob job, Directory temp, void Function(String) log) async {
+    if (!DeezerMusic.accepts(job.input)) {
+      throw FormatException('Deezer: вставьте «Исполнитель - Название» либо ссылку deezer.com/track/, /album/ или /playlist/.');
     }
-    log('VK Музыка: запрашиваю треки через локальный VKpyMusic…');
-    final output = Directory('${temp.path}${Platform.pathSeparator}vk');
-    final result = await VkMusic.download(tools, job.input, output, log);
+    log('Deezer: получаю доступные записи через локальный deezer-downloader…');
+    final output = Directory('${temp.path}${Platform.pathSeparator}deezer');
+    final result = await DeezerMusic.download(tools, job.input, output, log);
     job.total = result.total;
     for (final entry in result.tracks) {
       final meta = TrackMeta(artist: entry.artist, title: entry.title);
@@ -253,13 +253,13 @@ class DownloadService extends ChangeNotifier {
             sourceId: job.sourceId, folderId: job.target, path: job.path);
         job.done++;
         job.title = meta.label;
-        try { job.onTrack?.call(track); } catch (e) { AppLog.warn('VK: после загрузки', e); }
-        log('VK: загружен ${meta.label}');
+        try { job.onTrack?.call(track); } catch (e) { AppLog.warn('Deezer: после загрузки', e); }
+        log('Deezer: загружен ${meta.label}');
         _notify();
       } catch (e) {
         job.failed++;
         job.failedNames.add(meta.label);
-        log('VK: не удалось добавить ${meta.label}: $e');
+        log('Deezer: не удалось добавить ${meta.label}: $e');
       }
     }
     job.failed += result.failed;
