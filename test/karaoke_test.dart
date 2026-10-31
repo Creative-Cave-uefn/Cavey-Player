@@ -124,17 +124,17 @@ void main() {
       final ends = [for (var i = 0; i < 4; i++) ms(14000 + i * 4000)];
       // На записи те же слова звучат на 5 с позже
       final heard = <HeardWord>[];
-      var t = 15000;
-      for (final line in ['я иду домой', 'под дождём по', 'длинной дороге', 'в ночь домой']) {
-        for (final w in line.split(' ')) {
+      final texts = ['я иду домой', 'под дождём по', 'длинной дороге', 'в ночь домой'];
+      for (var li = 0; li < texts.length; li++) {
+        var t = 15000 + li * 4000; // каждая строка звучит ровно на 5 с позже отметки в тексте
+        for (final w in texts[li].split(' ')) {
           heard.add(HeardWord(w, ms(t), ms(t + 300)));
           t += 400;
         }
-        t += 2400;
       }
       expect(words.isNotEmpty, true);
       final shift = KaraokeAligner.globalShift(shifted, heard);
-      expect(shift.inMilliseconds, inInclusiveRange(3800, 6200));
+      expect(shift.inMilliseconds, inInclusiveRange(4000, 6000));
       final r = KaraokeAligner.align(shifted, ends, heard);
       expect(r[0], isNotNull);
     });
