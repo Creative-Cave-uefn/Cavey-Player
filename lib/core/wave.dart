@@ -293,14 +293,18 @@ class WaveTrial {
   final String id; // id файла на Диске
   final String key; // «исполнитель|название» — чтобы не скачать его снова после удаления
   final DateTime at; // когда загружен
-  WaveTrial(this.id, this.key, this.at);
+  DateTime? until; // до какого времени живёт; дослушанный целиком трек продлевается (Д10)
+  WaveTrial(this.id, this.key, this.at, {this.until});
 
-  Map<String, dynamic> toJson() => {'id': id, 'k': key, 'at': at.toUtc().toIso8601String()};
+  DateTime get expires => until ?? at.add(waveTrialTime);
+
+  Map<String, dynamic> toJson() =>
+      {'id': id, 'k': key, 'at': at.toUtc().toIso8601String(), if (until != null) 'until': until!.toUtc().toIso8601String()};
   static WaveTrial? fromJson(dynamic j) {
     if (j is! Map) return null;
     final at = DateTime.tryParse('${j['at']}');
     if (at == null || j['id'] == null) return null;
-    return WaveTrial('${j['id']}', '${j['k'] ?? ''}', at);
+    return WaveTrial('${j['id']}', '${j['k'] ?? ''}', at, until: DateTime.tryParse('${j['until'] ?? ''}'));
   }
 }
 
@@ -314,6 +318,9 @@ class _Fresh {
 
 /// Сколько живёт скачанный волной трек, если его никто не сохранил
 const waveTrialTime = Duration(hours: 24);
+
+/// На сколько дней продлевается трек, который дослушали до конца
+const waveTrialExtended = Duration(days: 7);
 
 /// «Моя волна»: бесконечная очередь, которая подстраивается по ходу.
 /// Дослушали — больше такого, пропустили в начале — меньше, «не нравится» — больше не ставим.
@@ -788,7 +795,20 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     final total = Duration(milliseconds: t.durationMs ?? 0);
     final early = skipped && listened < const Duration(seconds: 30);
     final finished = !skipped || (total > Duration.zero && listened.inMilliseconds > total.inMilliseconds * 0.7);
+    final trial = trials[t.id];
+    if (trial != null && finished && !early) {
+      // Д10: дослушали — трек заслужил ещё неделю и может прозвучать снова
+      final until = DateTime.now().add(waveTrialExtended);
+      if (until.isAfter(trial.expires)) trial.until = until;
+    }
     if (early) {
+      // Д10: ранний пропуск пробного трека — удаляем сразу (через корзину), если его никто не сохранил
+      if (trial != null && !_kept(t.id)) {
+        Timer(const Duration(seconds: 2), () {
+          final cur = trials[t.id];
+          if (cur != null && player.current?.id != t.id && !_kept(t.id)) _drop(cur);
+        });
+      }
       taste.skips[t.id] = (taste.skips[t.id] ?? 0) + 1;
       for (final k in keys) {
         taste.bump(k, -0.6);
@@ -1178,6 +1198,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   /// Трек остаётся, если его кто-то лайкнул, добавил в плейлист или послушал второй раз
   bool _kept(String id) {
+    // Д12: в этот трек объединили другие копии (их файлы ушли в корзину) — он теперь единственный экземпляр
+    if (lib.data.merged.keys.any((k) => lib.data.resolve(k) == id)) return true;
     if (lib.data.likes[id]?.isNotEmpty ?? false) return true;
     if (lib.data.playlists.any((p) => p.items.contains(id))) return true;
     return social.playsOf(id) >= 2;
@@ -1187,7 +1209,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   (bool, Duration) trialState(String id) {
     final t = trials[id];
     if (t == null) return (true, Duration.zero);
-    final left = t.at.add(waveTrialTime).difference(DateTime.now());
+    final left = t.expires.difference(DateTime.now());
     return (_kept(id), left.isNegative ? Duration.zero : left);
   }
 
@@ -1225,7 +1247,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       }
       // Пока играет — не трогаем
       if (player.current?.id == id) continue;
-      if (DateTime.now().difference(t.at) >= waveTrialTime) {
+      if (!DateTime.now().isBefore(t.expires)) {
         _drop(t);
         removed++;
       }
