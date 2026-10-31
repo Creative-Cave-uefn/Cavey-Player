@@ -396,6 +396,13 @@ class DownloadService extends ChangeNotifier {
 
   /// Просто текст: лучший вариант с YouTube
   Future<bool> _search(DownloadJob job, YouTube yt, Directory temp, String text, void Function(String) log) async {
+    // Сначала узнаём песню в Deezer: с её длительностью на YouTube выбирается студийная запись,
+    // а теги и обложка берутся настоящие
+    TrackMeta? found;
+    try {
+      found = await deezerFind(text);
+    } catch (_) {}
+    if (found != null) return _single(job, yt, temp, found, 'Deezer', log);
     final (artist, title) = text.contains(' - ') ? splitArtistTitle('', text) : ('', text);
     final meta = TrackMeta(artist: artist, title: title.isEmpty ? text : title);
     job.total = 1;
