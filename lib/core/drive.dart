@@ -28,6 +28,7 @@ class DriveFile {
   final String name;
   final String mimeType;
   final int size;
+  final String md5; // контрольная сумма файла (у файлов Google-документов её нет)
   final String modifiedTime;
   final String createdTime;
   final String ownerEmail;
@@ -38,6 +39,7 @@ class DriveFile {
         name = (j['name'] as String?) ?? '',
         mimeType = (j['mimeType'] as String?) ?? '',
         size = int.tryParse('${j['size'] ?? 0}') ?? 0,
+        md5 = (j['md5Checksum'] as String?) ?? '',
         modifiedTime = (j['modifiedTime'] as String?) ?? '',
         createdTime = (j['createdTime'] as String?) ?? '',
         ownerEmail = _person(j)['emailAddress'] ?? '',
@@ -56,7 +58,7 @@ class DriveFile {
     return const {};
   }
 
-  static const fields = 'id,name,mimeType,size,modifiedTime,createdTime,owners(emailAddress,displayName),lastModifyingUser(emailAddress,displayName)';
+  static const fields = 'id,name,mimeType,size,md5Checksum,modifiedTime,createdTime,owners(emailAddress,displayName),lastModifyingUser(emailAddress,displayName)';
 }
 
 /// Достаёт ID папки или файла из ссылки Google Диска (или возвращает строку как есть).
@@ -266,7 +268,7 @@ class DriveApi {
     return DriveFile.fromJson(jsonDecode(res.body) as Map);
   }
 
-  /// Удаляет файл с Диска безвозвратно (может только владелец)
+  /// Удаляет файл с Диска безвозвратно (может только владелец). Для музыки не используется: там [trash]
   Future<void> deleteFile(String email, String id) async {
     await send(email, 'DELETE', api('files/$id'));
   }

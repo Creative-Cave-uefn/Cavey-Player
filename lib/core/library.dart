@@ -768,13 +768,15 @@ class LibraryController extends ChangeNotifier {
       final cover = covers[f.folder];
       if (old == null || old.modified != f.file.modifiedTime) {
         toParse.add(f);
-      } else if (old.cover != cover) {
+      } else if (old.cover != cover || (old.md5.isEmpty && f.file.md5.isNotEmpty)) {
+        // обложка поменялась или у старой записи ещё нет md5 — обновляем без чтения тегов
         final j = old.toJson();
         if (cover != null) {
           j['c'] = cover;
         } else {
           j.remove('c');
         }
+        if (f.file.md5.isNotEmpty) j['md5'] = f.file.md5;
         upserts[old.id] = j;
       }
     }
@@ -810,6 +812,7 @@ class LibraryController extends ChangeNotifier {
         cover: covers[f.folder],
         modified: f.file.modifiedTime,
         size: f.file.size,
+        md5: f.file.md5,
         by: f.file.ownerEmail,
         path: f.path,
         added: f.file.createdTime,
@@ -1175,13 +1178,14 @@ class LibraryController extends ChangeNotifier {
 
   // ---------- удаление с Диска ----------
 
-  /// Удаляет треки полностью: из библиотеки у всех сразу, а файлы — с Диска их владельцев.
+  /// Удаляет треки: из библиотеки у всех сразу, а файлы — в корзину Диска их владельцев (30 дней можно вернуть).
   /// Свои файлы удаляются сразу, чужие — когда владелец откроет Cave Player
   /// (удалить чужой файл Google Диск не даёт никому, кроме владельца)
   void deleteTracks(Iterable<Track> list) {
     final ids = {for (final t in list) t.id: t.by};
     if (ids.isEmpty) return;
-    commit({'op': 'deleteTracks', 'ids': ids});
+    final names = {for (final t in list) t.id: '${t.displayArtist} — ${t.title}'};
+    commit({'op': 'deleteTracks', 'ids': ids, 'names': names, if (me != null) 'by': me});
     AppLog.info('Удаление с Диска: ${ids.length}');
     unawaited(processDeletions());
   }
@@ -1207,6 +1211,33 @@ class LibraryController extends ChangeNotifier {
   /// Чьи файлы удалены, но ещё лежат на Диске и я их владелец — удаляем
   bool _purging = false;
 
+  /// Мои файлы, которые удалил друг: сами не удаляем, спрашиваем (А3). id → кто предложил
+  Map<String, String> get foreignDeletions {
+    final mine = {for (final a in accounts.accounts) a.email.toLowerCase()};
+    return {
+      for (final e in data.deleted.entries)
+        if (mine.contains(e.value.toLowerCase()) &&
+            (data.deletedBy[e.key] ?? '').isNotEmpty &&
+            !mine.contains(data.deletedBy[e.key]!.toLowerCase()))
+          e.key: data.deletedBy[e.key]!
+    };
+  }
+
+  /// «Удалить» — файл уходит в корзину Диска
+  Future<void> approveForeignDeletions(Iterable<String> ids) async {
+    for (final id in ids) {
+    }
+    commit({'op': 'approveDeletion', 'ids': ids.toList()});
+    await processDeletions();
+  }
+
+  /// «Оставить» — снимаем отметку, ближайший скан вернёт трек в библиотеку
+  Future<void> keepForeignDeletions(Iterable<String> ids) async {
+    commit({'op': 'purged', 'ids': ids.toList()});
+    AppLog.info('Оставлены файлы, которые предлагали удалить: ${ids.length}');
+    unawaited(scanAll(quiet: true));
+  }
+
   Future<int> processDeletions() async {
     if (_purging || data.deleted.isEmpty) return 0;
     _purging = true;
@@ -1216,8 +1247,11 @@ class LibraryController extends ChangeNotifier {
         final owner = e.value.toLowerCase();
         final acc = accounts.accounts.where((a) => a.email.toLowerCase() == owner).firstOrNull;
         if (acc == null) continue; // не мой файл — удалит владелец
+        // Удаление записал не я и не владелец (я им стал) — ждёт моего подтверждения
+        final by = (data.deletedBy[e.key] ?? '').toLowerCase();
+        if (by != owner && !accounts.accounts.any((a) => a.email.toLowerCase() == by)) continue;
         try {
-          await drive.deleteFile(acc.email, e.key);
+          await drive.trash(acc.email, e.key); // в корзину Диска, не навсегда
           done.add(e.key);
         } on DriveException catch (err) {
           if (err.notFound) {
@@ -1239,16 +1273,17 @@ class LibraryController extends ChangeNotifier {
     return done.length;
   }
 
-  /// Точные копии (та же песня и тот же размер файла — один и тот же файл в разных папках)
-  /// объединяем сами. Выбор однозначный, поэтому у всех друзей остаётся одна и та же копия.
+  /// Точные копии (та же песня и одинаковая md5-сумма файла) объединяем сами.
+  /// Выбор однозначный, поэтому у всех друзей остаётся одна и та же копия.
+  /// Записи без md5 (старые, ещё не пересканированные) не трогаем.
   int mergeExactCopies() {
     var n = 0;
     for (final g in duplicates) {
-      final bySize = <int, List<Track>>{};
+      final byHash = <String, List<Track>>{};
       for (final t in g) {
-        if (t.size > 0) bySize.putIfAbsent(t.size, () => []).add(t);
+        if (t.md5.isNotEmpty) byHash.putIfAbsent(t.md5, () => []).add(t);
       }
-      for (final same in bySize.values.where((l) => l.length > 1)) {
+      for (final same in byHash.values.where((l) => l.length > 1)) {
         final keep = bestOf(same);
         mergeAndDelete(keep, same);
         n += same.length - 1;
@@ -1564,6 +1599,7 @@ class LibraryController extends ChangeNotifier {
       cover: null,
       modified: f.modifiedTime,
       size: f.size,
+      md5: f.md5,
       by: me ?? who,
       path: path,
       added: f.createdTime,

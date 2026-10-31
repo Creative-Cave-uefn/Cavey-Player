@@ -14,6 +14,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
@@ -32,6 +33,7 @@ class BuildInfo {
   final DateTime? published;
   final String url;
   final int size;
+  final String sha256; // из данных релиза GitHub; пусто — проверяем только размер
   final bool beta;
 
   const BuildInfo({
@@ -42,6 +44,7 @@ class BuildInfo {
     required this.published,
     required this.url,
     required this.size,
+    this.sha256 = '',
     this.beta = false,
   });
 
@@ -50,6 +53,14 @@ class BuildInfo {
 
   /// Первая строка описания — обычно заголовок коммита
   String get summary => notes.split('\n').firstWhere((l) => l.trim().isNotEmpty, orElse: () => '').trim();
+}
+
+class _DigestSink implements Sink<crypto.Digest> {
+  crypto.Digest? value;
+  @override
+  void add(crypto.Digest data) => value = data;
+  @override
+  void close() {}
 }
 
 class Updater extends ChangeNotifier {
@@ -143,6 +154,12 @@ class Updater extends ChangeNotifier {
 
   // ---------- где лежат сборки ----------
 
+  /// sha256 файла из данных релиза («sha256:…»), если GitHub его отдаёт
+  static String _digest(Map a) {
+    final d = '${a['digest'] ?? ''}';
+    return d.startsWith('sha256:') ? d.substring(7).toLowerCase() : '';
+  }
+
   static Map? _asset(Map release) {
     for (final a in (release['assets'] as List? ?? const [])) {
       if (a is Map && a['name'] == _assetName) return a;
@@ -178,6 +195,7 @@ class Updater extends ChangeNotifier {
           published: DateTime.tryParse('${r['published_at']}'),
           url: '${a['browser_download_url']}',
           size: (a['size'] as num?)?.toInt() ?? 0,
+          sha256: _digest(a),
         );
       }
     }
@@ -213,6 +231,7 @@ class Updater extends ChangeNotifier {
         published: DateTime.tryParse('${r['published_at']}'),
         url: '${a['browser_download_url']}',
         size: (a['size'] as num?)?.toInt() ?? 0,
+          sha256: _digest(a),
       ));
     }
     list.sort((a, b) => isNewer(a.version, b.version) ? -1 : (isNewer(b.version, a.version) ? 1 : 0));
@@ -237,6 +256,7 @@ class Updater extends ChangeNotifier {
         published: DateTime.tryParse('${r['published_at']}'),
         url: '${a['browser_download_url']}',
         size: (a['size'] as num?)?.toInt() ?? 0,
+          sha256: _digest(a),
       );
     }
     return best;
@@ -312,7 +332,7 @@ class Updater extends ChangeNotifier {
         notifyListeners();
         return;
       }
-      final path = await _download(target.url, target.version, target.size);
+      final path = await _download(target.url, target.version, target.size, target.sha256);
       await store.writeJson('update.json', {'version': target.version, 'path': path});
       state = UpdateState.ready;
     } catch (e) {
@@ -332,7 +352,7 @@ class Updater extends ChangeNotifier {
     latest = b.version;
     error = null;
     try {
-      final path = await _download(b.url, b.branch.isEmpty ? b.version : '${b.version}-${b.slug}', b.size);
+      final path = await _download(b.url, b.branch.isEmpty ? b.version : '${b.version}-${b.slug}', b.size, b.sha256);
       // Скачанное раньше автообновление больше не нужно
       await _forget(null);
       AppLog.info('Ставлю ${b.beta ? 'бета-версию' : b.stable ? 'версию' : 'тестовую сборку ${b.branch}'} ${b.version}');
@@ -361,7 +381,7 @@ class Updater extends ChangeNotifier {
     }
   }
 
-  Future<String> _download(String url, String version, int size) async {
+  Future<String> _download(String url, String version, int size, [String sha256 = '']) async {
     state = UpdateState.downloading;
     progress = 0;
     notifyListeners();
@@ -373,9 +393,12 @@ class Updater extends ChangeNotifier {
       if (res.statusCode != 200) throw Exception('загрузка ответила ${res.statusCode}');
       final total = res.contentLength ?? size;
       final sink = part.openWrite();
+      final hashOut = _DigestSink();
+      final hasher = crypto.sha256.startChunkedConversion(hashOut);
       var got = 0;
       await for (final chunk in res.stream) {
         sink.add(chunk);
+        hasher.add(chunk);
         got += chunk.length;
         if (total > 0) {
           final p = got / total;
@@ -386,6 +409,17 @@ class Updater extends ChangeNotifier {
         }
       }
       await sink.close();
+      hasher.close();
+      // Не запускаем то, что скачалось не до конца или не совпало с релизом
+      if (size > 0 && got != size) {
+        await part.delete();
+        throw Exception('скачано $got байт вместо $size');
+      }
+      final actual = hashOut.value.toString();
+      if (sha256.isNotEmpty && actual != sha256) {
+        await part.delete();
+        throw Exception('контрольная сумма установщика не совпала');
+      }
       if (await file.exists()) await file.delete();
       await part.rename(file.path);
       return file.path;

@@ -64,6 +64,7 @@ class Track {
   final String? cover; // cover.jpg рядом с файлом
   final String modified;
   final int size;
+  final String md5; // контрольная сумма файла; пусто у старых записей, пока скан не заполнит
   final String by; // кто загрузил файл на Диск
   final String path; // папки внутри источника
   final String added; // когда файл появился на Диске
@@ -86,6 +87,7 @@ class Track {
     required this.cover,
     required this.modified,
     required this.size,
+    this.md5 = '',
     required this.by,
     required this.path,
     this.added = '',
@@ -121,6 +123,7 @@ class Track {
         if (cover != null) 'c': cover,
         'm': modified,
         'sz': size,
+        if (md5.isNotEmpty) 'md5': md5,
         if (by.isNotEmpty) 'by': by,
         if (path.isNotEmpty) 'path': path,
         if (added.isNotEmpty) 'ca': added,
@@ -143,6 +146,7 @@ class Track {
       cover: j['c'] as String?,
       modified: (j['m'] as String?) ?? '',
       size: (j['sz'] as num?)?.toInt() ?? 0,
+      md5: (j['md5'] as String?) ?? '',
       by: (j['by'] as String?) ?? '',
       path: (j['path'] as String?) ?? '',
       added: (j['ca'] as String?) ?? '',
@@ -185,6 +189,12 @@ class LibraryData {
   /// а приложение владельца удаляет файл с Диска и снимает отметку
   final Map<String, String> deleted = {};
 
+  /// Кто записал удаление: id → почта. Если не владелец файла, владелец сначала подтверждает (А3)
+  final Map<String, String> deletedBy = {};
+
+  /// Названия удалённых треков для окна подтверждения: id → «исполнитель — название»
+  final Map<String, String> deletedName = {};
+
   /// Куда ведёт id после объединений (цепочки тоже)
   String resolve(String id) {
     var cur = id;
@@ -207,6 +217,8 @@ class LibraryData {
         'hidden': hidden.toList(),
         if (merged.isNotEmpty) 'merged': merged,
         if (deleted.isNotEmpty) 'deleted': deleted,
+        if (deletedBy.isNotEmpty) 'deletedBy': deletedBy,
+        if (deletedName.isNotEmpty) 'deletedName': deletedName,
       };
 
   static LibraryData fromJson(dynamic j) {
@@ -245,6 +257,10 @@ class LibraryData {
     if (mg is Map) mg.forEach((k, v) => d.merged['$k'] = '$v');
     final del = j['deleted'];
     if (del is Map) del.forEach((k, v) => d.deleted['$k'] = '$v');
+    final delBy = j['deletedBy'];
+    if (delBy is Map) delBy.forEach((k, v) => d.deletedBy['$k'] = '$v');
+    final delName = j['deletedName'];
+    if (delName is Map) delName.forEach((k, v) => d.deletedName['$k'] = '$v');
     for (final id in d.edits.keys) {
       d._overlay(id);
     }
@@ -360,6 +376,10 @@ class LibraryData {
         (op['ids'] as Map).forEach((k, v) {
           final id = '$k';
           deleted[id] = '$v';
+          final by = op['by'];
+          if (by is String && by.isNotEmpty) deletedBy[id] = by;
+          final nm = (op['names'] as Map?)?['$k'];
+          if (nm != null) deletedName[id] = '$nm';
           tracks.remove(id);
           hidden.remove(id);
           likes.remove(id);
@@ -368,10 +388,18 @@ class LibraryData {
             p.items.remove(id);
           }
         });
+      case 'approveDeletion':
+        // Владелец подтвердил чужое удаление своего файла
+        for (final id in (op['ids'] as List)) {
+          final owner = deleted['$id'];
+          if (owner != null) deletedBy['$id'] = owner;
+        }
       case 'purged':
         // Файл удалён с Диска — отметка больше не нужна
         for (final id in (op['ids'] as List)) {
           deleted.remove('$id');
+          deletedBy.remove('$id');
+          deletedName.remove('$id');
         }
       case 'unmergeTrack':
         // Вернуть копию отдельным треком (лайки и плейлисты остаются на той, куда перешли)

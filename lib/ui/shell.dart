@@ -6,6 +6,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
+import '../core/library.dart';
 import '../core/log.dart';
 import '../core/media_keys.dart';
 import '../core/share_link.dart';
@@ -16,6 +17,7 @@ import 'albums_view.dart';
 import 'cinema_view.dart';
 import 'company_view.dart';
 import 'download_view.dart';
+import 'foreign_deletions.dart';
 import 'library_views.dart';
 import 'lyrics_panel.dart';
 import 'mouse_gesture.dart';
@@ -148,10 +150,22 @@ class _ShellState extends State<Shell> {
       // Своя плашка вместо SnackBar: маленькая, по центру и над плеером, ничего не перекрывает
       _showToast(m);
     });
+    if (_askLib == null) {
+      _askLib = Services.of(context).lib..addListener(_checkForeignDeletions);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _checkForeignDeletions());
+    }
     if (_linkSource == null) {
       _linkSource = Services.of(context).incomingLink..addListener(_onLink);
       WidgetsBinding.instance.addPostFrameCallback((_) => _onLink()); // ссылка, с которой запустили программу
     }
+  }
+
+  LibraryController? _askLib;
+
+  void _checkForeignDeletions() {
+    final lib = _askLib;
+    if (!mounted || lib == null || lib.foreignDeletions.isEmpty) return;
+    askForeignDeletions(context, lib);
   }
 
   void _showToast(String text, {String? actionLabel, VoidCallback? action, Duration time = const Duration(seconds: 4)}) {
@@ -214,6 +228,7 @@ class _ShellState extends State<Shell> {
     _hideBar?.cancel();
     _msgs?.cancel();
     _linkSource?.removeListener(_onLink);
+    _askLib?.removeListener(_checkForeignDeletions);
     _nav.dispose();
     super.dispose();
   }
