@@ -21,7 +21,16 @@ class Candidate {
 
   /// Найден в YouTube Music среди «Песен»: это студийная запись с официального канала, а не клип и не концерт
   final bool song;
-  Candidate(this.id, this.title, this.channel, this.duration, {this.song = false});
+
+  /// Страница на SoundCloud; null — ролик YouTube
+  final String? soundcloud;
+  Candidate(this.id, this.title, this.channel, this.duration, {this.song = false, this.soundcloud});
+
+  /// Что отдать yt-dlp для скачивания
+  String get url => soundcloud ?? 'https://www.youtube.com/watch?v=$id';
+
+  /// Где нашли — для журнала
+  String get site => soundcloud != null ? 'SoundCloud' : (song ? 'YouTube Music' : 'YouTube');
 }
 
 /// Скачанный файл: путь, исполнитель, название, номер в плейлисте
@@ -72,6 +81,26 @@ class YouTube {
   Future<List<Candidate>> searchSongs(String query, [int n = searchResults]) =>
       _list('https://music.youtube.com/search?q=${Uri.encodeQueryComponent(query)}#songs', n, song: true);
 
+  /// Поиск на SoundCloud — запасной источник, когда на YouTube нет студийной версии.
+  /// Без --flat-playlist: иначе SoundCloud не отдаёт длительность, а по ней выбирается оригинал
+  Future<List<Candidate>> searchSoundCloud(String query, [int n = 6]) async {
+    try {
+      final out = await Tools.run(tools.ytdlp.path, [...tools.jsArgs, '-J', '--no-warnings', '--skip-download', 'scsearch$n:$query']);
+      final json = out.firstWhere((l) => l.startsWith('{'), orElse: () => '');
+      if (json.isEmpty) return [];
+      final data = jsonDecode(json) as Map;
+      return [
+        for (final e in (data['entries'] as List? ?? const []))
+          if (e is Map && (e['webpage_url'] ?? e['url']) != null)
+            Candidate('sc:${e['id']}', '${e['title'] ?? ''}', '${e['uploader'] ?? e['artist'] ?? ''}', (e['duration'] as num?)?.toDouble(),
+                soundcloud: '${e['webpage_url'] ?? e['url']}'),
+      ];
+    } catch (e) {
+      log('Поиск на SoundCloud не удался: $e');
+      return [];
+    }
+  }
+
   Future<List<Candidate>> _list(String target, int n, {bool song = false}) async {
     try {
       final out = await Tools.run(
@@ -116,6 +145,8 @@ class YouTube {
     } else if (meta.artist.isNotEmpty && channel.contains(meta.artist.toLowerCase())) {
       s += 10;
     }
+    // SoundCloud без входа часто отдаёт 30-секундный отрывок — длительность это выдаст, но и название подскажет
+    if (c.soundcloud != null && hasWord(c.title.toLowerCase(), 'preview')) s -= 45;
     // Каналы VEVO выкладывают клипы
     if (channel.endsWith('vevo') && !c.song) s -= 20;
     final title = c.title.toLowerCase();
@@ -146,6 +177,15 @@ class YouTube {
         if (seen.add(c.id)) cands.add(c);
       }
       cands.sort(byScore);
+    }
+    // На YouTube так и нет студийной версии — смотрим SoundCloud
+    if (cands.isEmpty || score(cands.first, meta) < 40) {
+      final sc = await searchSoundCloud(query);
+      if (sc.isNotEmpty) {
+        log('На YouTube уверенного варианта нет, смотрю SoundCloud…');
+        cands.addAll(sc);
+        cands.sort(byScore);
+      }
     }
     return cands;
   }

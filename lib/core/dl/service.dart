@@ -273,10 +273,10 @@ class DownloadService extends ChangeNotifier {
     for (final c in cands.take(maxDownloadTries)) {
       final d = c.duration;
       final dur = d == null ? '?' : '${d ~/ 60}:${(d % 60).toInt().toString().padLeft(2, '0')}';
-      yt.log('Выбрано на YouTube: ${c.title}  [${c.channel}, $dur]');
+      yt.log('Выбрано на ${c.site}: ${c.title}  [${c.channel}, $dur]');
       if (YouTube.score(c, meta) < 0) yt.log('Внимание: надёжного варианта не нашлось, это может быть не оригинал.');
       final entries = await yt.download('${dir.path}${Platform.pathSeparator}%(id)s.%(ext)s',
-          'https://www.youtube.com/watch?v=${c.id}', embedThumb: cover == null);
+          c.url, embedThumb: cover == null);
       if (entries.isEmpty) {
         yt.log('Не скачалось, пробую следующий вариант…');
         continue;
@@ -408,8 +408,8 @@ class DownloadService extends ChangeNotifier {
     job.total = 1;
     final cands = await yt.ranked(meta);
     for (final c in cands.take(maxDownloadTries)) {
-      log('Выбрано на YouTube: ${c.title}  [${c.channel}]');
-      final entries = await yt.download('${temp.path}${Platform.pathSeparator}%(id)s.%(ext)s', 'https://www.youtube.com/watch?v=${c.id}');
+      log('Выбрано на ${c.site}: ${c.title}  [${c.channel}]');
+      final entries = await yt.download('${temp.path}${Platform.pathSeparator}%(id)s.%(ext)s', c.url);
       if (entries.isNotEmpty) return _finishYoutube(job, yt, entries, folderId: job.target, path: job.path);
     }
     return false;
