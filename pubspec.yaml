@@ -39,6 +39,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/app_icon.ico
+    - assets/logo.png
     - assets/taskbar/prev.ico
     - assets/taskbar/play.ico
     - assets/taskbar/pause.ico

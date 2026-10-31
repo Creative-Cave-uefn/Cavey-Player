@@ -39,7 +39,17 @@ String formatDuration(Duration d) {
   return h > 0 ? '$h:${m.toString().padLeft(2, '0')}:$ss' : '$m:$ss';
 }
 
-/// Название с жёлтой полочкой под ним
+/// Значок приложения (тот же, что у окна и установщика)
+class BrandMark extends StatelessWidget {
+  final double size;
+  const BrandMark({super.key, this.size = 28});
+
+  @override
+  Widget build(BuildContext context) => Image.asset('assets/logo.png',
+      width: size, height: size, filterQuality: FilterQuality.medium, semanticLabel: 'Cavey');
+}
+
+/// Значок и название Cavey
 class Wordmark extends StatelessWidget {
   final double size;
   const Wordmark({super.key, this.size = 22});
@@ -47,23 +57,16 @@ class Wordmark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // UnconstrainedBox: название всегда рисуется целиком и не режется по ширине родителя
-    // (раньше при узком родителе от «Cavey» оставалось «Cav» с такой же короткой полочкой)
     return UnconstrainedBox(
       alignment: Alignment.centerLeft,
       clipBehavior: Clip.none,
-      child: IntrinsicWidth(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Cavey', maxLines: 1, softWrap: false, overflow: TextOverflow.visible, style: brand(size)),
-            SizedBox(height: size * 0.18),
-            Container(
-              height: size * 0.16,
-              decoration: BoxDecoration(color: C.accent, borderRadius: BorderRadius.circular(2)),
-            ),
-          ],
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          BrandMark(size: size * 1.5),
+          SizedBox(width: size * 0.45),
+          Text('Cavey', maxLines: 1, softWrap: false, overflow: TextOverflow.visible, style: brand(size)),
+        ],
       ),
     );
   }

@@ -164,11 +164,15 @@ class _CaptionBarState extends State<_CaptionBar> with WindowListener {
                 behavior: HitTestBehavior.translucent,
                 onPanStart: (_) => windowManager.startDragging(),
                 onDoubleTap: _toggleMax,
-                child: const Align(
+                child: Align(
                   alignment: Alignment.centerLeft,
                   child: Padding(
-                    padding: EdgeInsets.only(left: 12),
-                    child: Text('Cavey', style: TextStyle(color: C.muted, fontSize: 12)),
+                    padding: const EdgeInsets.only(left: 12),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Image.asset('assets/logo.png', width: 16, height: 16, filterQuality: FilterQuality.medium),
+                      const SizedBox(width: 8),
+                      const Text('Cavey', style: TextStyle(color: C.muted, fontSize: 12)),
+                    ]),
                   ),
                 ),
               ),

@@ -652,7 +652,7 @@ class _Sidebar extends StatelessWidget {
             Padding(
               padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 26, 0, 22),
               child: compact
-                  ? Center(child: Text('C', style: brand(24, color: C.accent)))
+                  ? const Center(child: BrandMark(size: 34))
                   : const Align(alignment: Alignment.centerLeft, child: Wordmark()),
             ),
             item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
