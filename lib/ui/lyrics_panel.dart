@@ -1,5 +1,6 @@
 import 'package:flutter/scheduler.dart';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -165,9 +166,11 @@ class _LyricsBodyState extends State<LyricsBody> {
   List<Duration>? _starts;
   int _offMs = 0; // Ж7: поправка времени текста (мс)
 
-  int _lineAt(Lyrics ly) {
+  int _leadIdx = -1; // К3: строка, к которой надо начать прокрутку (на 180 мс раньше)
+
+  int _lineAt(Lyrics ly, {int leadMs = 0}) {
     // В панели строку подсвечиваем чуть заранее — читать удобнее. В караоке — ровно в такт, без упреждения
-    final pos = _player!.position.value + (widget.karaoke ? Duration(milliseconds: _offMs) : const Duration(milliseconds: 250));
+    final pos = _player!.position.value + (widget.karaoke ? Duration(milliseconds: _offMs + leadMs) : const Duration(milliseconds: 250));
     final starts = _starts;
     if (starts == null || starts.length != ly.lines.length) return ly.indexAt(pos);
     var lo = 0, hi = starts.length - 1, idx = -1;
@@ -188,7 +191,13 @@ class _LyricsBodyState extends State<LyricsBody> {
     final ly = _synced;
     if (ly == null || _player == null || !mounted) return;
     final i = _lineAt(ly);
-    if (i != _idx) setState(() => _idx = i);
+    final lead = widget.karaoke ? _lineAt(ly, leadMs: 180) : i;
+    if (i != _idx || lead != _leadIdx) {
+      setState(() {
+        _idx = i;
+        _leadIdx = lead;
+      });
+    }
   }
 
   void _retry() {
@@ -242,6 +251,64 @@ class _LyricsBodyState extends State<LyricsBody> {
     );
   }
 
+  /// К2: текущая строка в полный размер, остальные тем меньше, прозрачнее и размытее, чем дальше от неё
+  Widget _focus(int offset, Widget child) {
+    if (!widget.big) return child;
+    final d = offset.abs().clamp(0, 4).toDouble();
+    return TweenAnimationBuilder<double>(
+      tween: Tween(end: d),
+      duration: const Duration(milliseconds: 450),
+      curve: Curves.easeOutBack,
+      child: child,
+      builder: (context, v, child) {
+        final k = v.clamp(0.0, 4.0);
+        final scale = k <= 0 ? 1.0 : 0.94 - 0.005 * math.min(k, 4);
+        final sigma = k < 1 ? 0.0 : math.min(3.0, 0.8 + 0.7 * (k - 1));
+        Widget w = Transform.scale(scale: scale, alignment: Alignment.centerLeft, child: child);
+        if (sigma > 0.05) {
+          w = ImageFiltered(imageFilter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma, tileMode: TileMode.decal), child: w);
+        }
+        return w;
+      },
+    );
+  }
+
+  /// К4: если до следующей строки больше 4 секунд без слов, показываем три точки, которые заполняются к её началу
+  Widget _breakDots(List<KWord> words, Duration next, PlayerController player) {
+    if (words.isEmpty) return const SizedBox.shrink();
+    final from = words.last.end;
+    if (next - from < const Duration(seconds: 4)) return const SizedBox.shrink();
+    return ValueListenableBuilder<Duration>(
+      valueListenable: player.position,
+      builder: (context, pos, _) {
+        final p = Duration(milliseconds: _offMs) + pos;
+        if (p < from) return const SizedBox.shrink();
+        final prog = ((p - from).inMilliseconds / (next - from).inMilliseconds).clamp(0.0, 1.0);
+        final breathe = 1 + 0.15 * math.sin(p.inMilliseconds / 350);
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+          child: Row(children: [
+            for (var k = 0; k < 3; k++)
+              Padding(
+                padding: const EdgeInsets.only(right: 10),
+                child: Transform.scale(
+                  scale: breathe,
+                  child: Container(
+                    width: 14,
+                    height: 14,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white.withValues(alpha: 0.25 + 0.75 * (prog * 3 - k).clamp(0.0, 1.0)),
+                    ),
+                  ),
+                ),
+              ),
+          ]),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
@@ -287,7 +354,8 @@ class _LyricsBodyState extends State<LyricsBody> {
           ])
         : null;
     final idx = _idx = _lineAt(ly);
-    _follow(idx);
+    _leadIdx = widget.karaoke ? _lineAt(ly, leadMs: 180) : idx;
+    _follow(math.max(idx, _leadIdx)); // К3: прокрутка начинается за 180 мс до новой строки
     List<KWord> wordsOf(int i) {
       final line = ly.lines[i];
       final st = _starts;
@@ -303,8 +371,10 @@ class _LyricsBodyState extends State<LyricsBody> {
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(14, 4, 14, 200),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          for (var i = 0; i < ly.lines.length; i++)
-            InkWell(
+          for (var i = 0; i < ly.lines.length; i++) ...[
+            _focus(
+              i - idx,
+              InkWell(
               key: _keys[i],
               borderRadius: BorderRadius.circular(8),
               onTap: () {
@@ -327,7 +397,11 @@ class _LyricsBodyState extends State<LyricsBody> {
                       : Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
                 ),
               ),
+              ),
             ),
+            // К4: долгий проигрыш между строками — три дышащие точки
+            if (widget.big && widget.karaoke && i == idx && i + 1 < ly.lines.length) _breakDots(wordsOf(i), ly.lines[i + 1].at!, app.player),
+          ],
           Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: _again()),
           if (widget.karaoke) _KaraokeTools(track: t, lyrics: ly),
         ]),
@@ -364,7 +438,19 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
   String? _layoutKey;
 
   @override
+  void initState() {
+    super.initState();
+    widget.player.position.addListener(_wake);
+  }
+
+  /// Перемотали назад внутри строки или сняли с паузы — заливка снова должна двигаться
+  void _wake() {
+    if (!_ticker.isActive) _ticker.start();
+  }
+
+  @override
   void dispose() {
+    widget.player.position.removeListener(_wake);
     _ticker.dispose();
     _frame.dispose();
     super.dispose();
