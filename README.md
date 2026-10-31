@@ -16,7 +16,7 @@
 
 В разделе «Скачать» и настройках доступен **один активный загрузчик**: YouTube, Soulseek через Sockseek или Bandcamp.
 Bandcamp принимает прямые ссылки на треки и альбомы и сохраняет доступный аудиопоток в MP3; платные оригиналы и lossless-файлы не предоставляются.
-SoundCloud выключен, Zotify удалён. Сам загрузчик — отдельный модуль [cave-downloader](https://github.com/Creative-Cave-uefn/cave-downloader): Cavey сам ставит его в фоне сразу после запуска и раз в сутки проверяет обновления. Подробнее: [docs/downloaders.md](docs/downloaders.md).
+SoundCloud выключен, Zotify удалён. Сам загрузчик — отдельный модуль cave-downloader (приватный репозиторий, сборки в `cave-downloader-releases`): Cavey сам ставит его в фоне сразу после запуска и раз в сутки проверяет обновления. Подробнее: [docs/downloaders.md](docs/downloaders.md).
 
 ## Что умеет
 
