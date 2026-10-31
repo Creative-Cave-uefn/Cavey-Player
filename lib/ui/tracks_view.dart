@@ -1278,6 +1278,7 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
         PopupMenuItem(value: 'artist:$i', child: Text('Открыть: ${names[i]}', overflow: TextOverflow.ellipsis)),
     const PopupMenuItem(value: 'copy', child: Text('Копировать название')),
     const PopupMenuItem(value: 'share', child: Text('Поделиться…')),
+    const PopupMenuItem(value: 'plays', child: Text('Прослушивания…')),
     const PopupMenuDivider(),
     if (canSelect) PopupMenuItem(value: 'select', child: Text(selected ? 'Снять выбор' : 'Выбрать')),
     const PopupMenuItem(value: 'edit', child: Text('Изменить метаданные…')),
@@ -1314,6 +1315,8 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
       app.lib.messages.add('Название скопировано');
     case 'share':
       await showShareDialog(context, track);
+    case 'plays':
+      await showPlaysDialog(context, track);
     case 'playlist':
       await addToPlaylistDialog(context, [track.id]);
     case 'remove':
@@ -1564,4 +1567,40 @@ class FavButton extends StatelessWidget {
       icon: Icon(on ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: on ? C.accent : C.text),
     );
   }
+}
+
+/// Кто и сколько раз слушал трек (счётчики из личных файлов участников)
+Future<void> showPlaysDialog(BuildContext context, Track track) {
+  final app = Services.of(context);
+  final by = app.social.playsByUser(track.id).entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  final total = by.fold<int>(0, (a, e) => a + e.value);
+  return showGlassDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('Прослушивания', style: display(18)),
+      content: SizedBox(
+        width: 380,
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('${track.title} — ${track.displayArtist}', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          Text(total == 0 ? 'Пока никто не слушал' : 'Слушали: $total ${plural(total, 'раз', 'раза', 'раз')}',
+              style: const TextStyle(color: C.muted)),
+          const SizedBox(height: 12),
+          for (final e in by)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              child: Row(children: [
+                Avatar(email: e.key, name: app.lib.nameOf(e.key), size: 28),
+                const SizedBox(width: 12),
+                Expanded(child: Text(app.lib.nameOf(e.key), overflow: TextOverflow.ellipsis)),
+                Text('${e.value}', style: const TextStyle(color: C.muted, fontFeatures: [FontFeature.tabularFigures()])),
+              ]),
+            ),
+          const SizedBox(height: 8),
+          const Text('Засчитывается, если трек играл хотя бы 30 секунд.', style: TextStyle(color: C.faint, fontSize: 12)),
+        ]),
+      ),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрыть'))],
+    ),
+  );
 }

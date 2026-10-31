@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
+import '../core/social.dart';
 import 'ambient.dart';
 import 'company_view.dart';
 import 'shell.dart';
@@ -773,6 +774,10 @@ class UserProfilePage extends StatelessWidget {
                 },
           onInfo: () => _showInfo(context, app, name, liked.length, uploads.length, lists.length),
           sections: [
+            if (m != null && (m.totals.isNotEmpty || m.plays.isNotEmpty)) ...[
+              ListenStats(email: email),
+              const SizedBox(height: 36),
+            ],
             if (nothing)
               const Padding(
                 padding: EdgeInsets.only(top: 20),
@@ -920,5 +925,81 @@ class UserTracksPage extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+/// «Статистика» в профиле: сколько наслушано всего, за неделю и месяц, график за 30 дней и любимый исполнитель.
+/// Время примерное: прослушивания × длительность трека
+class ListenStats extends StatelessWidget {
+  final String email;
+  const ListenStats({super.key, required this.email});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final s = app.social;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final total = s.listened(email);
+    final week = s.listened(email, since: today.subtract(const Duration(days: 6)));
+    final month = s.listened(email, since: today.subtract(const Duration(days: 29)));
+    final days = s.listenedByDay(email);
+    final top = s.topArtist(email);
+    final peak = days.fold<int>(0, (a, d) => math.max(a, d.$2.inMinutes));
+    Widget tile(String label, String value) => Container(
+          constraints: const BoxConstraints(minWidth: 150),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          decoration: BoxDecoration(color: C.surface, border: Border.all(color: C.line), borderRadius: BorderRadius.circular(14)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Text(value, style: display(22, weight: FontWeight.w700)),
+            const SizedBox(height: 2),
+            Text(label, style: const TextStyle(color: C.muted, fontSize: 13)),
+          ]),
+        );
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const SectionTitle('Статистика'),
+      Wrap(spacing: 12, runSpacing: 12, children: [
+        tile('наслушано всего', formatListened(total)),
+        tile('за неделю', formatListened(week)),
+        tile('за месяц', formatListened(month)),
+        if (top != null)
+          InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => NavScope.of(context).go(Nav('artist', top.toLowerCase())),
+            child: tile('любимый исполнитель месяца', top),
+          ),
+      ]),
+      const SizedBox(height: 18),
+      // По дням за 30 дней: высота столбика — сколько минут слушали
+      SizedBox(
+        height: 90,
+        child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          for (final (day, d) in days)
+            Expanded(
+              child: Tooltip(
+                message: '${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}: ${formatListened(d)}',
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 1.5),
+                  child: Container(
+                    height: peak == 0 ? 3 : (3 + 84 * d.inMinutes / peak),
+                    decoration: BoxDecoration(
+                      color: d.inMinutes == 0 ? C.line : C.accent.withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ]),
+      ),
+      const SizedBox(height: 6),
+      const Row(children: [
+        Text('30 дней назад', style: TextStyle(color: C.faint, fontSize: 11)),
+        Spacer(),
+        Text('сегодня', style: TextStyle(color: C.faint, fontSize: 11)),
+      ]),
+      const SizedBox(height: 6),
+      const Text('Время примерное: прослушивания × длительность трека.', style: TextStyle(color: C.faint, fontSize: 11)),
+    ]);
   }
 }
