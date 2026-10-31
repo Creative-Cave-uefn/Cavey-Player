@@ -4,7 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
 
-import 'dl/service.dart';
+import 'downloader/service.dart';
 import 'lastfm.dart';
 import 'library.dart';
 import 'log.dart';

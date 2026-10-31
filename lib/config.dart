@@ -15,6 +15,15 @@ const kAppVersion = String.fromEnvironment('APP_VERSION');
 const kReleasesRepos = ['Creative-Cave-uefn/cave-player-releases'];
 const kReleasesRepo = 'Creative-Cave-uefn/cave-player-releases';
 
+// Модуль скачки (YouTube, Soulseek, Bandcamp) — отдельная программа в своём публичном
+// репозитории. Плеер скачивает её из релизов, когда она понадобится первый раз.
+// Для своей копии репозитория: --dart-define=DOWNLOADER_REPO=владелец/репо
+const kDownloaderRepo = String.fromEnvironment('DOWNLOADER_REPO', defaultValue: 'Creative-Cave-uefn/cave-downloader');
+
+// Версия протокола плеер ↔ модуль. Плеер берёт только сборки модуля v<протокол>.x.y.
+// Меняется вместе с protocolVersion в lib/src/ipc.dart репозитория cave-downloader.
+const kDownloaderProtocol = 1;
+
 // Папка общей библиотеки по умолчанию (необязательно): ID папки «Cave Player»
 // на Диске. Если не задана, приложение само ищет доступную библиотеку.
 const kDefaultLibraryId = String.fromEnvironment('CAVE_LIBRARY_ID');

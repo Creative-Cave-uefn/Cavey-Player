@@ -1,5 +1,4 @@
 import 'dart:io';
-import '../core/dl/sockseek.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -959,7 +958,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
     final app = Services.of(context);
     setState(() { _installing = true; _installLog = 'Устанавливаю Sockseek…'; });
     try {
-      await Sockseek.install(app.downloads.tools, (line) {
+      await app.downloads.installSockseek((line) {
         if (mounted) setState(() => _installLog = '$_installLog\n$line');
       });
       app.settings.downloadProvider = 'sockseek';
@@ -972,8 +971,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
   Future<void> _configureSockseek() async {
     final app = Services.of(context);
     try {
-      await Sockseek.prepareConfig(app.downloads.tools);
-      final path = Sockseek.config(app.downloads.tools).absolute.path;
+      final path = await app.downloads.sockseekConfigPath();
       if (Platform.isWindows) {
         await Process.start('notepad.exe', [path], mode: ProcessStartMode.detached);
       } else {

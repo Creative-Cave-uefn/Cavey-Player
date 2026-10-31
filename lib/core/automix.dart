@@ -5,7 +5,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'audio_cache.dart';
-import 'dl/tools.dart';
+import 'tools.dart';
 import 'log.dart';
 
 // Умный переход между треками (как «Automix» в Spotify). Готовых библиотек для Flutter нет,

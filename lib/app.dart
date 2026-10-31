@@ -15,8 +15,9 @@ import 'core/automix.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
-import 'core/dl/service.dart';
-import 'core/dl/tools.dart';
+import 'core/downloader/module.dart';
+import 'core/downloader/service.dart';
+import 'core/tools.dart';
 import 'core/drive.dart';
 import 'core/library.dart';
 import 'core/lyric_sources.dart';
@@ -152,7 +153,7 @@ class AppServices {
       social.onUserAction();
       showInDiscord();
     };
-    final downloads = DownloadService(lib, Tools(store.sub('tools')), store.sub('downloads'));
+    final downloads = DownloadService(lib, DownloaderModule(store.sub('downloader')), store.sub('tools'), store.sub('downloads'));
     late final AppServices app;
     final tray = TrayController(
       player: player,

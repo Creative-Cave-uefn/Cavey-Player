@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
-import '../core/dl/service.dart';
+import '../core/downloader/service.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -164,14 +164,17 @@ class _DownloadPageState extends State<DownloadPage> {
               child: Text(
                 dl.installing
                     ? 'Устанавливаю программы для скачивания…'
-                    : 'yt-dlp: ${dl.toolsVersion.isEmpty ? '…' : dl.toolsVersion}. Программы ставятся сами при первом скачивании.',
+                    : dl.moduleVersion.isEmpty
+                        ? 'Модуль скачки и программы для него ставятся сами при первом скачивании.'
+                        : 'Модуль скачки ${dl.moduleVersion} · yt-dlp: ${dl.toolsVersion.isEmpty ? '…' : dl.toolsVersion}. '
+                            'Обновляются сами.',
                 style: const TextStyle(color: C.faint, fontSize: 13),
               ),
             ),
             TextButton.icon(
               onPressed: dl.busy ? null : dl.updateTools,
               icon: const Icon(Icons.refresh_rounded, size: 16),
-              label: const Text('Обновить yt-dlp'),
+              label: const Text('Обновить загрузчик'),
             ),
           ]),
           const SizedBox(height: 26),

@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:cave_player/core/dl/winproc.dart';
+import 'package:cave_player/core/winproc.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -13,5 +13,14 @@ void main() {
     expect(exitCode, 0, reason: output.join('\n'));
     expect(output.any((line) => line.toLowerCase().contains('cmd.exe')), isTrue,
         reason: output.join('\n'));
+  });
+
+  test('кавычки в командной строке Windows', () {
+    expect(quoteArg('plain'), 'plain');
+    expect(quoteArg(''), '""');
+    expect(quoteArg('a b'), '"a b"');
+    expect(quoteArg('a"b'), r'"a\"b"');
+    expect(quoteArg(r'C:\Program Files\x\'), r'"C:\Program Files\x\\"');
+    expect(quoteArg('127.0.0.1:51234'), '127.0.0.1:51234');
   });
 }
