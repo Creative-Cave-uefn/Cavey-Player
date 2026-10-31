@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'lyric_sources.dart';
+import 'musixmatch.dart';
 
 import '../config.dart';
 import 'log.dart';
@@ -322,6 +323,9 @@ class LyricsService extends ChangeNotifier {
           if (j['none'] == true) {
             final at = DateTime.tryParse('${j['at']}');
             if (at != null && DateTime.now().difference(at) < const Duration(days: 7)) return null;
+          } else if (j['musixmatch'] != null) {
+            final rich = Musixmatch.parse(j['musixmatch']);
+            if (rich != null) return rich;
           } else if (j['side'] != null) {
             final own = SourceText.fromJson(j)?.parse();
             if (own != null) return own.copyWith(origin: j['side'] as String);
@@ -347,6 +351,28 @@ class LyricsService extends ChangeNotifier {
       } catch (e) {
         AppLog.warn('Свой текст для «${t.title}» не прочитался', e);
       }
+    }
+
+    // Ready-made word timings avoid running speech recognition locally.
+    try {
+      final rich = await Musixmatch(_http).find(t, duration).timeout(const Duration(seconds: 20));
+      if (rich != null) {
+        try {
+          await f.writeAsString(jsonEncode({'musixmatch': [
+            for (final line in rich.lines) {
+              'ts': line.at!.inMilliseconds / 1000,
+              'te': line.words!.last.end.inMilliseconds / 1000,
+              'l': [for (final w in line.words!) {
+                'c': line.text.substring(w.from, w.to),
+                'o': (w.start - line.at!).inMilliseconds / 1000,
+              }],
+            },
+          ]}));
+        } catch (_) {}
+        return rich;
+      }
+    } catch (e) {
+      AppLog.warn('Musixmatch недоступен, использую LRCLIB', e);
     }
 
     Map? found;
@@ -471,3 +497,4 @@ class LyricsService extends ChangeNotifier {
     return r.isEmpty ? s.trim() : r;
   }
 }
+

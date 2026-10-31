@@ -101,6 +101,8 @@ class Settings {
   int cacheLimitMb = 2048;
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
+  bool useZotify = false;
+  String zotifyExecutable = 'zotify';
   bool discord = true;
   bool betaUpdates = false; // получать бета-версии
   bool trayOnClose = true; // крестик прячет окно в трей, музыка играет дальше
@@ -136,6 +138,8 @@ class Settings {
         'cacheLimitMb': cacheLimitMb,
         'offlineLiked': offlineLiked,
         'offlinePlaylists': offlinePlaylists.toList(),
+        'useZotify': useZotify,
+        'zotifyExecutable': zotifyExecutable,
         'discord': discord,
         'betaUpdates': betaUpdates,
         'trayOnClose': trayOnClose,
@@ -169,6 +173,8 @@ class Settings {
     s.cacheLimitMb = (j['cacheLimitMb'] as num?)?.toInt() ?? 2048;
     s.offlineLiked = j['offlineLiked'] == true;
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
+    s.useZotify = j['useZotify'] == true;
+    s.zotifyExecutable = (j['zotifyExecutable'] as String?) ?? 'zotify';
     s.discord = j['discord'] != false;
     s.betaUpdates = j['betaUpdates'] == true;
     s.trayOnClose = j['trayOnClose'] != false;
@@ -186,3 +192,4 @@ class Settings {
     return s;
   }
 }
+

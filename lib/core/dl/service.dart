@@ -16,6 +16,7 @@ import 'sources.dart';
 import 'text.dart';
 import 'tools.dart';
 import 'youtube.dart';
+import 'zotify.dart';
 
 const albumWorkers = 3;
 
@@ -156,6 +157,31 @@ class DownloadService extends ChangeNotifier {
     await temp.create(recursive: true);
     AppLog.info('Загрузчик: ${job.input}');
     try {
+      if (lib.settings.useZotify && Zotify.accepts(job.input)) {
+        log('Загрузчик: Zotify');
+        job.title = 'Загрузка через Zotify';
+        final executable = lib.settings.zotifyExecutable.trim();
+        final files = await Zotify.download(executable.isEmpty ? 'zotify' : executable, job.input, temp, log);
+        job.total = files.length;
+        for (final file in files) {
+          try {
+            log('Загружаю на Диск: ${file.uri.pathSegments.last}');
+            final track = await lib.uploadOne(file, sourceId: job.sourceId, folderId: job.target, path: job.path);
+            job.done++;
+            job.onTrack?.call(track);
+            _notify();
+          } catch (e) {
+            job.failed++;
+            log('Не удалось добавить файл: $e');
+          }
+        }
+        job.state = job.failed == 0 ? JobState.done : JobState.failed;
+        if (job.done > 0 && !job.quiet) {
+          lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
+          lib.messages.add('Zotify: добавлено треков — ${job.done}');
+        }
+        return;
+      }
       if (!tools.ready) {
         log('Первый запуск: устанавливаю программы для скачивания…');
         installing = true;
@@ -537,3 +563,4 @@ NamedPlaylistResult addToNamedPlaylist(LibraryController lib, String name, List<
   if (fresh.isNotEmpty) lib.addToPlaylist(same.id, fresh);
   return NamedPlaylistResult(same.id, false, fresh.length);
 }
+

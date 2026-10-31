@@ -146,6 +146,8 @@ class _AccountsPageState extends State<AccountsPage> {
           const SizedBox(height: 44),
           const _TraySection(),
           const SizedBox(height: 36),
+          const _DownloaderSection(),
+          const SizedBox(height: 24),
           const _KaraokeSection(),
           const SizedBox(height: 44),
           const _CacheSection(),
@@ -860,6 +862,46 @@ class _DiscordSectionState extends State<_DiscordSection> {
                 position: app.player.position.value,
                 duration: app.player.duration,
                 enabled: v);
+          },
+        ),
+    ]);
+  }
+}
+
+
+
+class _DownloaderSection extends StatefulWidget {
+  const _DownloaderSection();
+  @override
+  State<_DownloaderSection> createState() => _DownloaderSectionState();
+}
+
+class _DownloaderSectionState extends State<_DownloaderSection> {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Загрузчик музыки', style: display(20)),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Использовать Zotify для ссылок Spotify'),
+        subtitle: const Text('Треки, альбомы и плейлисты Spotify скачиваются через Zotify. '
+            'Другие ссылки и поиск используют обычный загрузчик. '
+            'Заранее установите Zotify и FFmpeg и выполните вход в Zotify через терминал.',
+            style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+        value: app.settings.useZotify,
+        onChanged: (value) {
+          setState(() => app.settings.useZotify = value);
+          app.lib.saveSettings();
+        },
+      ),
+      if (app.settings.useZotify)
+        TextFormField(
+          initialValue: app.settings.zotifyExecutable,
+          decoration: const InputDecoration(labelText: 'Путь к Zotify', hintText: 'zotify или полный путь к zotify.exe'),
+          onChanged: (value) {
+            app.settings.zotifyExecutable = value.trim();
+            app.lib.saveSettings();
           },
         ),
     ]);

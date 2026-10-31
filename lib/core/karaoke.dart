@@ -550,7 +550,7 @@ class KaraokeService extends ChangeNotifier {
   List<List<KWord>?>? wordsFor(Track t, Lyrics ly) {
     if (!ly.synced) return null;
     // Л6: готовая разметка по слогам из файла точнее любого расчёта — у строк уже есть время слов
-    if (ly.origin == 'ultrastar' || ly.origin == 'ass') return null;
+    if (ly.lines.every((line) => line.words?.isNotEmpty == true)) return null;
     // Л2: текст другой версии (длительность отличается больше чем на 3 с) в караоке — только после поправки сдвига
     if (ly.approx && !_approxOk.contains(t.id)) return null;
     final key = keyFor(t, ly);
@@ -931,3 +931,4 @@ class KaraokeService extends ChangeNotifier {
     return out;
   }
 }
+
