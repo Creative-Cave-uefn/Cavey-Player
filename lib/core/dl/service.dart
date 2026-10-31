@@ -1,5 +1,5 @@
 // Очередь загрузок Cave Player: один выбранный источник (YouTube, Sockseek,
-// Bandcamp, VK) → аудиофайл → папка библиотеки на Google Диске.
+// Bandcamp) → аудиофайл → папка библиотеки на Google Диске.
 
 import 'dart:async';
 import 'dart:convert';
@@ -17,7 +17,6 @@ import 'tools.dart';
 import 'youtube.dart';
 import 'bandcamp.dart';
 import 'sockseek.dart';
-import 'vk.dart';
 
 const albumWorkers = 3;
 
@@ -158,15 +157,6 @@ class DownloadService extends ChangeNotifier {
     await temp.create(recursive: true);
     AppLog.info('Загрузчик: ${job.input}');
     try {
-      if (lib.settings.downloadProvider == 'vk') {
-        final result = await _vk(job, temp, log);
-        job.state = result ? JobState.done : JobState.failed;
-        if (job.done > 0 && !job.quiet) {
-          lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
-          lib.messages.add('VK: добавлено треков — ${job.done} из ${job.total}');
-        }
-        return;
-      }
       if (lib.settings.downloadProvider == 'sockseek') {
         log('Загрузчик: Sockseek / Soulseek');
         final tracks = await _sockseekTracks(job.input);
@@ -226,48 +216,6 @@ class DownloadService extends ChangeNotifier {
       } catch (_) {}
       notifyListeners();
     }
-  }
-
-  /// VK is an exclusive optional source. No YouTube fallback or automatic source switching.
-  Future<bool> _vk(DownloadJob job, Directory temp, void Function(String) log) async {
-    if (!VkMusic.accepts(job.input)) {
-      throw FormatException('VK: вставьте «Исполнитель - Название», ссылку на аудио или плейлист VK.');
-    }
-    log('VK Музыка: запрашиваю треки через локальный VKpyMusic…');
-    final output = Directory('${temp.path}${Platform.pathSeparator}vk');
-    final result = await VkMusic.download(tools, job.input, output, log);
-    job.total = result.total;
-    for (final entry in result.tracks) {
-      final meta = TrackMeta(artist: entry.artist, title: entry.title);
-      final existing = lib.existing(meta.artist, meta.title);
-      if (existing != null) {
-        job.skipped++;
-        log('Уже есть в библиотеке: ${meta.label}');
-        continue;
-      }
-      try {
-        if (!await entry.file.exists() || await entry.file.length() == 0) {
-          throw Exception('пустой файл');
-        }
-        final track = await lib.uploadOne(entry.file,
-            sourceId: job.sourceId, folderId: job.target, path: job.path);
-        job.done++;
-        job.title = meta.label;
-        try { job.onTrack?.call(track); } catch (e) { AppLog.warn('VK: после загрузки', e); }
-        log('VK: загружен ${meta.label}');
-        _notify();
-      } catch (e) {
-        job.failed++;
-        job.failedNames.add(meta.label);
-        log('VK: не удалось добавить ${meta.label}: $e');
-      }
-    }
-    job.failed += result.failed;
-    // Respect unavailable/removed playlist items rather than announcing success.
-    final missing = job.total - result.tracks.length - result.failed;
-    if (missing > 0) job.failed += missing;
-    _summary(job, log);
-    return job.done + job.skipped > 0 && job.failed == 0;
   }
 
   // Resolve metadata before P2P search; never guess a different recording via YouTube.

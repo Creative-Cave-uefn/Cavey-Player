@@ -106,15 +106,6 @@ jobs:
             exit $code
           }
 
-      # VK bridge проверяется без аккаунта, сети и Python-зависимостей.
-      - name: Тесты VK bridge (без реального VK)
-        shell: pwsh
-        env:
-          PYTHONIOENCODING: utf-8
-        run: |
-          python tools/test_vk_bridge.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       # Канал сборки: пусто для main, имя ветки для тестовых. Плеер по нему понимает,
       # за какой веткой следить при автообновлении
       - name: Канал сборки

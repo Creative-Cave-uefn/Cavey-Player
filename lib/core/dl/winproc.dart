@@ -193,9 +193,7 @@ void _worker(List<Object?> msg) {
       ..hStdError = hWrite.value;
     final pi = arena<_ProcessInfo>();
     final ok = createProcess(
-      // Имя программы уже есть в командной строке (cmd). lpApplicationName не ищет в PATH,
-      // поэтому передаём nullptr: тогда Windows найдёт python.exe через PATH.
-      nullptr,
+      exe.toNativeUtf16(allocator: arena),
       cmd.toNativeUtf16(allocator: arena),
       nullptr,
       nullptr,

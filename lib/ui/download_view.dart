@@ -63,13 +63,12 @@ class _DownloadPageState extends State<DownloadPage> {
             switch (app.settings.downloadProvider) {
               'sockseek' => 'Soulseek (Sockseek): «Исполнитель - Название» или ссылка Spotify, Deezer, Яндекс Музыки. Ищет файлы в P2P сети.',
               'bandcamp' => 'Bandcamp: вставьте прямую ссылку на трек или альбом (artist.bandcamp.com/track/... или /album/...). Скачивается доступный для прослушивания аудиопоток, а не оригинальный FLAC.',
-              'vk' => 'VK Музыка: «Исполнитель - Название» или ссылка vk.com/audio... / vk.com/music/playlist/.... Перед первым использованием установите VKpyMusic и войдите в VK через настройки.',
               _ => 'YouTube / YouTube Music: ссылка YouTube, Spotify, Deezer, Яндекс Музыки или «Исполнитель - Название». Аудио ищется на YouTube и загружается в библиотеку.',
             },
             style: const TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
           const SizedBox(height: 8),
-          Text('Активный источник: ${switch (app.settings.downloadProvider) { 'bandcamp' => 'Bandcamp', 'sockseek' => 'Soulseek', 'vk' => 'VK Музыка', _ => 'YouTube' }}. Переключить можно в настройках аккаунта.',
+          Text('Активный источник: ${switch (app.settings.downloadProvider) { 'bandcamp' => 'Bandcamp', 'sockseek' => 'Soulseek', _ => 'YouTube' }}. Переключить можно в настройках аккаунта.',
               style: const TextStyle(color: C.faint, fontSize: 13)),
           const SizedBox(height: 24),
           Container(
@@ -82,7 +81,7 @@ class _DownloadPageState extends State<DownloadPage> {
                     controller: _input,
                     autofocus: true,
                     decoration: InputDecoration(
-                      hintText: app.settings.downloadProvider == 'bandcamp' ? 'Ссылка Bandcamp на трек или альбом' : app.settings.downloadProvider == 'vk' ? 'VK: Исполнитель - Название или ссылка audio/playlist' : 'Ссылка или «Исполнитель - Название»',
+                      hintText: app.settings.downloadProvider == 'bandcamp' ? 'Ссылка Bandcamp на трек или альбом' : 'Ссылка или «Исполнитель - Название»',
                       prefixIcon: const Icon(Icons.link_rounded, size: 18),
                       suffixIcon: IconButton(
                         tooltip: 'Вставить из буфера',
@@ -108,7 +107,6 @@ class _DownloadPageState extends State<DownloadPage> {
                   DropdownMenuItem(value: 'youtube', child: Text('YouTube')),
                   DropdownMenuItem(value: 'sockseek', child: Text('Soulseek / Sockseek')),
                   DropdownMenuItem(value: 'bandcamp', child: Text('Bandcamp')),
-                  DropdownMenuItem(value: 'vk', child: Text('VK Музыка')),
                 ],
                 onChanged: dl.busy ? null : (value) {
                   if (value == null) return;
