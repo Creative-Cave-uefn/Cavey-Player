@@ -1,3 +1,5 @@
+import 'dart:io';
+import '../core/dl/sockseek.dart';
 
 import '../core/dl/zotify_install.dart';
 import '../core/dl/zotify_auth.dart';
@@ -900,6 +902,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
       });
       app.settings.zotifyExecutable = executable;
       app.settings.useZotify = true;
+      app.settings.useSockseek = false;
       await app.lib.saveSettings();
       if (mounted) setState(() {
         _pathVersion++;
@@ -909,6 +912,36 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
       if (mounted) setState(() => _installLog += '\nОшибка: $e');
     } finally {
       if (mounted) setState(() => _installing = false);
+    }
+  }
+
+  Future<void> _installSockseek() async {
+    final app = Services.of(context);
+    setState(() { _installing = true; _installLog = 'Устанавливаю Sockseek…'; });
+    try {
+      await Sockseek.install(app.downloads.tools, (line) {
+        if (mounted) setState(() => _installLog = '$_installLog\n$line');
+      });
+      app.settings.useSockseek = true;
+      app.settings.useZotify = false;
+      await app.lib.saveSettings();
+    } catch (e) {
+      if (mounted) setState(() => _installLog += '\nОшибка: $e');
+    } finally { if (mounted) setState(() => _installing = false); }
+  }
+
+  Future<void> _configureSockseek() async {
+    final app = Services.of(context);
+    try {
+      await Sockseek.prepareConfig(app.downloads.tools);
+      final path = Sockseek.config(app.downloads.tools).absolute.path;
+      if (Platform.isWindows) {
+        await Process.start('notepad.exe', [path], mode: ProcessStartMode.detached);
+      } else {
+        await launchUrl(Uri.file(path));
+      }
+    } catch (e) {
+      if (mounted) setState(() => _installLog = 'Не удалось открыть конфиг: $e');
     }
   }
 
@@ -969,7 +1002,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
         onPressed: _installing || _authenticating || app.downloads.busy ? null : _install,
         icon: _installing ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.download_rounded),
-        label: Text(_installing ? 'Устанавливаю Zotify…' : 'Установить Zotify'),
+        label: const Text('Установить Zotify'),
       ),
       const SizedBox(height: 8),
       OutlinedButton.icon(
@@ -982,19 +1015,42 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
       if (_installLog.isNotEmpty)
         ConstrainedBox(constraints: const BoxConstraints(maxHeight: 180),
           child: SingleChildScrollView(child: SelectableText(_installLog, style: const TextStyle(fontSize: 12)))),
-      SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        title: const Text('Использовать Zotify для ссылок Spotify'),
-        subtitle: const Text('Треки, альбомы и плейлисты Spotify скачиваются через Zotify. '
-            'Другие ссылки и поиск используют обычный загрузчик. '
-            'После установки нажмите «Войти в Spotify через браузер» и завершите вход на странице Spotify.',
-            style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
-        value: app.settings.useZotify,
-        onChanged: _installing || _authenticating ? null : (value) {
-          setState(() => app.settings.useZotify = value);
+      const SizedBox(height: 12),
+      DropdownButtonFormField<String>(
+        value: app.settings.useSockseek ? 'sockseek' : app.settings.useZotify ? 'zotify' : 'standard',
+        decoration: const InputDecoration(labelText: 'Активный загрузчик'),
+        items: const [
+          DropdownMenuItem(value: 'standard', child: Text('Обычный (YouTube)')),
+          DropdownMenuItem(value: 'zotify', child: Text('Zotify (ссылки Spotify)')),
+          DropdownMenuItem(value: 'sockseek', child: Text('Sockseek (Soulseek)')),
+        ],
+        onChanged: _installing || _authenticating || app.downloads.busy ? null : (value) {
+          setState(() {
+            app.settings.useSockseek = value == 'sockseek';
+            app.settings.useZotify = value == 'zotify';
+          });
           app.lib.saveSettings();
         },
       ),
+      const SizedBox(height: 10),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        FilledButton.icon(
+          onPressed: _installing || _authenticating || app.downloads.busy ? null : _installSockseek,
+          icon: const Icon(Icons.download_rounded), label: const Text('Установить Sockseek'),
+        ),
+        OutlinedButton.icon(
+          onPressed: _installing || app.downloads.busy ? null : _configureSockseek,
+          icon: const Icon(Icons.settings_outlined), label: const Text('Открыть конфиг Soulseek'),
+        ),
+      ]),
+      const Text('Sockseek бесплатный. Откройте конфиг, замените username и password на данные отдельного аккаунта Soulseek и сохраните файл. '
+          'Пароль хранится локально в этом файле открытым текстом. Данные Spotify не подходят. '
+          'Поиск: «Исполнитель - Название» либо ссылки Spotify, Яндекс Музыки и Deezer. '
+          'Проверяются название, исполнитель и известная длительность (±3 с). Доступность зависит от пользователей Soulseek. '
+          'Скачивайте только файлы, на получение которых у вас есть право.',
+          style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+      TextButton(onPressed: () => launchUrl(Uri.parse('https://github.com/fiso64/sockseek')),
+          child: const Text('Sockseek · исходный код и лицензия AGPL-3.0')),
       if (app.settings.useZotify)
         TextFormField(
           key: ValueKey(_pathVersion),
@@ -1017,4 +1073,5 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
     ]);
   }
 }
+
 

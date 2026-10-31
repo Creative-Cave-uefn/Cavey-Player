@@ -17,6 +17,7 @@ import 'text.dart';
 import 'tools.dart';
 import 'youtube.dart';
 import 'zotify.dart';
+import 'sockseek.dart';
 
 const albumWorkers = 3;
 
@@ -157,6 +158,29 @@ class DownloadService extends ChangeNotifier {
     await temp.create(recursive: true);
     AppLog.info('Загрузчик: ${job.input}');
     try {
+      if (lib.settings.useSockseek) {
+        log('Загрузчик: Sockseek / Soulseek');
+        final tracks = await _sockseekTracks(job.input);
+        if (tracks.isEmpty) throw Exception('Не удалось получить метаданные. Укажите «Исполнитель - Название» или ссылку на трек/альбом.');
+        job.total = tracks.length;
+        job.title = tracks.length == 1 ? tracks.first.label : 'Sockseek: ${tracks.length} треков';
+        final files = await Sockseek.download(tools, tracks, temp, log);
+        for (final file in files) {
+          try {
+            final track = await lib.uploadOne(file, sourceId: job.sourceId, folderId: job.target, path: job.path);
+            job.done++;
+            job.onTrack?.call(track);
+            _notify();
+          } catch (e) { log('Не удалось добавить файл: $e'); }
+        }
+        job.failed = (job.total - job.done).clamp(0, job.total);
+        job.state = job.failed == 0 ? JobState.done : JobState.failed;
+        if (job.done > 0 && !job.quiet) {
+          lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
+          lib.messages.add('Sockseek: добавлено треков — ${job.done} из ${job.total}');
+        }
+        return;
+      }
       if (lib.settings.useZotify && Zotify.accepts(job.input)) {
         log('Загрузчик: Zotify');
         job.title = 'Загрузка через Zotify';
@@ -213,6 +237,33 @@ class DownloadService extends ChangeNotifier {
       } catch (_) {}
       notifyListeners();
     }
+  }
+
+  // Resolve metadata before P2P search; never guess a different recording via YouTube.
+  Future<List<TrackMeta>> _sockseekTracks(String input) async {
+    final uri = Uri.tryParse(input);
+    final host = uri?.host.toLowerCase() ?? '';
+    TrackMeta? single;
+    if (host == 'open.spotify.com' || input.startsWith('spotify:')) {
+      if (input.contains('/album/') || input.startsWith('spotify:album:')) return (await spotifyAlbum(input))?.$2 ?? [];
+      if (input.contains('/playlist/') || input.startsWith('spotify:playlist:')) return (await spotifyPlaylist(input))?.metas ?? [];
+      single = await spotifyTrack(input, (_) {});
+    } else if (host == 'deezer.com' || host.endsWith('.deezer.com')) {
+      if (input.contains('/album/')) return (await deezerAlbum(input))?.$2 ?? [];
+      single = await deezerTrack(input);
+    } else if (host.startsWith('music.yandex.')) {
+      if (input.contains('/track/')) { single = await yandexTrack(input); }
+      else if (input.contains('/album/')) { return (await yandexAlbum(input))?.$2 ?? []; }
+      else { return (await yandexPlaylist(input))?.metas ?? []; }
+    } else if (uri?.hasScheme == true) {
+      throw Exception('Sockseek: используйте ссылку Spotify, Яндекс Музыки, Deezer или «Исполнитель - Название».');
+    } else {
+      final (artist, title) = splitArtistTitle('', input);
+      if (artist.isEmpty || title.isEmpty) throw Exception('Для точного поиска Sockseek укажите «Исполнитель - Название».');
+      // Preserve exactly what the user requested instead of accepting the first catalog hit.
+      single = TrackMeta(artist: artist, title: title);
+    }
+    return single == null ? [] : [single];
   }
 
   // ---------- маршрутизация, как в download() скрипта ----------
@@ -563,5 +614,6 @@ NamedPlaylistResult addToNamedPlaylist(LibraryController lib, String name, List<
   if (fresh.isNotEmpty) lib.addToPlaylist(same.id, fresh);
   return NamedPlaylistResult(same.id, false, fresh.length);
 }
+
 
 

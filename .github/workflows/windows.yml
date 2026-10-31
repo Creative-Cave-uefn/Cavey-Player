@@ -91,6 +91,8 @@ jobs:
 
       - name: Тесты
         shell: pwsh
+        env:
+          CAVE_SOCKSEEK_SMOKE: '1'
         run: |
           $out = flutter test --reporter expanded 2>&1 | Out-String
           $code = $LASTEXITCODE
@@ -305,3 +307,4 @@ jobs:
           while read -r tag; do
             [ -n "$tag" ] && gh release delete "$tag" --repo Creative-Cave-uefn/cave-player-releases --cleanup-tag --yes
           done
+

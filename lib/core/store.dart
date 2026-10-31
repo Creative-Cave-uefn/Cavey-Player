@@ -102,6 +102,7 @@ class Settings {
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
   bool useZotify = false;
+  bool useSockseek = false;
   String zotifyExecutable = 'zotify';
   bool discord = true;
   bool betaUpdates = false; // получать бета-версии
@@ -139,6 +140,7 @@ class Settings {
         'offlineLiked': offlineLiked,
         'offlinePlaylists': offlinePlaylists.toList(),
         'useZotify': useZotify,
+        'useSockseek': useSockseek,
         'zotifyExecutable': zotifyExecutable,
         'discord': discord,
         'betaUpdates': betaUpdates,
@@ -174,6 +176,7 @@ class Settings {
     s.offlineLiked = j['offlineLiked'] == true;
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
     s.useZotify = j['useZotify'] == true;
+    s.useSockseek = j['useSockseek'] == true;
     s.zotifyExecutable = (j['zotifyExecutable'] as String?) ?? 'zotify';
     s.discord = j['discord'] != false;
     s.betaUpdates = j['betaUpdates'] == true;
@@ -192,4 +195,5 @@ class Settings {
     return s;
   }
 }
+
 
