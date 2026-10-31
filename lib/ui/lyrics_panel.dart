@@ -163,10 +163,11 @@ class _LyricsBodyState extends State<LyricsBody> {
   /// Когда строка на самом деле начинается. В LRCLIB отметки часто стоят чуть раньше пения;
   /// если Whisper знает время первого слова — строка переключается по нему
   List<Duration>? _starts;
+  int _offMs = 0; // Ж7: поправка времени текста (мс)
 
   int _lineAt(Lyrics ly) {
     // В панели строку подсвечиваем чуть заранее — читать удобнее. В караоке — ровно в такт, без упреждения
-    final pos = _player!.position.value + (widget.karaoke ? Duration.zero : const Duration(milliseconds: 250));
+    final pos = _player!.position.value + (widget.karaoke ? Duration(milliseconds: _offMs) : const Duration(milliseconds: 250));
     final starts = _starts;
     if (starts == null || starts.length != ly.lines.length) return ly.indexAt(pos);
     var lo = 0, hi = starts.length - 1, idx = -1;
@@ -258,6 +259,7 @@ class _LyricsBodyState extends State<LyricsBody> {
       _keys.add(GlobalKey());
     }
     // Время слов: точное из текста (расширенный LRC) → посчитанное Whisper → разбивка по слогам
+    _offMs = widget.karaoke ? app.karaoke.offsetMs(t) : 0;
     final exact = widget.karaoke ? app.karaoke.wordsFor(t, ly) : null;
     _starts = widget.karaoke
         ? KaraokeAligner.lineStarts([for (final l in ly.lines) l.at!], [
@@ -305,12 +307,13 @@ class _LyricsBodyState extends State<LyricsBody> {
                     color: i == idx ? C.text : (i < idx ? (widget.big ? const Color(0x4DFFFFFF) : C.faint) : (widget.big ? const Color(0x80FFFFFF) : C.muted)),
                   ),
                   child: widget.karaoke && i == idx && ly.lines[i].text.isNotEmpty
-                      ? KaraokeText(text: ly.lines[i].text, words: wordsOf(i), player: app.player)
+                      ? KaraokeText(text: ly.lines[i].text, words: wordsOf(i), player: app.player, shiftMs: _offMs)
                       : Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
                 ),
               ),
             ),
           Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: _again()),
+          if (widget.karaoke) _KaraokeTools(track: t, lyrics: ly),
         ]),
       ),
     );
@@ -325,7 +328,8 @@ class KaraokeText extends StatefulWidget {
   final String text;
   final List<KWord> words;
   final PlayerController player;
-  const KaraokeText({super.key, required this.text, required this.words, required this.player});
+  final int shiftMs; // Ж7: поправка времени
+  const KaraokeText({super.key, required this.text, required this.words, required this.player, this.shiftMs = 0});
 
   @override
   State<KaraokeText> createState() => _KaraokeTextState();
@@ -349,7 +353,8 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
       _lastPos = pos;
       _lastAt = DateTime.now();
     }
-    return p.playing ? pos + DateTime.now().difference(_lastAt) : pos;
+    final shift = Duration(milliseconds: widget.shiftMs);
+    return (p.playing ? pos + DateTime.now().difference(_lastAt) : pos) + shift;
   }
 
   @override
@@ -418,4 +423,37 @@ class _Reveal extends CustomClipper<Path> {
 
   @override
   bool shouldReclip(_Reveal old) => true;
+}
+
+
+/// Ж6 и Ж7: пересчёт караоке и сдвиг времени текста на ±50 мс (запоминается на трек)
+class _KaraokeTools extends StatelessWidget {
+  final Track track;
+  final Lyrics lyrics;
+  const _KaraokeTools({required this.track, required this.lyrics});
+
+  @override
+  Widget build(BuildContext context) {
+    final k = Services.of(context).karaoke;
+    return ListenableBuilder(
+      listenable: k,
+      builder: (context, _) {
+        final off = k.trackOffsetMs(track);
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(8, 20, 8, 0),
+          child: Wrap(spacing: 8, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
+            const Text('Время текста:', style: TextStyle(color: C.faint, fontSize: 12)),
+            IconButton(tooltip: 'Текст позже на 50 мс', onPressed: () => k.nudge(track, -50), icon: const Icon(Icons.remove_rounded, size: 18)),
+            Text(off == 0 ? 'как есть' : '${off > 0 ? '+' : ''}$off мс', style: const TextStyle(color: C.muted, fontSize: 12)),
+            IconButton(tooltip: 'Текст раньше на 50 мс', onPressed: () => k.nudge(track, 50), icon: const Icon(Icons.add_rounded, size: 18)),
+            TextButton.icon(
+              onPressed: () => k.recompute(track, lyrics),
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+              label: const Text('Пересчитать караоке'),
+            ),
+          ]),
+        );
+      },
+    );
+  }
 }

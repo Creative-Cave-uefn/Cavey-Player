@@ -24,7 +24,8 @@ import 'models.dart';
 class HeardWord {
   final String text;
   final Duration start, end;
-  const HeardWord(this.text, this.start, this.end);
+  final double conf; // уверенность Whisper 0..1 (1 — неизвестна, как у старых результатов)
+  const HeardWord(this.text, this.start, this.end, [this.conf = 1]);
 }
 
 /// Сопоставление распознанных слов с текстом песни.
@@ -39,11 +40,10 @@ class KaraokeAligner {
     for (var i = 0; i < marks.length; i++) {
       final f = i < firstWords.length ? firstWords[i] : null;
       if (f == null) continue;
-      final d = (f - marks[i]).inMilliseconds;
-      if (d > -1200 && d < 3000) diffs.add(d);
+      diffs.add((f - marks[i]).inMilliseconds); // Ж2: без ограничения сдвига — большой тоже находим
     }
     var shift = 0;
-    if (diffs.length >= 4) {
+    if (diffs.length >= 3) {
       diffs.sort();
       final median = diffs[diffs.length ~/ 2];
       // Сдвиг устойчивый — большинство строк сдвинуты примерно одинаково
@@ -54,7 +54,7 @@ class KaraokeAligner {
     for (var i = 0; i < marks.length; i++) {
       final f = i < firstWords.length ? firstWords[i] : null;
       final d = f == null ? null : (f - marks[i]).inMilliseconds;
-      var at = d != null && d > -1200 && d < 3000 ? f! : marks[i] + Duration(milliseconds: shift);
+      var at = d != null && d - shift > -1200 && d - shift < 3000 ? f! : marks[i] + Duration(milliseconds: shift);
       // Порядок строк не меняется, и каждая видна хотя бы долю секунды
       if (out.isNotEmpty && at < out.last + const Duration(milliseconds: 150)) at = out.last + const Duration(milliseconds: 150);
       out.add(at);
@@ -92,10 +92,10 @@ class KaraokeAligner {
       if (_cjk.hasMatch(t) && t.length > 1) {
         final step = (h.end - h.start).inMilliseconds / t.length;
         for (var i = 0; i < t.length; i++) {
-          out.add(HeardWord(t[i], h.start + Duration(milliseconds: (step * i).round()), h.start + Duration(milliseconds: (step * (i + 1)).round())));
+          out.add(HeardWord(t[i], h.start + Duration(milliseconds: (step * i).round()), h.start + Duration(milliseconds: (step * (i + 1)).round()), h.conf));
         }
       } else {
-        out.add(HeardWord(t, h.start, h.end));
+        out.add(HeardWord(t, h.start, h.end, h.conf));
       }
     }
     return out;
@@ -117,9 +117,66 @@ class KaraokeAligner {
     return 1 - prev[b.length] / math.max(a.length, b.length);
   }
 
-  /// [lines] — строки текста (время начала), [ends] — когда каждая кончается
-  static List<List<KWord>?> align(List<LyricLine> lines, List<Duration> ends, List<HeardWord> heardRaw) {
-    final heard = splitHeard(heardRaw);
+  /// Грубое число слогов в слове: группы гласных (для русского, английского и похожих)
+  static int syllables(String word) {
+    final n = RegExp(r'[aeiouyаеёиоуыэюяіїє]+', caseSensitive: false).allMatches(word).length;
+    return n < 1 ? 1 : n;
+  }
+
+  /// Ж2: общий сдвиг песни. Первые слова строк сопоставляем со всем распознанным без ограничения по времени
+  /// и берём медиану расхождений. Положительный сдвиг — песня в этой записи звучит позже, чем в тексте.
+  static Duration globalShift(List<LyricLine> lines, List<HeardWord> heard) {
+    final firsts = <(int, String)>[]; // строка, первое слово
+    final all = <String>[];
+    final owner = <int>[]; // для каждого слова текста — номер строки или -1, если слово не первое в строке
+    for (var li = 0; li < lines.length; li++) {
+      final t = tokens(lines[li].text);
+      for (var k = 0; k < t.length; k++) {
+        all.add(t[k].$3);
+        owner.add(k == 0 ? li : -1);
+      }
+      if (t.isNotEmpty) firsts.add((li, t.first.$3));
+    }
+    final n = all.length, m = heard.length;
+    if (n < 6 || m < 6) return Duration.zero;
+    final score = List.generate(n + 1, (_) => List<double>.filled(m + 1, 0));
+    bool good(int i, int j) => all[i].length >= 3 && similarity(all[i], heard[j].text) >= 0.85;
+    for (var i = 1; i <= n; i++) {
+      for (var j = 1; j <= m; j++) {
+        var best = math.max(score[i - 1][j], score[i][j - 1]);
+        if (heard[j - 1].conf >= 0.3 && good(i - 1, j - 1)) best = math.max(best, score[i - 1][j - 1] + 1);
+        score[i][j] = best;
+      }
+    }
+    final diffs = <int>[];
+    var i = n, j = m;
+    while (i > 0 && j > 0) {
+      if (score[i][j] == score[i - 1][j]) {
+        i--;
+      } else if (score[i][j] == score[i][j - 1]) {
+        j--;
+      } else {
+        if (owner[i - 1] >= 0) diffs.add((heard[j - 1].start - lines[owner[i - 1]].at!).inMilliseconds);
+        i--;
+        j--;
+      }
+    }
+    if (diffs.length < 3) return Duration.zero;
+    diffs.sort();
+    final median = diffs[diffs.length ~/ 2];
+    final close = diffs.where((d) => (d - median).abs() < 1500).length;
+    return close >= diffs.length * 0.5 ? Duration(milliseconds: median) : Duration.zero;
+  }
+
+  /// [lines] — строки текста (время начала), [ends] — когда каждая кончается.
+  /// [exactOut] (если дан) получает для каждой строки: найдена по словам (true) или достроена по соседям (false)
+  static List<List<KWord>?> align(List<LyricLine> lines, List<Duration> ends, List<HeardWord> heardRaw,
+      {List<bool>? exactOut}) {
+    // Слова с низкой уверенностью не берём в опору
+    final heard = splitHeard([for (final h in heardRaw) if (h.conf >= 0.25) h]);
+    final shift = globalShift(lines, heard);
+    Duration lineAt(int li) => lines[li].at! + shift;
+    Duration lineEnd(int li) => ends[li] + shift;
     // Все слова текста подряд, с номером строки
     final lw = <(int line, int from, int to, String text)>[];
     for (var li = 0; li < lines.length; li++) {
@@ -129,14 +186,19 @@ class KaraokeAligner {
     }
     final n = lw.length, m = heard.length;
     final result = List<List<KWord>?>.filled(lines.length, null);
-    if (n == 0 || m == 0) return result;
+    final exact = List<bool>.filled(lines.length, false);
+    if (n == 0 || m == 0) {
+      exactOut?.clear();
+      exactOut?.addAll(exact);
+      return result;
+    }
 
     // Выравнивание как в сравнении текстов: совпадение даёт очки, только если слово похоже
     // и прозвучало около своей строки (±1,5 с от её границ)
     const slack = Duration(milliseconds: 1500);
     bool near(int i, int j) {
       final li = lw[i].$1;
-      final a = lines[li].at!, b = ends[li];
+      final a = lineAt(li), b = lineEnd(li);
       return heard[j].start >= a - slack && heard[j].start <= b + slack;
     }
 
@@ -175,7 +237,7 @@ class KaraokeAligner {
       if (idx.isEmpty) continue;
       final found = idx.where((x) => match[x] != null).length;
       if (found < math.max(1, (idx.length * 0.4).ceil())) continue; // слишком мало узнали — оставим слоги
-      final start = lines[li].at!, end = ends[li];
+      final start = lineAt(li), end = lineEnd(li);
       final starts = <Duration?>[for (final x in idx) match[x] == null ? null : heard[match[x]!].start];
       // Заполняем пропуски равномерно между известными соседями
       for (var a = 0; a < starts.length; a++) {
@@ -187,8 +249,17 @@ class KaraokeAligner {
         final left = a == 0 ? start : starts[a - 1]!;
         final right = b < starts.length ? starts[b]! : end - const Duration(milliseconds: 300);
         final span = (right - left).inMilliseconds;
+        // Ж4: пропущенные слова делят промежуток по числу слогов, а не поровну
+        final wl = a == 0 ? 0 : syllables(lw[idx[a - 1]].$4);
+        final wr = b < starts.length ? syllables(lw[idx[b]].$4) : 0;
+        var total = wl + wr;
         for (var c = a; c < b; c++) {
-          starts[c] = left + Duration(milliseconds: (span * (c - a + 1) / (b - a + 1)).round());
+          total += syllables(lw[idx[c]].$4);
+        }
+        var before = wl;
+        for (var c = a; c < b; c++) {
+          starts[c] = left + Duration(milliseconds: (span * before / total).round());
+          before += syllables(lw[idx[c]].$4);
         }
         a = b;
       }
@@ -205,6 +276,52 @@ class KaraokeAligner {
         words.add(KWord(lw[idx[a]].$2, lw[idx[a]].$3, s, e));
       }
       result[li] = words;
+      exact[li] = true;
+    }
+
+    // Ж4: строки, где узнали слишком мало, не делим «по линейке» между отметками LRCLIB, а прижимаем
+    // к найденным словам соседних строк: не раньше конца предыдущей и не позже начала следующей
+    for (var li = 0; li < lines.length; li++) {
+      if (result[li] != null) continue;
+      final t = tokens(lines[li].text);
+      if (t.isEmpty) continue;
+      Duration? prevEnd, nextStart;
+      for (var p = li - 1; p >= 0; p--) {
+        if (result[p] != null && result[p]!.isNotEmpty) {
+          prevEnd = result[p]!.last.end;
+          break;
+        }
+      }
+      for (var q = li + 1; q < lines.length; q++) {
+        if (result[q] != null && result[q]!.isNotEmpty) {
+          nextStart = result[q]!.first.start;
+          break;
+        }
+      }
+      if (prevEnd == null && nextStart == null) continue; // не к чему прижимать — оставляем слоги
+      var s0 = lineAt(li), e0 = lineEnd(li) - const Duration(milliseconds: 250);
+      if (prevEnd != null && s0 < prevEnd) s0 = prevEnd;
+      if (nextStart != null && e0 > nextStart - const Duration(milliseconds: 100)) e0 = nextStart - const Duration(milliseconds: 100);
+      if (e0 <= s0 + const Duration(milliseconds: 200)) continue;
+      var total = 0;
+      for (final x in t) {
+        total += syllables(x.$3);
+      }
+      var acc = 0;
+      final words = <KWord>[];
+      for (final x in t) {
+        final w = syllables(x.$3);
+        final ws = s0 + Duration(milliseconds: ((e0 - s0).inMilliseconds * acc / total).round());
+        final we = s0 + Duration(milliseconds: ((e0 - s0).inMilliseconds * (acc + w) / total).round());
+        words.add(KWord(x.$1, x.$2, ws, we));
+        acc += w;
+      }
+      result[li] = words;
+    }
+    if (exactOut != null) {
+      exactOut
+        ..clear()
+        ..addAll(exact);
     }
     return result;
   }
@@ -345,8 +462,14 @@ class KaraokeService extends ChangeNotifier {
         h = (h * 31 + c) & 0x7fffffff;
       }
     }
-    return '${t.id}_${h.toRadixString(36)}';
+    return '${t.id}_${h.toRadixString(36)}_a$algVersion'; // Ж6: новая версия алгоритма — результат считается заново
   }
+
+  /// Версия алгоритма сопоставления: при изменении старые результаты (у всех друзей) не используются
+  static const algVersion = 2;
+
+  /// Ж6: в общую папку выкладываем, только если найдено по словам не меньше такой доли строк
+  static const shareQuality = 0.7;
 
   File _local(String key) => File('${dir.path}${Platform.pathSeparator}kw_$key.json');
 
@@ -492,44 +615,57 @@ class KaraokeService extends ChangeNotifier {
       _status('Точное караоке: слушаю «${t.title}»…');
       final threads = math.max(1, Platform.numberOfProcessors ~/ 2); // половина ядер: музыка не должна заикаться
       final lang = langOf(ly);
-      // Подсказка из начала текста: Whisper охотнее пишет именно эти слова
-      final prompt = ly.lines.map((l) => l.text).where((x) => x.isNotEmpty).join(' ');
+      // Ж5: подсказка — короткий список редких слов песни, а не начало текста: так Whisper
+      // не «дописывает» слова, которых в этот момент не пели
+      final prompt = promptWords(ly);
       final started = DateTime.now();
-      await Tools.run(_cli.path, [
-        '-m', _modelFile(model).path,
-        '-f', wav.path,
-        '-l', lang,
-        '-t', '$threads',
-        '-ml', '1', '-sow', // каждое слово — отдельным кусочком со своим временем
-        '-oj', '-of', out,
-        '-np',
-        '--prompt', prompt.length > 400 ? prompt.substring(0, 400) : prompt,
-      ]);
       final json = File('$out.json');
+      List<String> args({required bool dtw}) => [
+            '-m', _modelFile(model).path,
+            '-f', wav.path,
+            '-l', lang,
+            '-t', '$threads',
+            '-ml', '1', '-sow', // каждое слово — отдельным кусочком со своим временем
+            if (dtw && _dtwPreset(model) != null) ...['--dtw', _dtwPreset(model)!], // Ж1: DTW-отметки времени
+            '-ojf', '-of', out, // полный JSON с вероятностью каждого слова
+            '-np',
+            if (prompt.isNotEmpty) ...['--prompt', prompt],
+          ];
+      await Tools.run(_cli.path, args(dtw: true));
+      if (!json.existsSync()) await Tools.run(_cli.path, args(dtw: false)); // версия whisper.cpp без --dtw
       if (!json.existsSync()) throw Exception('whisper.cpp не выдал результат');
       final heard = parseWhisper(jsonDecode(utf8.decode(await json.readAsBytes(), allowMalformed: true)));
       final ends = [
         for (var i = 0; i < ly.lines.length; i++)
           i + 1 < ly.lines.length ? ly.lines[i + 1].at! : ly.lines[i].at! + const Duration(seconds: 6),
       ];
-      final words = KaraokeAligner.align(ly.lines, ends, heard);
-      final ok = words.where((w) => w != null).length;
-      AppLog.info('Караоке: «${t.title}» — распознано ${heard.length} слов, точные строки $ok из ${ly.lines.length}, '
-          '${DateTime.now().difference(started).inSeconds} с');
-      final body = jsonEncode(encode(words));
+      final exact = <bool>[];
+      final words = KaraokeAligner.align(ly.lines, ends, heard, exactOut: exact);
+      final withText = [for (var i = 0; i < ly.lines.length; i++) if (KaraokeAligner.tokens(ly.lines[i].text).isNotEmpty) i];
+      final ok = withText.where((i) => exact[i]).length;
+      final quality = withText.isEmpty ? 0.0 : ok / withText.length;
+      AppLog.info('Караоке: «${t.title}» — распознано ${heard.length} слов, строк по словам $ok из ${withText.length} '
+          '(${(quality * 100).round()}%), ${DateTime.now().difference(started).inSeconds} с');
+      final body = jsonEncode({...encode(words), 'alg': algVersion, 'q': double.parse(quality.toStringAsFixed(2))});
       await _local(key).writeAsString(body);
       _ready(key, words);
-      // Делимся с друзьями
-      if (lib.hasHub && ok > 0) {
+      // Ж6: друзьям выкладываем только хороший результат (≥ 70% строк по словам)
+      if (lib.hasHub && quality >= shareQuality) {
         try {
           await lib.withHub((email) async {
             final folder = await _sharedFolder(email);
             final found = await drive.listChildren(email, folder, nameEquals: 'kw_$key.json');
-            if (found.isEmpty) await drive.createFile(email, folder, 'kw_$key.json', body);
+            if (found.isEmpty) {
+              await drive.createFile(email, folder, 'kw_$key.json', body);
+            } else if (_forced.remove(key)) {
+              await drive.updateFile(email, found.first.id, body); // ручной пересчёт заменяет прежний
+            }
           });
         } catch (e) {
           AppLog.warn('Караоке: не выложилось в общую папку', e);
         }
+      } else if (lib.hasHub) {
+        AppLog.info('Караоке: «${t.title}» не выложено в общую папку — точных строк меньше ${(shareQuality * 100).round()}%');
       }
     } finally {
       for (final f in [src, wav, File('$out.json')]) {
@@ -538,6 +674,81 @@ class KaraokeService extends ChangeNotifier {
         } catch (_) {}
       }
     }
+  }
+
+  /// Ж5: до 25 самых редких длинных слов песни, не больше 220 знаков
+  static String promptWords(Lyrics ly) {
+    final count = <String, int>{};
+    for (final l in ly.lines) {
+      for (final t in KaraokeAligner.tokens(l.text)) {
+        count[t.$3] = (count[t.$3] ?? 0) + 1;
+      }
+    }
+    final rare = [for (final e in count.entries) if (e.value == 1 && e.key.length >= 6) e.key]..sort((a, b) => b.length.compareTo(a.length));
+    final out = StringBuffer();
+    var n = 0;
+    for (final w in rare) {
+      if (n >= 25 || out.length + w.length + 2 > 220) break;
+      if (out.isNotEmpty) out.write(', ');
+      out.write(w);
+      n++;
+    }
+    return out.toString();
+  }
+
+  /// Название модели для --dtw (только те, что знает whisper.cpp)
+  static String? _dtwPreset(String model) {
+    const known = {
+      'tiny': 'tiny', 'tiny.en': 'tiny.en', 'base': 'base', 'base.en': 'base.en', 'small': 'small', 'small.en': 'small.en',
+      'medium': 'medium', 'medium.en': 'medium.en', 'large-v1': 'large.v1', 'large-v2': 'large.v2', 'large-v3': 'large.v3',
+      'large-v3-turbo': 'large.v3.turbo',
+    };
+    return known[model];
+  }
+
+  /// Ж6: пересчитать караоке для трека: старый результат стирается, считается заново, хороший заменяет общий
+  Future<void> recompute(Track t, Lyrics ly) async {
+    final key = keyFor(t, ly);
+    try {
+      final f = _local(key);
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
+    _mem.remove(key);
+    _forced.add(key);
+    notifyListeners();
+    if (!enabled) {
+      lib.messages.add('Включите точное караоке в настройках, чтобы пересчитать');
+      return;
+    }
+    _enqueue(t, ly, key);
+  }
+
+  final Set<String> _forced = {};
+
+  // ---------- Ж7: ручная поправка времени ----------
+
+  /// Общая задержка звука устройства (Bluetooth-наушники), мс; плюс поправка этого трека
+  int get globalDelayMs => int.tryParse(lib.settings.view['karaoke.delay'] ?? '') ?? 0;
+  int trackOffsetMs(Track t) => int.tryParse(lib.settings.view['karaoke.off.${t.id}'] ?? '') ?? 0;
+
+  /// Сколько прибавить к позиции плеера: положительное — текст идёт раньше
+  int offsetMs(Track t) => globalDelayMs + trackOffsetMs(t);
+
+  void nudge(Track t, int ms) {
+    final v = (trackOffsetMs(t) + ms).clamp(-3000, 3000);
+    if (v == 0) {
+      lib.settings.view.remove('karaoke.off.${t.id}');
+    } else {
+      lib.settings.view['karaoke.off.${t.id}'] = '$v';
+    }
+    unawaited(lib.saveSettings());
+    notifyListeners();
+  }
+
+  void setGlobalDelay(int ms) {
+    lib.settings.view['karaoke.delay'] = '${ms.clamp(-1000, 1000)}';
+    unawaited(lib.saveSettings());
+    notifyListeners();
   }
 
   /// Слова из JSON whisper.cpp: transcription[].offsets.from/to в миллисекундах
@@ -552,7 +763,20 @@ class KaraokeService extends ChangeNotifier {
       if (text.isEmpty || o is! Map) continue;
       final a = (o['from'] as num?)?.toInt(), b = (o['to'] as num?)?.toInt();
       if (a == null || b == null) continue;
-      out.add(HeardWord(text, Duration(milliseconds: a), Duration(milliseconds: b)));
+      // Ж1: средняя вероятность настоящих токенов слова (служебные вида [_TT_…] не считаем)
+      var sum = 0.0, cnt = 0;
+      final toks = s['tokens'];
+      if (toks is List) {
+        for (final tk in toks) {
+          if (tk is! Map) continue;
+          final tt = '${tk['text'] ?? ''}';
+          final p = (tk['p'] as num?)?.toDouble();
+          if (p == null || tt.startsWith('[_')) continue;
+          sum += p;
+          cnt++;
+        }
+      }
+      out.add(HeardWord(text, Duration(milliseconds: a), Duration(milliseconds: b), cnt == 0 ? 1 : sum / cnt));
     }
     return out;
   }

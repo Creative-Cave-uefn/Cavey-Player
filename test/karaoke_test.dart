@@ -115,6 +115,35 @@ void main() {
       expect(KaraokeAligner.lineStarts(marks, [null, null]), marks);
     });
 
+
+    test('текст сдвинут на 5 с — слова всё равно находятся (Ж2)', () {
+      final words = 'я иду домой под дождём по длинной дороге в ночь'.split(' ');
+      final shifted = [
+        for (var i = 0; i < 4; i++) LyricLine(ms(10000 + i * 4000), ['я иду домой', 'под дождём по', 'длинной дороге', 'в ночь домой'][i]),
+      ];
+      final ends = [for (var i = 0; i < 4; i++) ms(14000 + i * 4000)];
+      // На записи те же слова звучат на 5 с позже
+      final heard = <HeardWord>[];
+      var t = 15000;
+      for (final line in ['я иду домой', 'под дождём по', 'длинной дороге', 'в ночь домой']) {
+        for (final w in line.split(' ')) {
+          heard.add(HeardWord(w, ms(t), ms(t + 300)));
+          t += 400;
+        }
+        t += 2400;
+      }
+      expect(words.isNotEmpty, true);
+      final shift = KaraokeAligner.globalShift(shifted, heard);
+      expect(shift.inMilliseconds, inInclusiveRange(4500, 5500));
+      final r = KaraokeAligner.align(shifted, ends, heard);
+      expect(r[0], isNotNull);
+    });
+
+    test('слоги: пропущенное длинное слово получает больше времени (Ж4)', () {
+      expect(KaraokeAligner.syllables('дорога'), 3);
+      expect(KaraokeAligner.syllables('в'), 1);
+    });
+
     test('язык по тексту', () {
       expect(KaraokeService.langOf(Lyrics(lines, synced: true)), 'ru');
       expect(KaraokeService.langOf(const Lyrics([LyricLine(Duration.zero, '心に雲を持つ少年')], synced: true)), 'ja');

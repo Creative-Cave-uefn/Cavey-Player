@@ -592,6 +592,25 @@ class _KaraokeSection extends StatelessWidget {
           ),
           onChanged: k.setEnabled,
         ),
+        const SizedBox(height: 6),
+        Row(children: [
+          const Expanded(
+            child: Text('Задержка звука устройства (например, Bluetooth-наушники): текст идёт раньше на столько миллисекунд',
+                style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+          ),
+          SizedBox(
+            width: 220,
+            child: Slider(
+              value: k.globalDelayMs.toDouble(),
+              min: 0,
+              max: 600,
+              divisions: 24,
+              label: '${k.globalDelayMs} мс',
+              onChanged: (v) => k.setGlobalDelay(v.round()),
+            ),
+          ),
+          SizedBox(width: 60, child: Text('${k.globalDelayMs} мс', style: const TextStyle(color: C.muted, fontSize: 13))),
+        ]),
         if (k.enabled) ...[
           const SizedBox(height: 6),
           Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
