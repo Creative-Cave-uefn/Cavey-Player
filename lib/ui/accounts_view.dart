@@ -1,5 +1,6 @@
 
 import '../core/dl/zotify_install.dart';
+import '../core/dl/zotify_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -881,6 +882,7 @@ class _DownloaderSection extends StatefulWidget {
 
 class _DownloaderSectionState extends State<_DownloaderSection> {
   bool _installing = false;
+  bool _authenticating = false;
   bool _checking = false;
   String _installLog = '';
   String _matchResult = '';
@@ -901,12 +903,33 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
       await app.lib.saveSettings();
       if (mounted) setState(() {
         _pathVersion++;
-        _installLog += "\nZotify установлен. Для входа откройте PowerShell и выполните:\n& '${executable.replaceAll("'", "''")}'";
+        _installLog += '\nZotify установлен. Нажмите «Войти в Spotify через браузер».';
       });
     } catch (e) {
       if (mounted) setState(() => _installLog += '\nОшибка: $e');
     } finally {
       if (mounted) setState(() => _installing = false);
+    }
+  }
+
+  Future<void> _loginZotify() async {
+    final app = Services.of(context);
+    setState(() { _authenticating = true; _installLog = 'Начинаю вход в Spotify через браузер…'; });
+    try {
+      await ZotifyAuth.login(app.downloads.tools, app.settings.zotifyExecutable, (uri) async {
+        if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+          throw Exception('Не удалось открыть браузер');
+        }
+      }, (line) {
+        if (mounted) setState(() {
+          _installLog = '$_installLog\n$line';
+          if (_installLog.length > 12000) _installLog = _installLog.substring(_installLog.length - 12000);
+        });
+      });
+    } catch (e) {
+      if (mounted) setState(() => _installLog += '\nОшибка входа: $e');
+    } finally {
+      if (mounted) setState(() => _authenticating = false);
     }
   }
 
@@ -940,10 +963,16 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
       Text('Загрузчик музыки', style: display(20)),
       const SizedBox(height: 10),
       FilledButton.icon(
-        onPressed: _installing || app.downloads.busy ? null : _install,
+        onPressed: _installing || _authenticating || app.downloads.busy ? null : _install,
         icon: _installing ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.download_rounded),
         label: Text(_installing ? 'Устанавливаю Zotify…' : 'Установить Zotify'),
+      ),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(
+        onPressed: _installing || _authenticating || app.downloads.busy ? null : _loginZotify,
+        icon: const Icon(Icons.login_rounded),
+        label: Text(_authenticating ? 'Ожидаю вход в браузере…' : 'Войти в Spotify через браузер'),
       ),
       const Text('Установит Python 3.11, Git, FFmpeg и Zotify. Windows может запросить права на установку.',
           style: TextStyle(color: C.faint, fontSize: 12)),
@@ -955,10 +984,10 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
         title: const Text('Использовать Zotify для ссылок Spotify'),
         subtitle: const Text('Треки, альбомы и плейлисты Spotify скачиваются через Zotify. '
             'Другие ссылки и поиск используют обычный загрузчик. '
-            'После установки выполните вход в Zotify через терминал.',
+            'После установки нажмите «Войти в Spotify через браузер» и завершите вход на странице Spotify.',
             style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
         value: app.settings.useZotify,
-        onChanged: _installing ? null : (value) {
+        onChanged: _installing || _authenticating ? null : (value) {
           setState(() => app.settings.useZotify = value);
           app.lib.saveSettings();
         },
@@ -966,7 +995,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
       if (app.settings.useZotify)
         TextFormField(
           key: ValueKey(_pathVersion),
-          enabled: !_installing,
+          enabled: !_installing && !_authenticating,
           initialValue: app.settings.zotifyExecutable,
           decoration: const InputDecoration(labelText: 'Путь к Zotify', hintText: 'zotify или полный путь к zotify.exe'),
           onChanged: (value) {
