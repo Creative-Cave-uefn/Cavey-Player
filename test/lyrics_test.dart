@@ -117,4 +117,18 @@ void main() {
       await dir.delete(recursive: true);
     });
   });
+  test('Cached Better Lyrics TTML preserves syllable timing', () async {
+    final dir = await Directory.systemTemp.createTemp('better-cache');
+    try {
+      final service = LyricsService(dir);
+      final t = track('Example', 'Artist', 'Album');
+      const xml = '<tt><body><p begin="0:01" end="0:03"><span begin="0:01" end="0:02">a</span> <span begin="0:02" end="0:03">b</span></p></body></tt>';
+      await File('${dir.path}/${LyricsService.keyFor(t)}.json').writeAsString(jsonEncode({'betterLyrics': xml}));
+      final result = await service.forTrack(t, const Duration(seconds: 100));
+      expect(result?.origin, 'betterlyrics');
+      expect(result?.lines.single.text, 'a b');
+      expect(result?.lines.single.words?.last.start.inSeconds, 2);
+    } finally { await dir.delete(recursive: true); }
+  });
+
 }

@@ -6,6 +6,16 @@ import 'zotify_cooldown.dart';
 
 /// Runs an already installed and authenticated Zotify, without a shell.
 class Zotify {
+  /// Progress spinners can prefix protocol messages on the same console line.
+  static (bool, String?) rateLimitSignal(String line) {
+    if (!line.contains('CAVE_RATE_LIMIT')) return (false, null);
+    final match = RegExp(r'CAVE_RATE_LIMIT\s+(\{[^\r\n]*?\})').firstMatch(line);
+    try {
+      final value = jsonDecode(match![1]!)['retry_after'];
+      return (true, value is String ? value : null);
+    } catch (_) { return (true, null); }
+  }
+
   static final cooldown = ZotifyCooldown();
   static File get credentialsFile {
     final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
@@ -55,7 +65,7 @@ _original_send = requests.sessions.Session.send
 def send_with_rate_limit(self, request, **kwargs):
     response = _original_send(self, request, **kwargs)
     if response.status_code == 429:
-        print('CAVE_RATE_LIMIT ' + json.dumps({'retry_after': response.headers.get('Retry-After')}), flush=True)
+        print('\nCAVE_RATE_LIMIT ' + json.dumps({'retry_after': response.headers.get('Retry-After')}), flush=True)
         raise SystemExit(4)
     return response
 requests.sessions.Session.send = send_with_rate_limit
@@ -92,9 +102,10 @@ main()
     var rateLimited = false;
     String? retryAfter;
     void handle(String line) {
-      if (line.startsWith('CAVE_RATE_LIMIT ')) {
+      final signal = rateLimitSignal(line);
+      if (signal.$1) {
         rateLimited = true;
-        try { final value = jsonDecode(line.substring(16))['retry_after']; retryAfter = value is String ? value : null; } catch (_) {}
+        retryAfter = signal.$2;
         log('Spotify вернул 429. Останавливаю запросы.');
       } else if (line.startsWith('CAVE_AUTH_REJECTED:')) {
         authRejected = true;
@@ -131,6 +142,7 @@ main()
       process.kill();
       throw Exception('Zotify не завершился вовремя. Проверьте вход в аккаунт в терминале.');
     }
+    if (code == 4) rateLimited = true; // Also recognize the dedicated exit code if console output was mangled.
     final rateLimit = rateLimited ? await cooldown.pause(retryAfter, stateFile: stateFile) : null;
     if (rateLimit != null) log('$rateLimit');
     if (authRejected) throw Exception('Сохранённая сессия Spotify отклонена. Нажмите «Войти в Spotify через браузер». Если ошибка повторится после успешного входа, доступ через эту версию Librespot пока не подтверждён.');

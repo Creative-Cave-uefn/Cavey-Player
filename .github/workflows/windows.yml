@@ -65,6 +65,30 @@ jobs:
           }
           if ($errs.Count -gt 0) { exit 1 }
 
+      - name: Проверить публичный API Better Lyrics
+        shell: pwsh
+        run: |
+          @'
+          import json, os, urllib.request, urllib.error
+          from pathlib import Path
+          path = Path(os.environ['RUNNER_TEMP']) / 'better-lyrics-probe.json'
+          try:
+              request = urllib.request.Request('https://api.betterlyrics.org/getLyrics?s=E85&a=Don%20Toliver&al=OCTANE&d=154', headers={'User-Agent': 'CavePlayer', 'Accept': 'application/json'})
+              with urllib.request.urlopen(request, timeout=15) as response:
+                  data = json.load(response)
+                  ttml = data.get('ttml', '')
+                  if isinstance(ttml, str) and ttml.strip():
+                      path.write_text(json.dumps(data), encoding='utf-8')
+                      print('Better Lyrics live probe: HTTP 200, TTML characters=' + str(len(ttml)))
+                  else:
+                      print('::warning::Better Lyrics live probe: HTTP 200 without TTML')
+          except urllib.error.HTTPError as error:
+              print('::warning::Better Lyrics live probe: HTTP ' + str(error.code))
+          except Exception as error:
+              print('::warning::Better Lyrics live probe: ' + type(error).__name__)
+          '@ | python -
+          "BETTER_LYRICS_LIVE_JSON=$env:RUNNER_TEMP/better-lyrics-probe.json" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Тесты
         shell: pwsh
         run: |

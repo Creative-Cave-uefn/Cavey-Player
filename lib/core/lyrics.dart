@@ -13,6 +13,7 @@ import 'package:http/http.dart' as http;
 
 import 'lyric_sources.dart';
 import 'musixmatch.dart';
+import 'better_lyrics.dart';
 
 import '../config.dart';
 import 'log.dart';
@@ -248,7 +249,7 @@ class LyricsService extends ChangeNotifier {
 
   LyricsService(this.dir);
 
-  late final Musixmatch musixmatch = Musixmatch(_http, tokenFile: File('${dir.path}${Platform.pathSeparator}musixmatch-token.json'));
+  late final BetterLyrics betterLyrics = BetterLyrics(_http);
 
   /// Л1, Л6: текст из файла рядом с треком или из самого файла (задаёт приложение, у него есть доступ к Диску).
   /// Возвращает сырой текст нужного вида или null, если своих текстов у трека нет
@@ -325,6 +326,9 @@ class LyricsService extends ChangeNotifier {
           if (j['none'] == true) {
             final at = DateTime.tryParse('${j['at']}');
             if (at != null && DateTime.now().difference(at) < const Duration(days: 7)) return null;
+          } else if (j['betterLyrics'] is String) {
+            final cached = BetterLyrics.parse(j['betterLyrics'] as String);
+            if (cached != null) return cached;
           } else if (j['musixmatchLrc'] is String) {
             return Lyrics.fromLrclib({'syncedLyrics': j['musixmatchLrc']})?.copyWith(origin: 'musixmatch');
           } else if (j['musixmatch'] != null) {
@@ -357,32 +361,15 @@ class LyricsService extends ChangeNotifier {
       }
     }
 
-    // Ready-made word timings avoid running speech recognition locally.
+    // Prefer documented syllable timing, preserving the original TTML in cache.
     try {
-      final rich = await musixmatch.find(t, duration).timeout(const Duration(seconds: 20));
-      if (rich != null) {
-        try {
-          await f.writeAsString(jsonEncode(rich.lines.any((line) => line.words == null) ? {'musixmatchLrc': rich.lines.map((line) {
-            final at = line.at!;
-            final min = at.inMinutes.toString().padLeft(2, '0');
-            final sec = ((at.inMilliseconds % 60000) / 1000).toStringAsFixed(3).padLeft(6, '0');
-            return '[$min:$sec]${line.text}';
-          }).join('\n')} : {'musixmatch': [
-            for (final line in rich.lines) {
-              'x': line.text,
-              'ts': line.at!.inMilliseconds / 1000,
-              'te': line.words!.last.end.inMilliseconds / 1000,
-              'l': [for (final w in line.words!) {
-                'c': line.text.substring(w.from, w.to),
-                'o': (w.start - line.at!).inMilliseconds / 1000,
-              }],
-            },
-          ]}));
-        } catch (_) {}
-        return rich;
+      final result = await betterLyrics.fetch(t, duration);
+      if (result != null) {
+        try { await f.writeAsString(jsonEncode({'betterLyrics': result.ttml})); } catch (_) {}
+        return result.lyrics;
       }
     } catch (e) {
-      AppLog.warn('Musixmatch недоступен, использую LRCLIB', e);
+      AppLog.warn('Better Lyrics недоступен, использую LRCLIB', e);
     }
 
     Map? found;

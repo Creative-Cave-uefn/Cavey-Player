@@ -34,4 +34,12 @@ void main() {
     } finally { await dir.delete(recursive: true); }
   });
 
+  test('Rate limit marker survives progress prefixes, ANSI and missing newlines', () {
+    final line = '\u001b[2K[●∙∙] Fetching track information... CAVE_RATE_LIMIT {"retry_after": "38"}\r';
+    expect(Zotify.rateLimitSignal(line), (true, '38'));
+    expect(Zotify.rateLimitSignal('CAVE_RATE_LIMIT {"retry_after": null}'), (true, null));
+    expect(Zotify.rateLimitSignal('progress only'), (false, null));
+    expect(Zotify.rateLimitSignal('prefix CAVE_RATE_LIMIT damaged'), (true, null));
+  });
+
 }

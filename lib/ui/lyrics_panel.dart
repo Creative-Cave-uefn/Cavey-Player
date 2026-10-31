@@ -231,6 +231,7 @@ class _LyricsBodyState extends State<LyricsBody> {
         : ly.approx
             ? 'Версия текста может отличаться: длительность в базе не совпадает с треком'
             : switch (ly.origin) {
+                'betterlyrics' => 'Текст и тайминги: Better Lyrics',
                 'musixmatch' => 'Синхронизация слов: Musixmatch',
                 'ultrastar' => 'Слоги из файла UltraStar рядом с треком',
                 'ass' => 'Слоги из файла .ass рядом с треком',
