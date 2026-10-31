@@ -136,6 +136,19 @@ class LastFm {
         },
       );
 
+  /// Теги конкретной песни (Д5): точнее, чем теги исполнителя. [match] — вес от 0 до 1
+  Future<List<LfmItem>> trackTags(String artist, String title) => _get(
+        'ttags:${artist.toLowerCase()}|${title.toLowerCase()}',
+        {'method': 'track.gettoptags', 'artist': artist, 'track': title},
+        (j) {
+          final list = (j['toptags'] as Map?)?['tag'];
+          return [
+            for (final x in (list is List ? list : const []))
+              if (x is Map && _num(x['count']) >= 5) LfmItem('${x['name'] ?? ''}'.toLowerCase(), '', _num(x['count']) / 100)
+          ].take(20).toList();
+        },
+      );
+
   /// Самые популярные песни с тегом (настроением)
   Future<List<LfmItem>> tagTracks(String tag) => _get(
         'tag:$tag',

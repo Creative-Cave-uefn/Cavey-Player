@@ -162,6 +162,8 @@ class WaveInputs {
   final Map<String, double> boost; // трек → насколько он похож на недавно дослушанные (0..1, по Last.fm)
   final Set<String> focus; // своя подборка: только эти исполнители и похожие на них (пусто — все)
   final Map<String, double>? mood; // выбрано настроение: трек → насколько подходит (0..1)
+  final Map<String, double> bpm; // известный темп треков (Д6)
+  final double? curBpm; // темп играющего сейчас трека
 
   WaveInputs({
     required this.tracks,
@@ -175,6 +177,8 @@ class WaveInputs {
     this.boost = const {},
     this.focus = const {},
     this.mood,
+    this.bpm = const {},
+    this.curBpm,
   }) : taste = taste ?? WaveTaste();
 }
 
@@ -248,6 +252,13 @@ class WaveEngine {
     // Настроение: неподходящие треки отходят далеко на второй план
     final mood = x.mood;
     if (mood != null) w *= 0.08 + 2.5 * (mood[t.id] ?? 0);
+    // Д6: резкий скачок темпа относительно играющего трека слегка штрафуем (двойной/половинный темп — не скачок)
+    final cb = x.curBpm, tb = x.bpm[t.id];
+    if (cb != null && tb != null && cb > 0 && tb > 0) {
+      var r = log(tb / cb) / ln2; // в октавах
+      r = (r - r.roundToDouble()).abs() < r.abs() ? r - r.roundToDouble() : r;
+      w *= 1 - min(0.35, r.abs() * 0.5);
+    }
     if (x.taste.upvoted.contains(t.id)) w *= 1.6;
     w *= pow(0.45, x.taste.skips[t.id] ?? 0);
     return max(w, 0.002);
@@ -405,6 +416,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   /// Теги исполнителей из Last.fm: ключ исполнителя → тег → вес
   final Map<String, Map<String, double>> _tags = {};
   bool _tagging = false;
+  final Map<String, double> _bpms = {}; // Д6: id трека → темп, узнаётся по мере прослушивания
+  final Map<String, Map<String, double>> _trackTags = {}; // Д5: id трека → тег → вес
+  final Set<String> _trackTagsAsked = {};
   int tagsKnown = 0, tagsTotal = 0;
 
   // ---------- новинки ----------
@@ -475,6 +489,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     // Волна играла при закрытии — продолжаем её после перезапуска
     if (player.settings.session?['wave'] == true && player.current != null) player.attachFeeder(w);
     player.addListener(w._onPlayer);
+    lib.addListener(w._markInputsDirty);
+    social.addListener(w._markInputsDirty);
     // Пробные треки проверяем не сразу: сначала должны подтянуться прослушивания друзей
     Timer(const Duration(minutes: 3), w.sweep);
     w._sweepTimer = Timer.periodic(const Duration(minutes: 20), (_) => w.sweep());
@@ -488,6 +504,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     if (active != _wasActive) {
       _wasActive = active;
       notifyListeners();
+      if (!active) cleanup(); // Д16: сессия волны закончилась
     }
     // Новый трек в волне: сразу ищем похожие на него и пересобираем то, что после следующего
     final cur = player.current;
@@ -500,6 +517,13 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   }
 
   Future<void> _onTrackStart(Track t) async {
+    // Д6: темп играющего трека нужен, чтобы следующие не отличались резко
+    if (!_bpms.containsKey(t.id)) {
+      unawaited(web.bpm(t.artists.first, t.title).then((b) {
+        if (b != null) _bpms[t.id] = b;
+      }, onError: (Object _) {}));
+    }
+    if (mood != null) unawaited(_loadTags());
     final found = await _learnFrom(t);
     if (!active || player.current?.id != t.id) return;
     if (found > 0) player.refillFeed(keep: (id) => trials.containsKey(id));
@@ -511,6 +535,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   // ---------- запуск ----------
 
   Future<void> start([WaveMode? m]) async {
+    cleanup(); // Д16: чистка в начале каждой сессии
     if (m != null) mode = m;
     _session.clear();
     _boost.clear();
@@ -628,9 +653,22 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
           }
           return min(1.0, v * 1.5);
         });
+    double fitTrack(Track t) {
+      // Д5: теги самой песни точнее; если их нет — теги исполнителя
+      final own = _trackTags[t.id];
+      if (own != null && own.isNotEmpty) {
+        var v = 0.0;
+        for (final tag in m.tags) {
+          v += own[tag] ?? 0;
+        }
+        return min(1.0, v * 1.5);
+      }
+      return t.artists.map((a) => fit(a.toLowerCase())).fold<double>(0, (a, b) => a > b ? a : b);
+    }
+
     return {
       for (final t in tracks)
-        if (t.artists.map((a) => fit(a.toLowerCase())).fold<double>(0, (a, b) => a > b ? a : b) case final v when v > 0) t.id: v
+        if (fitTrack(t) case final v when v > 0) t.id: v
     };
   }
 
@@ -641,9 +679,24 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     try {
       final artists = List.of(lib.artists)..sort((a, b) => b.tracks.length.compareTo(a.tracks.length));
       final todo = [for (final a in artists.take(400)) if (!_tags.containsKey(a.key)) a];
+      // Д14: сначала исполнители из ближайшей очереди — настроение заработает раньше
+      final near = <String>{
+        for (final t in player.upcoming.take(20)) ...t.artists.map((a) => a.toLowerCase()),
+        if (player.current != null) ...player.current!.artists.map((a) => a.toLowerCase()),
+      };
+      todo.sort((a, b) => (near.contains(a.key) ? 0 : 1).compareTo(near.contains(b.key) ? 0 : 1));
       tagsTotal = min(artists.length, 400);
       tagsKnown = tagsTotal - todo.length;
       notifyListeners();
+      // Д5: теги ближайших песен очереди (не больше 12 за раз)
+      var asked = 0;
+      for (final t in [if (player.current != null) player.current!, ...player.upcoming.take(11)]) {
+        if (mood == null || asked >= 12) break;
+        if (!_trackTagsAsked.add(t.id)) continue;
+        asked++;
+        final tags = await lastfm.trackTags(t.artists.first, t.title);
+        if (tags.isNotEmpty) _trackTags[t.id] = {for (final x in tags) x.artist: x.match};
+      }
       var n = 0;
       for (final a in todo) {
         if (mood == null) break;
@@ -776,7 +829,45 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   // ---------- что волна знает ----------
 
+  // Д13: тяжёлую часть (перебор всех треков и прослушиваний друзей) считаем заново только когда
+  // изменилась библиотека или прослушивания, но не чаще, чем раз в 30 секунд
+  bool _inputsDirty = true;
+  DateTime _inputsAt = DateTime.fromMillisecondsSinceEpoch(0);
+  int _inputsTrials = -1;
+  List<Track> _cTracks = const [];
+  Set<String> _cLiked = const {};
+  Map<String, int> _cMyPlays = const {};
+  Map<String, int> _cCrowd = const {};
+  Set<String> _cFav = const {};
+
+  void _markInputsDirty() => _inputsDirty = true;
+
   WaveInputs _inputs() {
+    final stale = DateTime.now().difference(_inputsAt) > const Duration(seconds: 30);
+    if (_inputsDirty && (stale || _inputsTrials != trials.length) || _inputsTrials != trials.length) {
+      _rebuildInputs();
+    }
+    return WaveInputs(
+      tracks: _cTracks,
+      liked: _cLiked,
+      myPlays: _cMyPlays,
+      crowd: _cCrowd,
+      favArtists: _cFav,
+      related: _related,
+      taste: taste,
+      session: _session,
+      boost: _boost,
+      focus: _focus,
+      mood: _moodMap(_cTracks),
+      bpm: _bpms,
+      curBpm: player.current == null ? null : _bpms[player.current!.id],
+    );
+  }
+
+  void _rebuildInputs() {
+    _inputsDirty = false;
+    _inputsAt = DateTime.now();
+    _inputsTrials = trials.length;
     final me = lib.me;
     // Пробные треки волна ставит сама один раз: повтор должен быть чьим-то выбором, а не волны
     final tracks = [for (final t in lib.allTracks) if (!trials.containsKey(t.id)) t];
@@ -797,20 +888,11 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       final others = who.where((e) => e != me).length;
       if (others > 0) crowd[id] = (crowd[id] ?? 0) + others * 2;
     });
-    final fav = {for (final a in lib.artists) if (lib.isFavArtist(a.key)) a.key};
-    return WaveInputs(
-      tracks: tracks,
-      liked: liked,
-      myPlays: myPlays,
-      crowd: crowd,
-      favArtists: fav,
-      related: _related,
-      taste: taste,
-      session: _session,
-      boost: _boost,
-      focus: _focus,
-      mood: _moodMap(tracks),
-    );
+    _cTracks = tracks;
+    _cLiked = liked;
+    _cMyPlays = myPlays;
+    _cCrowd = crowd;
+    _cFav = {for (final a in lib.artists) if (lib.isFavArtist(a.key)) a.key};
   }
 
   Map<String, double> _affinity() => WaveEngine.affinity(_inputs());
@@ -1347,6 +1429,29 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     _save();
   }
 
+  /// Д16: удаляет (через корзину) пробные треки, которые волна уже «наказала»: ранний пропуск
+  /// или исполнитель с симпатией ≤ −3. Сохранённые людьми и обычные треки библиотеки не трогает.
+  void cleanup() {
+    if (trials.isEmpty || !lib.hasHub || !social.loaded) return;
+    final aff = WaveEngine.affinity(_inputs());
+    var removed = 0;
+    for (final t in trials.values.toList()) {
+      final id = lib.data.resolve(t.id);
+      final track = lib.data.tracks[id];
+      if (track == null || _kept(id) || player.current?.id == id) continue;
+      final skipped = (taste.skips[t.id] ?? 0) > 0;
+      if (skipped || _skippedArtist(track.artist, aff)) {
+        _drop(t);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      player.dropUpcoming((id) => lib.data.tracks[id] == null);
+      AppLog.info('Моя волна: убрано наказанных пробных треков: $removed');
+      notifyListeners();
+    }
+  }
+
   /// Раз в 20 минут: сохранённые оставляем насовсем, просроченные удаляем с Диска
   void sweep() {
     if (trials.isEmpty || !lib.hasHub || !social.loaded) return;
@@ -1408,6 +1513,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   @override
   void dispose() {
+    lib.removeListener(_markInputsDirty);
+    social.removeListener(_markInputsDirty);
     _sweepTimer?.cancel();
     _saveTimer?.cancel();
     super.dispose();
