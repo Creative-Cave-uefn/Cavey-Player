@@ -181,6 +181,8 @@ class AppServices {
       return null;
     };
     app.wave = await WaveService.open(store, lib, player, social, app.web, downloads);
+    // Модуль скачки ставится сразу в фоне, чтобы «Скачать» работало с первого нажатия
+    downloads.start();
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());

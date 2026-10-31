@@ -119,6 +119,34 @@ class DownloadService extends ChangeNotifier {
     }
   }
 
+  bool _started = false;
+  Timer? _prepareTimer;
+
+  /// Вызывается при запуске плеера: модуль скачки ставится сразу, в фоне, а не при первом «Скачать».
+  /// Без интернета пробует снова через 15 минут; пока плеер открыт — раз в сутки проверяет обновления
+  void start() {
+    if (_started) return;
+    // Сборки модуля есть только для Windows; на других системах — только своя (CAVE_DOWNLOADER_EXE)
+    if (!Platform.isWindows && module.override == null) return;
+    _started = true;
+    unawaited(_prepare());
+  }
+
+  Future<void> _prepare() async {
+    _prepareTimer?.cancel();
+    var next = const Duration(hours: 6); // сеть трогается не чаще раза в сутки (см. DownloaderModule.ensure)
+    final had = module.installed;
+    try {
+      await _locked(() => _ensureModule((l) => AppLog.info('Модуль скачки: $l')));
+      // Только что поставили — обновляем надпись с версиями в разделе «Скачать»
+      if (!had && module.installed) unawaited(refreshVersion());
+    } catch (e) {
+      AppLog.warn('Модуль скачки не установился, попробую через 15 минут', e);
+      next = const Duration(minutes: 15);
+    }
+    _prepareTimer = Timer(next, () => unawaited(_prepare()));
+  }
+
   /// Ставит или обновляет модуль и выполняет им одно задание
   Future<SessionResult> _invoke(Map<String, Object?> spec, void Function(String) log,
       {void Function(Map)? onProgress, ModuleCallHandler? onCall, bool check = false}) {
@@ -151,7 +179,7 @@ class DownloadService extends ChangeNotifier {
 
   Future<void> refreshVersion() async {
     if (!module.installed) {
-      toolsVersion = 'ставится при первом скачивании';
+      toolsVersion = 'ещё не установлен';
       notifyListeners();
       return;
     }
@@ -294,6 +322,7 @@ class DownloadService extends ChangeNotifier {
   @override
   void dispose() {
     _notifyTimer?.cancel();
+    _prepareTimer?.cancel();
     super.dispose();
   }
 }
