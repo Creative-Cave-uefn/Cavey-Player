@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -85,18 +86,45 @@ def download_one(service, song, folder, index):
     return str(dest.resolve())
 
 
-def interactive_auth(config):
+class _AuthLog(logging.Handler):
+    """Collects VKpyMusic log lines to explain a failed login. Never printed."""
+
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+    def has(self, text):
+        return any(text in line for line in self.lines)
+
+
+def auth_failure_message(log):
+    if log.has('Password bruteforce attempt'):
+        return ('VK временно ограничил вход: слишком много попыток. Не повторяйте сразу: '
+                'подождите несколько часов или попробуйте из другой сети.')
+    if log.has('Login or password is invalid'):
+        return 'VK не принял логин или пароль. Проверьте их и повторите.'
+    return 'Не удалось войти в VK. Проверьте вывод выше.'
+
+
+def interactive_auth(config, client_name='kate'):
     from vkpymusic import TokenReceiver
+    from vkpymusic.client import KateMobileClient, VkMobileClient
+    client = {'kate': KateMobileClient, 'vk': VkMobileClient}[client_name]
     print('Cave Player: вход в VK Музыку через VKpyMusic. Пароль не сохраняется.', flush=True)
     print('Авторизация может потребовать SMS, приложение 2FA или капчу.', flush=True)
     login = input('Телефон или логин VK: ').strip()
     password = getpass.getpass('Пароль VK (ввод скрыт): ')
     if not login or not password:
         raise ValueError('Логин и пароль не могут быть пустыми.')
-    receiver = TokenReceiver(login, password)
+    receiver = TokenReceiver(login, password, client=client)
     del password
+    auth_log = _AuthLog()
+    receiver._logger.addHandler(auth_log)
     if not receiver.auth():
-        raise RuntimeError('Не удалось войти в VK. Проверьте вывод выше.')
+        raise RuntimeError(auth_failure_message(auth_log))
     # VKpyMusic stores token and user agent in a local INI file.
     receiver.save_to_config(str(config))
     if not config.is_file():
@@ -160,11 +188,12 @@ def main():
     parser.add_argument('--config', required=True)
     parser.add_argument('--output')
     parser.add_argument('--input')
+    parser.add_argument('--client', choices=('kate', 'vk'), default='kate')
     a = parser.parse_args()
     config = Path(a.config).resolve()
     if a.mode == 'auth':
         config.parent.mkdir(parents=True, exist_ok=True)
-        interactive_auth(config)
+        interactive_auth(config, a.client)
         return
     if not a.output or not a.input:
         raise ValueError('Не задан запрос или каталог назначения.')

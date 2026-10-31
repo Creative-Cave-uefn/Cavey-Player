@@ -38,6 +38,15 @@ class FakeService:
         return str(file)
 
 class VkBridgeTest(unittest.TestCase):
+    def test_auth_failure_messages_are_specific(self):
+        def log_with(*lines):
+            log = bridge._AuthLog()
+            log.lines.extend(lines)
+            return log
+        self.assertIn('ограничил', bridge.auth_failure_message(log_with('Password bruteforce attempt!')))
+        self.assertIn('логин или пароль', bridge.auth_failure_message(log_with('Login or password is invalid!')))
+        self.assertIn('Не удалось войти', bridge.auth_failure_message(log_with()))
+
     def test_parse_valid_input(self):
         self.assertEqual(bridge.parse_input('Test Artist - Test Track'), ('search', ('Test Artist', 'Test Track')))
         self.assertEqual(bridge.parse_input('https://vk.com/audio-123_456'), ('audio', ['-123_456']))
