@@ -20,7 +20,7 @@ class DriveException implements Exception {
   bool get insufficientScope => status == 403 && message.toLowerCase().contains('insufficient');
   @override
   String toString() => insufficientScope
-      ? 'У Cave Player нет доступа к Google Диску: при входе не отметили галочку про Диск. Нажмите «Войти заново» и отметьте её.'
+      ? 'У Cavey нет доступа к Google Диску: при входе не отметили галочку про Диск. Нажмите «Войти заново» и отметьте её.'
       : 'Google Диск ответил $status: $message';
 }
 

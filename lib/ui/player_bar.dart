@@ -209,7 +209,7 @@ class PlayerBar extends StatelessWidget {
                 if (cur != null)
                   ListTile(
                     leading: CoverImage(track: cur, size: 40),
-                    title: Text(cur.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.accent)),
+                    title: Text(cur.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: C.accent)),
                     subtitle: Text(cur.displayArtist, maxLines: 1, style: const TextStyle(color: C.muted)),
                   ),
                 Padding(

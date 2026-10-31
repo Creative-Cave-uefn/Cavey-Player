@@ -53,7 +53,7 @@ class _AccountsPageState extends State<AccountsPage> {
           Text('Аккаунты', style: display(20)),
           const SizedBox(height: 10),
           const Text(
-            'Можно подключить несколько аккаунтов Google. Cave Player сам выберет, через какой открывать каждую папку. '
+            'Можно подключить несколько аккаунтов Google. Cavey сам выберет, через какой открывать каждую папку. '
             'Лайки и плейлисты подписываются основным аккаунтом.',
             style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
@@ -80,7 +80,7 @@ class _AccountsPageState extends State<AccountsPage> {
                             color: C.accent.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(20),
                           ),
-                          child: const Text('основной', style: TextStyle(color: C.accent, fontSize: 12)),
+                          child: Text('основной', style: TextStyle(color: C.accent, fontSize: 12)),
                         ),
                       ],
                     ]),
@@ -144,6 +144,8 @@ class _AccountsPageState extends State<AccountsPage> {
           const _DiscordSection(),
           const SizedBox(height: 44),
           const _PlaybackSection(),
+          const SizedBox(height: 44),
+          const _AccentSection(),
           const SizedBox(height: 44),
           const _LookSection(),
           const SizedBox(height: 44),
@@ -283,7 +285,7 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
                         final ok = await confirm(
                           context,
                           title: 'Вернуться на обычную версию?',
-                          text: 'Cave Player поставит последнюю обычную версию и дальше будет обновляться как у всех.',
+                          text: 'Cavey поставит последнюю обычную версию и дальше будет обновляться как у всех.',
                           action: 'Вернуться',
                         );
                         if (ok) await up.installStable();
@@ -349,9 +351,9 @@ class _TestBuildsSectionState extends State<_TestBuildsSection> {
       title: b.stable ? 'Вернуться на обычную версию ${b.version}?' : 'Поставить тестовую сборку ${b.version}?',
       text: [
         if (!b.stable) 'Ветка «${b.branch}». Тестовые сборки могут работать с ошибками.',
-        if (!b.stable) 'Дальше Cave Player будет обновляться сборками этой ветки, а когда её удалят — вернётся к обычным версиям.',
-        if (older) 'Эта версия старее установленной — Cave Player поставит её поверх.',
-        'Cave Player закроется и откроется уже с новой версией.',
+        if (!b.stable) 'Дальше Cavey будет обновляться сборками этой ветки, а когда её удалят — вернётся к обычным версиям.',
+        if (older) 'Эта версия старее установленной — Cavey поставит её поверх.',
+        'Cavey закроется и откроется уже с новой версией.',
       ].join('\n\n'),
       action: 'Поставить',
     );
@@ -443,7 +445,7 @@ class _BuildRow extends StatelessWidget {
         ),
         const SizedBox(width: 12),
         if (current)
-          const Text('установлена', style: TextStyle(color: C.accent, fontSize: 13))
+          Text('установлена', style: TextStyle(color: C.accent, fontSize: 13))
         else if (installing)
           const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
         else
@@ -707,6 +709,73 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
 }
 
 /// Яркость и контраст фона окна
+/// Смена акцентного цвета: кнопки, переключатели, ползунки, выделения. Хранится в настройках вида,
+/// применяется сразу и при следующих запусках
+class _AccentSection extends StatefulWidget {
+  const _AccentSection();
+  @override
+  State<_AccentSection> createState() => _AccentSectionState();
+}
+
+class _AccentSectionState extends State<_AccentSection> {
+  Future<void> _pick(Color? c) async {
+    final app = Services.of(context);
+    setState(() {
+      if (c == null) {
+        app.settings.view.remove('accent');
+      } else {
+        app.settings.view['accent'] = C.accentHex(c);
+      }
+    });
+    C.setAccent(c ?? C.defaultAccent);
+    rebuildEverything();
+    await app.lib.saveSettings();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final current = C.accent.toARGB32();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Expanded(child: Text('Акцентный цвет', style: display(20))),
+        if (current != C.defaultAccent.toARGB32()) TextButton(onPressed: () => _pick(null), child: const Text('Как было')),
+      ]),
+      const SizedBox(height: 6),
+      const Text('Цвет кнопок, переключателей, ползунков и выделений.', style: TextStyle(color: C.faint, fontSize: 13)),
+      const SizedBox(height: 14),
+      Wrap(spacing: 12, runSpacing: 12, children: [
+        for (final (name, color) in accentChoices)
+          Tooltip(
+            message: name,
+            child: Semantics(
+              button: true,
+              selected: current == color.toARGB32(),
+              label: name,
+              child: GestureDetector(
+                onTap: () => _pick(color),
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: current == color.toARGB32() ? C.text : C.line, width: current == color.toARGB32() ? 2.5 : 1),
+                    ),
+                    child: current == color.toARGB32()
+                        ? Icon(Icons.check_rounded, size: 20, color: color.computeLuminance() > 0.42 ? const Color(0xFF241C06) : Colors.white)
+                        : null,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ]),
+    ]);
+  }
+}
+
 class _LookSection extends StatefulWidget {
   const _LookSection();
   @override
@@ -800,7 +869,7 @@ class _TraySectionState extends State<_TraySection> {
         activeColor: C.accent,
         title: const Text('Сворачивать в трей при закрытии окна'),
         subtitle: const Text(
-          'Музыка играет дальше, а Cave Player остаётся значком у часов. Закрыть совсем можно пунктом «Выйти» в меню значка.',
+          'Музыка играет дальше, а Cavey остаётся значком у часов. Закрыть совсем можно пунктом «Выйти» в меню значка.',
           style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
         ),
         onChanged: (v) async {
@@ -818,7 +887,7 @@ class _TraySectionState extends State<_TraySection> {
         activeColor: C.accent,
         title: const Text('Медиаклавиши, когда окно не активно'),
         subtitle: const Text(
-          '⏮ ⏯ ⏭ на клавиатуре (в том числе Fn+F-клавиши ноутбука) работают, даже если Cave Player свёрнут или спрятан в трей.',
+          '⏮ ⏯ ⏭ на клавиатуре (в том числе Fn+F-клавиши ноутбука) работают, даже если Cavey свёрнут или спрятан в трей.',
           style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
         ),
         onChanged: (v) async {

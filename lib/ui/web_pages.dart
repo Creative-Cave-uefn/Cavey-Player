@@ -254,7 +254,7 @@ Widget webTile(BuildContext context,
                   child: Container(
                     padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(color: C.bg.withValues(alpha: 0.8), shape: BoxShape.circle),
-                    child: const Icon(Icons.check_rounded, size: 16, color: C.accent),
+                    child: Icon(Icons.check_rounded, size: 16, color: C.accent),
                   ),
                 ),
               ),
@@ -652,7 +652,7 @@ class _WebAlbumPageState extends State<WebAlbumPage> {
                 const SizedBox(height: 6),
                 InkWell(
                   onTap: a.artistId == 0 ? null : () => nav.go(Nav('webartist', '${a.artistId}')),
-                  child: Text(a.artist, style: const TextStyle(color: C.accent, fontSize: 18, fontWeight: FontWeight.w500)),
+                  child: Text(a.artist, style: TextStyle(color: C.accent, fontSize: 18, fontWeight: FontWeight.w500)),
                 ),
                 const SizedBox(height: 6),
                 Text(

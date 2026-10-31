@@ -250,7 +250,7 @@ class LibraryController extends ChangeNotifier {
       if (found.isEmpty) {
         // Раньше здесь создавалась новая пустая библиотека: если вставить ссылку на папку с музыкой,
         // человек оказывался в отдельной пустой библиотеке без плейлистов и друзей
-        throw LibraryException('В этой папке нет общей библиотеки Cave Player (файла library.json). '
+        throw LibraryException('В этой папке нет общей библиотеки Cavey (файла library.json). '
             'Нужна ссылка на папку «Cave Player», а не на папку с музыкой.');
       }
       // Если в папке несколько library.json, настоящий — самый большой
@@ -424,8 +424,8 @@ class LibraryController extends ChangeNotifier {
     if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email)) {
       throw LibraryException('Это не похоже на адрес почты');
     }
-    const note = 'Приглашаю в нашу общую музыкальную библиотеку Cave Player. '
-        'Установи Cave Player и войди через Google с этой почтой — библиотека подключится сама.';
+    const note = 'Приглашаю в нашу общую музыкальную библиотеку Cavey. '
+        'Установи Cavey и войди через Google с этой почтой — библиотека подключится сама.';
     await _withHub((me) => drive.share(me, settings.hubId!, email, message: note));
     final failed = <String>[];
     for (final s in data.sources) {

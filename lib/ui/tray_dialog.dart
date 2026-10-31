@@ -9,11 +9,11 @@ Future<bool?> askTrayOnClose(BuildContext context) {
   return showGlassDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: Text('Закрыть Cave Player?', style: display(18)),
+      title: Text('Закрыть Cavey?', style: display(18)),
       content: const SizedBox(
         width: 400,
         child: Text(
-          'Можно свернуть Cave Player в трей: музыка продолжит играть, а открыть окно можно значком у часов. '
+          'Можно свернуть Cavey в трей: музыка продолжит играть, а открыть окно можно значком у часов. '
           'Выбор можно поменять в настройках.',
           style: TextStyle(color: C.muted, height: 1.45),
         ),

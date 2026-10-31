@@ -121,7 +121,7 @@ class _SettingsButton extends StatelessWidget {
                 Positioned(
                   right: 10,
                   top: 10,
-                  child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: C.accent, shape: BoxShape.circle)),
+                  child: Container(width: 8, height: 8, decoration: BoxDecoration(color: C.accent, shape: BoxShape.circle)),
                 ),
             ]),
           ),
@@ -131,8 +131,9 @@ class _SettingsButton extends StatelessWidget {
   }
 }
 
-/// Карусель обложек: в центре карточка играющего трека как в кинотеатре (обложка, название, перемотка,
-/// управление, громкость), по бокам — соседние треки очереди. Размер считается и от ширины, и от высоты окна
+/// Карусель обложек прежних размеров (центр до 300): у играющего трека плеер как в кинотеатре
+/// (обложка, название, перемотка, управление, громкость), по бокам — соседние треки очереди без наложений.
+/// Панели плеера внизу на странице нет: всё управление в центральной карточке
 class _NowFlow extends StatelessWidget {
   final bool compact;
   final double height;
@@ -149,8 +150,9 @@ class _NowFlow extends StatelessWidget {
       const gap = 22.0, pad = 24.0; // зазор между карточками и рамка соседней карточки
       const panelExtra = 262.0; // всё, что под обложкой в центральной карточке
       final byHeight = height - panelExtra;
-      final byWidth = (w - 2 * gap - 2 * pad) / (1 + 2 * 0.74);
-      final big = math.max(180.0, math.min(520.0, math.min(byHeight, math.max(byWidth, 260.0))));
+      // Прежние размеры карусели: центральная карточка до 300 (в узком окне до 230), дальше только по месту
+      final maxBig = compact ? 230.0 : 300.0;
+      final big = math.max(140.0, math.min(maxBig, math.min(byHeight, w - 2 * pad)));
       final s1 = big * 0.74, s2 = big * 0.56;
       final dx1 = big / 2 + gap + (s1 + pad) / 2;
       final dx2 = dx1 + (s1 + pad) / 2 + gap + (s2 + pad) / 2;
@@ -651,7 +653,7 @@ Widget waveSidebarMark(BuildContext context) {
   return ListenableBuilder(
     listenable: app.wave,
     builder: (context, _) =>
-        app.wave.active ? const Icon(Icons.graphic_eq_rounded, size: 16, color: C.accent) : const SizedBox.shrink(),
+        app.wave.active ? Icon(Icons.graphic_eq_rounded, size: 16, color: C.accent) : const SizedBox.shrink(),
   );
 }
 
@@ -668,7 +670,7 @@ class _NewBadge extends StatelessWidget {
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(color: C.accent.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(20)),
-        child: const Text('новое', style: TextStyle(color: C.accent, fontSize: 12, fontWeight: FontWeight.w600)),
+        child: Text('новое', style: TextStyle(color: C.accent, fontSize: 12, fontWeight: FontWeight.w600)),
       );
 }
 
@@ -698,7 +700,7 @@ class _Discover extends StatelessWidget {
       decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          const Icon(Icons.travel_explore_rounded, size: 20, color: C.accent),
+          Icon(Icons.travel_explore_rounded, size: 20, color: C.accent),
           const SizedBox(width: 10),
           Expanded(child: Text('Новое из интернета', style: display(16))),
           Switch(value: wave.discover, onChanged: wave.setDiscover),

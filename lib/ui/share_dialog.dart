@@ -50,12 +50,12 @@ class _ShareDialogState extends State<_ShareDialog> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
             Text('${t.title} — ${t.displayArtist}', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
             const SizedBox(height: 18),
-            const Text('Другу в Cave Player', style: TextStyle(color: C.muted)),
+            const Text('Другу в Cavey', style: TextStyle(color: C.muted)),
             const SizedBox(height: 6),
             if (friends.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 8),
-                child: Text('Пока нет друзей с Cave Player. Они появятся, когда запустят программу.', style: TextStyle(color: C.faint, fontSize: 13)),
+                child: Text('Пока нет друзей с Cavey. Они появятся, когда запустят программу.', style: TextStyle(color: C.faint, fontSize: 13)),
               )
             else
               ConstrainedBox(
@@ -113,16 +113,16 @@ class _ShareDialogState extends State<_ShareDialog> {
                   label: const Text('Для мессенджеров'),
                 ),
               OutlinedButton.icon(
-                onPressed: () => _copy(appLinkFor(t.id), 'Ссылка для Cave Player скопирована'),
+                onPressed: () => _copy(appLinkFor(t.id), 'Ссылка для Cavey скопирована'),
                 icon: const Icon(Icons.link_rounded, size: 16),
-                label: Text(web == null ? 'Скопировать ссылку' : 'Для Cave Player'),
+                label: Text(web == null ? 'Скопировать ссылку' : 'Для Cavey'),
               ),
             ]),
             const SizedBox(height: 8),
             Text(
               web == null
-                  ? 'Ссылка открывает трек в Cave Player (у друга он должен быть установлен). В мессенджерах она может не нажиматься — тогда вставьте её в адресную строку браузера.'
-                  : 'Ссылка «Для мессенджеров» нажимается в Telegram и Discord и открывает трек в Cave Player.',
+                  ? 'Ссылка открывает трек в Cavey (у друга он должен быть установлен). В мессенджерах она может не нажиматься — тогда вставьте её в адресную строку браузера.'
+                  : 'Ссылка «Для мессенджеров» нажимается в Telegram и Discord и открывает трек в Cavey.',
               style: const TextStyle(color: C.faint, fontSize: 12, height: 1.4),
             ),
           ]),

@@ -248,7 +248,7 @@ class _AnchorIcon extends StatelessWidget {
         border: Border.all(color: C.accent, width: 1.5),
         boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 8)],
       ),
-      child: const Icon(Icons.unfold_more_rounded, size: 18, color: C.accent),
+      child: Icon(Icons.unfold_more_rounded, size: 18, color: C.accent),
     );
   }
 }

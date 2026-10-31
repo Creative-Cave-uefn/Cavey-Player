@@ -51,7 +51,7 @@ class Wordmark extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Cave Player', maxLines: 1, style: brand(size)),
+          Text('Cavey', maxLines: 1, style: brand(size)),
           SizedBox(height: size * 0.18),
           Container(
             height: size * 0.16,

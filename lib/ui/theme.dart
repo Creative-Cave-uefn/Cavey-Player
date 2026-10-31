@@ -27,9 +27,52 @@ class C {
   // Вторичный текст — нейтральный белый с прозрачностью: читается на любой обложке под стеклом
   static const muted = Color(0xB8FFFFFF);
   static const faint = Color(0x8CFFFFFF);
-  static const accent = Color(0xFFF2C14E);
-  static const accentInk = Color(0xFF241C06);
   static const danger = Color(0xFFFF8A80);
+
+  /// Акцентный цвет по умолчанию; свой выбирается в настройках («Акцентный цвет»)
+  static const defaultAccent = Color(0xFFF2C14E);
+  static const _inkDark = Color(0xFF241C06);
+
+  /// Текущий акцентный цвет и цвет текста/значков на нём. Не const: меняется на лету
+  static Color accent = defaultAccent;
+  static Color accentInk = _inkDark;
+
+  /// Задаёт акцент; цвет «чернил» на нём выбирается по яркости, чтобы подпись читалась
+  static void setAccent(Color c) {
+    accent = c;
+    accentInk = c.computeLuminance() > 0.42 ? _inkDark : const Color(0xFFFFFFFF);
+  }
+
+  /// Акцент из строки вида «#RRGGBB» (хранится в настройках вида)
+  static Color? parseAccent(String? hex) {
+    if (hex == null) return null;
+    final m = RegExp(r'^#?([0-9a-fA-F]{6})$').firstMatch(hex.trim());
+    return m == null ? null : Color(0xFF000000 | int.parse(m.group(1)!, radix: 16));
+  }
+
+  static String accentHex(Color c) => '#${(c.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
+}
+
+/// Готовые акценты для настроек: жёлтый — фирменный, остальные подобраны под тёмное стекло
+const accentChoices = <(String, Color)>[
+  ('Жёлтый', Color(0xFFF2C14E)),
+  ('Оранжевый', Color(0xFFFF9A4A)),
+  ('Красный', Color(0xFFFF6B6B)),
+  ('Розовый', Color(0xFFFF7FB2)),
+  ('Фиолетовый', Color(0xFFB08CFF)),
+  ('Синий', Color(0xFF6FA8FF)),
+  ('Бирюзовый', Color(0xFF4FD1C5)),
+  ('Зелёный', Color(0xFF8FDB6A)),
+];
+
+/// Перерисовывает всё дерево: нужно после смены акцента, потому что C.accent читается прямо в build()
+void rebuildEverything() {
+  void visit(Element e) {
+    e.markNeedsBuild();
+    e.visitChildren(visit);
+  }
+
+  WidgetsBinding.instance.rootElement?.visitChildren(visit);
 }
 
 const friendPalette = [
@@ -80,7 +123,7 @@ ThemeData buildTheme() {
     scaffoldBackgroundColor: Colors.transparent,
     canvasColor: C.panel,
     cardColor: C.panel,
-    colorScheme: const ColorScheme.dark(
+    colorScheme: ColorScheme.dark(
       primary: C.accent,
       onPrimary: C.accentInk,
       secondary: C.accent,
@@ -118,7 +161,7 @@ ThemeData buildTheme() {
             : (s.contains(WidgetState.hovered) || s.contains(WidgetState.focused) ? C.hoverOverlay : null)),
       ),
     ),
-    chipTheme: const ChipThemeData(
+    chipTheme: ChipThemeData(
       backgroundColor: C.raised,
       selectedColor: C.accent,
       disabledColor: C.surface,
@@ -142,7 +185,7 @@ ThemeData buildTheme() {
     ),
     checkboxTheme: CheckboxThemeData(
       fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? C.accent : Colors.transparent),
-      checkColor: const WidgetStatePropertyAll(C.accentInk),
+      checkColor: WidgetStatePropertyAll(C.accentInk),
       side: const BorderSide(color: C.muted, width: 1.5),
     ),
     radioTheme: RadioThemeData(
@@ -169,7 +212,7 @@ ThemeData buildTheme() {
       hintStyle: const TextStyle(color: C.faint),
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
       focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: C.accent, width: 1.5)),
+          borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: C.accent, width: 1.5)),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
@@ -226,6 +269,6 @@ ThemeData buildTheme() {
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
     ),
-    progressIndicatorTheme: const ProgressIndicatorThemeData(color: C.accent, linearTrackColor: C.line),
+    progressIndicatorTheme: ProgressIndicatorThemeData(color: C.accent, linearTrackColor: C.line),
   );
 }

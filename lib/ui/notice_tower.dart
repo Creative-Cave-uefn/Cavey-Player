@@ -130,7 +130,7 @@ class _NoticeCard extends StatelessWidget {
             IconButton(
               tooltip: 'Слушать',
               visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.play_arrow_rounded, color: C.accent),
+              icon: Icon(Icons.play_arrow_rounded, color: C.accent),
               onPressed: () {
                 app.player.playTracks([track], 0);
                 onClose();

@@ -585,7 +585,7 @@ class DownloadService extends ChangeNotifier {
       if (id != null && !found.contains(id)) found.add(id);
     }
     if (found.isEmpty) {
-      log('В плейлист Cave Player добавлять нечего: ни один трек не скачался.');
+      log('В плейлист Cavey добавлять нечего: ни один трек не скачался.');
       return;
     }
     final id = addToNamedPlaylist(lib, name, found);
@@ -604,7 +604,7 @@ class DownloadService extends ChangeNotifier {
       }
     }
     log(created
-        ? 'Создан плейлист «$name» в Cave Player: ${found.length} ${found.length == 1 ? 'трек' : 'треков'}.'
+        ? 'Создан плейлист «$name» в Cavey: ${found.length} ${found.length == 1 ? 'трек' : 'треков'}.'
         : 'Плейлист «$name» уже был: добавлено недостающих треков — ${id.added}.');
     lib.messages.add(created ? 'Плейлист «$name» создан' : 'Плейлист «$name» дополнен');
   }

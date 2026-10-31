@@ -17,7 +17,7 @@ class AppLog {
       final d = Directory('${base.path}${Platform.pathSeparator}cave_player${Platform.pathSeparator}logs');
       await d.create(recursive: true);
       _dir = d;
-      info('Запуск Cave Player ${kAppVersion.isEmpty ? '(сборка для разработки)' : kAppVersion}, '
+      info('Запуск Cavey ${kAppVersion.isEmpty ? '(сборка для разработки)' : kAppVersion}, '
           '${Platform.operatingSystemVersion}');
     } catch (_) {
       // без журнала приложение всё равно должно работать

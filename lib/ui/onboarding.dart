@@ -75,7 +75,7 @@ class _SetupScreenState extends State<SetupScreen> {
       Text('Ключ для входа через Google', style: display(20)),
       const SizedBox(height: 10),
       const Text(
-        'Cave Player входит в Google от имени вашего приложения в Google Cloud. '
+        'Cavey входит в Google от имени вашего приложения в Google Cloud. '
         'Создайте его по инструкции из README (раздел «Ключи Google») и вставьте сюда оба значения. '
         'Это нужно сделать один раз.',
         style: TextStyle(color: C.muted, height: 1.5),
@@ -126,7 +126,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
         Text('Общая музыка для своих', style: display(26)),
         const SizedBox(height: 14),
         const Text(
-          'Музыка лежит в ваших папках на Google Диске. Cave Player собирает её в одну библиотеку '
+          'Музыка лежит в ваших папках на Google Диске. Cavey собирает её в одну библиотеку '
           'с общими плейлистами и лайками и играет прямо с Диска, ничего не скачивая.',
           style: TextStyle(color: C.muted, fontSize: 16, height: 1.55),
         ),
@@ -146,7 +146,7 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
           ]),
         const SizedBox(height: 14),
         const Text(
-          'Google спросит разрешения. Обязательно отметьте доступ к Google Диску, иначе Cave Player не увидит музыку.',
+          'Google спросит разрешения. Обязательно отметьте доступ к Google Диску, иначе Cavey не увидит музыку.',
           style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
         ),
         _ErrorText(_error),
@@ -216,7 +216,7 @@ class _HubScreenState extends State<HubScreen> {
         const SizedBox(height: 32),
         Text('Ищу общую библиотеку', style: display(22)),
         const SizedBox(height: 12),
-        const Text('Проверяю, не поделились ли с вами папкой Cave Player на Google Диске.',
+        const Text('Проверяю, не поделились ли с вами папкой Cavey на Google Диске.',
             style: TextStyle(color: C.muted, height: 1.5)),
         const SizedBox(height: 24),
         const LinearProgressIndicator(),
@@ -231,7 +231,7 @@ class _HubScreenState extends State<HubScreen> {
         'Общая библиотека — это папка «Cave Player» на Google Диске, где хранятся общие плейлисты и лайки. '
         'Её создаёт кто-то один, остальные подключаются сами, как только с ними поделятся папкой. '
         '${app.settings.autoJoinDisabled
-            ? 'Вы отключились от библиотеки, поэтому Cave Player её сам не ищет. Подключитесь по ссылке на папку или нажмите «Найти библиотеку на моих Дисках».'
+            ? 'Вы отключились от библиотеки, поэтому Cavey её сам не ищет. Подключитесь по ссылке на папку или нажмите «Найти библиотеку на моих Дисках».'
             : 'Вы вошли как ${me.email}, и с этой почтой общей библиотеки пока не нашлось.'}',
         style: const TextStyle(color: C.muted, height: 1.5),
       ),

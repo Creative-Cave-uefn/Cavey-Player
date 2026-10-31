@@ -252,7 +252,7 @@ class _WebAlbumTileState extends State<WebAlbumTile> {
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
                         decoration: BoxDecoration(color: C.accent.withValues(alpha: 0.18), borderRadius: BorderRadius.circular(4)),
-                        child: const Text('новое', style: TextStyle(color: C.accent, fontSize: 11)),
+                        child: Text('новое', style: TextStyle(color: C.accent, fontSize: 11)),
                       ),
                     ],
                   ]),

@@ -61,7 +61,7 @@ class CompanyPage extends StatelessWidget {
                 : social.lastPoll == null
                     ? 'Загружаю статусы друзей…'
                     : 'Обновляется раз в 15 секунд, последний раз в ${TimeOfDay.fromDateTime(social.lastPoll!).format(context)}. '
-                        'Друзей с Cave Player: ${social.friends.length}.',
+                        'Друзей с Cavey: ${social.friends.length}.',
             style: TextStyle(color: social.pollError != null ? C.danger : C.faint, fontSize: 13),
           ),
           const SizedBox(height: 14),
@@ -339,7 +339,7 @@ class _NoticeRow extends StatelessWidget {
             IconButton(
               tooltip: 'Слушать',
               visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.play_arrow_rounded, color: C.accent),
+              icon: Icon(Icons.play_arrow_rounded, color: C.accent),
               onPressed: () => app.player.playTracks([track], 0),
             ),
         ]),
@@ -464,11 +464,11 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 10, 4),
                 child: Row(children: [
-                  const Icon(Icons.headphones_rounded, size: 16, color: C.accent),
+                  Icon(Icons.headphones_rounded, size: 16, color: C.accent),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text('Вместе с ${app.lib.firstNameOf(followed)}',
-                        overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.accent, fontSize: 13)),
+                        overflow: TextOverflow.ellipsis, style: TextStyle(color: C.accent, fontSize: 13)),
                   ),
                   TextButton(onPressed: social.stopFollowing, child: const Text('Выйти')),
                 ]),
@@ -551,7 +551,7 @@ class _ListenerTileState extends State<_ListenerTile> {
                       if (_hover)
                         ListenActions(email: m.email, dense: true)
                       else if (together)
-                        const Icon(Icons.headphones_rounded, size: 14, color: C.accent),
+                        Icon(Icons.headphones_rounded, size: 14, color: C.accent),
                     ],
                   ],
                 ),

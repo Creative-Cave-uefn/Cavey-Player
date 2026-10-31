@@ -565,7 +565,7 @@ class _TracksPageState extends State<TracksPage> {
                           title: 'Удалить выбранное: ${countTracks(picked.length)}?',
                           text: 'Треки пропадут из библиотеки у всех, а файлы уйдут в корзину Google Диска (их можно вернуть оттуда).'
                               '${foreign > 0 ? '\n\nЧужих файлов среди них: $foreign. Google Диск даёт удалить файл только владельцу, '
-                                  'поэтому они уйдут в корзину, когда их владелец откроет Cave Player и подтвердит удаление.' : ''}',
+                                  'поэтому они уйдут в корзину, когда их владелец откроет Cavey и подтвердит удаление.' : ''}',
                           action: 'Удалить',
                         );
                         if (!ok) return;
@@ -1268,7 +1268,7 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
         title: 'Удалить «${track.title}» с Диска?',
         text: 'Трек пропадёт из библиотеки у всех, а файл удалится с Google Диска безвозвратно.'
             '${mine ? '' : '\n\nФайл принадлежит ${app.lib.firstNameOf(track.by)}: Google Диск даёт удалить его только '
-                'владельцу, поэтому с Диска он удалится, когда ${app.lib.firstNameOf(track.by)} откроет Cave Player.'}',
+                'владельцу, поэтому с Диска он удалится, когда ${app.lib.firstNameOf(track.by)} откроет Cavey.'}',
         action: 'Удалить',
       );
       if (!ok) return;
@@ -1302,7 +1302,7 @@ Future<bool> addToPlaylistDialog(BuildContext context, List<String> trackIds) as
           ),
         SimpleDialogOption(
           onPressed: () => Navigator.pop(ctx, '+new'),
-          child: const Row(children: [
+          child: Row(children: [
             Icon(Icons.add_rounded, size: 18, color: C.accent),
             SizedBox(width: 10),
             Text('Новый плейлист', style: TextStyle(color: C.accent)),
@@ -1345,7 +1345,7 @@ class OfflineButton extends StatelessWidget {
         return Tooltip(
           message: on ? 'Нажмите, чтобы не хранить эти треки на компьютере' : 'Треки скачаются и будут играть без интернета',
           child: OutlinedButton.icon(
-            style: on ? OutlinedButton.styleFrom(foregroundColor: C.accent, side: const BorderSide(color: C.accent)) : null,
+            style: on ? OutlinedButton.styleFrom(foregroundColor: C.accent, side: BorderSide(color: C.accent)) : null,
             onPressed: () => onChanged(!on),
             icon: Icon(on ? Icons.download_done_rounded : Icons.download_rounded, size: 18),
             label: Text(label),
@@ -1467,7 +1467,7 @@ class _EdgeZone extends StatelessWidget {
             top: 6,
             bottom: 6,
             width: 3,
-            child: const DecoratedBox(
+            child: DecoratedBox(
               decoration: BoxDecoration(color: C.accent, borderRadius: BorderRadius.horizontal(right: Radius.circular(3))),
             ),
           ),

@@ -79,6 +79,8 @@ class AppServices {
     // Скачанное в прошлый раз обновление ставим до запуска интерфейса
     if (await updater.installPendingOnStart()) exit(0);
     final settings = Settings.fromJson(await store.readJson('settings.json'));
+    final savedAccent = C.parseAccent(settings.view['accent']);
+    if (savedAccent != null) C.setAccent(savedAccent);
     final builtIn = kGoogleClientId.isNotEmpty && kGoogleClientSecret.isNotEmpty;
     if (builtIn) {
       settings
@@ -230,7 +232,7 @@ class CavePlayerApp extends StatelessWidget {
       app: app,
       child: MaterialApp(
         navigatorKey: navigatorKey,
-        title: 'Cave Player',
+        title: 'Cavey',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
         // Стеклянный фон под всеми экранами, включая первый запуск и диалоги.

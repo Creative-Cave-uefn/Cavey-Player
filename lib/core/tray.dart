@@ -36,7 +36,7 @@ class TrayController with TrayListener, WindowListener {
     if (!Platform.isWindows) return;
     try {
       await trayManager.setIcon('assets/app_icon.ico');
-      await trayManager.setToolTip('Cave Player');
+      await trayManager.setToolTip('Cavey');
       trayManager.addListener(this);
       // Закрытие окна обрабатываем сами: прячем в трей или аккуратно выходим, сохранив всё нужное
       await windowManager.setPreventClose(true);
@@ -80,12 +80,12 @@ class TrayController with TrayListener, WindowListener {
     _signature = sig;
     try {
       // Заголовок окна виден в превью на панели задач и в Alt+Tab
-      await windowManager.setTitle(t != null && playing ? _short('${t.title} — ${t.displayArtist}', 120) : 'Cave Player');
+      await windowManager.setTitle(t != null && playing ? _short('${t.title} — ${t.displayArtist}', 120) : 'Cavey');
     } catch (_) {}
     try {
-      await trayManager.setToolTip(t == null ? 'Cave Player' : _tip(t, playing));
+      await trayManager.setToolTip(t == null ? 'Cavey' : _tip(t, playing));
       await trayManager.setContextMenu(Menu(items: [
-        MenuItem(key: 'show', label: 'Открыть Cave Player'),
+        MenuItem(key: 'show', label: 'Открыть Cavey'),
         MenuItem.separator(),
         if (t != null) MenuItem(key: 'now', label: _short('${t.title} — ${t.displayArtist}', 48), disabled: true),
         MenuItem(key: 'toggle', label: playing ? 'Пауза' : 'Играть', disabled: t == null),

@@ -5,7 +5,7 @@
 
 [Setup]
 AppId={{806F3744-0035-43B4-B655-A423BF019A3B}
-AppName=Cave Player
+AppName=Cavey
 AppVersion={#MyVersion}
 VersionInfoVersion={#MyVersion}
 AppPublisher=Creative Cave
@@ -33,18 +33,23 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
+[InstallDelete]
+; Прежнее имя ярлыков: после переименования в Cavey старые ярлыки не дублируются
+Type: files; Name: "{autoprograms}\Cave Player.lnk"
+Type: files; Name: "{autodesktop}\Cave Player.lnk"
+
 [Icons]
-Name: "{autoprograms}\Cave Player"; Filename: "{app}\cave_player.exe"
-Name: "{autodesktop}\Cave Player"; Filename: "{app}\cave_player.exe"; Tasks: desktopicon
+Name: "{autoprograms}\Cavey"; Filename: "{app}\cave_player.exe"
+Name: "{autodesktop}\Cavey"; Filename: "{app}\cave_player.exe"; Tasks: desktopicon
 
 [Registry]
 ; Ссылки caveplayer://track/<id> открывают Cave Player на нужном треке (для текущего пользователя, права администратора не нужны)
-Root: HKCU; Subkey: "Software\Classes\caveplayer"; ValueType: string; ValueName: ""; ValueData: "URL:Cave Player"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\caveplayer"; ValueType: string; ValueName: ""; ValueData: "URL:Cavey"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\caveplayer"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
 Root: HKCU; Subkey: "Software\Classes\caveplayer\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\cave_player.exe,0"
 Root: HKCU; Subkey: "Software\Classes\caveplayer\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\cave_player.exe"" ""%1"""
 
 [Run]
-Filename: "{app}\cave_player.exe"; Description: "{cm:LaunchProgram,Cave Player}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\cave_player.exe"; Description: "{cm:LaunchProgram,Cavey}"; Flags: nowait postinstall skipifsilent
 ; При тихой установке (автообновление) снова открываем приложение
 Filename: "{app}\cave_player.exe"; Flags: nowait; Check: WizardSilent

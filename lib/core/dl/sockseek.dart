@@ -24,7 +24,7 @@ class Sockseek {
     if (await file.exists()) return;
     await file.parent.create(recursive: true);
     await file.writeAsString('# Soulseek account, NOT Spotify. Saved locally in plain text.\n'
-        '# Edit the two values, save this file, then return to Cave Player.\n'
+        '# Edit the two values, save this file, then return to Cavey.\n'
         'username = YOUR_SOULSEEK_USERNAME\npassword = YOUR_SOULSEEK_PASSWORD\n');
   }
 

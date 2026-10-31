@@ -942,7 +942,7 @@ class _UpdateLine extends StatelessWidget {
         );
         return Padding(
           padding: EdgeInsets.fromLTRB(compact ? 10 : 16, 12, compact ? 10 : 16, 0),
-          child: Tooltip(message: 'Перезапустить Cave Player с новой версией', child: button),
+          child: Tooltip(message: 'Перезапустить Cavey с новой версией', child: button),
         );
       },
     );
@@ -1025,7 +1025,7 @@ class _DropOverlay extends StatelessWidget {
           border: Border.all(color: C.accent, width: 2),
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.upload_rounded, size: 44, color: C.accent),
+          Icon(Icons.upload_rounded, size: 44, color: C.accent),
           const SizedBox(height: 16),
           Text('Отпустите, чтобы загрузить', style: display(22)),
           const SizedBox(height: 8),

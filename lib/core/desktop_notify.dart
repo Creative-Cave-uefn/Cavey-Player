@@ -42,7 +42,7 @@ Future<bool> windowIsHidden() async {
 }
 
 /// Показывает уведомление Windows. Ошибки не мешают: это лишь удобство.
-Future<void> desktopToast(String body, {String title = 'Cave Player'}) async {
+Future<void> desktopToast(String body, {String title = 'Cavey'}) async {
   if (!Platform.isWindows) return;
   try {
     await Process.run('powershell.exe', [

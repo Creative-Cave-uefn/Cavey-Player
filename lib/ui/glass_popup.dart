@@ -151,7 +151,7 @@ class _GlassMenuRoute<T> extends PopupRoute<T> {
               overflow: TextOverflow.ellipsis,
               child: Row(children: [
                 if (checked != null) ...[
-                  SizedBox(width: 20, child: checked ? const Icon(Icons.check_rounded, size: 18, color: C.accent) : null),
+                  SizedBox(width: 20, child: checked ? Icon(Icons.check_rounded, size: 18, color: C.accent) : null),
                   const SizedBox(width: 10),
                 ],
                 Flexible(child: e.child ?? const SizedBox.shrink()),

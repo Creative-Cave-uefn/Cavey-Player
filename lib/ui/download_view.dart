@@ -151,7 +151,7 @@ class _DownloadPageState extends State<DownloadPage> {
                     ),
                     const SizedBox(width: 8),
                     const Flexible(
-                      child: Text('Сделать плейлист в Cave Player (для ссылок на плейлисты)', style: TextStyle(color: C.muted)),
+                      child: Text('Сделать плейлист в Cavey (для ссылок на плейлисты)', style: TextStyle(color: C.muted)),
                     ),
                   ]),
                 ),

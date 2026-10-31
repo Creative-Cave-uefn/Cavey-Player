@@ -186,8 +186,8 @@ class _LibrarySectionState extends State<LibrarySection> {
           Text('Пригласить друзей', style: display(20)),
           const SizedBox(height: 10),
           const Text(
-            'Введите почту друга: Cave Player откроет ему общую папку и папки с музыкой, а Google пришлёт письмо. '
-            'Друг установит Cave Player, войдёт с этой почтой, и библиотека подключится сама.',
+            'Введите почту друга: Cavey откроет ему общую папку и папки с музыкой, а Google пришлёт письмо. '
+            'Друг установит Cavey, войдёт с этой почтой, и библиотека подключится сама.',
             style: TextStyle(color: C.muted, height: 1.5),
           ),
           const SizedBox(height: 14),
@@ -225,7 +225,7 @@ class _LibrarySectionState extends State<LibrarySection> {
           const SizedBox(height: 8),
           _Panel(children: [
             Row(children: [
-              const Icon(Icons.folder_rounded, color: C.accent),
+              Icon(Icons.folder_rounded, color: C.accent),
               const SizedBox(width: 12),
               Expanded(child: SelectableText(hubLink, style: const TextStyle(fontSize: 13))),
               const SizedBox(width: 12),
@@ -249,7 +249,7 @@ class _LibrarySectionState extends State<LibrarySection> {
           const SizedBox(height: 10),
           const Text(
             'Отключение действует только на этом компьютере. Треки, плейлисты и лайки в общей библиотеке остаются у друзей как были: '
-            'ничего не удаляется. Cave Player сам к библиотеке больше не подключится, пока вы не подключитесь вручную.',
+            'ничего не удаляется. Cavey сам к библиотеке больше не подключится, пока вы не подключитесь вручную.',
             style: TextStyle(color: C.muted, height: 1.5),
           ),
           const SizedBox(height: 8),
@@ -261,7 +261,7 @@ class _LibrarySectionState extends State<LibrarySection> {
                 final ok = await confirm(context,
                     title: 'Отключиться от этой библиотеки?',
                     text: 'Библиотека пропадёт только с этого компьютера. У друзей и на Диске всё останется как было, '
-                        'никакие треки не удалятся. Сами к библиотеке Cave Player больше не подключится: '
+                        'никакие треки не удалятся. Сами к библиотеке Cavey больше не подключится: '
                         'подключиться снова можно вручную, по ссылке или кнопкой поиска.',
                     action: 'Отключиться');
                 if (ok) await lib.leaveHub();
@@ -468,7 +468,7 @@ class _LocationPanelState extends State<_LocationPanel> {
           if (link != null)
             InkWell(
               onTap: () => launchUrl(Uri.parse(link)),
-              child: const Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.open_in_new_rounded, size: 15, color: C.accent)),
+              child: Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.open_in_new_rounded, size: 15, color: C.accent)),
             ),
         ]),
       );
@@ -587,7 +587,7 @@ class _LocationPanelState extends State<_LocationPanel> {
       ]),
       if (_busy) const Padding(padding: EdgeInsets.only(top: 14), child: LinearProgressIndicator()),
       if (_error != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(_error!, style: const TextStyle(color: C.danger))),
-      if (_ok != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(_ok!, style: const TextStyle(color: C.accent))),
+      if (_ok != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(_ok!, style: TextStyle(color: C.accent))),
     ]);
   }
 }

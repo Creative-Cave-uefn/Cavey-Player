@@ -46,7 +46,7 @@ jobs:
           Copy-Item assets/app_icon.ico windows/runner/resources/app_icon.ico -Force
           $main = 'windows/runner/main.cpp'
           (Get-Content $main) `
-            -replace 'L"cave_player"', 'L"Cave Player"' `
+            -replace 'L"cave_player"', 'L"Cavey"' `
             -replace 'Win32Window::Size size\(1280, 720\)', 'Win32Window::Size size(1240, 800)' |
             Set-Content $main
 
@@ -177,10 +177,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NOTES: ${{ github.event.head_commit.message }}
         run: |
-          $notes = if ($env:NOTES) { $env:NOTES } else { "Cave Player $env:APP_VERSION" }
+          $notes = if ($env:NOTES) { $env:NOTES } else { "Cavey $env:APP_VERSION" }
           gh release create "v$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
             --repo ${{ github.repository }} --target ${{ github.sha }} `
-            --title "Cave Player $env:APP_VERSION" --notes $notes
+            --title "Cavey $env:APP_VERSION" --notes $notes
           if ($LASTEXITCODE -ne 0) { Write-Output "::warning::Не получилось создать релиз в этом репозитории" }
 
       # Обновление для приложений друзей: релиз в публичном репозитории cave-player-releases
@@ -199,16 +199,16 @@ jobs:
           $check = gh api "repos/Creative-Cave-uefn/cave-player-releases/commits?per_page=1" 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) {
             Write-Output "::notice::Проверка коммитов: $($check.Trim() -replace "`r?`n", ' ')"
-            $text = "# Cave Player`n`nУстановщики Cave Player. Последняя версия — в разделе Releases, приложение обновляется само.`n"
+            $text = "# Cavey`n`nУстановщики Cavey. Последняя версия — в разделе Releases, приложение обновляется само.`n"
             $readme = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
             $init = gh api -X PUT repos/Creative-Cave-uefn/cave-player-releases/contents/README.md `
               -f message="Первый коммит" -f content=$readme 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) { Write-Output "::error::Первый коммит не создан: $($init.Trim() -replace "`r?`n", ' ')" }
           }
-          $notes = if ($env:NOTES) { $env:NOTES } else { "Cave Player $env:APP_VERSION" }
+          $notes = if ($env:NOTES) { $env:NOTES } else { "Cavey $env:APP_VERSION" }
           $out = gh release create "v$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
             --repo Creative-Cave-uefn/cave-player-releases `
-            --title "Cave Player $env:APP_VERSION" --notes $notes 2>&1 | Out-String
+            --title "Cavey $env:APP_VERSION" --notes $notes 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) {
             Write-Output "::error::Релиз не опубликован: $($out.Trim() -replace "`r?`n", ' ')"
             exit 1
@@ -256,7 +256,7 @@ jobs:
             exit 0
           }
           $repo = 'Creative-Cave-uefn/cave-player-releases'
-          $notes = if ($env:NOTES) { $env:NOTES } else { "Бета Cave Player $env:APP_VERSION" }
+          $notes = if ($env:NOTES) { $env:NOTES } else { "Бета Cavey $env:APP_VERSION" }
           $out = gh release create "beta-v$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
             --repo $repo --prerelease `
             --title "Бета · $env:APP_VERSION" --notes $notes 2>&1 | Out-String

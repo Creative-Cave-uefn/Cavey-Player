@@ -168,7 +168,7 @@ class _CaptionBarState extends State<_CaptionBar> with WindowListener {
                   alignment: Alignment.centerLeft,
                   child: Padding(
                     padding: EdgeInsets.only(left: 12),
-                    child: Text('Cave Player', style: TextStyle(color: C.muted, fontSize: 12)),
+                    child: Text('Cavey', style: TextStyle(color: C.muted, fontSize: 12)),
                   ),
                 ),
               ),
