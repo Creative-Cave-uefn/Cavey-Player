@@ -101,7 +101,7 @@ class Settings {
   int cacheLimitMb = 2048;
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
-  /// Единственный активный загрузчик: youtube, sockseek или bandcamp.
+  /// Единственный активный загрузчик: youtube, sockseek, bandcamp или vk.
   String downloadProvider = 'youtube';
   bool discord = true;
   bool betaUpdates = false; // получать бета-версии
@@ -174,7 +174,7 @@ class Settings {
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
     // Старые настройки Zotify намеренно не восстанавливаем. Sockseek переносим.
     final provider = j['downloadProvider'];
-    if (provider == 'youtube' || provider == 'sockseek' || provider == 'bandcamp') {
+    if (provider == 'youtube' || provider == 'sockseek' || provider == 'bandcamp' || provider == 'vk') {
       s.downloadProvider = provider as String;
     } else if (j['useSockseek'] == true) {
       s.downloadProvider = 'sockseek';

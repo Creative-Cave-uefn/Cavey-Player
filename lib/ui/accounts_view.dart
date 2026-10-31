@@ -1,5 +1,6 @@
 import 'dart:io';
 import '../core/dl/sockseek.dart';
+import '../core/dl/vk.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -915,6 +916,32 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
     }
   }
 
+  Future<void> _installVk() async {
+    final app = Services.of(context);
+    setState(() { _installing = true; _installLog = 'Устанавливаю VKpyMusic…'; });
+    try {
+      await VkMusic.install(app.downloads.tools, (line) {
+        if (mounted) setState(() => _installLog = '$_installLog\n$line');
+      });
+      app.settings.downloadProvider = 'vk';
+      await app.lib.saveSettings();
+    } catch (e) {
+      if (mounted) setState(() => _installLog += '\nОшибка: $e');
+    } finally {
+      if (mounted) setState(() => _installing = false);
+    }
+  }
+
+  Future<void> _loginVk() async {
+    final app = Services.of(context);
+    try {
+      await VkMusic.openLogin(app.downloads.tools);
+      if (mounted) setState(() => _installLog = 'Открыта отдельная консоль VK. Введите данные и пройдите подтверждение входа. После успешного входа можно скачивать в режиме VK.');
+    } catch (e) {
+      if (mounted) setState(() => _installLog = 'Ошибка авторизации VK: $e');
+    }
+  }
+
   Future<void> _checkMatch() async {
     final app = Services.of(context);
     final track = app.player.current;
@@ -947,7 +974,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text('Загрузчик музыки', style: display(20)),
       const SizedBox(height: 10),
-      const Text('Используется только один источник за раз. Режим Bandcamp принимает ссылки на треки и альбомы; '           'Soulseek ищет по названию или ссылке на каталог; YouTube — обычный поиск и ссылки.',
+      const Text('Используется только один источник за раз: YouTube, Soulseek, Bandcamp или VK Музыка. VK ищет по точному названию либо прямым ссылкам на аудио/плейлист.',
           style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
       const SizedBox(height: 12),
       DropdownButtonFormField<String>(
@@ -957,6 +984,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
           DropdownMenuItem(value: 'youtube', child: Text('YouTube / YouTube Music')),
           DropdownMenuItem(value: 'sockseek', child: Text('Sockseek (Soulseek)')),
           DropdownMenuItem(value: 'bandcamp', child: Text('Bandcamp (ссылки)')),
+          DropdownMenuItem(value: 'vk', child: Text('VK Музыка (VKpyMusic)')),
         ],
         onChanged: _installing || app.downloads.busy ? null : (value) {
           if (value == null) return;
@@ -989,6 +1017,29 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
       const SizedBox(height: 8),
       const Text('Bandcamp: доступно аудио, которое можно прослушать на странице. Это не покупка и не оригинальный FLAC; '           'скачивайте только музыку, на которую у вас есть права.',
           style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+      const SizedBox(height: 14),
+      Text('VK Музыка: нужен установленный Python 3.10+ (рекомендуется 3.13). '
+          'Сначала установите VKpyMusic в локальное окружение, затем войдите в VK в отдельном окне. '
+          'Пароль в настройках Cave Player не сохраняется; токен хранится только локально в vk_auth.ini. '
+          'Поддерживается точный поиск «Исполнитель - Название», прямые audio-ссылки и ссылки на плейлисты (до 500 треков). '
+          'Неподходящие записи не заменяются YouTube. DRM и недоступные аудиозаписи не обходятся. '
+          'Сохраняйте только музыку, на которую у вас есть права.',
+          style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+      const SizedBox(height: 10),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        FilledButton.icon(
+          onPressed: _installing || app.downloads.busy ? null : _installVk,
+          icon: const Icon(Icons.download_rounded),
+          label: const Text('Установить VKpyMusic'),
+        ),
+        OutlinedButton.icon(
+          onPressed: _installing || app.downloads.busy ? null : _loginVk,
+          icon: const Icon(Icons.login_rounded),
+          label: const Text('Войти в VK'),
+        ),
+      ]),
+      TextButton(onPressed: () => launchUrl(Uri.parse('https://github.com/issamansur/vkpymusic')),
+          child: const Text('VKpyMusic · исходный код и лицензия MIT')),
       const SizedBox(height: 18),
       OutlinedButton.icon(
         onPressed: _checking ? null : _checkMatch,

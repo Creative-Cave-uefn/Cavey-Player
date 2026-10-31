@@ -14,9 +14,9 @@
 
 ## Источники музыки
 
-В разделе «Скачать» и настройках доступен **один активный загрузчик**: YouTube, Soulseek через Sockseek или Bandcamp.
+В разделе «Скачать» и настройках доступен **один активный загрузчик**: YouTube, Soulseek через Sockseek, Bandcamp или VK Музыка.
 Bandcamp принимает прямые ссылки на треки и альбомы и сохраняет доступный аудиопоток в MP3; платные оригиналы и lossless-файлы не предоставляются.
-SoundCloud выключен, Zotify удалён. Подробнее: [docs/downloaders.md](docs/downloaders.md).
+VK Музыка использует VKpyMusic 4.0.2; для Windows необходим установленный Python 3.10+ (рекомендуется 3.13), а для входа — локальная интерактивная авторизация VK. Доступность треков зависит от VK и прав аккаунта. SoundCloud выключен, Zotify удалён. Подробнее: [docs/downloaders.md](docs/downloaders.md) и [docs/vk-music.md](docs/vk-music.md).
 
 ## Что умеет
 
