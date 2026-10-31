@@ -26,7 +26,7 @@ class ZotifyInstall {
     log('Запускаю установщик через PowerShell…');
     final output = <String>[];
     final code = await WinProc.run(powershell, [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', base64.encode(bytes),
+      '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', base64.encode(bytes),
     ], (line) { output.add(line.trim()); log(line); });
     if (code != 0 || !output.contains('CAVE_ZOTIFY_INSTALL_OK') || !await exe.exists()) {
       throw Exception('Установщик Zotify завершился с кодом $code. Подробности — в журнале выше.');
@@ -76,14 +76,14 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Git not found
 Write-Output 'Creating isolated Python environment...'
 Run-Checked $python @('-m', 'venv', ROOT)
 Write-Output 'Installing Zotify...'
-Run-Checked PIP @('install', '--upgrade', 'pip')
-Run-Checked PIP @('install', 'https://get.zotify.xyz')
+Run-Checked VENV_PYTHON @('-m', 'pip', 'install', '--upgrade', 'pip')
+Run-Checked VENV_PYTHON @('-m', 'pip', 'install', 'https://get.zotify.xyz')
 Run-Checked EXE @('--help')
 Write-Output 'CAVE_ZOTIFY_INSTALL_OK'
 '''
-        .replaceAllMapped(RegExp(r'\b(ROOT|PIP|EXE)\b'), (match) => switch (match[1]) {
+        .replaceAllMapped(RegExp(r'\b(ROOT|VENV_PYTHON|EXE)\b'), (match) => switch (match[1]) {
           'ROOT' => quote(rootPath),
-          'PIP' => quote('${rootPath}\\Scripts\\pip.exe'),
+          'VENV_PYTHON' => quote('${rootPath}\\Scripts\\python.exe'),
           _ => quote(executable),
         });
   }
