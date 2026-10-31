@@ -75,19 +75,26 @@ class VkMusic {
     }
     String? executable;
     List<String> prefix = const [];
+    final attempts = <String>[];
     for (final candidate in <(String, List<String>)>[
       ('py.exe', ['-3.13']), ('py.exe', ['-3']), ('python.exe', []),
     ]) {
+      final name = [candidate.$1, ...candidate.$2].join(' ');
       try {
-        if (await _run(candidate.$1, [...candidate.$2, '-c', 'import sys; assert sys.version_info >= (3, 10)'], (_) {}) == 0) {
+        final code = await _run(candidate.$1, [...candidate.$2, '-c', 'import sys; assert sys.version_info >= (3, 10)'], (_) {});
+        if (code == 0) {
           executable = candidate.$1;
           prefix = candidate.$2;
           break;
         }
-      } catch (_) {}
+        attempts.add('$name: код $code');
+      } catch (e) {
+        attempts.add('$name: $e');
+      }
     }
     if (executable == null) {
-      throw Exception('Не найден Python 3.10+ (рекомендуется 3.13). Установите Python с python.org и повторите установку VKpyMusic.');
+      final details = attempts.isEmpty ? '' : '\nПроверено: ${attempts.join('; ')}';
+      throw Exception('Не найден Python 3.10+ (рекомендуется 3.13). Установите Python с python.org и повторите установку VKpyMusic.$details');
     }
     log('Создаю локальное окружение Python…');
     final code = await _run(executable, [...prefix, '-m', 'venv', interpreter.parent.parent.path], log);
