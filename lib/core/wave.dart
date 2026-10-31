@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
 
 import 'dl/service.dart';
 import 'lastfm.dart';
@@ -62,6 +63,17 @@ class WaveTaste {
   /// Сколько раз трек пропустили в первые 30 секунд
   final Map<String, int> skips = {};
 
+  /// Д8: треки, которые когда-либо слушали дольше 30 секунд (длинная память для «Незнакомого»)
+  final Set<String> heard = {};
+
+  void markHeard(String id) {
+    heard.remove(id);
+    heard.add(id);
+    while (heard.length > 6000) {
+      heard.remove(heard.first);
+    }
+  }
+
   /// «Нравится в волне»: трек не сохраняется в любимое, но волна ищет от него похожие
   final Set<String> upvoted = {};
 
@@ -72,6 +84,25 @@ class WaveTaste {
     seeds.removeWhere((x) => x.$1 == artist && x.$2 == title);
     seeds.add((artist, title));
     if (seeds.length > 40) seeds.removeAt(0);
+  }
+
+  /// Когда в последний раз применялось затухание
+  DateTime? decayedAt;
+
+  /// Д2: симпатии без новых сигналов остывают — ×0,98 за каждый прошедший день
+  void decay([DateTime? now]) {
+    now ??= DateTime.now();
+    final last = decayedAt;
+    if (last == null) {
+      decayedAt = now;
+      return;
+    }
+    final days = now.difference(last).inDays;
+    if (days < 1) return;
+    final k = pow(0.98, days).toDouble();
+    artists.updateAll((_, v) => v * k);
+    artists.removeWhere((_, v) => v.abs() < 0.05);
+    decayedAt = last.add(Duration(days: days));
   }
 
   void bump(String artist, double by) {
@@ -89,6 +120,8 @@ class WaveTaste {
         'skips': skips,
         'upvoted': upvoted.toList(),
         'seeds': [for (final x in seeds) [x.$1, x.$2]],
+        'heard': heard.toList(),
+        if (decayedAt != null) 'decayedAt': decayedAt!.toUtc().toIso8601String(),
       };
 
   static WaveTaste fromJson(dynamic j) {
@@ -107,6 +140,11 @@ class WaveTaste {
     for (final x in (j['seeds'] as List? ?? const [])) {
       if (x is List && x.length >= 2) t.seeds.add(('${x[0]}', '${x[1]}'));
     }
+    for (final x in (j['heard'] as List? ?? const [])) {
+      t.heard.add('$x');
+    }
+    t.decayedAt = DateTime.tryParse('${j['decayedAt'] ?? ''}');
+    t.decay();
     return t;
   }
 }
@@ -196,7 +234,7 @@ class WaveEngine {
     final fam = x.myPlays[t.id] ?? 0;
     final liked = x.liked.contains(t.id);
     final pop = (x.crowd[t.id] ?? 0) / maxCrowd;
-    final fresh = fam == 0 && !liked;
+    final fresh = fam == 0 && !liked && !x.taste.heard.contains(t.id); // Д8: слышал когда-то — уже не новое
     var w = switch (mode) {
       WaveMode.mix => 0.4 + 2.0 * aN + (liked ? 1.0 : 0) + 0.6 * pop + (fresh ? 0.4 : 0),
       WaveMode.favorite => 0.1 + 1.6 * aN + (liked ? 2.5 : 0) + 0.15 * min(fam, 6),
@@ -217,7 +255,8 @@ class WaveEngine {
 
   /// Следующие [n] треков. [recent] — что уже звучало или стоит в очереди: их не повторяем,
   /// пока в библиотеке есть из чего выбрать. Один исполнитель два раза подряд — только если больше некого.
-  static List<String> pick(WaveInputs x, WaveMode mode, int n, {List<String> recent = const [], Random? rnd}) {
+  static List<String> pick(WaveInputs x, WaveMode mode, int n,
+      {List<String> recent = const [], Random? rnd, int sinceWide = 0}) {
     rnd ??= Random();
     final pool = [for (final t in x.tracks) if (!x.taste.disliked.contains(t.id)) t];
     if (pool.isEmpty || n <= 0) return const [];
@@ -254,7 +293,11 @@ class WaveEngine {
     for (var k = 0; k < n && out.length < cands.length; k++) {
       // Примерно два трека из трёх — из похожих на недавно дослушанные, если такие есть.
       // Иначе похожие тонут среди тысячи остальных треков библиотеки
-      final onlySimilar = hasSimilar && rnd.nextDouble() < similarShare;
+      // Д7: каждый 5-й трек — из другого круга; и если последние 5 были все «похожие», слот ослабляем
+      final wideSlot = (sinceWide + k + 1) % 5 == 0;
+      final last5 = recent.length >= 5 ? recent.sublist(recent.length - 5) : const <String>[];
+      final stuck = last5.length == 5 && last5.every((id) => (x.boost[id] ?? 0) >= similarFloor);
+      final onlySimilar = hasSimilar && !wideSlot && !stuck && rnd.nextDouble() < similarShare;
       var total = 0.0;
       final eff = List<double>.filled(cands.length, 0);
       for (final restrict in onlySimilar ? [true, false] : [false]) {
@@ -345,6 +388,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   Timer? _saveTimer;
   Timer? _sweepTimer;
   bool _learning = false;
+  int _sinceWide = 0; // Д7: сколько треков прошло с последнего «из другого круга»
   String? _lastTrack;
 
   /// Сколько треков библиотеки похожи на текущий (для страницы волны)
@@ -368,8 +412,17 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   /// Качать новые треки в волну
   bool discover = true;
 
-  /// Не больше стольких новых треков в день: защищает Диск
-  static const dailyLimit = 25;
+  /// Не больше стольких новых треков в день: защищает Диск (Д15: 25 / 50 / 100, по умолчанию 50)
+  int dailyLimit = 50;
+  static const dailyLimits = [25, 50, 100];
+
+  void setDailyLimit(int v) {
+    if (!dailyLimits.contains(v) || v == dailyLimit) return;
+    dailyLimit = v;
+    _save();
+    notifyListeners();
+    _maybeDiscover();
+  }
   final Map<String, WaveTrial> trials = {};
   final Set<String> _rejected = {}; // удалённые после пробы — не качаем снова
   String _day = '';
@@ -394,6 +447,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         final rel = j['similarArtists'];
         if (rel is Map) rel.forEach((k, v) => w._related['$k'] = [for (final x in (v as List? ?? const [])) '$x']);
         w.discover = j['discover'] != false;
+        final dl = (j['dailyLimit'] as num?)?.toInt();
+        if (dl != null && WaveService.dailyLimits.contains(dl)) w.dailyLimit = dl;
         for (final x in (j['trials'] as List? ?? const [])) {
           final t = WaveTrial.fromJson(x);
           if (t != null) w.trials[t.id] = t;
@@ -781,19 +836,50 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   List<String> more(int n) {
     final x = _inputs();
     final ahead = player.feeder == this ? player.queue.skip(player.index) : const <String>[];
-    final ids = WaveEngine.pick(x, mode, n, recent: [..._recent, ...ahead]);
+    final ids = [...WaveEngine.pick(x, mode, n, recent: [..._recent, ...ahead], sinceWide: _sinceWide)];
+    _sinceWide = (_sinceWide + ids.length) % 5;
+    // Д15: пришёл черёд новинки — ставим готовую из запаса в конец выдачи
+    final every = _every;
+    if (discover && every != null && ids.isNotEmpty && _sinceFresh + ids.length >= every) {
+      final busy = {..._recent, ...ahead, ...ids};
+      final ready = _stockIds.where((id) => !busy.contains(id)).firstOrNull;
+      if (ready != null) {
+        ids[ids.length - 1] = ready;
+        _sinceFresh = 0;
+      } else {
+        _sinceFresh += ids.length;
+      }
+    } else {
+      _sinceFresh += ids.length;
+    }
     _remember(ids);
-    _sinceFresh += ids.length;
     _save();
     _maybeDiscover();
     return ids;
   }
 
+  bool get _inBackground {
+    final st = WidgetsBinding.instance.lifecycleState;
+    return st == AppLifecycleState.hidden || st == AppLifecycleState.paused;
+  }
+
+  /// Сколько разных песен исполнителя [key] пропущено в начале
+  int _skippedSongsOf(String key) {
+    var n = 0;
+    for (final id in taste.skips.keys) {
+      final u = lib.data.tracks[id];
+      if (u != null && u.artists.any((a) => a.toLowerCase() == key)) n++;
+    }
+    return n;
+  }
+
   @override
   void heard(Track t, Duration listened, {required bool skipped}) {
+    taste.decay();
     final keys = [for (final a in t.artists) a.toLowerCase()];
     final total = Duration(milliseconds: t.durationMs ?? 0);
     final early = skipped && listened < const Duration(seconds: 30);
+    if (listened >= const Duration(seconds: 30)) taste.markHeard(t.id);
     final finished = !skipped || (total > Duration.zero && listened.inMilliseconds > total.inMilliseconds * 0.7);
     final trial = trials[t.id];
     if (trial != null && finished && !early) {
@@ -810,15 +896,25 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         });
       }
       taste.skips[t.id] = (taste.skips[t.id] ?? 0) + 1;
+      // Д1: основной штраф получает сам трек (skips). Исполнителя заметно наказываем,
+      // только когда пропущены минимум две его разные песни
       for (final k in keys) {
-        taste.bump(k, -0.6);
-        _session[k] = (_session[k] ?? 0) - 2.5;
+        final songs = _skippedSongsOf(k);
+        if (songs >= 2) {
+          taste.bump(k, -0.6);
+          _session[k] = (_session[k] ?? 0) - 2.5;
+        } else {
+          taste.bump(k, -0.1);
+          _session[k] = (_session[k] ?? 0) - 0.5;
+        }
       }
-      // Сразу убираем из ближайшей очереди этого же исполнителя — волна реагирует, а не через десять треков
-      player.dropUpcoming((id) {
-        final u = lib.data.tracks[id];
-        return u != null && u.artists.any((a) => keys.contains(a.toLowerCase()));
-      }, keepVisible: true);
+      if (keys.any((k) => _skippedSongsOf(k) >= 2)) {
+        // Сразу убираем из ближайшей очереди этого же исполнителя — волна реагирует, а не через десять треков
+        player.dropUpcoming((id) {
+          final u = lib.data.tracks[id];
+          return u != null && u.artists.any((a) => keys.contains(a.toLowerCase()));
+        }, keepVisible: true);
+      }
     } else if (finished) {
       final s = taste.skips[t.id];
       if (s != null && s <= 1) {
@@ -826,9 +922,11 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       } else if (s != null) {
         taste.skips[t.id] = s - 1;
       }
+      // Д3: если окно скрыто, человек ничего не нажимал — дослушивание весит вдвое меньше
+      final bg = _inBackground ? 0.5 : 1.0;
       for (final k in keys) {
-        taste.bump(k, 0.4);
-        _session[k] = (_session[k] ?? 0) + 1.5;
+        taste.bump(k, 0.4 * bg);
+        _session[k] = (_session[k] ?? 0) + 1.5 * bg;
       }
       _good.remove(t.id);
       _good.add(t.id);
@@ -957,10 +1055,21 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   /// Каждый какой трек волны — новый из интернета
   int? get _every => switch (mode) {
-        WaveMode.mix => 4,
+        WaveMode.mix => 3,
         WaveMode.unfamiliar => 2,
-        WaveMode.favorite || WaveMode.popular => null,
+        WaveMode.favorite || WaveMode.popular => 8, // изредка
       };
+
+  /// Скольких скачанных, но ещё не звучавших новинок держим про запас
+  int get _stockTarget => switch (mode) {
+        WaveMode.mix || WaveMode.unfamiliar => 2,
+        WaveMode.favorite || WaveMode.popular => 1,
+      };
+
+  Iterable<String> get _stockIds => [
+        for (final t in trials.values)
+          if (lib.data.tracks[t.id] != null && !taste.heard.contains(t.id) && !taste.disliked.contains(t.id)) t.id
+      ];
 
   String? get _targetSource {
     final sources = lib.data.sources;
@@ -972,14 +1081,15 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   /// [force] — в библиотеке не нашлось похожих: качаем, не дожидаясь своей очереди
   void _maybeDiscover({bool force = false}) {
     final every = _every;
-    if (!discover || !active || every == null || _pending > 0 || (!force && _sinceFresh < every)) return;
+    // Д15: держим 1–2 новинки про запас и качаем до двух треков параллельно
+    if (!discover || !active || every == null || _pending >= 2) return;
+    if (!force && _stockIds.length + _pending >= _stockTarget) return;
     if (downloadedToday >= dailyLimit || _targetSource == null || !lib.hasHub) return;
     unawaited(_discoverOne());
   }
 
   Future<void> _discoverOne() async {
     _pending++;
-    _sinceFresh = 0;
     _status('Ищу новое для волны…');
     try {
       final pick = await _findFresh();
@@ -1189,9 +1299,15 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     }
     _today++;
     _status('');
-    if (active) player.insertSoon(t.id);
+    // Д15: новинка ждёт своей очереди про запас; сразу ставим, только если её черёд уже пришёл
+    final every = _every;
+    if (active && (every == null || _sinceFresh >= every)) {
+      _sinceFresh = 0;
+      player.insertSoon(t.id);
+    }
     _save();
     notifyListeners();
+    _maybeDiscover();
   }
 
   // ---------- пробный срок ----------
@@ -1277,6 +1393,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         'similarArtists': _related,
         'discover': discover,
         'mood': mood,
+        'dailyLimit': dailyLimit,
         'custom': custom,
         'artistTags': _tags.map((k, v) => MapEntry(k, v.map((t, x) => MapEntry(t, double.parse(x.toStringAsFixed(2)))))),
         'trials': [for (final t in trials.values) t.toJson()],

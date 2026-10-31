@@ -684,10 +684,20 @@ class _Discover extends StatelessWidget {
         const SizedBox(height: 6),
         Text(
           'Волна сама скачивает треки, которые звучат рядом с вашими любимыми исполнителями, в папку «Моя волна». '
-          'Если за сутки трек никто не послушает второй раз, не лайкнет и не добавит в плейлист — он удалится с Диска '
-          'и больше не скачается. Не больше ${WaveService.dailyLimit} в день, сегодня: ${wave.downloadedToday}.$modeNote',
+          'Если за сутки трек никто не послушает до конца или второй раз, не лайкнет и не добавит в плейлист — он уйдёт '
+          'в корзину Диска и больше не скачается. Сегодня скачано: ${wave.downloadedToday} из ${wave.dailyLimit}.$modeNote',
           style: const TextStyle(color: C.muted, fontSize: 13, height: 1.45),
         ),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          const Text('Не больше в день:', style: TextStyle(color: C.muted, fontSize: 13)),
+          for (final n in WaveService.dailyLimits)
+            ChoiceChip(
+              label: Text('$n'),
+              selected: wave.dailyLimit == n,
+              onSelected: (_) => wave.setDailyLimit(n),
+            ),
+        ]),
         if (wave.discoverStatus.isNotEmpty) ...[
           const SizedBox(height: 10),
           Row(children: [
