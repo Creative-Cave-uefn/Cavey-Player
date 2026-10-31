@@ -266,6 +266,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _retryTimer?.cancel();
     _unlisten?.call();
     _ticker?.dispose();
     _clock.dispose();
@@ -287,6 +288,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
     if (src?.key == _key) return;
     _key = src?.key;
     final seq = ++_seq;
+    final primary = src;
     var s = src;
     while (s != null) {
       final hit = _cache[s.key];
@@ -295,6 +297,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
           _image = hit;
           _color = null;
         });
+        _markFallback(primary, !identical(s, primary));
         return;
       }
       ui.Image? img;
@@ -321,6 +324,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
           _image = img;
           _color = null;
         });
+        _markFallback(primary, !identical(s, primary));
         return;
       }
       if (s.color != null) {
@@ -328,6 +332,7 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
           _image = null;
           _color = s!.color;
         });
+        _markFallback(primary, true);
         return;
       }
       s = s.fallback;
@@ -336,6 +341,37 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
     setState(() {
       _image = null;
       _color = null;
+    });
+    _markFallback(primary, true);
+  }
+
+  // З6: если вместо основной картинки показан запасной вариант, пробуем загрузить основную ещё раз
+  // (через 2, 5, 15, 30 и 60 секунд — не больше 5 попыток), и когда она придёт, фон заменится
+  Timer? _retryTimer;
+  int _attempts = 0;
+  String? _attemptsFor;
+
+  void _markFallback(AmbientSource? primary, bool fallback) {
+    if (primary == null || !fallback) {
+      _retryTimer?.cancel();
+      _retryTimer = null;
+      _attempts = 0;
+      _attemptsFor = null;
+      return;
+    }
+    if (_attemptsFor != primary.key) {
+      _attemptsFor = primary.key;
+      _attempts = 0;
+      _retryTimer?.cancel();
+      _retryTimer = null;
+    }
+    if (_attempts >= 5 || (_retryTimer?.isActive ?? false)) return;
+    const waits = [2, 5, 15, 30, 60];
+    _retryTimer = Timer(Duration(seconds: waits[_attempts]), () {
+      _attempts++;
+      if (!mounted || _attemptsFor != primary.key) return;
+      _key = null;
+      _sync();
     });
   }
 

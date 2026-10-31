@@ -288,8 +288,10 @@ class _ShellState extends State<Shell> {
                   }
                   // В кинотеатре панели не выезжают совсем: всё управление на самой странице
                   final cinema = nav.kind == 'cinema';
+                  // З1: на странице играющей волны капсулы нет совсем, а боковая панель по-прежнему выезжает
+                  final waveLive = nav.kind == 'wave' && immersive;
                   final showSide = !immersive || (_peekSide && !cinema);
-                  final showBar = !immersive || (_peekBar && !cinema);
+                  final showBar = !immersive || (_peekBar && !cinema && !waveLive);
                   return Stack(children: [
                     AnimatedPositioned(
                       duration: dur,
@@ -302,7 +304,7 @@ class _ShellState extends State<Shell> {
                         Expanded(
                           child: Stack(children: [
                             Positioned.fill(child: _content(nav, compact)),
-                            if (!cinema)
+                            if (!cinema && !waveLive) // З4: стрелок на странице волны нет
                             Positioned(
                               top: 4,
                               left: compact ? 16 : 28,
@@ -333,7 +335,7 @@ class _ShellState extends State<Shell> {
                     if (immersive && !cinema) ...[
                       // Узкие полосы у края: навёл — панель выезжает
                       Positioned(left: 0, top: 0, bottom: 0, width: 12, child: MouseRegion(onEnter: (_) => _reveal(side: true))),
-                      Positioned(left: 0, right: 0, bottom: 0, height: 14, child: MouseRegion(onEnter: (_) => _reveal(side: false))),
+                      if (!waveLive) Positioned(left: 0, right: 0, bottom: 0, height: 14, child: MouseRegion(onEnter: (_) => _reveal(side: false))),
                     ],
                     AnimatedPositioned(
                       duration: dur,
@@ -423,7 +425,9 @@ class _ShellState extends State<Shell> {
     final repeat = e is KeyRepeatEvent;
 
     void Function()? action;
-    if (k == LogicalKeyboardKey.escape && !repeat && _nav.value.kind == 'cinema') action = _nav.back;
+    if (k == LogicalKeyboardKey.escape && !repeat && (_nav.value.kind == 'cinema' || _immersive(_nav.value))) {
+      action = _nav.canBack ? _nav.back : () => _nav.go(const Nav('all')); // З5: из волны по Esc, музыка играет дальше
+    }
     // Медиаклавиши и сочетания с Ctrl работают всегда
     // (если включён перехват по всей системе, медиаклавиши ловит он, иначе они сработали бы дважды)
     if (!MediaKeys.running) {

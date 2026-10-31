@@ -62,7 +62,7 @@ class _CinemaPageState extends State<CinemaPage> {
               final cover = (narrow && _lyrics ? box.maxHeight * 0.34 : sideW - 120)
                   .clamp(160.0, (box.maxHeight - 330).clamp(160.0, 560.0))
                   .toDouble();
-              final left = _NowPanel(width: cover);
+              final left = NowPanel(width: cover);
               if (!_lyrics) return Center(child: left);
               final lyrics = ShaderMask(
                 // Текст растворяется у верхнего и нижнего края, как в Apple Music
@@ -114,9 +114,15 @@ class _CinemaPageState extends State<CinemaPage> {
 }
 
 /// Обложка, название, перемотка, управление и громкость — колонкой, как в Apple Music
-class _NowPanel extends StatelessWidget {
+class NowPanel extends StatelessWidget {
   final double width;
-  const _NowPanel({required this.width});
+
+  /// Вместо перемешивания и повтора по краям кнопок управления (в «Моей волне» — «не нравится» / «нравится»)
+  final Widget? leftAction, rightAction;
+
+  /// Подпись под названием (в «Моей волне» — почему выбран этот трек)
+  final String? caption;
+  const NowPanel({super.key, required this.width, this.leftAction, this.rightAction, this.caption});
 
   @override
   Widget build(BuildContext context) {
@@ -141,6 +147,11 @@ class _NowPanel extends StatelessWidget {
               Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
               const SizedBox(height: 3),
               Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 15, fontWeight: FontWeight.w600)),
+              if (caption != null && caption!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 3),
+                  child: Text(caption!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 12)),
+                ),
             ]),
           ),
           _Round(
@@ -156,11 +167,12 @@ class _NowPanel extends StatelessWidget {
         _Seek(player: p),
         const SizedBox(height: 12),
         Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          IconButton(
-            tooltip: p.shuffle ? 'Выключить перемешивание' : 'Перемешать',
-            onPressed: p.toggleShuffle,
-            icon: Icon(Icons.shuffle_rounded, size: 22, color: p.shuffle ? C.accent : C.muted),
-          ),
+          leftAction ??
+              IconButton(
+                tooltip: p.shuffle ? 'Выключить перемешивание' : 'Перемешать',
+                onPressed: p.toggleShuffle,
+                icon: Icon(Icons.shuffle_rounded, size: 22, color: p.shuffle ? C.accent : C.muted),
+              ),
           const SizedBox(width: 18),
           IconButton(onPressed: p.previous, tooltip: 'Предыдущий', icon: const Icon(Icons.fast_rewind_rounded, size: 42, color: C.text)),
           const SizedBox(width: 10),
@@ -172,12 +184,13 @@ class _NowPanel extends StatelessWidget {
           const SizedBox(width: 10),
           IconButton(onPressed: p.next, tooltip: 'Следующий', icon: const Icon(Icons.fast_forward_rounded, size: 42, color: C.text)),
           const SizedBox(width: 18),
-          IconButton(
-            tooltip: 'Повтор',
-            onPressed: p.cycleRepeat,
-            icon: Icon(p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
-                size: 22, color: p.repeat == RepeatSetting.off ? C.muted : C.accent),
-          ),
+          rightAction ??
+              IconButton(
+                tooltip: 'Повтор',
+                onPressed: p.cycleRepeat,
+                icon: Icon(p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+                    size: 22, color: p.repeat == RepeatSetting.off ? C.muted : C.accent),
+              ),
         ]),
         const SizedBox(height: 12),
         Row(children: [

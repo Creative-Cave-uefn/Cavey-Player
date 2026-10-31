@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/models.dart';
 import '../core/wave.dart';
+import 'cinema_view.dart' show NowPanel;
 import 'shell.dart';
 import 'theme.dart';
 import 'web_views.dart';
@@ -43,15 +44,42 @@ class WavePage extends StatelessWidget {
               constraints: BoxConstraints(minHeight: box.maxHeight, minWidth: box.maxWidth),
               child: Stack(alignment: Alignment.center, children: [
                 Padding(
-                  padding: EdgeInsets.fromLTRB(pad, 92, pad, 40),
-                  child: active ? _NowFlow(compact: compact) : _Idle(compact: compact),
+                  padding: EdgeInsets.fromLTRB(pad, active ? 56 : 92, pad, active ? 12 : 40),
+                  child: active ? _NowFlow(compact: compact, height: box.maxHeight - 68) : _Idle(compact: compact),
                 ),
                 Positioned(
                   left: compact ? 20 : 104,
                   top: 18,
                   child: Text('Моя волна', style: display(compact ? 20 : 22, color: C.muted)),
                 ),
-                Positioned(right: 18, top: 12, child: _SettingsButton()), // не const: подсказка и точка обновляются
+                Positioned(
+                  right: 18,
+                  top: 12,
+                  child: Row(children: [
+                    _SettingsButton(), // не const: подсказка и точка обновляются
+                    if (active) ...[
+                      const SizedBox(width: 8),
+                      // З5: выход из волны — музыка играет дальше; «Остановить» — музыка останавливается
+                      TextButton.icon(
+                        onPressed: () async {
+                          await p.pause();
+                          p.clearUpcoming();
+                        },
+                        style: TextButton.styleFrom(foregroundColor: C.muted),
+                        icon: const Icon(Icons.stop_circle_outlined, size: 20),
+                        label: const Text('Остановить волну'),
+                      ),
+                      IconButton(
+                        tooltip: 'Закрыть (Esc)',
+                        onPressed: () {
+                          final nav = NavScope.of(context);
+                          nav.canBack ? nav.back() : nav.go(const Nav('all'));
+                        },
+                        icon: const Icon(Icons.close_rounded, size: 26, color: C.text),
+                      ),
+                    ],
+                  ]),
+                ),
               ]),
             ),
           );
@@ -103,11 +131,12 @@ class _SettingsButton extends StatelessWidget {
   }
 }
 
-/// Карусель обложек: два трека назад, текущий и два следующих. Соседние развёрнуты в перспективе;
-/// при смене трека карточки плавно переезжают
+/// Карусель обложек: в центре карточка играющего трека как в кинотеатре (обложка, название, перемотка,
+/// управление, громкость), по бокам — соседние треки очереди. Размер считается и от ширины, и от высоты окна
 class _NowFlow extends StatelessWidget {
   final bool compact;
-  const _NowFlow({required this.compact});
+  final double height;
+  const _NowFlow({required this.compact, required this.height});
 
   @override
   Widget build(BuildContext context) {
@@ -115,101 +144,94 @@ class _NowFlow extends StatelessWidget {
     final p = app.player;
     final wave = app.wave;
     final t = p.current!;
-    return Column(children: [
-      LayoutBuilder(builder: (context, box) {
-        final w = box.maxWidth;
-        final cx = w / 2;
-        // Размер центральной карточки — от ширины: пять карточек с зазорами помещаются без наложений
-        const gap = 22.0, pad = 24.0; // зазор между карточками и рамка карточки (по 12 с боков)
-        final big = math.max(140.0, math.min(compact ? 230.0 : 300.0, (w - 4 * gap - 5 * pad) / (1 + 2 * 0.74 + 2 * 0.56)));
-        final s1 = big * 0.74, s2 = big * 0.56;
-        final dx1 = (big + pad) / 2 + gap + (s1 + pad) / 2;
-        final dx2 = dx1 + (s1 + pad) / 2 + gap + (s2 + pad) / 2;
-        final showFar = !compact && w >= 2 * dx2 + s2 + pad;
-        // Соседние развёрнуты лицом к центру
-        final slots = <int, ({double size, double dx, double angle, double opacity})>{
-          -2: (size: s2, dx: -dx2, angle: -0.42, opacity: 0.55),
-          -1: (size: s1, dx: -dx1, angle: -0.32, opacity: 0.85),
-          0: (size: big, dx: 0, angle: 0, opacity: 1),
-          1: (size: s1, dx: dx1, angle: 0.32, opacity: 0.85),
-          2: (size: s2, dx: dx2, angle: 0.42, opacity: 0.55),
-        };
-        final cards = <Widget>[];
-        final seen = <String, int>{};
-        // Дальние рисуем первыми, текущий — поверх всех
-        for (final o in const [-2, 2, -1, 1, 0]) {
-          final i = p.index + o;
-          if (i < 0 || i >= p.queue.length) continue;
-          final track = app.lib.data.tracks[p.queue[i]];
-          if (track == null) continue;
-          final slot = slots[o]!;
-          if (!showFar && o.abs() == 2) continue;
-          final n = seen[track.id] = (seen[track.id] ?? 0) + 1;
-          final height = slot.size + 24 + slot.size * 0.24;
-          cards.add(AnimatedPositioned(
-            key: ValueKey('${track.id}#$n'),
+    return LayoutBuilder(builder: (context, box) {
+      final w = box.maxWidth;
+      const gap = 22.0, pad = 24.0; // зазор между карточками и рамка соседней карточки
+      const panelExtra = 262.0; // всё, что под обложкой в центральной карточке
+      final byHeight = height - panelExtra;
+      final byWidth = (w - 2 * gap - 2 * pad) / (1 + 2 * 0.74);
+      final big = math.max(180.0, math.min(520.0, math.min(byHeight, math.max(byWidth, 260.0))));
+      final s1 = big * 0.74, s2 = big * 0.56;
+      final dx1 = big / 2 + gap + (s1 + pad) / 2;
+      final dx2 = dx1 + (s1 + pad) / 2 + gap + (s2 + pad) / 2;
+      final showNear = w >= big + 2 * (gap + s1 + pad);
+      final showFar = showNear && w >= 2 * (dx2 + (s2 + pad) / 2);
+      final cx = w / 2;
+      final slots = <int, ({double size, double dx, double angle, double opacity})>{
+        -2: (size: s2, dx: -dx2, angle: -0.42, opacity: 0.55),
+        -1: (size: s1, dx: -dx1, angle: -0.32, opacity: 0.85),
+        1: (size: s1, dx: dx1, angle: 0.32, opacity: 0.85),
+        2: (size: s2, dx: dx2, angle: 0.42, opacity: 0.55),
+      };
+      final cards = <Widget>[];
+      final seen = <String, int>{};
+      for (final o in const [-2, 2, -1, 1]) {
+        final i = p.index + o;
+        if (i < 0 || i >= p.queue.length) continue;
+        final track = app.lib.data.tracks[p.queue[i]];
+        if (track == null) continue;
+        if (!showNear || (!showFar && o.abs() == 2)) continue;
+        final slot = slots[o]!;
+        final n = seen[track.id] = (seen[track.id] ?? 0) + 1;
+        final h = slot.size + 24 + slot.size * 0.24;
+        cards.add(AnimatedPositioned(
+          key: ValueKey('${track.id}#$n'),
+          duration: const Duration(milliseconds: 450),
+          curve: Curves.easeOutCubic,
+          left: cx + slot.dx - slot.size / 2 - 12,
+          top: (big - h) / 2 + h * 0.12,
+          width: slot.size + 24,
+          height: h,
+          child: AnimatedOpacity(
             duration: const Duration(milliseconds: 450),
-            curve: Curves.easeOutCubic,
-            left: cx + slot.dx - slot.size / 2 - 12,
-            top: (big * 1.28 + 24 - height) / 2,
-            width: slot.size + 24,
-            height: height,
-            child: AnimatedOpacity(
+            opacity: slot.opacity,
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(end: slot.angle),
               duration: const Duration(milliseconds: 450),
-              opacity: slot.opacity,
-              child: TweenAnimationBuilder<double>(
-                tween: Tween(end: slot.angle),
-                duration: const Duration(milliseconds: 450),
-                curve: Curves.easeOutCubic,
-                builder: (context, a, child) => Transform(
-                  alignment: Alignment.center,
-                  transform: Matrix4.identity()
-                    ..setEntry(3, 2, 0.0012)
-                    ..rotateY(a),
-                  child: child,
-                ),
-                child: _FlowCard(track: track, current: o == 0, onTap: o == 0 ? null : () => p.jumpTo(i)),
+              curve: Curves.easeOutCubic,
+              builder: (context, a, child) => Transform(
+                alignment: Alignment.center,
+                transform: Matrix4.identity()
+                  ..setEntry(3, 2, 0.0012)
+                  ..rotateY(a),
+                child: child,
               ),
+              child: _FlowCard(track: track, current: false, onTap: () => p.jumpTo(i)),
             ),
-          ));
-        }
-        return SizedBox(height: big * 1.28 + 24, child: Stack(clipBehavior: Clip.none, children: cards));
-      }),
-      const SizedBox(height: 22),
-      Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        _RoundGlass(
-          tooltip: 'Не нравится — больше не попадётся',
-          icon: Icons.thumb_down_alt_outlined,
-          onPressed: wave.dislike,
+          ),
+        ));
+      }
+      cards.add(Positioned(
+        left: cx - big / 2,
+        top: 0,
+        width: big,
+        child: NowPanel(
+          key: ValueKey(t.id),
+          width: big,
+          caption: wave.reasonFor(t.id),
+          leftAction: _RoundGlass(
+            tooltip: 'Не нравится — больше не попадётся',
+            icon: Icons.thumb_down_alt_outlined,
+            onPressed: wave.dislike,
+          ),
+          rightAction: _RoundGlass(
+            tooltip: wave.isUpvoted(t.id) ? 'Нравится в волне — нажмите, чтобы отменить' : 'Нравится: больше похожего, без сохранения в любимое',
+            icon: wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
+            color: wave.isUpvoted(t.id) ? C.accent : C.text,
+            onPressed: wave.upvote,
+          ),
         ),
-        SizedBox(
-          width: compact ? 200 : 300,
-          child: Text(wave.reasonFor(t.id),
-              textAlign: TextAlign.center, maxLines: 2, style: const TextStyle(color: C.text, fontSize: 14, fontWeight: FontWeight.w500)),
-        ),
-        _RoundGlass(
-          tooltip: wave.isUpvoted(t.id) ? 'Нравится в волне — нажмите, чтобы отменить' : 'Нравится: больше похожего, без сохранения в любимое',
-          icon: wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
-          color: wave.isUpvoted(t.id) ? C.accent : C.text,
-          onPressed: wave.upvote,
-        ),
-      ]),
-      const SizedBox(height: 10),
-      TextButton.icon(
-        onPressed: p.next,
-        style: TextButton.styleFrom(foregroundColor: C.muted),
-        icon: const Icon(Icons.skip_next_rounded, size: 20),
-        label: const Text('Дальше'),
-      ),
-      if (wave.discoverStatus.isNotEmpty) ...[
-        const SizedBox(height: 8),
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-          const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.6)),
-          const SizedBox(width: 10),
-          Flexible(child: Text(wave.discoverStatus, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 13))),
-        ]),
-      ],
-    ]);
+      ));
+      return Column(children: [
+        SizedBox(height: big + panelExtra, child: Stack(clipBehavior: Clip.none, children: cards)),
+        if (wave.discoverStatus.isNotEmpty)
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.6)),
+            const SizedBox(width: 10),
+            Flexible(child: Text(wave.discoverStatus, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 13))),
+          ]),
+      ]);
+    });
   }
 }
 
