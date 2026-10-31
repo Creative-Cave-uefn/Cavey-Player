@@ -16,6 +16,12 @@ void main() {
       no: null, year: '', pic: null, cover: null, modified: '', size: 0, by: '', path: '');
   final match = {'track': {'track_name': 'Song', 'artist_name': 'Artist', 'commontrack_id': 42, 'track_length': 100}};
   final rich = [{'ts': 10.0, 'te': 12.0, 'x': 'Привет мир', 'l': [{'c': 'Привет', 'o': 0.0}, {'c': 'мир', 'o': 0.5}]}];
+  Map macro(Map matched, {int status = 200}) => {'macro_calls': {
+    'matcher.track.get': {'message': {'header': {'status_code': status}, 'body': matched}},
+    'track.subtitles.get': {'message': {'header': {'status_code': 200}, 'body': {
+      'subtitle_list': [{'subtitle': {'subtitle_body': '[00:10.00]Example'}}],
+    }}},
+  }};
   test('RichSync preserves whitespace and relative word timestamps', () {
     final lyrics = Musixmatch.parse(rich)!;
     expect(lyrics.lines.single.text, 'Привет мир');
@@ -41,7 +47,11 @@ void main() {
       expect(request.url.queryParameters.containsKey('signature'), isFalse);
       if (request.url.path.endsWith('token.get')) { tokenCalls++; return response({'user_token': 'test-token'}); }
       expect(request.url.queryParameters['usertoken'], 'test-token');
-      if (request.url.path.endsWith('matcher.track.get')) return response(match);
+      if (request.url.path.endsWith('macro.subtitles.get')) {
+        expect(request.url.queryParameters['namespace'], 'lyrics_richsynched');
+        expect(request.url.queryParameters['subtitle_format'], 'lrc');
+        return response(macro(match));
+      }
       expect(request.url.queryParameters['commontrack_id'], '42');
       return response({'richsync': {'richsync_body': jsonEncode(rich)}});
     });
@@ -59,7 +69,7 @@ void main() {
     final client = MockClient((r) async {
       if (r.url.path.endsWith('token.get')) return response({'user_token': 'token-${++tokens}'});
       matches++;
-      return response({}, 401);
+      return response(macro({}, status: 401));
     });
     await expectLater(Musixmatch(client).find(track, Duration.zero), throwsA(isA<MusixmatchFailure>()));
     expect(tokens, 2);
@@ -80,7 +90,7 @@ void main() {
   test('Wrong version is rejected; missing RichSync falls back to line timing', () async {
     final client = MockClient((r) async {
       if (r.url.path.endsWith('token.get')) return response({'user_token': 't'});
-      if (r.url.path.endsWith('matcher.track.get')) return response(match);
+      if (r.url.path.endsWith('macro.subtitles.get')) return response(macro(match));
       if (r.url.path.endsWith('track.richsync.get')) return response({}, 404);
       return response({'subtitle_list': [{'subtitle': {'subtitle_body': '[00:10.00]Example'}}]});
     });
@@ -92,4 +102,24 @@ void main() {
     expect(lyrics?.lines.single.words, isNull);
     client.close();
   });
+  test('Nested matcher 404 is no match, not a service failure', () async {
+    final client = MockClient((r) async => r.url.path.endsWith('token.get')
+        ? response({'user_token': 't'}) : response(macro({}, status: 404)));
+    expect(await Musixmatch(client).find(track, Duration.zero), isNull);
+    client.close();
+  });
+  test('HTTP 404 on richsync uses the subtitle included in the macro', () async {
+    final paths = <String>[];
+    final client = MockClient((r) async {
+      paths.add(r.url.path);
+      if (r.url.path.endsWith('token.get')) return response({'user_token': 't'});
+      if (r.url.path.endsWith('macro.subtitles.get')) return response(macro(match));
+      return http.Response('not found', 404);
+    });
+    final result = await Musixmatch(client).find(track, const Duration(seconds: 100));
+    expect(result?.lines.single.text, 'Example');
+    expect(paths.any((p) => p.endsWith('/matcher.track.get') || p.endsWith('/track.subtitle.get')), isFalse);
+    client.close();
+  });
+
 }

@@ -45,6 +45,7 @@ class Musixmatch {
     // Do not echo remote bodies, URLs or tokens into the UI/log.
     if (status != 200) throw MusixmatchFailure(status, endpoint, header['hint'] == 'captcha' ? 'captcha' : '');
     final body = message['body'];
+    if (body is Map && endpoint == 'macro.subtitles.get') _macroBody(body, 'matcher.track.get');
     return body is Map ? body : null;
   }
 
@@ -93,21 +94,40 @@ class Musixmatch {
     }
   }
 
+  static Map? _macroBody(Map? body, String name) {
+    final calls = body?['macro_calls'];
+    final call = calls is Map ? calls[name] : null;
+    final message = call is Map ? call['message'] : null;
+    if (message is! Map) return null;
+    final header = message['header'];
+    if (header is! Map || header['status_code'] is! num) throw MusixmatchFailure(0, 'macro.subtitles.get/$name', 'нет статуса вложенного ответа');
+    final status = (header['status_code'] as num).toInt();
+    if (status == 404) return null;
+    if (status != 200) throw MusixmatchFailure(status, 'macro.subtitles.get/$name', header['hint'] == 'captcha' ? 'captcha' : '');
+    return message['body'] is Map ? message['body'] as Map : null;
+  }
+
   static String _norm(String s) => s.toLowerCase().replaceAll(RegExp(r'[^\p{L}\p{N}]', unicode: true), '');
 
   Future<Lyrics?> find(Track track, Duration duration) async {
-    final body = await _authenticated('matcher.track.get', {
+    final body = await _authenticated('macro.subtitles.get', {
+      'namespace': 'lyrics_richsynched', 'subtitle_format': 'lrc',
       'q_track': track.title, 'q_artist': track.displayArtist, 'q_album': track.album,
       if (duration > Duration.zero) 'q_duration': '${duration.inSeconds}',
     });
-    final found = body?['track'];
+    final found = _macroBody(body, 'matcher.track.get')?['track'];
     if (found is! Map || _norm('${found['track_name']}') != _norm(track.title) ||
         _norm('${found['artist_name']}') != _norm(track.displayArtist)) return null;
     final length = found['track_length'];
     if (duration > Duration.zero && length is num && (length - duration.inMilliseconds / 1000).abs() > 3) return null;
     final id = found['commontrack_id'];
     if (id == null) return null;
-    final rich = await _authenticated('track.richsync.get', {'commontrack_id': '$id'});
+    Map? rich;
+    try {
+      rich = await _authenticated('track.richsync.get', {'commontrack_id': '$id'});
+    } on MusixmatchFailure catch (e) {
+      if (e.status != 404) rethrow;
+    }
     final payload = rich?['richsync'];
     if (payload is Map && payload['richsync_body'] is String) {
       try {
@@ -115,7 +135,7 @@ class Musixmatch {
         if (parsed != null) return parsed;
       } on FormatException { /* line fallback below */ }
     }
-    final sub = await _authenticated('track.subtitle.get', {'commontrack_id': '$id', 'subtitle_format': 'lrc'});
+    final sub = _macroBody(body, 'track.subtitles.get') ?? _macroBody(body, 'track.subtitle.get');
     final list = sub?['subtitle_list'];
     if (list is List) {
       for (final item in list) {
