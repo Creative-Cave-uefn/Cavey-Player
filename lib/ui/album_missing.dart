@@ -71,7 +71,7 @@ class _MissingAlbumTracksState extends State<MissingAlbumTracks> {
                 ),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
-                    const Icon(Icons.cloud_download_outlined, color: C.accent),
+                    Icon(Icons.cloud_download_outlined, color: C.accent),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text('Можно докачать · ${countTracks(missing.length)}', style: display(18)),
