@@ -11,6 +11,7 @@ import '../core/models.dart';
 import 'ambient.dart';
 import 'company_view.dart';
 import 'shell.dart';
+import 'playlists_view.dart';
 import 'profile_edit.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
@@ -742,6 +743,7 @@ class UserProfilePage extends StatelessWidget {
         } else if (email == lib.me) {
           subtitle = 'Это ваша страница';
         }
+        final favs = lib.favoritesOf(email);
         final nothing = liked.isEmpty && uploads.isEmpty && lists.isEmpty;
         return ProfileLayout(
           compact: compact,
@@ -812,6 +814,49 @@ class UserProfilePage extends StatelessWidget {
                       title: p.name,
                       subtitle: countTracks(p.items.length),
                       onTap: () => NavScope.of(context).go(Nav('playlist', p.id)),
+                    ),
+                ],
+              ),
+            ],
+            // Что человек отметил сердечком: плейлисты друзей, альбомы и исполнители
+            if (favs.playlists.isNotEmpty || favs.albums.isNotEmpty || favs.artists.isNotEmpty) ...[
+              const SizedBox(height: 36),
+              TileRow(
+                title: 'Любимое',
+                tileWidth: compact ? 160 : 190,
+                height: compact ? 232 : 262,
+                tiles: [
+                  for (final a in favs.albums)
+                    _tile(
+                      context,
+                      cover: LayoutBuilder(builder: (context, box) => CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 10)),
+                      title: a.title,
+                      subtitle: 'Альбом · ${a.artist}',
+                      onTap: () => NavScope.of(context).go(Nav('album', a.key)),
+                    ),
+                  for (final p in favs.playlists)
+                    _tile(
+                      context,
+                      cover: LayoutBuilder(builder: (context, box) => PlaylistCover(playlist: p, size: box.maxWidth, radius: 10)),
+                      title: p.name,
+                      subtitle: 'Плейлист · ${lib.firstNameOf(p.by)}',
+                      onTap: () => NavScope.of(context).go(Nav('playlist', p.id)),
+                    ),
+                  for (final a in favs.artists)
+                    _tile(
+                      context,
+                      cover: LayoutBuilder(
+                        builder: (context, box) => ClipOval(
+                          child: ArtistPhoto(
+                            name: a.name,
+                            size: box.maxWidth,
+                            fallback: CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 0),
+                          ),
+                        ),
+                      ),
+                      title: a.name,
+                      subtitle: 'Исполнитель',
+                      onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
                     ),
                 ],
               ),

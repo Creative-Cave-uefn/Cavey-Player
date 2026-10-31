@@ -4,6 +4,7 @@ import '../app.dart';
 import '../core/models.dart';
 import 'list_filter.dart';
 import 'shell.dart';
+import 'library_tabs.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
@@ -54,7 +55,8 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
         final header = Padding(
           padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Плейлисты', style: display(36, weight: FontWeight.w700)),
+            if (!LibraryFrame.on(context))
+              Text('Плейлисты', style: display(36, weight: FontWeight.w700)),
             const SizedBox(height: 10),
             Text('${lists.length} ${plural(lists.length, 'плейлист', 'плейлиста', 'плейлистов')}',
                 style: const TextStyle(color: C.muted, fontSize: 15)),

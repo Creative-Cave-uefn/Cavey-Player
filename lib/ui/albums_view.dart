@@ -5,6 +5,7 @@ import '../core/library.dart';
 import 'cover_picker.dart';
 import 'list_filter.dart';
 import 'shell.dart';
+import 'library_tabs.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
@@ -73,7 +74,8 @@ class _AlbumsPageState extends State<AlbumsPage> {
         final header = Padding(
           padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(ep ? 'Синглы и EP' : 'Альбомы', style: display(36, weight: FontWeight.w700)),
+            if (!LibraryFrame.on(context))
+              Text(ep ? 'Синглы и EP' : 'Альбомы', style: display(36, weight: FontWeight.w700)),
             if (all.isNotEmpty) ...[
               const SizedBox(height: 10),
               Text(

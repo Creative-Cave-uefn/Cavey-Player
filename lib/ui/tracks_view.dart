@@ -9,6 +9,7 @@ import 'albums_view.dart';
 import 'ambient.dart';
 import 'cover_picker.dart';
 import 'download_view.dart';
+import 'library_tabs.dart';
 import 'library_views.dart';
 import 'shell.dart';
 import 'share_dialog.dart';
@@ -47,7 +48,8 @@ class AllTracksPage extends StatelessWidget {
           tracks: tracks,
           compact: compact,
           actions: libraryActions(context),
-          banner: const DropHint(),
+          // Поиск по трекам — под шапкой, на месте прежней плашки «Перетащите сюда файлы»
+          searchInBanner: true,
           empty: lib.scan.running
               ? EmptyState(
                   icon: Icons.downloading_rounded,
@@ -177,6 +179,11 @@ class AlbumPage extends StatelessWidget {
           editCoverTooltip: 'Изменить альбом',
           footer: MissingAlbumTracks(album: album),
           actions: [
+            FavButton(
+              on: app.lib.isFavAlbum(album),
+              what: 'альбом',
+              onTap: () => app.lib.toggleFavAlbum(album),
+            ),
             GlassMenuButton<String>(
               tooltip: 'Ещё',
               icon: const Icon(Icons.more_horiz_rounded),
@@ -246,6 +253,9 @@ class PlaylistPage extends StatelessWidget {
           editCoverTooltip: 'Изменить плейлист',
           onReorder: (track, after) => lib.movePlaylistItem(playlistId, track.id, after?.id),
           actions: [
+            // Свои плейлисты и так всегда в «Коллекции»; сердечко — для плейлистов друзей
+            if (p.by.isNotEmpty && p.by != lib.me)
+              FavButton(on: lib.isFavPlaylist(p.id), what: 'плейлист', onTap: () => lib.toggleFavPlaylist(p.id)),
             OfflineButton(
               on: app.cache.isPlaylistOffline(playlistId),
               tracks: tracks,
@@ -369,7 +379,11 @@ class TracksPage extends StatefulWidget {
     this.heroColor,
     this.onEditCover,
     this.editCoverTooltip = 'Изменить',
+    this.searchInBanner = false,
   });
+
+  /// Поиск по трекам отдельной строкой под шапкой, а не справа от неё
+  final bool searchInBanner;
 
   @override
   State<TracksPage> createState() => _TracksPageState();
@@ -501,6 +515,8 @@ class _TracksPageState extends State<TracksPage> {
           type: MaterialType.transparency,
           child: GlassPanel(
             radius: 16,
+            tint: C.glassLight,
+            blur: 32,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             child: Wrap(spacing: 4, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
               Text('Выбрано: ${picked.length}', style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -857,10 +873,12 @@ class _TracksPageState extends State<TracksPage> {
         ],
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            SelectionArea(
-              child: Text(widget.title,
-                  maxLines: 2, overflow: TextOverflow.ellipsis, style: display(widget.compact ? 26 : 36, weight: FontWeight.w700)),
-            ),
+            // Внутри «Медиатеки» общий заголовок уже сверху — своё название страницы не дублируем
+            if (!LibraryFrame.on(context))
+              SelectionArea(
+                child: Text(widget.title,
+                    maxLines: 2, overflow: TextOverflow.ellipsis, style: display(widget.compact ? 26 : 36, weight: FontWeight.w700)),
+              ),
             if (widget.subtitleWidget != null) ...[
               const SizedBox(height: 10),
               SelectionArea(child: widget.subtitleWidget!),
@@ -877,7 +895,7 @@ class _TracksPageState extends State<TracksPage> {
             ],
           ]),
         ),
-        if (widget.tracks.length > 8 && !widget.compact) ...[
+        if (widget.tracks.length > 8 && !widget.compact && !widget.searchInBanner) ...[
           const SizedBox(width: 20),
           SizedBox(
             width: 240,
@@ -904,9 +922,32 @@ class _TracksPageState extends State<TracksPage> {
       ]),
     );
 
-    final banner = widget.banner == null
+    final Widget? bannerChild = widget.searchInBanner && widget.tracks.isNotEmpty
+        ? ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: TextField(
+              controller: _search,
+              focusNode: _searchFocus,
+              onChanged: (v) => setState(() => _query = v),
+              decoration: InputDecoration(
+                hintText: 'Найти трек, исполнителя или альбом',
+                prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: const Icon(Icons.close_rounded, size: 16),
+                        onPressed: () => setState(() {
+                          _search.clear();
+                          _query = '';
+                        }),
+                      ),
+              ),
+            ),
+          )
+        : widget.banner;
+    final banner = bannerChild == null
         ? null
-        : Padding(padding: EdgeInsets.fromLTRB(pad, 0, pad, 14), child: Align(alignment: Alignment.centerLeft, child: widget.banner));
+        : Padding(padding: EdgeInsets.fromLTRB(pad, 0, pad, 14), child: Align(alignment: Alignment.centerLeft, child: bannerChild));
     if (widget.tracks.isEmpty) {
       if (widget.footer != null) {
         return ListView(children: [header, if (banner != null) banner, widget.footer!]);
@@ -1504,6 +1545,23 @@ class _EdgeZone extends StatelessWidget {
           ),
         ),
       ]),
+    );
+  }
+}
+
+/// Сердечко в шапке альбома или плейлиста: «в коллекцию» — появится в боковой панели и в профиле
+class FavButton extends StatelessWidget {
+  final bool on;
+  final String what;
+  final VoidCallback onTap;
+  const FavButton({super.key, required this.on, required this.what, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: on ? 'Убрать $what из любимого' : 'В любимое: $what появится в боковой панели и в профиле',
+      onPressed: onTap,
+      icon: Icon(on ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: on ? C.accent : C.text),
     );
   }
 }

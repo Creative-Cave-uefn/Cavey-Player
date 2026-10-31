@@ -154,25 +154,44 @@ class PlayerBar extends StatelessWidget {
 
             if (compact) {
               return Row(children: [
-                controls,
-                const SizedBox(width: 8),
                 Expanded(child: card),
+                const SizedBox(width: 6),
+                controls,
                 lyricsButton,
               ]);
             }
+            // Слева карточка трека, ровно по центру — кнопки, справа: текст, очередь, громкость, кинотеатр.
+            // Боковые части одинаковой ширины, поэтому кнопки стоят точно посередине капсулы
             return Row(children: [
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 440), child: card),
+                ),
+              ),
+              const SizedBox(width: 12),
               controls,
               const SizedBox(width: 12),
-              Expanded(child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 620), child: card))),
-              const SizedBox(width: 12),
-              lyricsButton,
-              const CinemaButton(),
-              IconButton(
-                tooltip: 'Очередь',
-                onPressed: t == null ? null : () => _showQueue(context),
-                icon: const Icon(Icons.queue_music_rounded, color: ink),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      lyricsButton,
+                      IconButton(
+                        tooltip: 'Очередь',
+                        onPressed: t == null ? null : () => _showQueue(context),
+                        icon: const Icon(Icons.queue_music_rounded, color: ink),
+                      ),
+                      _VolumeControl(p),
+                      const SizedBox(width: 4),
+                      const CinemaButton(),
+                    ]),
+                  ),
+                ),
               ),
-              _VolumeControl(p),
             ]);
           },
         ),
@@ -434,7 +453,19 @@ class _VolumeControlState extends State<_VolumeControl> {
     return Listener(
       onPointerSignal: _onScroll,
       child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(p.volume == 0 ? Icons.volume_off_rounded : Icons.volume_up_rounded, size: 18),
+        // Клик по динамику — выключить звук, ещё клик — вернуть прежнюю громкость
+        IconButton(
+          tooltip: p.volume == 0 ? 'Включить звук' : 'Выключить звук',
+          visualDensity: VisualDensity.compact,
+          iconSize: 20,
+          onPressed: p.toggleMute,
+          icon: Icon(
+            p.volume == 0
+                ? Icons.volume_off_rounded
+                : (p.volume < 40 ? Icons.volume_down_rounded : Icons.volume_up_rounded),
+            color: p.volume == 0 ? C.muted : C.text,
+          ),
+        ),
         SizedBox(
           width: 120,
           child: Slider(

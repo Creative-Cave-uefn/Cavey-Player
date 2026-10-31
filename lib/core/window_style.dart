@@ -47,9 +47,12 @@ const _dwmaBorderColor = 34;
 const _dwmaCaptionColor = 35;
 const _dwmaTextColor = 36;
 
-/// Красит полосу заголовка в Windows 11. На других системах ничего не делает.
+/// Тёмная системная рамка и (в Windows 11) полоса заголовка в цвет фона приложения.
+/// Нужна и при своей шапке: при наведении на угол с кнопками окна Windows иногда проступает
+/// системная полоса, и без этого она светло-серая
 void tintCaption() {
-  if (!canTintCaption()) return;
+  final build = windowsBuild();
+  if (build < 17763) return;
   try {
     final user32 = DynamicLibrary.open('user32.dll');
     final dwm = DynamicLibrary.open('dwmapi.dll');
@@ -70,10 +73,13 @@ void tintCaption() {
         set(hwnd, attr, v, 4);
       }
 
-      put(_dwmaUseDarkMode, 1);
-      put(_dwmaCaptionColor, colorRef(C.bg));
-      put(_dwmaBorderColor, colorRef(C.bg));
-      put(_dwmaTextColor, colorRef(C.text));
+      // До Windows 10 20H1 тёмный режим рамки включался атрибутом 19
+      put(build < 18985 ? 19 : _dwmaUseDarkMode, 1);
+      if (canTintCaption(build)) {
+        put(_dwmaCaptionColor, colorRef(C.bg));
+        put(_dwmaBorderColor, colorRef(C.bg));
+        put(_dwmaTextColor, colorRef(C.text));
+      }
     } finally {
       malloc.free(v);
     }

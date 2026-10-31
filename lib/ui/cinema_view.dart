@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/models.dart';
 import '../core/player.dart';
 import 'ambient.dart';
 import 'lyrics_panel.dart';
@@ -21,7 +22,30 @@ class CinemaPage extends StatefulWidget {
 }
 
 class _CinemaPageState extends State<CinemaPage> {
+  /// Текст включён человеком (кнопка внизу справа)
   bool _lyrics = true;
+
+  /// У текущего трека текста нет: режим текста выключается сам, плеер встаёт по центру.
+  /// У следующего трека с текстом он снова появится, если его не выключали кнопкой
+  bool _none = false;
+  String? _checked;
+
+  void _check(Track t) {
+    final app = Services.of(context);
+    final known = app.player.duration > Duration.zero;
+    final key = '${t.id}:$known';
+    if (_checked == key) return;
+    _checked = key;
+    final id = t.id;
+    app.lyrics.forTrack(t, app.player.duration).then((l) {
+      if (!mounted || app.player.current?.id != id) return;
+      final none = l == null || l.instrumental || l.lines.isEmpty;
+      if (none != _none) setState(() => _none = none);
+    }, onError: (Object _) {
+      // Нет сети — это не «текста нет»: панель остаётся и сама предложит повторить
+      if (mounted && _none) setState(() => _none = false);
+    });
+  }
 
   @override
   void initState() {
@@ -48,6 +72,8 @@ class _CinemaPageState extends State<CinemaPage> {
       listenable: Listenable.merge([p, app.lib]),
       builder: (context, _) {
         final t = p.current;
+        if (t != null) _check(t);
+        final showLyrics = _lyrics && !_none;
         return Stack(children: [
           if (t == null)
             const EmptyState(
@@ -57,13 +83,13 @@ class _CinemaPageState extends State<CinemaPage> {
             )
           else
             LayoutBuilder(builder: (context, box) {
-              final narrow = box.maxWidth < 900 || !_lyrics;
+              final narrow = box.maxWidth < 900 || !showLyrics;
               final sideW = narrow ? box.maxWidth : box.maxWidth * 0.46;
-              final cover = (narrow && _lyrics ? box.maxHeight * 0.34 : sideW - 120)
+              final cover = (narrow && showLyrics ? box.maxHeight * 0.34 : sideW - 120)
                   .clamp(160.0, (box.maxHeight - 330).clamp(160.0, 560.0))
                   .toDouble();
               final left = NowPanel(width: cover);
-              if (!_lyrics) return Center(child: left);
+              if (!showLyrics) return Center(child: left);
               final lyrics = ShaderMask(
                 // Текст растворяется у верхнего и нижнего края, как в Apple Music
                 shaderCallback: (r) => const LinearGradient(
@@ -102,9 +128,9 @@ class _CinemaPageState extends State<CinemaPage> {
             right: 20,
             bottom: 18,
             child: IconButton(
-              tooltip: _lyrics ? 'Скрыть текст' : 'Показать текст',
-              onPressed: () => setState(() => _lyrics = !_lyrics),
-              icon: Icon(Icons.lyrics_outlined, color: _lyrics ? C.text : C.muted),
+              tooltip: _none ? 'У этого трека текста нет' : (_lyrics ? 'Скрыть текст' : 'Показать текст'),
+              onPressed: _none ? null : () => setState(() => _lyrics = !_lyrics),
+              icon: Icon(Icons.lyrics_outlined, color: showLyrics ? C.text : C.muted),
             ),
           ),
         ]);
@@ -166,7 +192,10 @@ class NowPanel extends StatelessWidget {
         const SizedBox(height: 18),
         _Seek(player: p),
         const SizedBox(height: 12),
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+        // Кнопки сжимаются под ширину обложки, а не вылезают вправо: иначе «Играть» уезжает от центра
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
           leftAction ??
               IconButton(
                 tooltip: p.shuffle ? 'Выключить перемешивание' : 'Перемешать',
@@ -192,6 +221,7 @@ class NowPanel extends StatelessWidget {
                     size: 22, color: p.repeat == RepeatSetting.off ? C.muted : C.accent),
               ),
         ]),
+        ),
         const SizedBox(height: 12),
         Row(children: [
           const Icon(Icons.volume_down_rounded, size: 20, color: C.muted),
@@ -293,7 +323,7 @@ class CinemaButton extends StatelessWidget {
     return IconButton(
       tooltip: 'Кинотеатр: обложка и текст во весь экран',
       onPressed: () => nav.go(const Nav('cinema')),
-      icon: const Icon(Icons.theaters_rounded, color: C.text),
+      icon: const Icon(Icons.fullscreen_rounded, size: 26, color: C.text),
     );
   }
 }

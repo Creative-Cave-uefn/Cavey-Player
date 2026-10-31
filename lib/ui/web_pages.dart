@@ -765,6 +765,16 @@ class _WebSearchPageState extends State<WebSearchPage> {
               return const Padding(padding: EdgeInsets.only(top: 24), child: Text('Ничего не нашлось', style: TextStyle(color: C.muted)));
             }
             return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              // Сначала альбомы, потом исполнители, потом треки
+              if (r.albums.isNotEmpty) ...[
+                const SizedBox(height: 30),
+                TileRow(
+                  title: 'Альбомы',
+                  tileWidth: 190,
+                  height: 260,
+                  tiles: [for (final a in r.albums) albumTile(context, a, withArtist: true)],
+                ),
+              ],
               if (r.artists.isNotEmpty) ...[
                 const SizedBox(height: 30),
                 TileRow(title: 'Исполнители', tileWidth: 150, height: 190, tiles: [for (final a in r.artists) artistTile(context, a)]),
@@ -777,15 +787,6 @@ class _WebSearchPageState extends State<WebSearchPage> {
                     decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
                     child: WebTrackLine(track: t, list: r.tracks),
                   ),
-              ],
-              if (r.albums.isNotEmpty) ...[
-                const SizedBox(height: 30),
-                TileRow(
-                  title: 'Альбомы',
-                  tileWidth: 190,
-                  height: 260,
-                  tiles: [for (final a in r.albums) albumTile(context, a, withArtist: true)],
-                ),
               ],
             ]);
           },

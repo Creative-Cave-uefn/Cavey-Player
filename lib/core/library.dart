@@ -1519,6 +1519,56 @@ class LibraryController extends ChangeNotifier {
     setMeta({'u:$m': {'fa:${artistKey.toLowerCase()}': isFavArtist(artistKey) ? '' : '1'}});
   }
 
+  /// Любимые плейлисты (чужие — свои и так всегда в боковой панели) и альбомы. Хранятся, как и исполнители,
+  /// в общей записи человека: одинаковы на всех его компьютерах и видны друзьям в профиле
+  bool isFavPlaylist(String id) => me != null && _metaValue('u:$me', 'fp:$id') != null;
+
+  void toggleFavPlaylist(String id) {
+    final m = me;
+    if (m == null) return;
+    setMeta({'u:$m': {'fp:$id': isFavPlaylist(id) ? '' : '1'}});
+  }
+
+  /// У склеенного альбома отметка могла стоять на любой его части
+  bool isFavAlbum(Album a) => me != null && [a.key, ...a.keys].any((k) => _metaValue('u:$me', 'fl:${k.toLowerCase()}') != null);
+
+  void toggleFavAlbum(Album a) {
+    final m = me;
+    if (m == null) return;
+    if (isFavAlbum(a)) {
+      setMeta({'u:$m': {for (final k in {a.key, ...a.keys}) 'fl:${k.toLowerCase()}': ''}});
+    } else {
+      setMeta({'u:$m': {'fl:${a.key.toLowerCase()}': '1'}});
+    }
+  }
+
+  /// Что человек отметил сердечком: плейлисты, альбомы и исполнители (для боковой панели и профиля)
+  ({List<Playlist> playlists, List<Album> albums, List<Artist> artists}) favoritesOf(String email) {
+    final e = data.edits['u:$email'] ?? const <String, String>{};
+    final pl = <Playlist>[];
+    final al = <Album>[];
+    final ar = <Artist>[];
+    final seenAlbums = <String>{};
+    for (final entry in e.entries) {
+      if (entry.value.isEmpty) continue;
+      final k = entry.key;
+      if (k.startsWith('fp:')) {
+        final p = playlist(k.substring(3));
+        if (p != null && (p.by == email || isPlaylistPublic(p.id) || email == me)) pl.add(p);
+      } else if (k.startsWith('fl:')) {
+        final a = album(k.substring(3));
+        if (a != null && seenAlbums.add(a.key)) al.add(a);
+      } else if (k.startsWith('fa:')) {
+        final a = artist(k.substring(3));
+        if (a != null) ar.add(a);
+      }
+    }
+    pl.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    al.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    ar.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return (playlists: pl, albums: al, artists: ar);
+  }
+
   // ---------- папка с загруженными обложками ----------
 
   static const coversFolderName = 'cave-covers';

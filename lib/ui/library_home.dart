@@ -5,6 +5,7 @@ import '../core/library.dart';
 import 'download_view.dart';
 import 'profile_view.dart';
 import 'shell.dart';
+import 'library_tabs.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
@@ -33,8 +34,6 @@ class LibraryHomePage extends StatelessWidget {
         final albums = lib.albums;
         final artists = lib.artists;
         final short = albums.where(isShortRelease).toList();
-        final playlists = lib.visiblePlaylists;
-        final liked = lib.liked.length;
         final pad = compact ? 20.0 : 36.0;
         final nav = NavScope.of(context);
 
@@ -66,18 +65,10 @@ class LibraryHomePage extends StatelessWidget {
 
         final topArtists = List<Artist>.of(artists)..sort((a, b) => b.tracks.length.compareTo(a.tracks.length));
 
-        final categories = <_Category>[
-          _Category(Icons.music_note_rounded, 'Песни', tracks.length, const Nav('songs')),
-          _Category(Icons.album_outlined, 'Альбомы', albums.length, const Nav('albums')),
-          if (short.isNotEmpty) _Category(Icons.radio_button_checked_rounded, 'Синглы и EP', short.length, const Nav('albums', 'ep')),
-          _Category(Icons.mic_none_rounded, 'Исполнители', artists.length, const Nav('artists')),
-          _Category(Icons.queue_music_rounded, 'Плейлисты', playlists.length, const Nav('playlists')),
-          _Category(Icons.favorite_border_rounded, 'Любимое', liked, const Nav('liked')),
-          _Category(Icons.schedule_rounded, 'Недавно добавленное', null, const Nav('recent')),
-        ];
 
         return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
-          Text('Медиатека', style: display(compact ? 30 : 36, weight: FontWeight.w700)),
+          if (!LibraryFrame.on(context))
+            Text('Медиатека', style: display(compact ? 30 : 36, weight: FontWeight.w700)),
           const SizedBox(height: 8),
           Text(
             '${countTracks(tracks.length)} · ${albums.length} ${plural(albums.length, 'альбом', 'альбома', 'альбомов')} · '
@@ -86,14 +77,7 @@ class LibraryHomePage extends StatelessWidget {
           ),
           const SizedBox(height: 18),
           Wrap(spacing: 10, runSpacing: 10, children: libraryActions(context)),
-          const SizedBox(height: 26),
-          LayoutBuilder(builder: (context, box) {
-            final cols = box.maxWidth >= 980 ? 3 : (box.maxWidth >= 600 ? 2 : 1);
-            final w = (box.maxWidth - (cols - 1) * 10) / cols;
-            return Wrap(spacing: 10, runSpacing: 10, children: [
-              for (final c in categories) SizedBox(width: w, child: _CategoryTile(c)),
-            ]);
-          }),
+
           if (recentAlbums.isNotEmpty) ...[
             const SizedBox(height: 36),
             TileRow(
@@ -128,49 +112,11 @@ class LibraryHomePage extends StatelessWidget {
               tiles: [for (final a in (List<Album>.of(short)..shuffle()).take(18)) _AlbumTile(a)],
             ),
           ],
-          const SizedBox(height: 28),
-          const DropHint(),
+
         ]);
       },
     );
   }
-}
-
-class _Category {
-  final IconData icon;
-  final String label;
-  final int? count;
-  final Nav target;
-  const _Category(this.icon, this.label, this.count, this.target);
-}
-
-/// Строка раздела: стекло, значок, название, число и «›»
-class _CategoryTile extends StatelessWidget {
-  final _Category c;
-  const _CategoryTile(this.c);
-
-  @override
-  Widget build(BuildContext context) => Material(
-        color: C.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: const BorderSide(color: C.line)),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: () => NavScope.of(context).go(c.target),
-          child: SizedBox(
-            height: 56,
-            child: Row(children: [
-              const SizedBox(width: 16),
-              Icon(c.icon, size: 22, color: C.accent),
-              const SizedBox(width: 14),
-              Expanded(child: Text(c.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600))),
-              if (c.count != null) Text('${c.count}', style: const TextStyle(color: C.faint, fontSize: 13)),
-              const SizedBox(width: 6),
-              const Icon(Icons.chevron_right_rounded, color: C.muted),
-              const SizedBox(width: 10),
-            ]),
-          ),
-        ),
-      );
 }
 
 class _AlbumTile extends StatelessWidget {

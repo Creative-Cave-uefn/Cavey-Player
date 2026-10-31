@@ -231,6 +231,13 @@ class _ChartRow extends StatelessWidget {
   }
 }
 
+/// Сколько уведомлений пришло после последнего открытия колокольчика (для красной точки у «Компании»)
+int unreadNotices(AppServices app) {
+  final seen = DateTime.tryParse(app.settings.bellSeen ?? '');
+  if (seen == null) return 0;
+  return app.social.notices.where((n) => n.at.isAfter(seen)).length;
+}
+
 /// Колокольчик с уведомлениями «Вам»: загорается зелёным, пока есть непрочитанные; по нажатию раскрывается окошко
 class _NoticeBell extends StatefulWidget {
   final List<Notice> notices;
@@ -260,7 +267,8 @@ class _NoticeBellState extends State<_NoticeBell> {
       onOpen: () {
         // Открыли — всё считается прочитанным, колокольчик гаснет
         app.settings.bellSeen = DateTime.now().toUtc().toIso8601String();
-        unawaited(app.lib.saveSettings());
+        // Сохраняет и обновляет боковую панель: красная точка у «Компании» гаснет
+        app.lib.viewChanged();
       },
       onClose: () {
         if (mounted) setState(() {});

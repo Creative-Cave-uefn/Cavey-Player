@@ -113,6 +113,8 @@ class _GlassMenuRoute<T> extends PopupRoute<T> {
             child: IntrinsicWidth(
               child: GlassPanel(
                 radius: 16,
+                tint: C.glassLight,
+                blur: 32,
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 child: SingleChildScrollView(
                   child: Material(

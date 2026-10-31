@@ -344,14 +344,15 @@ class _LyricsBodyState extends State<LyricsBody> {
     while (_keys.length < ly.lines.length) {
       _keys.add(GlobalKey());
     }
-    // Время слов: точное из текста (расширенный LRC) → посчитанное Whisper → разбивка по слогам
-    _offMs = widget.karaoke ? app.karaoke.offsetMs(t) : 0;
-    final exact = widget.karaoke ? app.karaoke.wordsFor(t, ly) : null;
+    // Анимация — по тому, что дал источник текста: время слогов — по слогам, время слов — по словам,
+    // только время строк — по строкам. Своё время слов (Whisper, разбивка на слоги) не подставляем,
+    // ручного сдвига времени больше нет
+    _offMs = 0;
     _starts = widget.karaoke
         ? KaraokeAligner.lineStarts([for (final l in ly.lines) l.at!], [
             for (var i = 0; i < ly.lines.length; i++)
               () {
-                final w = ly.lines[i].words ?? (exact != null && i < exact.length ? exact[i] : null);
+                final w = ly.lines[i].words;
                 return w == null || w.isEmpty ? null : w.first.start;
               }(),
           ])
@@ -359,15 +360,8 @@ class _LyricsBodyState extends State<LyricsBody> {
     final idx = _idx = _lineAt(ly);
     _leadIdx = widget.karaoke ? _lineAt(ly, leadMs: 180) : idx;
     _follow(math.max(idx, _leadIdx)); // К3: прокрутка начинается за 180 мс до новой строки
-    List<KWord> wordsOf(int i) {
-      final line = ly.lines[i];
-      final st = _starts;
-      final end = i + 1 < ly.lines.length && ly.lines[i + 1].at != null
-          ? (st != null && i + 1 < st.length ? st[i + 1] : ly.lines[i + 1].at!)
-          : line.at! + const Duration(seconds: 5);
-      final w = line.words ?? (exact != null && i < exact.length ? exact[i] : null);
-      return (w != null && w.isNotEmpty) ? w : syllables(line.text, st != null && i < st.length ? st[i] : line.at!, end);
-    }
+    /// Время слов (или слогов) строки из источника; пусто — у строки есть только её начало
+    List<KWord> wordsOf(int i) => ly.lines[i].words ?? const [];
 
     return NotificationListener<UserScrollNotification>(
       onNotification: _onScroll,
@@ -395,7 +389,7 @@ class _LyricsBodyState extends State<LyricsBody> {
                     letterSpacing: widget.big ? -0.4 : null,
                     color: i == idx ? C.text : (i < idx ? (widget.big ? const Color(0x4DFFFFFF) : C.faint) : (widget.big ? const Color(0x80FFFFFF) : C.muted)),
                   ),
-                  child: widget.karaoke && i == idx && ly.lines[i].text.isNotEmpty
+                  child: widget.karaoke && i == idx && ly.lines[i].text.isNotEmpty && wordsOf(i).isNotEmpty
                       ? KaraokeText(text: ly.lines[i].text, words: wordsOf(i), player: app.player, shiftMs: _offMs)
                       : Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
                 ),
@@ -406,7 +400,6 @@ class _LyricsBodyState extends State<LyricsBody> {
             if (widget.big && widget.karaoke && i == idx && i + 1 < ly.lines.length) _breakDots(wordsOf(i), ly.lines[i + 1].at!, app.player),
           ],
           Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: _again()),
-          if (widget.karaoke) _KaraokeTools(track: t, lyrics: ly),
         ]),
       ),
     );
@@ -614,39 +607,6 @@ class _KaraokePainter extends CustomPainter {
   @override
   bool shouldRepaint(_KaraokePainter old) => !identical(old.l, l) || old.words != words;
 }
-
-/// Ж6 и Ж7: пересчёт караоке и сдвиг времени текста на ±50 мс (запоминается на трек)
-class _KaraokeTools extends StatelessWidget {
-  final Track track;
-  final Lyrics lyrics;
-  const _KaraokeTools({required this.track, required this.lyrics});
-
-  @override
-  Widget build(BuildContext context) {
-    final k = Services.of(context).karaoke;
-    return ListenableBuilder(
-      listenable: k,
-      builder: (context, _) {
-        final off = k.trackOffsetMs(track);
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(8, 20, 8, 0),
-          child: Wrap(spacing: 8, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
-            const Text('Время текста:', style: TextStyle(color: C.faint, fontSize: 12)),
-            IconButton(tooltip: 'Текст позже на 50 мс', onPressed: () => k.nudge(track, -50), icon: const Icon(Icons.remove_rounded, size: 18)),
-            Text(off == 0 ? 'как есть' : '${off > 0 ? '+' : ''}$off мс', style: const TextStyle(color: C.muted, fontSize: 12)),
-            IconButton(tooltip: 'Текст раньше на 50 мс', onPressed: () => k.nudge(track, 50), icon: const Icon(Icons.add_rounded, size: 18)),
-            TextButton.icon(
-              onPressed: () => k.recompute(track, lyrics),
-              icon: const Icon(Icons.refresh_rounded, size: 16),
-              label: const Text('Пересчитать караоке'),
-            ),
-          ]),
-        );
-      },
-    );
-  }
-}
-
 
 /// Л4: текст есть, а времени нет — предложить расставить время строк по звуку (Whisper)
 class _PlainTiming extends StatefulWidget {
