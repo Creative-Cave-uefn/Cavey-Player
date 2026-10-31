@@ -352,14 +352,29 @@ class KaraokeText extends StatefulWidget {
 }
 
 class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStateMixin {
-  late final Ticker _ticker = createTicker((_) => setState(() {}))..start();
+  // И5: раскладку текста и прямоугольники слов считаем один раз на текст, стиль и ширину;
+  // каждый кадр меняется только степень заливки, а перерисовывается один CustomPaint
+  final ValueNotifier<int> _frame = ValueNotifier(0);
+  late final Ticker _ticker = createTicker(_onTick)..start();
   Duration _lastPos = Duration.zero;
   DateTime _lastAt = DateTime.now();
+  Duration _lastFrame = Duration.zero;
+
+  _Layout? _layout;
+  String? _layoutKey;
 
   @override
   void dispose() {
     _ticker.dispose();
+    _frame.dispose();
     super.dispose();
+  }
+
+  void _onTick(Duration elapsed) {
+    // не чаще 60 кадров в секунду, даже на мониторе 144 Гц
+    if (elapsed - _lastFrame < const Duration(milliseconds: 16)) return;
+    _lastFrame = elapsed;
+    _frame.value++;
   }
 
   Duration _now() {
@@ -376,71 +391,140 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
   @override
   Widget build(BuildContext context) {
     final style = DefaultTextStyle.of(context).style;
-    final now = _now();
-    // Насколько спето каждое слово: 0 — ещё нет, 1 — целиком
-    final fills = [
-      for (final w in widget.words)
-        w.end <= w.start
-            ? (now >= w.start ? 1.0 : 0.0)
-            : ((now - w.start).inMilliseconds / (w.end - w.start).inMilliseconds).clamp(0.0, 1.0),
-    ];
-    final done = fills.every((f) => f >= 1);
-    if (done) {
-      _ticker.stop();
-    } else if (!_ticker.isActive) {
-      _ticker.start(); // перемотали назад внутри строки
-    }
     return LayoutBuilder(builder: (context, box) {
-      final tp = TextPainter(
-        text: TextSpan(text: widget.text, style: style),
-        textDirection: Directionality.of(context),
-        textScaler: MediaQuery.textScalerOf(context),
-      )..layout(maxWidth: box.maxWidth);
-      final rects = <Rect>[];
-      for (var k = 0; k < widget.words.length; k++) {
-        final f = fills[k];
-        if (f <= 0) continue;
-        final w = widget.words[k];
-        final from = w.from.clamp(0, widget.text.length), to = w.to.clamp(0, widget.text.length);
-        if (to <= from) continue;
-        final boxes = tp.getBoxesForSelection(TextSelection(baseOffset: from, extentOffset: to));
-        var left = boxes.fold<double>(0, (a, b) => a + (b.right - b.left)) * f;
-        for (final b in boxes) {
-          if (left <= 0) break;
-          final bw = math.min(left, b.right - b.left);
-          rects.add(Rect.fromLTRB(b.left, b.top - 2, b.left + bw, b.bottom + 2));
-          left -= b.right - b.left;
-        }
+      final scaler = MediaQuery.textScalerOf(context);
+      final key = '${widget.text}|${box.maxWidth}|${style.fontSize}|${style.fontWeight}|${style.height}|${style.letterSpacing}|${scaler.hashCode}';
+      if (_layoutKey != key || _layout == null) {
+        _layout?.dispose();
+        _layout = _Layout.build(widget.text, widget.words, style, box.maxWidth, Directionality.of(context), scaler);
+        _layoutKey = key;
+        if (!_ticker.isActive) _ticker.start();
       }
-      tp.dispose();
-      return Stack(children: [
-        Text(widget.text, style: style.copyWith(color: style.color?.withValues(alpha: 0.35))),
-        ClipPath(
-          clipper: _Reveal(rects),
-          child: Text(widget.text, style: style.copyWith(color: Colors.white)),
-        ),
-      ]);
+      final l = _layout!;
+      return CustomPaint(
+        size: Size(box.maxWidth, l.height),
+        painter: _KaraokePainter(l, widget.words, _now, _frame, () {
+          if (_ticker.isActive) _ticker.stop();
+        }),
+      );
     });
   }
 }
 
-class _Reveal extends CustomClipper<Path> {
-  final List<Rect> rects;
-  _Reveal(this.rects);
+/// Раскладка строки: три варианта текста (тусклый, яркий, свечение) и прямоугольники каждого слова
+class _Layout {
+  final TextPainter dim, bright, glow;
+  final List<List<Rect>> wordBoxes;
+  final double height, fontSize;
+  _Layout(this.dim, this.bright, this.glow, this.wordBoxes, this.height, this.fontSize);
+
+  static _Layout build(String text, List<KWord> words, TextStyle style, double maxWidth, TextDirection dir, TextScaler scaler) {
+    TextPainter make(TextStyle st) => TextPainter(text: TextSpan(text: text, style: st), textDirection: dir, textScaler: scaler)
+      ..layout(maxWidth: maxWidth);
+    final dim = make(style.copyWith(color: style.color?.withValues(alpha: 0.35)));
+    final bright = make(style.copyWith(color: Colors.white));
+    final glow = make(style.copyWith(
+      foreground: Paint()
+        ..color = const Color(0x66FFFFFF)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
+    ));
+    final boxes = <List<Rect>>[];
+    for (final w in words) {
+      final from = w.from.clamp(0, text.length), to = w.to.clamp(0, text.length);
+      if (to <= from) {
+        boxes.add(const []);
+        continue;
+      }
+      boxes.add([
+        for (final b in bright.getBoxesForSelection(TextSelection(baseOffset: from, extentOffset: to)))
+          Rect.fromLTRB(b.left, b.top - 2, b.right, b.bottom + 2),
+      ]);
+    }
+    return _Layout(dim, bright, glow, boxes, bright.height, style.fontSize ?? 20);
+  }
+
+  void dispose() {
+    dim.dispose();
+    bright.dispose();
+    glow.dispose();
+  }
+}
+
+class _KaraokePainter extends CustomPainter {
+  final _Layout l;
+  final List<KWord> words;
+  final Duration Function() now;
+  final VoidCallback onDone;
+  _KaraokePainter(this.l, this.words, this.now, Listenable repaint, this.onDone) : super(repaint: repaint);
 
   @override
-  Path getClip(Size size) {
-    final path = Path();
-    for (final r in rects) {
-      path.addRect(r);
+  void paint(Canvas canvas, Size size) {
+    final t = now();
+    l.dim.paint(canvas, Offset.zero);
+    final edge = l.fontSize * 0.35; // К1: мягкий край заливки шириной около полбуквы
+    final sung = <Rect>[]; // целиком спетое — для свечения
+    var done = true;
+    for (var k = 0; k < words.length; k++) {
+      final w = words[k];
+      final f = w.end <= w.start ? (t >= w.start ? 1.0 : 0.0) : ((t - w.start).inMilliseconds / (w.end - w.start).inMilliseconds).clamp(0.0, 1.0);
+      if (f < 1) done = false;
+      if (f <= 0) continue;
+      final boxes = l.wordBoxes[k];
+      var left = boxes.fold<double>(0, (a, b) => a + b.width) * f;
+      for (final r in boxes) {
+        if (left <= 0) break;
+        final bw = math.min(left, r.width);
+        left -= r.width;
+        if (bw >= r.width - 0.5) {
+          sung.add(r);
+          _clipped(canvas, r);
+        } else {
+          final x = r.left + bw;
+          final ew = math.min(edge, bw);
+          _clipped(canvas, Rect.fromLTRB(r.left, r.top, x - ew, r.bottom));
+          _soft(canvas, Rect.fromLTRB(x - ew, r.top, x, r.bottom));
+        }
+      }
     }
-    return path;
+    // К1: спетое слегка светится
+    if (sung.isNotEmpty) {
+      canvas.save();
+      final path = Path();
+      for (final r in sung) {
+        path.addRect(r.inflate(2));
+      }
+      canvas.clipPath(path);
+      l.glow.paint(canvas, Offset.zero);
+      canvas.restore();
+    }
+    if (done) WidgetsBinding.instance.addPostFrameCallback((_) => onDone());
+  }
+
+  void _clipped(Canvas canvas, Rect r) {
+    if (r.width <= 0) return;
+    canvas.save();
+    canvas.clipRect(r);
+    l.bright.paint(canvas, Offset.zero);
+    canvas.restore();
+  }
+
+  void _soft(Canvas canvas, Rect r) {
+    if (r.width <= 0) return;
+    canvas.saveLayer(r, Paint());
+    canvas.clipRect(r);
+    l.bright.paint(canvas, Offset.zero);
+    canvas.drawRect(
+      r,
+      Paint()
+        ..blendMode = BlendMode.dstIn
+        ..shader = const LinearGradient(colors: [Colors.white, Color(0x00FFFFFF)]).createShader(r),
+    );
+    canvas.restore();
   }
 
   @override
-  bool shouldReclip(_Reveal old) => true;
+  bool shouldRepaint(_KaraokePainter old) => !identical(old.l, l) || old.words != words;
 }
-
 
 /// Ж6 и Ж7: пересчёт караоке и сдвиг времени текста на ±50 мс (запоминается на трек)
 class _KaraokeTools extends StatelessWidget {
