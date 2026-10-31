@@ -754,6 +754,24 @@ class _LookSectionState extends State<_LookSection> {
       const SizedBox(height: 4),
       row('Яркость', 'ambient.bright', bright, 0.4, 1.8),
       row('Контраст', 'ambient.contrast', contrast, 0.5, 1.8),
+      const SizedBox(height: 8),
+      Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+        const Text('Движение:', style: TextStyle(color: C.muted)),
+        for (final (id, label) in const [('live', 'Живой'), ('calm', 'Спокойный'), ('still', 'Неподвижный')])
+          ChoiceChip(
+            label: Text(label),
+            selected: AmbientScope.modeOf(app.settings) == id,
+            onSelected: (_) {
+              setState(() => app.settings.view['ambient.mode'] = id);
+              AmbientScope.mode.value = id;
+              app.lib.saveSettings();
+            },
+          ),
+      ]),
+      const Padding(
+        padding: EdgeInsets.only(top: 4),
+        child: Text('Неподвижный и спокойный фон меньше нагружают процессор.', style: TextStyle(color: C.faint, fontSize: 13)),
+      ),
     ]);
   }
 }

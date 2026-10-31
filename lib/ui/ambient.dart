@@ -49,6 +49,14 @@ class AmbientScope {
   /// Ярче и сочнее, меньше затемнения — для кинотеатра
   static final ValueNotifier<bool> vivid = ValueNotifier(false);
 
+  /// И4: как живёт фон: 'live' — живой, 'calm' — спокойный (медленнее, реже кадры), 'still' — неподвижный
+  static final ValueNotifier<String> mode = ValueNotifier('live');
+
+  static String modeOf(Settings s) {
+    final m = s.viewOf('ambient.mode', 'live');
+    return m == 'calm' || m == 'still' ? m : 'live';
+  }
+
   /// Настройка фона: (яркость, контраст), 1 — как есть. Меняется в настройках и сразу видна
   static final ValueNotifier<(double, double)> look = ValueNotifier((1.0, 1.0));
 
@@ -181,17 +189,42 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
   String? _bpmFor;
   PlayerController? _player;
 
+  bool _hidden = false; // окно свёрнуто или спрятано в трей
+
+  /// И2: фон не рисует кадры, если окно скрыто, фон неподвижный или музыка на паузе и фон уже замедлился
+  void _updateTicker({bool settled = false}) {
+    final t = _ticker;
+    if (t == null) return;
+    final still = AmbientScope.mode.value == 'still';
+    final paused = !(_player?.playing ?? true) && (settled || _settled);
+    final mute = _hidden || still || paused;
+    if (!mute) _settled = false;
+    if (t.muted != mute) {
+      t.muted = mute;
+      if (!mute) _lastTick = Duration.zero;
+    }
+  }
+
+  bool _settled = false;
+
   void _onTick(Duration elapsed) {
     final dt = (elapsed - _lastTick).inMicroseconds / 1e6;
-    if (dt < 1 / 30) return; // 30 кадров в секунду фону хватает
+    // И2: 20 кадров в секунду (в спокойном режиме — 12): движение медленное, разницы почти не видно
+    final calm = AmbientScope.mode.value == 'calm';
+    if (dt < (calm ? 1 / 12 : 1 / 20)) return;
     _lastTick = elapsed;
     final p = _player;
     if (p == null) return;
     final bpm = _bpm;
     final tempo = bpm == null ? 1.0 : (bpm / 105).clamp(0.55, 2.2).toDouble();
-    final target = p.playing ? tempo : tempo * 0.4;
+    final target = (p.playing ? tempo : tempo * 0.4) * (calm ? 0.5 : 1.0);
     _speed += (target - _speed) * math.min(1.0, dt * 0.8); // скорость меняется плавно
     _clock.value += math.min(dt, 0.1) * _speed;
+    // На паузе после плавного замедления фон замирает совсем
+    if (!p.playing && (_speed - target).abs() < 0.03 && (_speed < 0.2)) {
+      _settled = true;
+      _updateTicker(settled: true);
+    }
   }
 
   void _trackTempo() {
@@ -222,10 +255,13 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
     if (_unlisten != null) return;
     final player = _player = Services.of(context).player;
     AmbientScope.look.value = AmbientScope.lookOf(Services.of(context).settings);
+    AmbientScope.mode.value = AmbientScope.modeOf(Services.of(context).settings);
+    AmbientScope.mode.addListener(_updateTicker);
     final covers = Services.of(context).covers;
     void changed() {
       _sync();
       _trackTempo();
+      _updateTicker();
     }
 
     // Обложка догрузилась позже, чем трек включился: фон без картинки пробует ещё раз
@@ -260,13 +296,15 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
   /// Г8: окно свёрнуто или спрятано в трей — фон не рисует кадры
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _ticker?.muted = state == AppLifecycleState.hidden || state == AppLifecycleState.paused;
+    _hidden = state == AppLifecycleState.hidden || state == AppLifecycleState.paused;
+    _updateTicker();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _retryTimer?.cancel();
+    AmbientScope.mode.removeListener(_updateTicker);
     _unlisten?.call();
     _ticker?.dispose();
     _clock.dispose();
