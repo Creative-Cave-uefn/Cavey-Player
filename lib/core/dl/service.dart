@@ -1,6 +1,5 @@
-// Загрузчик музыки внутри Cave Player: ссылка или название → лучший звук с YouTube
-// → mp3 с тегами и обложкой → папка библиотеки на Google Диске. Задания идут по
-// очереди, треки альбома — по три одновременно, как в music_downloaderV2.py.
+// Очередь загрузок Cave Player: один выбранный источник (YouTube, Sockseek,
+// Bandcamp) → аудиофайл → папка библиотеки на Google Диске.
 
 import 'dart:async';
 import 'dart:convert';
@@ -16,7 +15,7 @@ import 'sources.dart';
 import 'text.dart';
 import 'tools.dart';
 import 'youtube.dart';
-import 'zotify.dart';
+import 'bandcamp.dart';
 import 'sockseek.dart';
 
 const albumWorkers = 3;
@@ -158,7 +157,7 @@ class DownloadService extends ChangeNotifier {
     await temp.create(recursive: true);
     AppLog.info('Загрузчик: ${job.input}');
     try {
-      if (lib.settings.useSockseek) {
+      if (lib.settings.downloadProvider == 'sockseek') {
         log('Загрузчик: Sockseek / Soulseek');
         final tracks = await _sockseekTracks(job.input);
         if (tracks.isEmpty) throw Exception('Не удалось получить метаданные. Укажите «Исполнитель - Название» или ссылку на трек/альбом.');
@@ -181,30 +180,8 @@ class DownloadService extends ChangeNotifier {
         }
         return;
       }
-      if (lib.settings.useZotify && Zotify.accepts(job.input)) {
-        log('Загрузчик: Zotify');
-        job.title = 'Загрузка через Zotify';
-        final executable = lib.settings.zotifyExecutable.trim();
-        final files = await Zotify.download(executable.isEmpty ? 'zotify' : executable, job.input, temp, log, ffmpegDirectory: tools.dir.path);
-        job.total = files.length;
-        for (final file in files) {
-          try {
-            log('Загружаю на Диск: ${file.uri.pathSegments.last}');
-            final track = await lib.uploadOne(file, sourceId: job.sourceId, folderId: job.target, path: job.path);
-            job.done++;
-            job.onTrack?.call(track);
-            _notify();
-          } catch (e) {
-            job.failed++;
-            log('Не удалось добавить файл: $e');
-          }
-        }
-        job.state = job.failed == 0 ? JobState.done : JobState.failed;
-        if (job.done > 0 && !job.quiet) {
-          lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
-          lib.messages.add('Zotify: добавлено треков — ${job.done}');
-        }
-        return;
+      if (lib.settings.downloadProvider == 'bandcamp' && !Bandcamp.accepts(job.input)) {
+        throw FormatException('В режиме Bandcamp нужна прямая ссылка на /track/ или /album/.');
       }
       if (!tools.ready) {
         log('Первый запуск: устанавливаю программы для скачивания…');
@@ -220,13 +197,15 @@ class DownloadService extends ChangeNotifier {
         await tools.updateIfOld(log);
       }
       final yt = YouTube(tools, temp, log);
-      final ok = await _route(job, yt, temp, log);
+      final ok = lib.settings.downloadProvider == 'bandcamp'
+          ? await _bandcamp(job, yt, temp, log)
+          : await _route(job, yt, temp, log);
       job.state = ok ? JobState.done : JobState.failed;
       if (job.done > 0 && !job.quiet) {
         lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
         lib.messages.add('Скачано и загружено на Диск: ${job.done} ${job.done == 1 ? 'трек' : 'треков'}');
       }
-      if (!ok) log('Ничего не скачалось. Смотрите сообщения выше.');
+      if (!ok) log(job.done > 0 ? 'Часть треков не скачалась. Смотрите сообщения выше.' : 'Ничего не скачалось. Смотрите сообщения выше.');
     } catch (e) {
       job.state = JobState.failed;
       log('Ошибка: $e');
@@ -266,7 +245,74 @@ class DownloadService extends ChangeNotifier {
     return single == null ? [] : [single];
   }
 
-  // ---------- маршрутизация, как в download() скрипта ----------
+  /// Bandcamp is an exclusive manual mode. It never falls back to YouTube.
+  Future<bool> _bandcamp(DownloadJob job, YouTube yt, Directory temp, void Function(String) log) async {
+    if (!Bandcamp.accepts(job.input)) {
+      log('Bandcamp: вставьте ссылку вида https://artist.bandcamp.com/track/name или /album/name.');
+      return false;
+    }
+    final album = Bandcamp.isAlbum(job.input);
+    final info = album ? await Bandcamp.inspect(tools, job.input) : null;
+    if (album) {
+      job.title = info?.title ?? Bandcamp.slug(job.input);
+      log('Bandcamp: альбом «${job.title}». Сохраняю доступные для прослушивания треки.');
+    } else {
+      log('Bandcamp: скачиваю аудио со страницы трека.');
+    }
+    final out = Directory('${temp.path}${Platform.pathSeparator}bandcamp');
+    await out.create(recursive: true);
+    final entries = await yt.download('${out.path}${Platform.pathSeparator}%(id)s.%(ext)s',
+        job.input, playlist: album);
+    job.total = info?.count ?? (album ? entries.length : 1);
+    if (entries.isEmpty) {
+      job.failed = job.total > 0 ? job.total : 1;
+      log('Bandcamp: доступный аудиопоток не найден; платный оригинал/FLAC через этот режим не предоставляется.');
+      return false;
+    }
+    final folder = album ? safeName(entries.first.album.isNotEmpty ? entries.first.album : job.title, 80) : '';
+    final folderId = album ? await lib.ensureSubfolder(job.sourceId, job.sourceId, folder) : job.target;
+    if (album) log('Папка на Диске: ${job.folderName}/$folder');
+    for (var i = 0; i < entries.length; i++) {
+      final entry = entries[i];
+      try {
+        final (artist, title) = splitArtistTitle(entry.artist, entry.title);
+        final meta = TrackMeta(
+          artist: artist,
+          title: title.trim(),
+          album: entry.album,
+          track: (entry.trackNumber ?? (album ? i + 1 : null))?.toString() ?? '',
+        );
+        final existing = meta.artist.isNotEmpty && meta.title.isNotEmpty
+            ? lib.existing(meta.artist, meta.title) : null;
+        if (existing != null) {
+          job.skipped++;
+          log('Уже есть в библиотеке: ${meta.label}');
+          continue;
+        }
+        if (meta.artist.isNotEmpty && meta.title.isNotEmpty) {
+          await yt.tag(entry.path, meta);
+        }
+        final renamed = YouTube.moveTo(entry.path, File(entry.path).parent.path,
+            clampName(meta.label), album ? '${(entry.trackNumber ?? i + 1).toString().padLeft(2, '0')} - ' : '');
+        await _upload(job, yt, File(renamed), folderId: folderId, path: album ? folder : job.path);
+        if (!album) job.title = meta.label;
+        log('Bandcamp [${i + 1}/${entries.length}]: ${meta.label} — OK');
+      } catch (e) {
+        job.failed++;
+        job.failedNames.add(entry.title);
+        log('Bandcamp [${i + 1}/${entries.length}]: ошибка: $e');
+      }
+    }
+    final missing = job.total - entries.length;
+    if (missing > 0) {
+      job.failed += missing;
+      log('Bandcamp: из ${job.total} треков источник отдал только ${entries.length}.');
+    }
+    _summary(job, log);
+    return job.done + job.skipped > 0 && job.failed == 0;
+  }
+
+  // ---------- маршрутизация YouTube ----------
 
   Future<bool> _route(DownloadJob job, YouTube yt, Directory temp, void Function(String) log) async {
     final q = job.input;
@@ -303,13 +349,17 @@ class DownloadService extends ChangeNotifier {
       log('Поддерживаются ссылки на трек, альбом и плейлист Spotify.');
       return false;
     }
-    if ((q.contains('youtube.com') || q.contains('youtu.be')) && q.contains('/playlist') && q.contains('list=')) {
+    if (Bandcamp.youtubeUrl(q) && q.contains('/playlist') && q.contains('list=')) {
       return _playlist(job, yt, temp, q, log);
     }
-    if (q.startsWith('http://') || q.startsWith('https://')) {
+    if (Bandcamp.youtubeUrl(q)) {
       job.total = 1;
       final entries = await yt.download('${temp.path}${Platform.pathSeparator}%(id)s.%(ext)s', q);
       return _finishYoutube(job, yt, entries, folderId: job.target, path: job.path);
+    }
+    if (Uri.tryParse(q)?.hasScheme == true) {
+      log('В режиме YouTube поддерживаются только ссылки YouTube, Spotify, Deezer и Яндекс Музыки. '           'SoundCloud и произвольные сайты отключены; для Bandcamp выберите режим Bandcamp.');
+      return false;
     }
     return _search(job, yt, temp, q, log);
   }

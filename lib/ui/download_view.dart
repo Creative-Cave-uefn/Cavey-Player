@@ -59,13 +59,17 @@ class _DownloadPageState extends State<DownloadPage> {
         return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Text('Скачать', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
-          const Text(
-            'Ссылка на трек, альбом или плейлист из YouTube, YouTube Music, Яндекс Музыки или Spotify — '
-            'или просто «Исполнитель - Название». Cave Player найдёт лучшую версию, подпишет теги и обложку '
-            'и положит файл на Google Диск: он сразу появится в библиотеке у всех. '
-            'Плейлисты Spotify: без ключа доступны первые 100 треков.',
-            style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
+          Text(
+            switch (app.settings.downloadProvider) {
+              'sockseek' => 'Soulseek (Sockseek): «Исполнитель - Название» или ссылка Spotify, Deezer, Яндекс Музыки. Ищет файлы в P2P сети.',
+              'bandcamp' => 'Bandcamp: вставьте прямую ссылку на трек или альбом (artist.bandcamp.com/track/... или /album/...). Скачивается доступный для прослушивания аудиопоток, а не оригинальный FLAC.',
+              _ => 'YouTube / YouTube Music: ссылка YouTube, Spotify, Deezer, Яндекс Музыки или «Исполнитель - Название». Аудио ищется на YouTube и загружается в библиотеку.',
+            },
+            style: const TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
+          const SizedBox(height: 8),
+          Text('Активный источник: ${switch (app.settings.downloadProvider) { 'bandcamp' => 'Bandcamp', 'sockseek' => 'Soulseek', _ => 'YouTube' }}. Переключить можно в настройках аккаунта.',
+              style: const TextStyle(color: C.faint, fontSize: 13)),
           const SizedBox(height: 24),
           Container(
             padding: const EdgeInsets.all(18),
@@ -77,7 +81,7 @@ class _DownloadPageState extends State<DownloadPage> {
                     controller: _input,
                     autofocus: true,
                     decoration: InputDecoration(
-                      hintText: 'Ссылка или «Исполнитель - Название»',
+                      hintText: app.settings.downloadProvider == 'bandcamp' ? 'Ссылка Bandcamp на трек или альбом' : 'Ссылка или «Исполнитель - Название»',
                       prefixIcon: const Icon(Icons.link_rounded, size: 18),
                       suffixIcon: IconButton(
                         tooltip: 'Вставить из буфера',
@@ -95,6 +99,21 @@ class _DownloadPageState extends State<DownloadPage> {
                   label: const Text('Скачать'),
                 ),
               ]),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                value: app.settings.downloadProvider,
+                decoration: const InputDecoration(labelText: 'Источник музыки'),
+                items: const [
+                  DropdownMenuItem(value: 'youtube', child: Text('YouTube')),
+                  DropdownMenuItem(value: 'sockseek', child: Text('Soulseek / Sockseek')),
+                  DropdownMenuItem(value: 'bandcamp', child: Text('Bandcamp')),
+                ],
+                onChanged: dl.busy ? null : (value) {
+                  if (value == null) return;
+                  setState(() => app.settings.downloadProvider = value);
+                  app.lib.saveSettings();
+                },
+              ),
               const SizedBox(height: 14),
               Wrap(spacing: 12, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
                 const Text('Куда положить:', style: TextStyle(color: C.muted)),

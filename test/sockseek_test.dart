@@ -7,15 +7,15 @@ import 'package:cave_player/core/dl/winproc.dart';
 import 'package:cave_player/core/store.dart';
 
 void main() {
-  test('Sockseek is opt-in and persists independently of Zotify', () {
-    final old = Settings.fromJson({'useZotify': true});
-    expect(old.useZotify, true);
-    expect(old.useSockseek, false);
-    old.useSockseek = true;
-    old.useZotify = false;
-    final restored = Settings.fromJson(old.toJson());
-    expect(restored.useSockseek, true);
-    expect(restored.useZotify, false);
+  test('Sockseek migration and independent active source choice', () {
+    final old = Settings.fromJson({'useSockseek': true, 'useZotify': true});
+    expect(old.downloadProvider, 'sockseek');
+    final ignoredZotify = Settings.fromJson({'useZotify': true});
+    expect(ignoredZotify.downloadProvider, 'youtube');
+    final chosen = Settings()..downloadProvider = 'bandcamp';
+    expect(Settings.fromJson(chosen.toJson()).downloadProvider, 'bandcamp');
+    expect(chosen.toJson().containsKey('useZotify'), isFalse);
+    expect(Settings.fromJson({'downloadProvider': 'unexpected'}).downloadProvider, 'youtube');
   });
   test('CSV preserves Unicode, quotes, commas, recording version and length', () {
     final value = Sockseek.csv([TrackMeta(artist: 'bôa, Guest', title: 'Elephant "Live"', album: 'A, B', duration: 234.264)]);

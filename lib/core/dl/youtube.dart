@@ -22,15 +22,11 @@ class Candidate {
   /// Найден в YouTube Music среди «Песен»: это студийная запись с официального канала, а не клип и не концерт
   final bool song;
 
-  /// Страница на SoundCloud; null — ролик YouTube
-  final String? soundcloud;
-  Candidate(this.id, this.title, this.channel, this.duration, {this.song = false, this.soundcloud});
+  Candidate(this.id, this.title, this.channel, this.duration, {this.song = false});
 
-  /// Что отдать yt-dlp для скачивания
-  String get url => soundcloud ?? 'https://www.youtube.com/watch?v=$id';
-
-  /// Где нашли — для журнала
-  String get site => soundcloud != null ? 'SoundCloud' : (song ? 'YouTube Music' : 'YouTube');
+  /// Кандидаты всегда ведут на YouTube.
+  String get url => 'https://www.youtube.com/watch?v=$id';
+  String get site => song ? 'YouTube Music' : 'YouTube';
 }
 
 /// Скачанный файл: путь, исполнитель, название, номер в плейлисте
@@ -39,7 +35,9 @@ class Entry {
   final String artist;
   final String title;
   final String index;
-  Entry(this.path, this.artist, this.title, this.index);
+  final String album;
+  final int? trackNumber;
+  Entry(this.path, this.artist, this.title, this.index, {this.album = '', this.trackNumber});
 }
 
 /// Не та версия: концерт, ремикс, кавер, замедленная и т. п. Штраф, если этого слова нет в самом запросе
@@ -80,26 +78,6 @@ class YouTube {
   /// Поиск в YouTube Music только среди песен: там студийные записи с официальных каналов, без клипов и концертов
   Future<List<Candidate>> searchSongs(String query, [int n = searchResults]) =>
       _list('https://music.youtube.com/search?q=${Uri.encodeQueryComponent(query)}#songs', n, song: true);
-
-  /// Поиск на SoundCloud — запасной источник, когда на YouTube нет студийной версии.
-  /// Без --flat-playlist: иначе SoundCloud не отдаёт длительность, а по ней выбирается оригинал
-  Future<List<Candidate>> searchSoundCloud(String query, [int n = 6]) async {
-    try {
-      final out = await Tools.run(tools.ytdlp.path, [...tools.jsArgs, '-J', '--no-warnings', '--skip-download', 'scsearch$n:$query']);
-      final json = out.firstWhere((l) => l.startsWith('{'), orElse: () => '');
-      if (json.isEmpty) return [];
-      final data = jsonDecode(json) as Map;
-      return [
-        for (final e in (data['entries'] as List? ?? const []))
-          if (e is Map && (e['webpage_url'] ?? e['url']) != null)
-            Candidate('sc:${e['id']}', '${e['title'] ?? ''}', '${e['uploader'] ?? e['artist'] ?? ''}', (e['duration'] as num?)?.toDouble(),
-                soundcloud: '${e['webpage_url'] ?? e['url']}'),
-      ];
-    } catch (e) {
-      log('Поиск на SoundCloud не удался: $e');
-      return [];
-    }
-  }
 
   Future<List<Candidate>> _list(String target, int n, {bool song = false}) async {
     try {
@@ -145,8 +123,6 @@ class YouTube {
     } else if (meta.artist.isNotEmpty && channel.contains(meta.artist.toLowerCase())) {
       s += 10;
     }
-    // SoundCloud без входа часто отдаёт 30-секундный отрывок — длительность это выдаст, но и название подскажет
-    if (c.soundcloud != null && hasWord(c.title.toLowerCase(), 'preview')) s -= 45;
     // Каналы VEVO выкладывают клипы
     if (channel.endsWith('vevo') && !c.song) s -= 20;
     final title = c.title.toLowerCase();
@@ -178,15 +154,6 @@ class YouTube {
       }
       cands.sort(byScore);
     }
-    // На YouTube так и нет студийной версии — смотрим SoundCloud
-    if (cands.isEmpty || score(cands.first, meta) < 40) {
-      final sc = await searchSoundCloud(query);
-      if (sc.isNotEmpty) {
-        log('На YouTube уверенного варианта нет, смотрю SoundCloud…');
-        cands.addAll(sc);
-        cands.sort(byScore);
-      }
-    }
     return cands;
   }
 
@@ -204,7 +171,7 @@ class YouTube {
       '--embed-metadata',
       '--replace-in-metadata', 'uploader', r' - Topic$', '',
       '--windows-filenames',
-      '--print-to-file', 'after_move:%(filepath)s\t%(artists.0,uploader)s\t%(track,title)s\t%(playlist_index|)s', info.path,
+      '--print-to-file', 'after_move:%(filepath)s\t%(artists.0,uploader)s\t%(track,title)s\t%(playlist_index|)s\t%(album|)s\t%(track_number|)s', info.path,
       if (embedThumb) ...['--embed-thumbnail', '--convert-thumbnails', 'jpg'],
       if (playlist) '--ignore-errors',
       '-o', template,
@@ -216,7 +183,9 @@ class YouTube {
     for (final line in lines) {
       final p = line.split('\t');
       if (p.length >= 3 && p[0].isNotEmpty && File(p[0]).existsSync()) {
-        entries.add(Entry(p[0], p[1], p[2], p.length > 3 ? p[3] : ''));
+        entries.add(Entry(p[0], p[1], p[2], p.length > 3 ? p[3] : '',
+            album: p.length > 4 ? p[4] : '',
+            trackNumber: p.length > 5 ? int.tryParse(p[5]) : null));
       }
     }
     // Список не записался — берём mp3, которые появились в папке загрузки

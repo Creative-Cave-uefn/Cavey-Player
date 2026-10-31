@@ -36,12 +36,6 @@ void main() {
     expect(song, greaterThan(clip));
     expect(song, greaterThan(live));
     expect(clip, lessThan(40));
-    // SoundCloud: оригинал по длительности проходит, 30-секундный отрывок — нет
-    final sc = Candidate('sc:1', 'Freak On a Leash', 'Korn', 255, soundcloud: 'https://soundcloud.com/korn/freak');
-    expect(sc.url, 'https://soundcloud.com/korn/freak');
-    expect(sc.site, 'SoundCloud');
-    expect(YouTube.score(sc, meta), greaterThanOrEqualTo(40));
-    expect(YouTube.score(Candidate('sc:2', 'Freak On a Leash (preview)', 'Korn', 30, soundcloud: 'https://soundcloud.com/x'), meta), lessThan(0));
   });
 
   test('Deezer: та же песня, без live и ремиксов', () {

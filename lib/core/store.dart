@@ -101,9 +101,8 @@ class Settings {
   int cacheLimitMb = 2048;
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
-  bool useZotify = false;
-  bool useSockseek = false;
-  String zotifyExecutable = 'zotify';
+  /// Единственный активный загрузчик: youtube, sockseek или bandcamp.
+  String downloadProvider = 'youtube';
   bool discord = true;
   bool betaUpdates = false; // получать бета-версии
   bool trayOnClose = true; // крестик прячет окно в трей, музыка играет дальше
@@ -139,9 +138,7 @@ class Settings {
         'cacheLimitMb': cacheLimitMb,
         'offlineLiked': offlineLiked,
         'offlinePlaylists': offlinePlaylists.toList(),
-        'useZotify': useZotify,
-        'useSockseek': useSockseek,
-        'zotifyExecutable': zotifyExecutable,
+        'downloadProvider': downloadProvider,
         'discord': discord,
         'betaUpdates': betaUpdates,
         'trayOnClose': trayOnClose,
@@ -175,9 +172,13 @@ class Settings {
     s.cacheLimitMb = (j['cacheLimitMb'] as num?)?.toInt() ?? 2048;
     s.offlineLiked = j['offlineLiked'] == true;
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
-    s.useZotify = j['useZotify'] == true;
-    s.useSockseek = j['useSockseek'] == true;
-    s.zotifyExecutable = (j['zotifyExecutable'] as String?) ?? 'zotify';
+    // Старые настройки Zotify намеренно не восстанавливаем. Sockseek переносим.
+    final provider = j['downloadProvider'];
+    if (provider == 'youtube' || provider == 'sockseek' || provider == 'bandcamp') {
+      s.downloadProvider = provider as String;
+    } else if (j['useSockseek'] == true) {
+      s.downloadProvider = 'sockseek';
+    }
     s.discord = j['discord'] != false;
     s.betaUpdates = j['betaUpdates'] == true;
     s.trayOnClose = j['trayOnClose'] != false;
