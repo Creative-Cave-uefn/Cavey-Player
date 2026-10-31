@@ -46,18 +46,24 @@ class Wordmark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IntrinsicWidth(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('Cavey', maxLines: 1, style: brand(size)),
-          SizedBox(height: size * 0.18),
-          Container(
-            height: size * 0.16,
-            decoration: BoxDecoration(color: C.accent, borderRadius: BorderRadius.circular(2)),
-          ),
-        ],
+    // UnconstrainedBox: название всегда рисуется целиком и не режется по ширине родителя
+    // (раньше при узком родителе от «Cavey» оставалось «Cav» с такой же короткой полочкой)
+    return UnconstrainedBox(
+      alignment: Alignment.centerLeft,
+      clipBehavior: Clip.none,
+      child: IntrinsicWidth(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Cavey', maxLines: 1, softWrap: false, overflow: TextOverflow.visible, style: brand(size)),
+            SizedBox(height: size * 0.18),
+            Container(
+              height: size * 0.16,
+              decoration: BoxDecoration(color: C.accent, borderRadius: BorderRadius.circular(2)),
+            ),
+          ],
+        ),
       ),
     );
   }
