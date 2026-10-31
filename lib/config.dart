@@ -10,9 +10,9 @@ const kGoogleClientSecret = String.fromEnvironment('GOOGLE_CLIENT_SECRET');
 // разработки её нет, и тогда автообновление выключено.
 const kAppVersion = String.fromEnvironment('APP_VERSION');
 
-// Где искать новые версии: отдельный публичный репозиторий для установщиков
-// и сам репозиторий с кодом (если его сделать публичным). Берётся самая свежая.
-const kReleasesRepos = ['Creative-Cave-uefn/cave-player-releases', 'Creative-Cave-uefn/Creative-Cave'];
+// Где искать новые версии: отдельный публичный репозиторий для установщиков.
+// Приватный репозиторий с кодом убран (В3): он каждые 4 часа заведомо отвечал 404.
+const kReleasesRepos = ['Creative-Cave-uefn/cave-player-releases'];
 const kReleasesRepo = 'Creative-Cave-uefn/cave-player-releases';
 
 // Папка общей библиотеки по умолчанию (необязательно): ID папки «Cave Player»

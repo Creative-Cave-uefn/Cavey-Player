@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive_io.dart';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:http/http.dart' as http;
 
 import 'winproc.dart';
@@ -96,11 +97,42 @@ class Tools {
         }
       }
       await sink.close();
+      // В2: сверяем с контрольной суммой из данных релиза на GitHub; если её там нет — предупреждаем
+      final expected = await _releaseDigest(url);
+      if (expected != null) {
+        final actual = (await crypto.sha256.bind(part.openRead()).first).toString();
+        if (actual != expected) {
+          await part.delete();
+          throw Exception('$label: контрольная сумма не совпала, файл не используем');
+        }
+      } else {
+        log('  $label: контрольной суммы в релизе нет, проверка пропущена');
+      }
       if (dest.existsSync()) await dest.delete();
       await part.rename(dest.path);
     } finally {
       client.close();
     }
+  }
+
+  /// sha256 файла из данных релиза GitHub (поле digest) для ссылок вида …/<владелец>/<репо>/releases/latest/download/<файл>
+  Future<String?> _releaseDigest(String url) async {
+    final m = RegExp(r'github\.com/([^/]+/[^/]+)/releases/latest/download/([^/?]+)').firstMatch(url);
+    if (m == null) return null;
+    try {
+      final res = await http
+          .get(Uri.parse('https://api.github.com/repos/${m[1]}/releases/latest'),
+              headers: {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer'})
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200) return null;
+      for (final a in (jsonDecode(res.body)['assets'] as List? ?? const [])) {
+        if (a is Map && a['name'] == m[2]) {
+          final d = '${a['digest'] ?? ''}';
+          return d.startsWith('sha256:') ? d.substring(7).toLowerCase() : null;
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<void> _extract(File zip, Map<String, File> wanted) async {
