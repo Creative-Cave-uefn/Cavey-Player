@@ -2,8 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'zotify_cooldown.dart';
+
 /// Runs an already installed and authenticated Zotify, without a shell.
 class Zotify {
+  static final cooldown = ZotifyCooldown();
   static File get credentialsFile {
     final home = Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '';
     final base = Platform.isWindows ? '$home/AppData/Roaming/Zotify'
@@ -41,9 +44,21 @@ class Zotify {
   /// Never fall back to username/password prompts in a background download.
   static const runnerScript = r'''
 import sys
+import json
+import requests.sessions
 from zotify.zotify import Zotify
 from zotify.config import Config
 from librespot.core import Session
+
+# Stop at the first HTTP 429, before Zotify can retry or query the next song.
+_original_send = requests.sessions.Session.send
+def send_with_rate_limit(self, request, **kwargs):
+    response = _original_send(self, request, **kwargs)
+    if response.status_code == 429:
+        print('CAVE_RATE_LIMIT ' + json.dumps({'retry_after': response.headers.get('Retry-After')}), flush=True)
+        raise SystemExit(4)
+    return response
+requests.sessions.Session.send = send_with_rate_limit
 
 def saved_login(cls, args):
     path = str(Config.get_credentials_location())
@@ -70,10 +85,18 @@ main()
 
   static Future<List<File>> download(String executable, String input, Directory output, void Function(String) log, {String? ffmpegDirectory}) async {
     if (!accepts(input)) throw ArgumentError('Нужна ссылка Spotify на трек, альбом или плейлист');
+    final stateFile = ffmpegDirectory == null ? null : File('$ffmpegDirectory/zotify-rate-limit.json');
+    await cooldown.check(stateFile: stateFile);
     final credentials = await requireCredentials();
     var authRejected = false;
+    var rateLimited = false;
+    String? retryAfter;
     void handle(String line) {
-      if (line.startsWith('CAVE_AUTH_REJECTED:')) {
+      if (line.startsWith('CAVE_RATE_LIMIT ')) {
+        rateLimited = true;
+        try { final value = jsonDecode(line.substring(16))['retry_after']; retryAfter = value is String ? value : null; } catch (_) {}
+        log('Spotify вернул 429. Останавливаю запросы.');
+      } else if (line.startsWith('CAVE_AUTH_REJECTED:')) {
         authRejected = true;
         log('Spotify отклонил сохранённую сессию. Повторите вход через браузер в настройках.');
       } else {
@@ -108,12 +131,15 @@ main()
       process.kill();
       throw Exception('Zotify не завершился вовремя. Проверьте вход в аккаунт в терминале.');
     }
+    final rateLimit = rateLimited ? await cooldown.pause(retryAfter, stateFile: stateFile) : null;
+    if (rateLimit != null) log('$rateLimit');
     if (authRejected) throw Exception('Сохранённая сессия Spotify отклонена. Нажмите «Войти в Spotify через браузер». Если ошибка повторится после успешного входа, доступ через эту версию Librespot пока не подтверждён.');
     final files = await output.list(recursive: true, followLinks: false)
         .where((f) => f is File && f.path.toLowerCase().endsWith('.mp3'))
         .cast<File>().toList();
     files.sort((a, b) => a.path.compareTo(b.path));
     if (code != 0) log('Zotify завершился с кодом $code; готовых файлов: ${files.length}');
+    if (files.isEmpty && rateLimit != null) throw rateLimit;
     if (files.isEmpty) throw Exception('Zotify не создал аудиофайлы. Проверьте журнал выше; при ошибке авторизации заново войдите через кнопку в настройках.');
     return files;
   }

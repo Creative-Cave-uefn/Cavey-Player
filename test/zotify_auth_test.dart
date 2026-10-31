@@ -90,6 +90,15 @@ sys.modules['zotify.zotify'].Zotify = Zotify
 sys.modules['zotify.config'].Config = Config
 sys.modules['zotify.__main__'].main = main
 sys.modules['librespot.core'].Session = types.SimpleNamespace(Configuration=types.SimpleNamespace(Builder=SessionConfig), Builder=Builder)
+class HttpSession:
+    def send(self, request, **kwargs):
+        return types.SimpleNamespace(status_code=200, headers={})
+request_module = types.ModuleType('requests')
+sessions_module = types.ModuleType('requests.sessions')
+sessions_module.Session = HttpSession
+request_module.sessions = sessions_module
+sys.modules['requests'] = request_module
+sys.modules['requests.sessions'] = sessions_module
 exec(source, {'__name__': '__main__'})
 ''';
     final denied = await Process.run('python', ['-c', wrapper, Zotify.runnerScript, 'yes']);
@@ -99,6 +108,46 @@ exec(source, {'__name__': '__main__'})
     final ok = await Process.run('python', ['-c', wrapper, Zotify.runnerScript, 'no']);
     expect(ok.exitCode, 0, reason: '${ok.stderr}');
     expect('${ok.stdout}', contains('RUNNER_OK'));
+  }, skip: !Platform.isWindows);
+
+  test('HTTP 429 stops at the first response and preserves Retry-After', () async {
+    const wrapper = r'''
+import sys
+import types
+source = sys.argv[1]
+calls = 0
+class HttpSession:
+    def send(self, request, **kwargs):
+        global calls
+        calls += 1
+        return types.SimpleNamespace(status_code=429, headers={'Retry-After': '90'})
+request_module = types.ModuleType('requests')
+sessions_module = types.ModuleType('requests.sessions')
+sessions_module.Session = HttpSession
+request_module.sessions = sessions_module
+sys.modules['requests'] = request_module
+sys.modules['requests.sessions'] = sessions_module
+for name in ['zotify', 'zotify.zotify', 'zotify.config', 'zotify.__main__', 'librespot', 'librespot.core']:
+    sys.modules[name] = types.ModuleType(name)
+sys.modules['zotify.zotify'].Zotify = type('Zotify', (), {})
+sys.modules['zotify.config'].Config = object
+sys.modules['librespot.core'].Session = object
+def main():
+    for i in range(3):
+        HttpSession().send(None)
+    raise AssertionError('Must stop on rate limit')
+sys.modules['zotify.__main__'].main = main
+try:
+    exec(source, {'__name__': '__main__'})
+finally:
+    print('HTTP_CALLS=' + str(calls))
+''';
+    final result = await Process.run('python', ['-c', wrapper, Zotify.runnerScript]);
+    expect(result.exitCode, 4, reason: '${result.stderr}');
+    expect('${result.stdout}', contains('CAVE_RATE_LIMIT'));
+    expect('${result.stdout}', contains('"retry_after": "90"'));
+    expect('${result.stdout}', contains('HTTP_CALLS=1'));
+    expect('${result.stderr}', isNot(contains('CAVE_AUTH_REJECTED')));
   }, skip: !Platform.isWindows);
 
 }
