@@ -1,3 +1,7 @@
+import 'package:http/http.dart' as http;
+
+import '../core/musixmatch.dart';
+import '../core/dl/zotify_install.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -864,6 +868,7 @@ class _DiscordSectionState extends State<_DiscordSection> {
                 enabled: v);
           },
         ),
+
     ]);
   }
 }
@@ -877,26 +882,95 @@ class _DownloaderSection extends StatefulWidget {
 }
 
 class _DownloaderSectionState extends State<_DownloaderSection> {
+  bool _installing = false;
+  bool _checking = false;
+  String _installLog = '';
+  String _matchResult = '';
+  int _pathVersion = 0;
+
+  Future<void> _install() async {
+    final app = Services.of(context);
+    setState(() { _installing = true; _installLog = 'Начинаю установку…'; });
+    try {
+      final executable = await ZotifyInstall.install(app.downloads.tools, (line) {
+        if (mounted) setState(() {
+          _installLog = '$_installLog\n$line';
+          if (_installLog.length > 12000) _installLog = _installLog.substring(_installLog.length - 12000);
+        });
+      });
+      app.settings.zotifyExecutable = executable;
+      app.settings.useZotify = true;
+      await app.lib.saveSettings();
+      if (mounted) setState(() {
+        _pathVersion++;
+        _installLog += "\nZotify установлен. Для входа откройте PowerShell и выполните:\n& '${executable.replaceAll("'", "''")}'";
+      });
+    } catch (e) {
+      if (mounted) setState(() => _installLog += '\nОшибка: $e');
+    } finally {
+      if (mounted) setState(() => _installing = false);
+    }
+  }
+
+  Future<void> _checkMatch() async {
+    final app = Services.of(context);
+    final track = app.player.current;
+    if (track == null) {
+      setState(() => _matchResult = 'Сначала включите трек, который хотите проверить.');
+      return;
+    }
+    setState(() { _checking = true; _matchResult = 'Проверяю ${track.displayArtist} — ${track.title}…'; });
+    final client = http.Client();
+    try {
+      final result = await Musixmatch(client).find(track, Duration(milliseconds: track.durationMs ?? 0))
+          .timeout(const Duration(seconds: 25));
+      if (mounted) setState(() => _matchResult = result == null
+          ? 'Для «${track.title}» RichSync не найден. Плеер использует другие источники текста.'
+          : 'Musixmatch работает: «${track.title}», строк: ${result.lines.length}, '
+            'сегментов с таймкодами: ${result.lines.fold<int>(0, (n, line) => n + (line.words?.length ?? 0))}. '
+            'Обновите текст в панели песни, чтобы загрузить эту разметку.');
+    } catch (e) {
+      if (mounted) setState(() => _matchResult = 'Musixmatch сейчас недоступен: $e. Плеер использует LRCLIB.');
+    } finally {
+      client.close();
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text('Загрузчик музыки', style: display(20)),
+      const SizedBox(height: 10),
+      FilledButton.icon(
+        onPressed: _installing || app.downloads.busy ? null : _install,
+        icon: _installing ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.download_rounded),
+        label: Text(_installing ? 'Устанавливаю Zotify…' : 'Установить Zotify'),
+      ),
+      const Text('Установит Python 3.11, Git, FFmpeg и Zotify. Windows может запросить права на установку.',
+          style: TextStyle(color: C.faint, fontSize: 12)),
+      if (_installLog.isNotEmpty)
+        ConstrainedBox(constraints: const BoxConstraints(maxHeight: 180),
+          child: SingleChildScrollView(child: SelectableText(_installLog, style: const TextStyle(fontSize: 12)))),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         title: const Text('Использовать Zotify для ссылок Spotify'),
         subtitle: const Text('Треки, альбомы и плейлисты Spotify скачиваются через Zotify. '
             'Другие ссылки и поиск используют обычный загрузчик. '
-            'Заранее установите Zotify и FFmpeg и выполните вход в Zotify через терминал.',
+            'После установки выполните вход в Zotify через терминал.',
             style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
         value: app.settings.useZotify,
-        onChanged: (value) {
+        onChanged: _installing ? null : (value) {
           setState(() => app.settings.useZotify = value);
           app.lib.saveSettings();
         },
       ),
       if (app.settings.useZotify)
         TextFormField(
+          key: ValueKey(_pathVersion),
+          enabled: !_installing,
           initialValue: app.settings.zotifyExecutable,
           decoration: const InputDecoration(labelText: 'Путь к Zotify', hintText: 'zotify или полный путь к zotify.exe'),
           onChanged: (value) {
@@ -904,6 +978,14 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
             app.lib.saveSettings();
           },
         ),
+      const SizedBox(height: 18),
+      OutlinedButton.icon(
+        onPressed: _checking ? null : _checkMatch,
+        icon: const Icon(Icons.lyrics_outlined),
+        label: Text(_checking ? 'Проверяю Musixmatch…' : 'Проверить Musixmatch на текущем треке'),
+      ),
+      if (_matchResult.isNotEmpty) SelectableText(_matchResult, style: const TextStyle(color: C.faint, height: 1.5)),
     ]);
   }
 }
+

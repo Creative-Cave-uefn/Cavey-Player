@@ -161,7 +161,7 @@ class DownloadService extends ChangeNotifier {
         log('Загрузчик: Zotify');
         job.title = 'Загрузка через Zotify';
         final executable = lib.settings.zotifyExecutable.trim();
-        final files = await Zotify.download(executable.isEmpty ? 'zotify' : executable, job.input, temp, log);
+        final files = await Zotify.download(executable.isEmpty ? 'zotify' : executable, job.input, temp, log, ffmpegDirectory: tools.dir.path);
         job.total = files.length;
         for (final file in files) {
           try {
@@ -563,4 +563,5 @@ NamedPlaylistResult addToNamedPlaylist(LibraryController lib, String name, List<
   if (fresh.isNotEmpty) lib.addToPlaylist(same.id, fresh);
   return NamedPlaylistResult(same.id, false, fresh.length);
 }
+
 

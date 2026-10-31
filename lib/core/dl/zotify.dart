@@ -12,7 +12,7 @@ class Zotify {
         RegExp(r'^/(?:intl-[^/]+/)?(?:track|album|playlist)/[A-Za-z0-9]+/?$').hasMatch(uri.path);
   }
 
-  static Future<List<File>> download(String executable, String input, Directory output, void Function(String) log) async {
+  static Future<List<File>> download(String executable, String input, Directory output, void Function(String) log, {String? ffmpegDirectory}) async {
     if (!accepts(input)) throw ArgumentError('Нужна ссылка Spotify на трек, альбом или плейлист');
     final process = await Process.start(executable, [
       '--root-path', output.path,
@@ -24,7 +24,9 @@ class Zotify {
       '--print-download-progress=False',
       '--print-downloads=True',
       input,
-    ], environment: {'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'});
+    ], environment: {'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8',
+      if (ffmpegDirectory != null) 'PATH': '$ffmpegDirectory${Platform.isWindows ? ';' : ':'}${Platform.environment['PATH'] ?? ''}',
+    });
     await process.stdin.close(); // Login must be completed in a terminal beforehand.
     final readers = Future.wait([
       process.stdout.transform(const Utf8Decoder(allowMalformed: true)).transform(const LineSplitter()).forEach(log),
@@ -47,3 +49,4 @@ class Zotify {
     return files;
   }
 }
+

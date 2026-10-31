@@ -45,7 +45,9 @@ class Musixmatch {
     final message = data is Map ? data['message'] : null;
     if (message is! Map) return null;
     final header = message['header'];
-    if (header is! Map || header['status_code'] != 200) return null;
+    if (header is! Map) throw Exception('Musixmatch: некорректный ответ API');
+    if (header['status_code'] == 404) return null;
+    if (header['status_code'] != 200) throw Exception('Musixmatch: API ${header['status_code']}');
     final body = message['body'];
     return body is Map ? body : null;
   }
@@ -102,3 +104,4 @@ class Musixmatch {
     return lines.isEmpty ? null : Lyrics(lines, synced: true, origin: 'musixmatch');
   }
 }
+
