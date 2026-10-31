@@ -192,8 +192,11 @@ void _worker(List<Object?> msg) {
       ..hStdOutput = hWrite.value
       ..hStdError = hWrite.value;
     final pi = arena<_ProcessInfo>();
+    // lpApplicationName == nullptr позволяет Windows найти exe через PATH,
+    // если это имя вроде python.exe или py.exe (а не абсолютный путь).
+    // cmd уже содержит правильно заключённое в кавычки имя программы.
     final ok = createProcess(
-      exe.toNativeUtf16(allocator: arena),
+      nullptr,
       cmd.toNativeUtf16(allocator: arena),
       nullptr,
       nullptr,
