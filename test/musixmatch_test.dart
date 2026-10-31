@@ -122,4 +122,24 @@ void main() {
     client.close();
   });
 
+  test('An omitted initial zero offset is valid RichSync', () {
+    final result = Musixmatch.parse([{'ts': 1, 'te': 3, 'x': 'a b', 'l': [{'c': 'a'}, {'c': 'b', 'o': 1}]}]);
+    expect(result?.lines.single.words?.first.start.inSeconds, 1);
+  });
+  test('Metadata rejection reports its actual reason', () async {
+    final messages = <String>[];
+    final client = MockClient((r) async => r.url.path.endsWith('token.get')
+        ? response({'user_token': 't'}) : response(macro(match)));
+    expect(await Musixmatch(client).find(track, const Duration(seconds: 200), onDiagnostic: messages.add), isNull);
+    expect(messages.join(), contains('длительности отличаются'));
+    expect(messages.join(), isNot(contains('user_token')));
+    client.close();
+  });
+  test('Missing macro structure is a protocol error instead of no lyrics', () async {
+    final client = MockClient((r) async => r.url.path.endsWith('token.get')
+        ? response({'user_token': 't'}) : response({}));
+    await expectLater(Musixmatch(client).find(track, Duration.zero), throwsA(isA<MusixmatchFailure>()));
+    client.close();
+  });
+
 }

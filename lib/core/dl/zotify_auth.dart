@@ -28,14 +28,17 @@ def main():
         def open_auth(url):
             print('CAVE_AUTH_URL ' + url, flush=True)
         session = Session.Builder(config).oauth(open_auth).create()
-        try:
-            if not temporary.is_file():
-                raise RuntimeError('Spotify session did not save credentials')
-            if destination.is_file():
-                shutil.copy2(destination, str(destination) + '.bak')
-            os.replace(temporary, destination)
-        finally:
-            session.close()
+        session.close()
+        if not temporary.is_file():
+            raise RuntimeError('Spotify session did not save credentials')
+        # Validate that the saved session can actually be reopened by the downloader.
+        check_config = (Session.Configuration.Builder().set_cache_enabled(False)
+                        .set_store_credentials(False).build())
+        restored = Session.Builder(check_config).stored_file(str(temporary)).create()
+        restored.close()
+        if destination.is_file():
+            shutil.copy2(destination, str(destination) + '.bak')
+        os.replace(temporary, destination)
     print('CAVE_AUTH_OK', flush=True)
 
 if __name__ == '__main__':
@@ -48,9 +51,7 @@ if __name__ == '__main__':
     _busy = true;
     Process? process;
     try {
-      var python = File('${File(executable).parent.path}${Platform.pathSeparator}python.exe');
-      if (!await python.exists()) python = File('${tools.dir.path}/zotify-env/Scripts/python.exe');
-      if (!await python.exists()) throw Exception('Сначала установите Zotify кнопкой в настройках');
+      final python = await Zotify.pythonFor(executable, toolsDirectory: tools.dir.path);
       final destination = Zotify.credentialsFile;
       final child = await Process.start(python.absolute.path, ['-u', '-c', script, destination.path],
           environment: {'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'});

@@ -941,16 +941,18 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
       return;
     }
     setState(() { _checking = true; _matchResult = 'Проверяю ${track.displayArtist} — ${track.title}…'; });
+    final diagnostics = <String>[];
     try {
-      final result = await app.lyrics.musixmatch.find(track, Duration(milliseconds: track.durationMs ?? 0))
+      final duration = app.player.duration > Duration.zero ? app.player.duration : Duration(milliseconds: track.durationMs ?? 0);
+      final result = await app.lyrics.musixmatch.find(track, duration, onDiagnostic: diagnostics.add)
           .timeout(const Duration(seconds: 25));
-      if (mounted) setState(() => _matchResult = result == null
+      if (mounted) setState(() => _matchResult = (result == null
           ? 'Для «${track.title}» RichSync не найден. Плеер использует другие источники текста.'
           : 'Musixmatch (новый API), синхронизация ${result.lines.any((l) => l.words?.isNotEmpty == true) ? 'по словам' : 'по строкам'}: «${track.title}», строк: ${result.lines.length}, '
             'сегментов с таймкодами: ${result.lines.fold<int>(0, (n, line) => n + (line.words?.length ?? 0))}. '
-            'Обновите текст в панели песни, чтобы загрузить эту разметку.');
+            'Обновите текст в панели песни, чтобы загрузить эту разметку.') + '\n' + diagnostics.join('\n'));
     } catch (e) {
-      if (mounted) setState(() => _matchResult = 'Musixmatch сейчас недоступен: $e. Плеер использует LRCLIB.');
+      if (mounted) setState(() => _matchResult = 'Musixmatch сейчас недоступен: $e. Плеер использует LRCLIB.\n${diagnostics.join('\n')}');
     } finally {
       if (mounted) setState(() => _checking = false);
     }

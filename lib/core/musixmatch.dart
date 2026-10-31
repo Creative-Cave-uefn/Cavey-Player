@@ -109,19 +109,40 @@ class Musixmatch {
 
   static String _norm(String s) => s.toLowerCase().replaceAll(RegExp(r'[^\p{L}\p{N}]', unicode: true), '');
 
-  Future<Lyrics?> find(Track track, Duration duration) async {
+  Future<Lyrics?> find(Track track, Duration duration, {void Function(String)? onDiagnostic}) async {
+    void note(String text) => onDiagnostic?.call(text);
+    note('Запрос: ${track.displayArtist} — ${track.title}; длительность ${duration.inMilliseconds / 1000} с');
     final body = await _authenticated('macro.subtitles.get', {
       'namespace': 'lyrics_richsynched', 'subtitle_format': 'lrc',
       'q_track': track.title, 'q_artist': track.displayArtist, 'q_album': track.album,
       if (duration > Duration.zero) 'q_duration': '${duration.inSeconds}',
     });
+    final calls = body?['macro_calls'];
+    if (body != null && (calls is! Map || !calls.containsKey('matcher.track.get'))) {
+      throw const MusixmatchFailure(0, 'macro.subtitles.get', 'в ответе нет matcher.track.get');
+    }
     final found = _macroBody(body, 'matcher.track.get')?['track'];
-    if (found is! Map || _norm('${found['track_name']}') != _norm(track.title) ||
-        _norm('${found['artist_name']}') != _norm(track.displayArtist)) return null;
+    if (found is! Map) {
+      note('API не вернул сопоставленный трек (matcher пуст или статус 404).');
+      return null;
+    }
+    note('Найдено: ${found['artist_name']} — ${found['track_name']}; длина ${found['track_length']}; has_richsync=${found['has_richsync']}');
+
+    final exactTitle = _norm('${found['track_name']}') == _norm(track.title);
+    final cleanTitle = _norm(LyricsService.cleanTitle('${found['track_name']}')) == _norm(LyricsService.cleanTitle(track.title));
+    final sameArtist = _norm('${found['artist_name']}') == _norm(track.displayArtist) ||
+        _norm(LyricsService.firstArtist('${found['artist_name']}')) == _norm(LyricsService.firstArtist(track.displayArtist));
+    if (!sameArtist || !(exactTitle || (cleanTitle && duration > Duration.zero))) {
+      note('Результат отклонён: название или исполнитель не совпали с метаданными файла.');
+      return null;
+    }
     final length = found['track_length'];
-    if (duration > Duration.zero && length is num && (length - duration.inMilliseconds / 1000).abs() > 3) return null;
+    if (duration > Duration.zero && length is num && (length - duration.inMilliseconds / 1000).abs() > 3) {
+      note('Результат отклонён: длительности отличаются больше чем на 3 секунды.');
+      return null;
+    }
     final id = found['commontrack_id'];
-    if (id == null) return null;
+    if (id == null) { note('У найденного трека нет commontrack_id.'); return null; }
     Map? rich;
     try {
       rich = await _authenticated('track.richsync.get', {'commontrack_id': '$id'});
@@ -132,9 +153,11 @@ class Musixmatch {
     if (payload is Map && payload['richsync_body'] is String) {
       try {
         final parsed = parse(jsonDecode(payload['richsync_body'] as String));
-        if (parsed != null) return parsed;
-      } on FormatException { /* line fallback below */ }
+        if (parsed != null) { note('RichSync получен: ${parsed.lines.length} строк.'); return parsed; }
+        note('RichSync получен, но формат временных меток не распознан.');
+      } on FormatException { note('RichSync содержит некорректный JSON.'); }
     }
+    if (payload is! Map || payload['richsync_body'] is! String) note('API не вернул richsync_body для найденного трека.');
     final sub = _macroBody(body, 'track.subtitles.get') ?? _macroBody(body, 'track.subtitle.get');
     final list = sub?['subtitle_list'];
     if (list is List) {
@@ -142,10 +165,11 @@ class Musixmatch {
         final subtitle = item is Map ? item['subtitle'] : null;
         if (subtitle is Map && subtitle['subtitle_body'] is String) {
           final parsed = Lyrics.fromLrclib({'syncedLyrics': subtitle['subtitle_body']});
-          if (parsed != null) return parsed.copyWith(origin: 'musixmatch');
+          if (parsed != null) { note('Получена синхронизация по строкам.'); return parsed.copyWith(origin: 'musixmatch'); }
         }
       }
     }
+    note('В macro-ответе также нет строковой разметки.');
     return null;
   }
 
@@ -171,9 +195,9 @@ class Musixmatch {
       var cursor = 0;
       for (var i = 0; i < segments.length; i++) {
         final s = segments[i];
-        if (s is! Map || s['c'] is! String || s['o'] is! num) return null;
+        if (s is! Map || s['c'] is! String || (s['o'] != null && s['o'] is! num)) return null;
         final chunk = s['c'] as String;
-        final offset = (s['o'] as num).toDouble();
+        final offset = (s['o'] as num?)?.toDouble() ?? 0;
         final next = i + 1 < segments.length ? segments[i + 1] : null;
         final finish = next is Map && next['o'] is num ? start + (next['o'] as num).toDouble() : end;
         if (!offset.isFinite || !finish.isFinite || offset < 0 || start + offset > end || finish < start + offset) return null;
