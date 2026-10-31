@@ -40,12 +40,13 @@ class Tools {
   }
 
   /// Скачивает файл через .part и сверяет SHA-256. Без [sha256] — предупреждает, что проверки не было
-  static Future<void> download(String url, File dest, String label, void Function(String) log, {String? sha256}) async {
+  static Future<void> download(String url, File dest, String label, void Function(String) log,
+      {String? sha256, Map<String, String>? headers}) async {
     log('Скачиваю $label…');
     final client = http.Client();
     final part = File('${dest.path}.part');
     try {
-      final res = await client.send(http.Request('GET', Uri.parse(url))..headers['User-Agent'] = 'Mozilla/5.0');
+      final res = await client.send(http.Request('GET', Uri.parse(url))..headers.addAll({'User-Agent': 'Mozilla/5.0', ...?headers}));
       if (res.statusCode != 200) throw Exception('$label: сервер ответил ${res.statusCode}');
       final sink = part.openWrite();
       try {

@@ -18,10 +18,10 @@ Map release(String tag, {bool pre = false, bool draft = false, String? digest, b
         if (exe)
           {
             'name': DownloaderModule.assetName,
-            'browser_download_url': 'https://example.test/$tag/${DownloaderModule.assetName}',
+            'url': 'https://api.github.com/repos/o/r/releases/assets/$tag-exe',
             if (digest != null) 'digest': 'sha256:$digest',
           },
-        if (shaFile) {'name': '${DownloaderModule.assetName}.sha256', 'browser_download_url': 'https://example.test/$tag/sha'},
+        if (shaFile) {'name': '${DownloaderModule.assetName}.sha256', 'url': 'https://api.github.com/repos/o/r/releases/assets/$tag-sha'},
       ],
     };
 
@@ -72,7 +72,7 @@ void main() {
       ], 1);
       expect(r?.version, '1.0.12');
       expect(r?.sha256, 'b' * 64);
-      expect(r?.url, endsWith('/v1.0.12/${DownloaderModule.assetName}'));
+      expect(r?.url, 'https://api.github.com/repos/o/r/releases/assets/v1.0.12-exe');
     });
 
     test('нет сборки для протокола — null', () {
@@ -83,9 +83,18 @@ void main() {
     test('контрольная сумма из файла .sha256', () {
       final r = DownloaderModule.pick([release('v1.0.3', shaFile: true)], 1);
       expect(r?.sha256, isNull);
-      expect(r?.shaUrl, 'https://example.test/v1.0.3/sha');
+      expect(r?.shaUrl, 'https://api.github.com/repos/o/r/releases/assets/v1.0.3-sha');
       expect(DownloaderModule.parseSha('${'C' * 64}  cave-downloader-windows-x64.exe'), 'c' * 64);
       expect(DownloaderModule.parseSha('not a hash'), isNull);
+    });
+
+    test('ключ доступа идёт только в заголовке Authorization и только если он задан', () {
+      expect(DownloaderModule.apiHeaders('', file: true).containsKey('Authorization'), isFalse);
+      final h = DownloaderModule.apiHeaders('ghp_secret');
+      expect(h['Authorization'], 'Bearer ghp_secret');
+      expect(h['Accept'], 'application/vnd.github+json');
+      expect(DownloaderModule.apiHeaders('ghp_secret', file: true)['Accept'], 'application/octet-stream');
+      expect(h.entries.where((e) => e.key != 'Authorization').any((e) => e.value.contains('ghp_secret')), isFalse);
     });
 
     test('своя сборка из CAVE_DOWNLOADER_EXE не скачивается', () async {

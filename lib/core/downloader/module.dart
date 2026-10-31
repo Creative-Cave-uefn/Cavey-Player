@@ -1,4 +1,4 @@
-// Модуль скачки cave-downloader живёт в отдельном репозитории (kDownloaderRepo).
+// Модуль скачки cave-downloader живёт в отдельном приватном репозитории (kDownloaderRepo).
 // Здесь его установка: при первом скачивании берём из релизов последнюю сборку
 // с нашей версией протокола, сверяем SHA-256 и кладём в папку приложения.
 // Раз в сутки проверяем, не вышла ли новая.
@@ -33,7 +33,11 @@ class DownloaderModule {
   /// Путь к своей сборке модуля вместо скачанной (для разработки)
   final String? override;
 
-  DownloaderModule(this.dir, {this.repo = kDownloaderRepo, this.protocol = kDownloaderProtocol, String? override})
+  /// Ключ доступа к приватному репозиторию модуля (только чтение)
+  final String token;
+
+  DownloaderModule(this.dir,
+      {this.repo = kDownloaderRepo, this.protocol = kDownloaderProtocol, this.token = kDownloaderToken, String? override})
       : override = override ?? _envOverride();
 
   static String? _envOverride() {
@@ -90,7 +94,7 @@ class DownloaderModule {
     String? sha;
     try {
       rel = await latest();
-      if (rel != null) sha = rel.sha256 ?? await _shaFromFile(rel.shaUrl);
+      if (rel != null) sha = rel.sha256 ?? await _shaFromFile(rel.shaUrl, token);
     } catch (e) {
       if (!installed) throw Exception('Не удалось скачать модуль скачки из $repo: $e');
       log('Не удалось проверить обновления модуля скачки: $e');
@@ -116,7 +120,7 @@ class DownloaderModule {
     log(installed ? 'Обновляю модуль скачки до ${rel.version}…' : 'Первый запуск: скачиваю модуль скачки ${rel.version}…');
     try {
       await dir.create(recursive: true);
-      await Tools.download(rel.url, exe, 'модуль скачки ${rel.version}', log, sha256: sha);
+      await Tools.download(rel.url, exe, 'модуль скачки ${rel.version}', log, sha256: sha, headers: apiHeaders(token, file: true));
       _save(rel.version);
     } catch (e) {
       if (!installed) rethrow;
@@ -124,14 +128,24 @@ class DownloaderModule {
     }
   }
 
-  static Map<String, String> get _headers =>
-      {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer/${kAppVersion.isEmpty ? 'dev' : kAppVersion}'};
+  /// Заголовки запросов к api.github.com. Ключ уходит только туда: на сервер файлов, куда GitHub
+  /// перенаправляет скачивание, его не передаёт ни этот код, ни http-клиент
+  static Map<String, String> apiHeaders(String token, {bool file = false}) => {
+        'Accept': file ? 'application/octet-stream' : 'application/vnd.github+json',
+        'User-Agent': 'CavePlayer/${kAppVersion.isEmpty ? 'dev' : kAppVersion}',
+        if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+      };
 
   /// Свежая сборка модуля с нашей версией протокола или null, если такой нет
   Future<ModuleRelease?> latest() async {
     final res = await http
-        .get(Uri.parse('https://api.github.com/repos/$repo/releases?per_page=30'), headers: _headers)
+        .get(Uri.parse('https://api.github.com/repos/$repo/releases?per_page=30'), headers: apiHeaders(token))
         .timeout(const Duration(seconds: 20));
+    if (res.statusCode == 404 || res.statusCode == 401) {
+      throw Exception(token.isEmpty
+          ? 'репозиторий модуля приватный, а в этой сборке Cavey нет ключа доступа (DOWNLOADER_TOKEN)'
+          : 'GitHub не пускает по ключу доступа к модулю (${res.statusCode}): ключ отозван или без права чтения. Обновите Cavey');
+    }
     if (res.statusCode != 200) throw Exception('GitHub ответил ${res.statusCode}');
     final list = jsonDecode(res.body);
     return pick(list is List ? list : const [], protocol);
@@ -151,11 +165,11 @@ class DownloaderModule {
       for (final a in (r['assets'] as List? ?? const [])) {
         if (a is! Map) continue;
         if (a['name'] == assetName) {
-          url = '${a['browser_download_url'] ?? ''}';
+          url = '${a['url'] ?? ''}'; // API-адрес файла: работает и для приватного репозитория
           final d = '${a['digest'] ?? ''}';
           if (d.startsWith('sha256:')) sha = d.substring(7).toLowerCase();
         } else if (a['name'] == '$assetName.sha256') {
-          shaUrl = '${a['browser_download_url'] ?? ''}';
+          shaUrl = '${a['url'] ?? ''}';
         }
       }
       if (url == null || url.isEmpty) continue;
@@ -173,9 +187,9 @@ class DownloaderModule {
   }
 
   /// Файл вида «<sha256>  <имя>» рядом со сборкой
-  static Future<String?> _shaFromFile(String? url) async {
+  static Future<String?> _shaFromFile(String? url, String token) async {
     if (url == null || url.isEmpty) return null;
-    final res = await http.get(Uri.parse(url), headers: {'User-Agent': 'CavePlayer'}).timeout(const Duration(seconds: 20));
+    final res = await http.get(Uri.parse(url), headers: apiHeaders(token, file: true)).timeout(const Duration(seconds: 20));
     if (res.statusCode != 200) return null;
     return parseSha(res.body);
   }

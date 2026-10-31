@@ -138,6 +138,7 @@ jobs:
             "--dart-define=BUILD_BETA=$env:BUILD_BETA" `
             "--dart-define=CAVE_LIBRARY_ID=${{ vars.CAVE_LIBRARY_ID }}" `
             "--dart-define=DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}" `
+            "--dart-define=DOWNLOADER_TOKEN=${{ secrets.DOWNLOADER_TOKEN }}" `
             "--dart-define=SHARE_URL=${{ vars.SHARE_URL }}" `
             "--dart-define=GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID" `
             "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET" 2>&1 | Out-String
