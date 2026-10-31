@@ -122,7 +122,7 @@ class DownloadService extends ChangeNotifier {
   bool _started = false;
   Timer? _prepareTimer;
 
-  /// Вызывается при запуске плеера: модуль скачки ставится сразу, в фоне, а не при первом «Скачать».
+  /// Вызывается при запуске плеера: модуль скачки и его программы ставятся сразу, в фоне, а не при первом «Скачать».
   /// Без интернета пробует снова через 15 минут; пока плеер открыт — раз в сутки проверяет обновления
   void start() {
     if (_started) return;
@@ -137,11 +137,15 @@ class DownloadService extends ChangeNotifier {
     var next = const Duration(hours: 6); // сеть трогается не чаще раза в сутки (см. DownloaderModule.ensure)
     final had = module.installed;
     try {
-      await _locked(() => _ensureModule((l) => AppLog.info('Модуль скачки: $l')));
+      void log(String l) => AppLog.info('Модуль скачки: $l');
+      await _locked(() => _ensureModule(log));
+      // Программы для скачки (yt-dlp, ffmpeg, Deno, Sockseek) тоже сразу, а не при первом задании
+      final r = await _invoke({'kind': 'tools-ensure', 'sockseek': true}, log);
+      if (!r.ok) throw Exception(r.error ?? 'модуль не поставил программы');
       // Только что поставили — обновляем надпись с версиями в разделе «Скачать»
-      if (!had && module.installed) unawaited(refreshVersion());
+      if (!had) unawaited(refreshVersion());
     } catch (e) {
-      AppLog.warn('Модуль скачки не установился, попробую через 15 минут', e);
+      AppLog.warn('Модуль скачки или его программы не установились, попробую через 15 минут', e);
       next = const Duration(minutes: 15);
     }
     _prepareTimer = Timer(next, () => unawaited(_prepare()));

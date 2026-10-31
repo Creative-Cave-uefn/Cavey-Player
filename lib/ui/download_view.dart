@@ -165,7 +165,7 @@ class _DownloadPageState extends State<DownloadPage> {
                 dl.installing
                     ? 'Устанавливаю программы для скачивания…'
                     : dl.moduleVersion.isEmpty
-                        ? 'Модуль скачки ставится сам в фоне после запуска Cavey. Если нет интернета, попробует снова через 15 минут.'
+                        ? 'Модуль скачки и программы для него ставятся сами в фоне после запуска Cavey. Если нет интернета, попробует снова через 15 минут.'
                         : 'Модуль скачки ${dl.moduleVersion} · yt-dlp: ${dl.toolsVersion.isEmpty ? '…' : dl.toolsVersion}. '
                             'Обновляются сами.',
                 style: const TextStyle(color: C.faint, fontSize: 13),
