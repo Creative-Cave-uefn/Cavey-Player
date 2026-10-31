@@ -50,7 +50,7 @@ void main() {
         expect(request.url.queryParameters['signature'], isNotEmpty);
         body = {'richsync': {'richsync_body': jsonEncode(rich)}};
       }
-      return http.Response(jsonEncode({'message': {'header': {'status_code': 200}, 'body': body}}), 200);
+      return http.Response(jsonEncode({'message': {'header': {'status_code': 200}, 'body': body}}), 200, headers: {'content-type': 'application/json; charset=utf-8'});
     });
     final track = Track(id: 'id', source: 's', title: 'Song', artist: 'Artist', album: '', albumArtist: '',
         no: null, year: '', pic: null, cover: null, modified: '', size: 0, by: '', path: '');
