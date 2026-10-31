@@ -126,16 +126,16 @@ class KaraokeAligner {
   /// Ж2: общий сдвиг песни. Первые слова строк сопоставляем со всем распознанным без ограничения по времени
   /// и берём медиану расхождений. Положительный сдвиг — песня в этой записи звучит позже, чем в тексте.
   static Duration globalShift(List<LyricLine> lines, List<HeardWord> heard) {
-    final firsts = <(int, String)>[]; // строка, первое слово
     final all = <String>[];
-    final owner = <int>[]; // для каждого слова текста — номер строки или -1, если слово не первое в строке
+    final expected = <Duration>[]; // когда слово должно звучать по тексту (положение в строке — по доле слов)
     for (var li = 0; li < lines.length; li++) {
       final t = tokens(lines[li].text);
+      final at = lines[li].at!;
+      final span = (li + 1 < lines.length ? lines[li + 1].at! - at : const Duration(seconds: 5)).inMilliseconds * 0.85;
       for (var k = 0; k < t.length; k++) {
         all.add(t[k].$3);
-        owner.add(k == 0 ? li : -1);
+        expected.add(at + Duration(milliseconds: (span * k / t.length).round()));
       }
-      if (t.isNotEmpty) firsts.add((li, t.first.$3));
     }
     final n = all.length, m = heard.length;
     if (n < 6 || m < 6) return Duration.zero;
@@ -156,12 +156,12 @@ class KaraokeAligner {
       } else if (score[i][j] == score[i][j - 1]) {
         j--;
       } else {
-        if (owner[i - 1] >= 0) diffs.add((heard[j - 1].start - lines[owner[i - 1]].at!).inMilliseconds);
+        diffs.add((heard[j - 1].start - expected[i - 1]).inMilliseconds);
         i--;
         j--;
       }
     }
-    if (diffs.length < 3) return Duration.zero;
+    if (diffs.length < 4) return Duration.zero;
     diffs.sort();
     final median = diffs[diffs.length ~/ 2];
     final close = diffs.where((d) => (d - median).abs() < 1500).length;

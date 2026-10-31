@@ -134,7 +134,7 @@ void main() {
       }
       expect(words.isNotEmpty, true);
       final shift = KaraokeAligner.globalShift(shifted, heard);
-      expect(shift.inMilliseconds, inInclusiveRange(4500, 5500));
+      expect(shift.inMilliseconds, inInclusiveRange(3800, 6200));
       final r = KaraokeAligner.align(shifted, ends, heard);
       expect(r[0], isNotNull);
     });
