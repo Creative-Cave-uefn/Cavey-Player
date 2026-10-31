@@ -606,13 +606,27 @@ class LibraryController extends ChangeNotifier {
     final libAtStart = settings.libFileId;
     try {
       await _withHub((email) async {
-        final latest = await _downloadLatest(email);
-        // Пока качали, человек отключился или сменил библиотеку: в чужой файл ничего не пишем
-        if (settings.libFileId != libAtStart) throw _Abandoned();
-        for (final op in batch) {
-          latest.apply(op);
+        // Б1: перед записью проверяем, что файл не менял кто-то другой с момента скачивания.
+        // Изменился — качаем заново и применяем свои правки поверх (до 3 попыток)
+        late LibraryData latest;
+        String? modified;
+        for (var attempt = 0;; attempt++) {
+          final before = (await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime'))['modifiedTime'];
+          latest = await _downloadLatest(email);
+          // Пока качали, человек отключился или сменил библиотеку: в чужой файл ничего не пишем
+          if (settings.libFileId != libAtStart) throw _Abandoned();
+          for (final op in batch) {
+            latest.apply(op);
+          }
+          final after = (await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime'))['modifiedTime'];
+          if (after != before) {
+            if (attempt >= 2) throw LibraryException('Библиотеку одновременно правят другие, сохраню чуть позже');
+            AppLog.info('Библиотека изменилась во время сохранения, повторяю (${attempt + 1})');
+            continue;
+          }
+          modified = await drive.updateFile(email, settings.libFileId!, jsonEncode(latest.toJson()));
+          break;
         }
-        final modified = await drive.updateFile(email, settings.libFileId!, jsonEncode(latest.toJson()));
         _pending.removeRange(0, batch.length);
         for (final op in _pending) {
           latest.apply(op);
