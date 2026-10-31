@@ -11,6 +11,8 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'lyric_sources.dart';
+
 import '../config.dart';
 import 'log.dart';
 import 'models.dart';
@@ -120,7 +122,16 @@ class Lyrics {
   final List<LyricLine> lines;
   final bool synced;
   final bool instrumental;
-  const Lyrics(this.lines, {required this.synced, this.instrumental = false});
+
+  /// Л2: длительность версии текста в LRCLIB отличается от трека больше чем на 3 с — это может быть другая версия
+  final bool approx;
+
+  /// Л1, Л6: текст взят из файла рядом с треком или из самого файла, а не из LRCLIB
+  final String? origin;
+  const Lyrics(this.lines, {required this.synced, this.instrumental = false, this.approx = false, this.origin});
+
+  Lyrics copyWith({bool? approx, String? origin}) =>
+      Lyrics(lines, synced: synced, instrumental: instrumental, approx: approx ?? this.approx, origin: origin ?? this.origin);
 
   static final _tag = RegExp(r'\[(\d+):(\d+(?:[.:]\d+)?)\]');
   static final _offset = RegExp(r'^\s*\[offset:\s*([+-]?\d+)\s*\]', multiLine: true, caseSensitive: false);
@@ -236,6 +247,10 @@ class LyricsService extends ChangeNotifier {
 
   LyricsService(this.dir);
 
+  /// Л1, Л6: текст из файла рядом с треком или из самого файла (задаёт приложение, у него есть доступ к Диску).
+  /// Возвращает сырой текст нужного вида или null, если своих текстов у трека нет
+  Future<SourceText?> Function(Track t)? ownSource;
+
   /// Ключ кэша по тому, что ищем, а не по id файла: если поправить название
   /// или исполнителя, текст поищется заново.
   static String keyFor(Track t) {
@@ -296,11 +311,31 @@ class LyricsService extends ChangeNotifier {
           if (j['none'] == true) {
             final at = DateTime.tryParse('${j['at']}');
             if (at != null && DateTime.now().difference(at) < const Duration(days: 7)) return null;
+          } else if (j['side'] != null) {
+            final own = SourceText.fromJson(j)?.parse();
+            if (own != null) return own.copyWith(origin: j['side'] as String);
           } else {
-            return Lyrics.fromLrclib(j);
+            return _mark(Lyrics.fromLrclib(j), j, duration);
           }
         }
       } catch (_) {}
+    }
+
+    // Свой текст (рядом с треком или внутри файла) важнее LRCLIB: он точно от этой версии трека
+    final hook = ownSource;
+    if (hook != null) {
+      try {
+        final src = await hook(t);
+        final own = src?.parse();
+        if (src != null && own != null) {
+          try {
+            await f.writeAsString(jsonEncode(src.toJson()));
+          } catch (_) {}
+          return own.copyWith(origin: src.kind.name);
+        }
+      } catch (e) {
+        AppLog.warn('Свой текст для «${t.title}» не прочитался', e);
+      }
     }
 
     Map? found;
@@ -313,7 +348,16 @@ class LyricsService extends ChangeNotifier {
     try {
       await f.writeAsString(jsonEncode(found ?? {'none': true, 'at': DateTime.now().toIso8601String()}));
     } catch (_) {}
-    return found == null ? null : Lyrics.fromLrclib(found);
+    return found == null ? null : _mark(Lyrics.fromLrclib(found), found, duration);
+  }
+
+  /// Л2: помечаем текст, длительность которого заметно отличается от трека
+  static Lyrics? _mark(Lyrics? ly, Map j, Duration duration) {
+    if (ly == null || duration <= Duration.zero) return ly;
+    final d = (j['duration'] as num?)?.toDouble();
+    if (d == null) return ly;
+    final diff = (d - duration.inMilliseconds / 1000).abs();
+    return diff > 3 ? ly.copyWith(approx: true) : ly;
   }
 
   Map<String, String> get _headers =>

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -18,6 +19,7 @@ import 'core/dl/service.dart';
 import 'core/dl/tools.dart';
 import 'core/drive.dart';
 import 'core/library.dart';
+import 'core/lyric_sources.dart';
 import 'core/lyrics.dart';
 import 'core/player.dart';
 import 'core/social.dart';
@@ -92,9 +94,36 @@ class AppServices {
     final player = PlayerController(lib, accounts, settings, cache);
     final lyrics = LyricsService(store.sub('lyrics'));
     // Текст ищем сразу, как трек открылся: панель потом покажет его без ожидания
+    // Л1, Л6: сначала смотрим, нет ли текста рядом с треком на Диске или внутри самого файла
+    lyrics.ownSource = (t) async {
+      final email = await lib.accessFor(t.source);
+      final meta = await drive.getFile(email, t.id, fields: 'id,name,parents');
+      final name = '${meta['name'] ?? ''}';
+      final dot = name.lastIndexOf('.');
+      final base = dot > 0 ? name.substring(0, dot) : name;
+      final parents = (meta['parents'] as List?)?.cast<String>() ?? const <String>[];
+      if (parents.isNotEmpty && base.isNotEmpty) {
+        for (final ext in const ['txt', 'ass', 'lrc']) {
+          final found = await drive.listChildren(email, parents.first, nameEquals: '$base.$ext');
+          if (found.isEmpty) continue;
+          final text = utf8.decode(await drive.download(email, found.first.id), allowMalformed: true);
+          if (ext == 'txt' && text.contains('#BPM')) return SourceText(LyricKind.ultrastar, text);
+          if (ext == 'ass') return SourceText(LyricKind.ass, text);
+          final c = LyricFiles.classify(text);
+          if (c != null) return c;
+        }
+      }
+      final head = await drive.readRange(email, t.id, 0, 262143);
+      return LyricFiles.embedded(head);
+    };
     player.onTrackReady = (t, d) {
       lyrics.forTrack(t, d).then<void>((_) {}, onError: (Object _) {});
       lib.noteDuration(t, d);
+      // Л5: текст следующего трека ищем заранее, вместе с предзагрузкой звука
+      final next = player.upcoming.firstOrNull;
+      if (next != null && (next.durationMs ?? 0) > 0 && !lyrics.known(next)) {
+        lyrics.forTrack(next, Duration(milliseconds: next.durationMs!)).then<void>((_) {}, onError: (Object _) {});
+      }
     };
     accounts.addListener(lib.saveSettings);
     await lib.start();

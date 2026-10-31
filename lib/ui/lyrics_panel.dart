@@ -215,16 +215,32 @@ class _LyricsBodyState extends State<LyricsBody> {
     return false;
   }
 
-  Widget _again() => Padding(
-        padding: const EdgeInsets.only(top: 18),
-        child: Align(
+  Widget _again() {
+    final ly = _synced;
+    final note = ly == null
+        ? null
+        : ly.approx
+            ? 'Версия текста может отличаться: длительность в базе не совпадает с треком'
+            : switch (ly.origin) {
+                'ultrastar' => 'Слоги из файла UltraStar рядом с треком',
+                'ass' => 'Слоги из файла .ass рядом с треком',
+                'lrc' => 'Текст из файла рядом с треком или из самого трека',
+                _ => null,
+              };
+    return Padding(
+      padding: const EdgeInsets.only(top: 18),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (note != null) Text(note, style: const TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+        Align(
           alignment: Alignment.centerLeft,
           child: TextButton(
             onPressed: _retry,
             child: const Text('Не тот текст? Искать заново', style: TextStyle(color: C.faint, fontSize: 13)),
           ),
         ),
-      );
+      ]),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {

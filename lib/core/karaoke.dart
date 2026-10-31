@@ -476,6 +476,10 @@ class KaraokeService extends ChangeNotifier {
   /// Время слов по строкам, если уже посчитано. Иначе null — и в фоне ищем или считаем
   List<List<KWord>?>? wordsFor(Track t, Lyrics ly) {
     if (!ly.synced) return null;
+    // Л6: готовая разметка по слогам из файла точнее любого расчёта — у строк уже есть время слов
+    if (ly.origin == 'ultrastar' || ly.origin == 'ass') return null;
+    // Л2: текст другой версии (длительность отличается больше чем на 3 с) в караоке — только после поправки сдвига
+    if (ly.approx && !_approxOk.contains(t.id)) return null;
     final key = keyFor(t, ly);
     if (_mem.containsKey(key)) return _mem[key];
     if (_loading.add(key)) unawaited(_fetch(t, ly, key));
@@ -714,6 +718,7 @@ class KaraokeService extends ChangeNotifier {
       if (await f.exists()) await f.delete();
     } catch (_) {}
     _mem.remove(key);
+    _approxOk.add(t.id);
     _forced.add(key);
     notifyListeners();
     if (!enabled) {
@@ -724,6 +729,7 @@ class KaraokeService extends ChangeNotifier {
   }
 
   final Set<String> _forced = {};
+  final Set<String> _approxOk = {}; // треки с «приблизительным» текстом, которым разрешён расчёт
 
   // ---------- Ж7: ручная поправка времени ----------
 
@@ -735,6 +741,7 @@ class KaraokeService extends ChangeNotifier {
   int offsetMs(Track t) => globalDelayMs + trackOffsetMs(t);
 
   void nudge(Track t, int ms) {
+    _approxOk.add(t.id);
     final v = (trackOffsetMs(t) + ms).clamp(-3000, 3000);
     if (v == 0) {
       lib.settings.view.remove('karaoke.off.${t.id}');
