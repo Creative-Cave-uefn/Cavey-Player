@@ -77,8 +77,14 @@ class DownloaderSession {
           accepted.complete(c);
         }
       } on ModuleProtocolMismatch catch (e) {
-        s.destroy();
+        // Сначала запоминаем причину: получив «bye», модуль сразу выходит,
+        // и иначе пользователь увидел бы «завершился с кодом 0» вместо понятной ошибки
         if (!accepted.isCompleted) accepted.completeError(e);
+        try {
+          s.write('${jsonEncode({'t': 'bye', 'error': '$e'})}\n');
+          await s.flush();
+        } catch (_) {}
+        s.destroy();
       } catch (_) {
         s.destroy(); // чужое подключение или неверный токен — ждём своё
       }
@@ -173,14 +179,7 @@ class DownloaderSession {
     if (hello is! Map || hello['t'] != 'hello' || hello['token'] != token) throw const SocketException('чужое подключение');
     final version = '${hello['version'] ?? '?'}';
     final theirs = (hello['protocol'] as num?)?.toInt() ?? 0;
-    if (theirs != protocol) {
-      final e = ModuleProtocolMismatch(theirs, protocol, version);
-      try {
-        s.write('${jsonEncode({'t': 'bye', 'error': '$e'})}\n');
-        await s.flush();
-      } catch (_) {}
-      throw e;
-    }
+    if (theirs != protocol) throw ModuleProtocolMismatch(theirs, protocol, version);
     return _Conn(s, lines, version);
   }
 
