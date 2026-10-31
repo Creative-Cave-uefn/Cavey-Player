@@ -77,7 +77,7 @@ Write-Output 'Creating isolated Python environment...'
 Run-Checked $python @('-m', 'venv', ROOT)
 Write-Output 'Installing Zotify...'
 Run-Checked VENV_PYTHON @('-m', 'pip', 'install', '--upgrade', 'pip')
-Run-Checked VENV_PYTHON @('-m', 'pip', 'install', 'https://get.zotify.xyz')
+Run-Checked VENV_PYTHON @('-m', 'pip', 'install', 'git+https://github.com/zotify-dev/zotify.git@08d844fe3e644ae6cd9bea34a3b4982e61129f33')
 Run-Checked EXE @('--help')
 Write-Output 'CAVE_ZOTIFY_INSTALL_OK'
 '''

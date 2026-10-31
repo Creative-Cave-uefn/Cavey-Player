@@ -1,6 +1,4 @@
-import 'package:http/http.dart' as http;
 
-import '../core/musixmatch.dart';
 import '../core/dl/zotify_install.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -920,19 +918,17 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
       return;
     }
     setState(() { _checking = true; _matchResult = 'Проверяю ${track.displayArtist} — ${track.title}…'; });
-    final client = http.Client();
     try {
-      final result = await Musixmatch(client).find(track, Duration(milliseconds: track.durationMs ?? 0))
+      final result = await app.lyrics.musixmatch.find(track, Duration(milliseconds: track.durationMs ?? 0))
           .timeout(const Duration(seconds: 25));
       if (mounted) setState(() => _matchResult = result == null
           ? 'Для «${track.title}» RichSync не найден. Плеер использует другие источники текста.'
-          : 'Musixmatch работает: «${track.title}», строк: ${result.lines.length}, '
+          : 'Musixmatch (новый API), синхронизация ${result.lines.any((l) => l.words?.isNotEmpty == true) ? 'по словам' : 'по строкам'}: «${track.title}», строк: ${result.lines.length}, '
             'сегментов с таймкодами: ${result.lines.fold<int>(0, (n, line) => n + (line.words?.length ?? 0))}. '
             'Обновите текст в панели песни, чтобы загрузить эту разметку.');
     } catch (e) {
       if (mounted) setState(() => _matchResult = 'Musixmatch сейчас недоступен: $e. Плеер использует LRCLIB.');
     } finally {
-      client.close();
       if (mounted) setState(() => _checking = false);
     }
   }

@@ -248,6 +248,8 @@ class LyricsService extends ChangeNotifier {
 
   LyricsService(this.dir);
 
+  late final Musixmatch musixmatch = Musixmatch(_http, tokenFile: File('${dir.path}${Platform.pathSeparator}musixmatch-token.json'));
+
   /// Л1, Л6: текст из файла рядом с треком или из самого файла (задаёт приложение, у него есть доступ к Диску).
   /// Возвращает сырой текст нужного вида или null, если своих текстов у трека нет
   Future<SourceText?> Function(Track t)? ownSource;
@@ -323,6 +325,8 @@ class LyricsService extends ChangeNotifier {
           if (j['none'] == true) {
             final at = DateTime.tryParse('${j['at']}');
             if (at != null && DateTime.now().difference(at) < const Duration(days: 7)) return null;
+          } else if (j['musixmatchLrc'] is String) {
+            return Lyrics.fromLrclib({'syncedLyrics': j['musixmatchLrc']})?.copyWith(origin: 'musixmatch');
           } else if (j['musixmatch'] != null) {
             final rich = Musixmatch.parse(j['musixmatch']);
             if (rich != null) return rich;
@@ -355,11 +359,17 @@ class LyricsService extends ChangeNotifier {
 
     // Ready-made word timings avoid running speech recognition locally.
     try {
-      final rich = await Musixmatch(_http).find(t, duration).timeout(const Duration(seconds: 20));
+      final rich = await musixmatch.find(t, duration).timeout(const Duration(seconds: 20));
       if (rich != null) {
         try {
-          await f.writeAsString(jsonEncode({'musixmatch': [
+          await f.writeAsString(jsonEncode(rich.lines.any((line) => line.words == null) ? {'musixmatchLrc': rich.lines.map((line) {
+            final at = line.at!;
+            final min = at.inMinutes.toString().padLeft(2, '0');
+            final sec = ((at.inMilliseconds % 60000) / 1000).toStringAsFixed(3).padLeft(6, '0');
+            return '[$min:$sec]${line.text}';
+          }).join('\n')} : {'musixmatch': [
             for (final line in rich.lines) {
+              'x': line.text,
               'ts': line.at!.inMilliseconds / 1000,
               'te': line.words!.last.end.inMilliseconds / 1000,
               'l': [for (final w in line.words!) {
