@@ -17,6 +17,7 @@ import 'dl/tools.dart';
 import 'drive.dart';
 import 'library.dart';
 import 'log.dart';
+import 'lyric_sources.dart';
 import 'lyrics.dart';
 import 'models.dart';
 
@@ -166,6 +167,78 @@ class KaraokeAligner {
     final median = diffs[diffs.length ~/ 2];
     final close = diffs.where((d) => (d - median).abs() < 1500).length;
     return close >= diffs.length * 0.5 ? Duration(milliseconds: median) : Duration.zero;
+  }
+
+  /// Л4: текст без времени. Слова текста сопоставляются со всем распознанным по порядку;
+  /// время строки — время её первого найденного слова, остальные строки достраиваются между соседями
+  static List<Duration?> timeLines(List<String> texts, List<HeardWord> heardRaw) {
+    final heard = splitHeard([for (final h in heardRaw) if (h.conf >= 0.25) h]);
+    final all = <String>[];
+    final owner = <int>[];
+    for (var li = 0; li < texts.length; li++) {
+      for (final t in tokens(texts[li])) {
+        all.add(t.$3);
+        owner.add(li);
+      }
+    }
+    final out = List<Duration?>.filled(texts.length, null);
+    final n = all.length, m = heard.length;
+    if (n == 0 || m == 0) return out;
+    final score = List.generate(n + 1, (_) => List<double>.filled(m + 1, 0));
+    for (var i = 1; i <= n; i++) {
+      for (var j = 1; j <= m; j++) {
+        var best = math.max(score[i - 1][j], score[i][j - 1]);
+        if (all[i - 1].length >= 2) {
+          final sim = similarity(all[i - 1], heard[j - 1].text);
+          if (sim >= 0.7) best = math.max(best, score[i - 1][j - 1] + sim);
+        }
+        score[i][j] = best;
+      }
+    }
+    var i = n, j = m;
+    while (i > 0 && j > 0) {
+      if (score[i][j] == score[i - 1][j]) {
+        i--;
+      } else if (score[i][j] == score[i][j - 1]) {
+        j--;
+      } else {
+        final li = owner[i - 1];
+        final cur = out[li];
+        final at = heard[j - 1].start;
+        if (cur == null || at < cur) out[li] = at; // идём с конца: оставляем самое раннее слово строки
+        i--;
+        j--;
+      }
+    }
+    // Время должно только расти: строки, нарушившие порядок, считаем ненайденными
+    Duration? last;
+    for (var li = 0; li < out.length; li++) {
+      final v = out[li];
+      if (v == null) continue;
+      if (last != null && v <= last) {
+        out[li] = null;
+      } else {
+        last = v;
+      }
+    }
+    // Ненайденные строки — равномерно между соседями с известным временем
+    for (var li = 0; li < out.length; li++) {
+      if (out[li] != null) continue;
+      var a = li;
+      while (a < out.length && out[a] == null) {
+        a++;
+      }
+      final prev = li == 0 ? null : out[li - 1];
+      final next = a < out.length ? out[a] : null;
+      if (prev == null && next == null) continue;
+      final from = prev ?? (next! - Duration(seconds: 4 * (a - li)));
+      final to = next ?? (prev! + Duration(seconds: 4 * (a - li + 1)));
+      for (var c = li; c < a; c++) {
+        out[c] = from + Duration(milliseconds: ((to - from).inMilliseconds * (c - li + 1) / (a - li + 1)).round());
+      }
+      li = a - 1;
+    }
+    return out;
   }
 
   /// [lines] — строки текста (время начала), [ends] — когда каждая кончается.
@@ -671,6 +744,76 @@ class KaraokeService extends ChangeNotifier {
       } else if (lib.hasHub) {
         AppLog.info('Караоке: «${t.title}» не выложено в общую папку — точных строк меньше ${(shareQuality * 100).round()}%');
       }
+    } finally {
+      for (final f in [src, wav, File('$out.json')]) {
+        try {
+          if (f.existsSync()) await f.delete();
+        } catch (_) {}
+      }
+    }
+  }
+
+  /// Л4: у песни только обычный текст — Whisper слушает звук, и по нему расставляется время строк.
+  /// Результат сохраняется как синхронный текст (LRC) рядом с остальными текстами
+  Future<bool> timePlain(Track t, Lyrics plain, LyricsService lyrics) async {
+    if (!enabled) {
+      lib.messages.add('Включите точное караоке в настройках: время строк считает Whisper');
+      return false;
+    }
+    final texts = [for (final l in plain.lines) l.text];
+    final prompt = promptWords(plain);
+    await _install();
+    _status('Ставлю время строк: готовлю звук «${t.title}»…');
+    final work = Directory('${dir.path}${Platform.pathSeparator}work');
+    await work.create(recursive: true);
+    final src = File('${work.path}${Platform.pathSeparator}plain.audio');
+    final wav = File('${work.path}${Platform.pathSeparator}plain.wav');
+    final out = '${work.path}${Platform.pathSeparator}plain_out';
+    try {
+      final cached = cache.fileFor(t.id);
+      if (cache.has(t.id) && cached.existsSync()) {
+        await cached.copy(src.path);
+      } else {
+        final email = await lib.accessFor(t.source);
+        await src.writeAsBytes(await drive.download(email, t.id));
+      }
+      if (!tools.ffmpeg.existsSync()) await tools.ensure((l) => _status(l));
+      await Tools.run(tools.ffmpeg.path, ['-y', '-i', src.path, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav.path]);
+      _status('Ставлю время строк: слушаю «${t.title}»…');
+      final threads = math.max(1, Platform.numberOfProcessors ~/ 2);
+      await Tools.run(_cli.path, [
+        '-m', _modelFile(model).path,
+        '-f', wav.path,
+        '-l', langOf(plain),
+        '-t', '$threads',
+        '-ml', '1', '-sow',
+        '-ojf', '-of', out,
+        '-np',
+        if (prompt.isNotEmpty) ...['--prompt', prompt],
+      ]);
+      final json = File('$out.json');
+      if (!json.existsSync()) throw Exception('whisper.cpp не выдал результат');
+      final heard = parseWhisper(jsonDecode(utf8.decode(await json.readAsBytes(), allowMalformed: true)));
+      final times = KaraokeAligner.timeLines(texts, heard);
+      final known = times.where((x) => x != null).length;
+      if (known < (texts.where((x) => x.trim().isNotEmpty).length * 0.5)) {
+        _status('Не получилось: звук не совпал с текстом');
+        return false;
+      }
+      String stamp(Duration d) {
+        final m = d.inMinutes, sec = (d.inMilliseconds % 60000) / 1000;
+        return '[${m.toString().padLeft(2, '0')}:${sec.toStringAsFixed(2).padLeft(5, '0')}]';
+      }
+
+      final lrc = StringBuffer();
+      for (var i = 0; i < texts.length; i++) {
+        final at = times[i];
+        if (at == null || texts[i].trim().isEmpty) continue;
+        lrc.writeln('${stamp(at)}${texts[i].trim()}');
+      }
+      await lyrics.saveOwn(t, SourceText(LyricKind.lrc, lrc.toString()));
+      _status('');
+      return true;
     } finally {
       for (final f in [src, wav, File('$out.json')]) {
         try {

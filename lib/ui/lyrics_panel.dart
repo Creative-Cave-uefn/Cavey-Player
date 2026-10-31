@@ -336,6 +336,7 @@ class _LyricsBodyState extends State<LyricsBody> {
             child: Text(l.text, style: TextStyle(color: C.muted, fontSize: widget.big ? 24 : 15, height: 1.5, fontWeight: widget.big ? FontWeight.w600 : null)),
           ),
         _again(),
+        _PlainTiming(track: t, lyrics: ly), // Л4
       ]);
     }
     while (_keys.length < ly.lines.length) {
@@ -640,6 +641,54 @@ class _KaraokeTools extends StatelessWidget {
           ]),
         );
       },
+    );
+  }
+}
+
+
+/// Л4: текст есть, а времени нет — предложить расставить время строк по звуку (Whisper)
+class _PlainTiming extends StatefulWidget {
+  final Track track;
+  final Lyrics lyrics;
+  const _PlainTiming({required this.track, required this.lyrics});
+
+  @override
+  State<_PlainTiming> createState() => _PlainTimingState();
+}
+
+class _PlainTimingState extends State<_PlainTiming> {
+  bool _busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return ListenableBuilder(
+      listenable: app.karaoke,
+      builder: (context, _) => Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('У этого текста нет времени строк.', style: TextStyle(color: C.faint, fontSize: 12)),
+          TextButton.icon(
+            onPressed: _busy
+                ? null
+                : () async {
+                    setState(() => _busy = true);
+                    try {
+                      final ok = await app.karaoke.timePlain(widget.track, widget.lyrics, app.lyrics);
+                      if (!ok && mounted) app.lib.messages.add('Не получилось расставить время строк');
+                    } catch (e) {
+                      app.lib.messages.add('Не получилось: ${'$e'.replaceFirst('Exception: ', '')}');
+                    } finally {
+                      if (mounted) setState(() => _busy = false);
+                    }
+                  },
+            icon: _busy
+                ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.timer_outlined, size: 16),
+            label: Text(_busy && app.karaoke.status.isNotEmpty ? app.karaoke.status : 'Расставить время по звуку'),
+          ),
+        ]),
+      ),
     );
   }
 }

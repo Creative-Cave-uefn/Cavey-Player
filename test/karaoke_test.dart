@@ -144,6 +144,28 @@ void main() {
       expect(KaraokeAligner.syllables('в'), 1);
     });
 
+
+    test('время строк обычного текста по распознанному (Л4)', () {
+      final texts = ['я иду домой', 'под дождём по дороге', 'и никто не ждёт'];
+      final heard = [
+        HeardWord('я', ms(5000), ms(5200)),
+        HeardWord('иду', ms(5400), ms(5700)),
+        HeardWord('домой', ms(5800), ms(6300)),
+        HeardWord('под', ms(9000), ms(9200)),
+        HeardWord('дождем', ms(9300), ms(9800)),
+        HeardWord('по', ms(9900), ms(10000)),
+        HeardWord('дороге', ms(10100), ms(10600)),
+        HeardWord('и', ms(14000), ms(14100)),
+        HeardWord('никто', ms(14200), ms(14600)),
+        HeardWord('не', ms(14700), ms(14800)),
+        HeardWord('ждет', ms(14900), ms(15300)),
+      ];
+      final t = KaraokeAligner.timeLines(texts, heard);
+      expect(t[0], ms(5000));
+      expect(t[1], ms(9000));
+      expect(t[2], ms(14000));
+    });
+
     test('язык по тексту', () {
       expect(KaraokeService.langOf(Lyrics(lines, synced: true)), 'ru');
       expect(KaraokeService.langOf(const Lyrics([LyricLine(Duration.zero, '心に雲を持つ少年')], synced: true)), 'ja');

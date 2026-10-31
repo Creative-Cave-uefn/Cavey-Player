@@ -300,6 +300,17 @@ class LyricsService extends ChangeNotifier {
     return f;
   }
 
+  /// Л4: сохраняем текст, полученный не из LRCLIB (например, с временем, посчитанным по звуку)
+  Future<void> saveOwn(Track t, SourceText src) async {
+    final key = keyFor(t);
+    await _file(key).writeAsString(jsonEncode(src.toJson()));
+    _mem.remove(key);
+    _failed.remove(key);
+    notifyListeners();
+    final d = Duration(milliseconds: t.durationMs ?? 0);
+    unawaited(forTrack(t, d).then<void>((_) {}, onError: (Object _) {}));
+  }
+
   File _file(String key) => File('${dir.path}${Platform.pathSeparator}$key.json');
 
   Future<Lyrics?> _load(String key, Track t, Duration duration, bool refresh) async {
