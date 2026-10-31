@@ -59,4 +59,38 @@ void main() {
     expect(requested.where((u) => u.path.endsWith('track.richsync.get')).length, 1);
     client.close();
   });
+  final probeTrack = Track(id: 'probe', source: 's', title: 'Song', artist: 'Artist', album: '', albumArtist: '',
+      no: null, year: '', pic: null, cover: null, modified: '', size: 0, by: '', path: '');
+  test('Persistent 503 retries once and identifies the failing stage', () async {
+    var calls = 0;
+    final client = MockClient((request) async { calls++; return http.Response('unavailable', 503); });
+    await expectLater(Musixmatch(client, retryDelay: Duration.zero).find(probeTrack, Duration.zero),
+        throwsA(predicate((Object e) => '$e'.contains('HTTP 503') && '$e'.contains('веб-конфигурации'))));
+    expect(calls, 2);
+    client.close();
+  });
+  test('Access denial is not retried', () async {
+    var calls = 0;
+    final client = MockClient((request) async { calls++; return http.Response('denied', 403); });
+    await expectLater(Musixmatch(client, retryDelay: Duration.zero).find(probeTrack, Duration.zero), throwsException);
+    expect(calls, 1);
+    client.close();
+  });
+  test('A transient 503 can recover and complete the search', () async {
+    var calls = 0;
+    final client = MockClient((request) async {
+      calls++;
+      if (calls == 1) return http.Response('unavailable', 503);
+      if (request.url.path == '/search') return http.Response('<script src="/_next/static/chunks/pages/_app-test.js"></script>', 200);
+      if (request.url.path.endsWith('.js')) {
+        final key = base64.encode(utf8.encode('test-key')).split('').reversed.join();
+        return http.Response('from("$key".split', 200);
+      }
+      return http.Response(jsonEncode({'message': {'header': {'status_code': 200}, 'body': {'track_list': []}}}), 200);
+    });
+    expect(await Musixmatch(client, retryDelay: Duration.zero).find(probeTrack, Duration.zero), isNull);
+    expect(calls, 4);
+    client.close();
+  });
+
 }

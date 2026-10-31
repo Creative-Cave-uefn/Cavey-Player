@@ -11,15 +11,35 @@ import 'models.dart';
 class Musixmatch {
   final http.Client client;
   String? _secret;
-  Musixmatch(this.client);
+  final Duration retryDelay;
+  Musixmatch(this.client, {this.retryDelay = const Duration(milliseconds: 600)});
 
   Future<String> _get(Uri uri) async {
-    final r = await client.get(uri, headers: {
-      'User-Agent': 'Mozilla/5.0',
-      'Cookie': 'mxm_bab=AB',
-    }).timeout(const Duration(seconds: 8));
-    if (r.statusCode != 200) throw Exception('Musixmatch: HTTP ${r.statusCode}');
-    return utf8.decode(r.bodyBytes);
+    final stage = uri.path == '/search'
+        ? 'получение веб-конфигурации'
+        : uri.path.endsWith('.js')
+            ? 'загрузка веб-конфигурации'
+            : uri.path.split('/').last;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final r = await client.get(uri, headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'application/json,text/html,application/javascript;q=0.9,*/*;q=0.8',
+        'Cookie': 'mxm_bab=AB',
+      }).timeout(const Duration(seconds: 8));
+      if (r.statusCode == 200) return utf8.decode(r.bodyBytes);
+      if (attempt == 0 && {502, 503, 504}.contains(r.statusCode)) {
+        await Future<void>.delayed(retryDelay);
+        continue;
+      }
+      final hint = r.statusCode == 503
+          ? 'Сервис временно недоступен или отклоняет запрос приложения. Повторная попытка не помогла.'
+          : r.statusCode == 403 || r.statusCode == 429
+              ? 'Сервис ограничил доступ приложения.'
+              : 'Сервис вернул ошибку.';
+      // Never include the signed URL or the signing key in user-visible errors.
+      throw Exception('Musixmatch: HTTP ${r.statusCode}, этап: $stage. $hint');
+    }
+    throw StateError('Unreachable');
   }
 
   Future<String> _key() async {
