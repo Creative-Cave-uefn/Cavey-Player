@@ -1,5 +1,5 @@
 // Локальный прокси для стриминга с Google Диска. libmpv берёт трек отсюда
-// (http://127.0.0.1:<порт>/t/<id>), а не напрямую с Диска. Зачем:
+// (http://127.0.0.1:<порт>/t/<секрет>/<id>), а не напрямую с Диска. Зачем:
 //
 // - Конец файла скачивается заранее, пока плеер читает начало. При открытии
 //   плеер почти всегда заглядывает в конец (теги ID3v1, длительность), и
@@ -14,6 +14,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
@@ -57,6 +58,12 @@ class StreamProxy {
       // Соединения с Диском держим подольше: следующий клик не тратит время на новое
       : _client = client ?? IOClient(HttpClient()..idleTimeout = const Duration(seconds: 90));
 
+  /// Г5: случайный секрет в адресе — чужой локальный процесс не угадает путь к файлам Диска
+  late final String _secret = () {
+    final r = Random.secure();
+    return List.generate(16, (_) => r.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
+  }();
+
   Future<HttpServer> _ensure() => _starting ??= () async {
         final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
         s.listen((req) => unawaited(_handle(req)));
@@ -85,7 +92,7 @@ class StreamProxy {
   Future<Uri> register(String id, {required int size, required Future<String> Function() token}) async {
     final s = await _ensure();
     _entry(id, size, token).timed = false;
-    return Uri.parse('http://127.0.0.1:${s.port}/t/$id');
+    return Uri.parse('http://127.0.0.1:${s.port}/t/$_secret/$id');
   }
 
   /// Трек скоро могут включить: заранее скачиваем начало и конец
@@ -131,7 +138,7 @@ class StreamProxy {
     final out = req.response;
     try {
       final parts = req.uri.pathSegments;
-      final e = parts.length == 2 && parts[0] == 't' ? _entries[parts[1]] : null;
+      final e = parts.length == 3 && parts[0] == 't' && parts[1] == _secret ? _entries[parts[2]] : null;
       if (e == null) {
         out.statusCode = HttpStatus.notFound;
         await out.close();
@@ -222,7 +229,7 @@ class StreamProxy {
       ..headers['Range'] = 'bytes=$start-$end';
     upstreamRequests++;
     final sent = DateTime.now();
-    final res = await _client.send(req);
+    final res = await _client.send(req).timeout(const Duration(seconds: 20)); // Г1
     if (!e.timed) {
       e.timed = true;
       AppLog.info('Прокси: Диск ответил через ${DateTime.now().difference(sent).inMilliseconds} мс');
@@ -231,7 +238,7 @@ class StreamProxy {
       await res.stream.drain<void>();
       throw HttpException('Диск ответил ${res.statusCode}');
     }
-    await out.addStream(res.stream);
+    await out.addStream(res.stream.timeout(const Duration(seconds: 30)));
     await out.close();
   }
 
@@ -240,13 +247,13 @@ class StreamProxy {
     final req = http.Request(head ? 'HEAD' : 'GET', urlFor(e.id))..headers['Authorization'] = 'Bearer ${await e.token()}';
     if (range != null) req.headers['Range'] = range;
     upstreamRequests++;
-    final res = await _client.send(req);
+    final res = await _client.send(req).timeout(const Duration(seconds: 20)); // Г1
     out.statusCode = res.statusCode;
     for (final h in const ['content-length', 'content-range', 'accept-ranges', 'content-type']) {
       final v = res.headers[h];
       if (v != null) out.headers.set(h, v);
     }
-    await out.addStream(res.stream);
+    await out.addStream(res.stream.timeout(const Duration(seconds: 30)));
     await out.close();
   }
 

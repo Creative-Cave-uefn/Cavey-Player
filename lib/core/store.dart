@@ -29,6 +29,11 @@ class AppStore {
       if (!await f.exists()) return null;
       return jsonDecode(await f.readAsString());
     } catch (_) {
+      // Г6: файл повреждён — берём прошлую удачную копию вместо тихого сброса всего
+      try {
+        final bak = File('${f.path}.bak');
+        if (await bak.exists()) return jsonDecode(await bak.readAsString());
+      } catch (_) {}
       return null;
     }
   }
@@ -53,6 +58,12 @@ class AppStore {
     for (var attempt = 0;; attempt++) {
       try {
         await tmp.writeAsString(text, flush: true);
+        try {
+          // Г6: прошлая версия остаётся рядом как .bak (если она читается)
+          if (await f.exists()) {
+            await f.copy('${f.path}.bak');
+          }
+        } catch (_) {}
         try {
           await tmp.rename(f.path); // в Windows это заменяет существующий файл
         } on FileSystemException {

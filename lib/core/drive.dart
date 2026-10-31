@@ -1,6 +1,7 @@
 // Тонкая обёртка над Google Drive REST API v3. Каждый запрос делается от имени
 // конкретного аккаунта: разные папки могут быть доступны разным аккаунтам.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -100,7 +101,16 @@ class DriveApi {
       final req = http.Request(method, uri)..headers['Authorization'] = 'Bearer $token';
       if (headers != null) req.headers.addAll(headers);
       if (body != null) req.bodyBytes = body;
-      final res = await http.Response.fromStream(await _http.send(req));
+      final http.Response res;
+      try {
+        // Г1: зависшее соединение не должно вешать запрос навсегда
+        res = await http.Response.fromStream(await _http.send(req).timeout(const Duration(seconds: 30)))
+            .timeout(const Duration(seconds: 60));
+      } on TimeoutException {
+        // повторяем только чтение: повтор записи мог бы создать дубль
+        if (method == 'GET' && attempt < 2) continue;
+        throw DriveException(408, 'Google Диск не ответил вовремя');
+      }
       if (res.statusCode == 401 && attempt == 0) continue;
       // 429 / 5xx — Google просит подождать
       if ((res.statusCode == 429 || res.statusCode >= 500) && attempt < 2) {
@@ -167,12 +177,24 @@ class DriveApi {
 
   /// Скачивает файл целиком на диск по частям, не держа его в памяти
   Future<void> downloadToFile(String email, String id, File target, {void Function(int got, int total)? onProgress}) async {
-    for (var attempt = 0; attempt < 2; attempt++) {
+    for (var attempt = 0; attempt < 3; attempt++) {
       final token = await accounts.token(email, force: attempt == 1);
       final req = http.Request('GET', mediaUrl(id))..headers['Authorization'] = 'Bearer $token';
-      final res = await _http.send(req);
+      final http.StreamedResponse res;
+      try {
+        res = await _http.send(req).timeout(const Duration(seconds: 30));
+      } on TimeoutException {
+        if (attempt < 2) continue;
+        throw DriveException(408, 'Google Диск не ответил вовремя');
+      }
       if (res.statusCode == 401 && attempt == 0) {
         await res.stream.drain<void>();
+        continue;
+      }
+      // Г2: 429 и 5xx — Google просит подождать, пробуем ещё раз
+      if ((res.statusCode == 429 || res.statusCode >= 500) && attempt < 2) {
+        await res.stream.drain<void>();
+        await Future<void>.delayed(Duration(milliseconds: 800 * (attempt + 1) + Random().nextInt(400)));
         continue;
       }
       if (res.statusCode >= 400) {
@@ -183,13 +205,19 @@ class DriveApi {
       final sink = part.openWrite();
       var got = 0;
       try {
-        await for (final chunk in res.stream) {
+        await for (final chunk in res.stream.timeout(const Duration(seconds: 30))) {
           sink.add(chunk);
           got += chunk.length;
           onProgress?.call(got, res.contentLength ?? 0);
         }
       } finally {
         await sink.close();
+      }
+      // Г2: недокачанный файл не должен попасть в кэш как целый
+      final promised = res.contentLength ?? 0;
+      if (promised > 0 && got != promised) {
+        await part.delete();
+        throw DriveException(0, 'файл скачан не полностью ($got из $promised байт)');
       }
       if (await target.exists()) await target.delete();
       await part.rename(target.path);

@@ -252,7 +252,13 @@ class AccountManager extends ChangeNotifier {
   }
 
   Future<Map<String, dynamic>> _tokenRequest(Map<String, String> form) async {
-    final res = await _http.post(Uri.parse('https://oauth2.googleapis.com/token'), body: form);
+    final http.Response res;
+    try {
+      // Г1: без таймаута зависший ответ Google вешал вход и обновление токена навсегда
+      res = await _http.post(Uri.parse('https://oauth2.googleapis.com/token'), body: form).timeout(const Duration(seconds: 30));
+    } on TimeoutException {
+      throw AuthException('Google не ответил вовремя. Проверьте интернет и повторите.');
+    }
     final body = jsonDecode(res.body);
     if (res.statusCode != 200) {
       final err = body is Map ? '${body['error']}: ${body['error_description'] ?? ''}' : res.body;

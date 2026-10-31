@@ -117,7 +117,24 @@ class PlayerController extends ChangeNotifier {
       error = e;
       AppLog.warn('Плеер: ${current?.title ?? ''}', e);
       notifyListeners();
+      // Ошибка в первые секунды трека — файл не открылся: идём дальше (Г3)
+      final t = current;
+      final opened = _openedAt;
+      if (t != null && opened != null && DateTime.now().difference(opened) < const Duration(seconds: 10)) _skipBroken(t);
     }));
+  }
+
+  /// Сколько треков подряд не открылось; после трёх останавливаемся, чтобы не гонять очередь по кругу
+  int _failStreak = 0;
+
+  /// Г3: трек не открылся (битый файл, 403) — показываем уведомление и переходим к следующему
+  void _skipBroken(Track t) {
+    if (_failStreak >= 3 || queue.length < 2) return;
+    _failStreak++;
+    lib.messages.add('«${t.title}» не открылся, включаю следующий');
+    Timer(const Duration(milliseconds: 800), () {
+      if (current?.id == t.id) unawaited(next(auto: true));
+    });
   }
 
   Track? get current => (index >= 0 && index < queue.length) ? lib.data.tracks[queue[index]] : null;
@@ -628,6 +645,7 @@ class PlayerController extends ChangeNotifier {
           ? 'Не получилось включить «${t.title}»: $e'
           : 'Не получилось включить «${t.title}». Если нет интернета, играют только сохранённые треки.');
       notifyListeners();
+      _skipBroken(t);
     }
   }
 
@@ -661,6 +679,7 @@ class PlayerController extends ChangeNotifier {
             .firstWhere((d) => d > Duration.zero)
             .timeout(const Duration(seconds: 15), onTimeout: () => Duration.zero);
     if (seq != _openSeq) return;
+    if (d > Duration.zero) _failStreak = 0; // трек открылся — серия неудач прервана
     onTrackReady?.call(t, d);
   }
 

@@ -165,7 +165,7 @@ class AmbientBackground extends StatefulWidget {
   State<AmbientBackground> createState() => _AmbientBackgroundState();
 }
 
-class _AmbientBackgroundState extends State<AmbientBackground> with SingleTickerProviderStateMixin {
+class _AmbientBackgroundState extends State<AmbientBackground> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static final Map<String, ui.Image> _cache = {};
 
   /// Мягкое «пятно» той же картинки с прозрачными краями — для плавающих слоёв
@@ -254,10 +254,18 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
     _sync();
     _trackTempo();
     _ticker = createTicker(_onTick)..start();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// Г8: окно свёрнуто или спрятано в трей — фон не рисует кадры
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _ticker?.muted = state == AppLifecycleState.hidden || state == AppLifecycleState.paused;
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _unlisten?.call();
     _ticker?.dispose();
     _clock.dispose();
