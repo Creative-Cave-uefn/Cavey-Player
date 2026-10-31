@@ -706,7 +706,7 @@ class _PersonCard extends StatelessWidget {
                     Text(status, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: live ? C.accent : C.faint, fontSize: 12)),
                   Text(uploads == 0 ? 'без загрузок' : 'загрузил(а) ${countTracks(uploads)}',
                       maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12)),
-                  if (m != null && m.totals.isNotEmpty)
+                  if (m != null && m.timeTotals.isNotEmpty)
                     Text('Наслушал(а): ${formatListened(app.social.listened(email))}',
                         maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 11)),
                 ]),

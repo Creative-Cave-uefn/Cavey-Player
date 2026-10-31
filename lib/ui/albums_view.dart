@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/library.dart';
-import 'cover_picker.dart';
+import 'album_edit.dart';
 import 'list_filter.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
@@ -197,32 +197,16 @@ class _AlbumsPageState extends State<AlbumsPage> {
   }
 }
 
-/// Окно «Обложка альбома»: загруженная картинка показывается у всех треков альбома
-Future<void> changeAlbumCover(BuildContext context, Album a) async {
-  final lib = Services.of(context).lib;
-  final v = await coverDialog(
-    context,
-    title: 'Обложка альбома',
-    current: CoverImage(track: a.coverTrack, size: 120, radius: 0),
-    canReset: lib.albumCover(a.key) != null,
-    note: 'Её увидят все друзья, и она показывается у каждого трека этого альбома.',
-  );
-  if (v != null) lib.setAlbumCover(a.key, v);
-}
-
 /// Меню альбома по правому клику, в точке клика
 Future<void> showAlbumMenu(BuildContext context, Album a, Offset at) async {
-  final lib = Services.of(context).lib;
   final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
   final v = await showGlassMenu<String>(
     context: context,
     position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
     items: [
-      const PopupMenuItem(value: 'cover', child: Text('Изменить обложку…')),
-      if (lib.albumCover(a.key) != null) const PopupMenuItem(value: 'reset', child: Text('Вернуть обложку из файлов')),
+      const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
     ],
   );
   if (!context.mounted) return;
-  if (v == 'cover') await changeAlbumCover(context, a);
-  if (v == 'reset') lib.setAlbumCover(a.key, '');
+  if (v == 'edit') await editAlbumDialog(context, a);
 }

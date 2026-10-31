@@ -774,7 +774,7 @@ class UserProfilePage extends StatelessWidget {
                 },
           onInfo: () => _showInfo(context, app, name, liked.length, uploads.length, lists.length),
           sections: [
-            if (m != null && (m.totals.isNotEmpty || m.plays.isNotEmpty)) ...[
+            if (m != null && (m.timeTotals.isNotEmpty || m.totals.isNotEmpty || m.plays.isNotEmpty)) ...[
               ListenStats(email: email),
               const SizedBox(height: 36),
             ],

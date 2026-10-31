@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -90,36 +91,56 @@ class _HeaderCoverState extends State<HeaderCover> {
 /// Закрывается по Esc, клику по фону или крестиком
 Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId}) {
   final covers = Services.of(context).covers;
-  final Future<Uint8List?> bytes = fileId != null
-      ? covers.forFile(fileId)
-      : (track != null ? covers.forTrack(track) : Future<Uint8List?>.value(null));
+  final Future<Uint8List?> bytes = (fileId != null
+          ? covers.forFile(fileId)
+          : (track != null ? covers.forTrack(track) : Future<Uint8List?>.value(null)))
+      // Если картинка так и не пришла, окно не должно висеть с крутилкой вечно
+      .timeout(const Duration(seconds: 25), onTimeout: () => null)
+      .catchError((Object _) => null);
   return showGeneralDialog<void>(
     context: context,
     barrierDismissible: true,
     barrierLabel: 'Закрыть',
     barrierColor: Colors.black.withValues(alpha: 0.86),
     transitionDuration: const Duration(milliseconds: 160),
-    pageBuilder: (ctx, _, __) => _CoverViewer(bytes: bytes),
+    pageBuilder: (ctx, _, __) => _CoverViewer(bytes: bytes, fallback: _fallbackCover(context, track, fileId)),
     transitionBuilder: (ctx, a, _, child) => FadeTransition(opacity: a, child: child),
   );
 }
 
+/// Пока крупная картинка грузится (или не загрузилась), показываем ту, что уже есть на экране
+Widget? _fallbackCover(BuildContext context, Track? track, String? fileId) {
+  if (track == null && fileId == null) return null;
+  return CoverImage(track: track, fileId: fileId, size: 480, radius: 0);
+}
+
 class _CoverViewer extends StatefulWidget {
   final Future<Uint8List?> bytes;
-  const _CoverViewer({required this.bytes});
+  final Widget? fallback;
+  const _CoverViewer({required this.bytes, this.fallback});
 
   @override
   State<_CoverViewer> createState() => _CoverViewerState();
 }
 
 class _CoverViewerState extends State<_CoverViewer> {
-  final _tc = TransformationController();
+  double _scale = 1;
+  Offset _pan = Offset.zero;
 
-  @override
-  void dispose() {
-    _tc.dispose();
-    super.dispose();
+  /// Колесо: масштаб относительно точки под курсором, чтобы она оставалась на месте
+  void _zoom(Offset fromCenter, double factor) {
+    final s = (_scale * factor).clamp(1.0, 12.0).toDouble();
+    if (s == _scale) return;
+    setState(() {
+      _pan = s <= 1.0001 ? Offset.zero : fromCenter - (fromCenter - _pan) * (s / _scale);
+      _scale = s;
+    });
   }
+
+  void _reset() => setState(() {
+        _scale = 1;
+        _pan = Offset.zero;
+      });
 
   @override
   Widget build(BuildContext context) {
@@ -127,53 +148,80 @@ class _CoverViewerState extends State<_CoverViewer> {
       bindings: {const SingleActivator(LogicalKeyboardKey.escape): () => Navigator.of(context).maybePop()},
       child: Focus(
         autofocus: true,
-        child: Stack(children: [
-          // Клик мимо картинки закрывает просмотр
-          Positioned.fill(child: GestureDetector(onTap: () => Navigator.of(context).maybePop())),
-          Positioned.fill(
-            child: FutureBuilder<Uint8List?>(
-              future: widget.bytes,
-              builder: (context, snap) {
-                final b = snap.data;
-                if (snap.connectionState != ConnectionState.done) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (b == null) {
-                  return const Center(child: Text('Картинку не получилось загрузить', style: TextStyle(color: Colors.white70)));
-                }
-                return LayoutBuilder(builder: (context, box) {
-                  final side = (box.biggest.shortestSide - 80).clamp(120.0, 4000.0);
-                  return InteractiveViewer(
-                    transformationController: _tc,
-                    minScale: 1,
-                    maxScale: 10,
-                    clipBehavior: Clip.none,
-                    boundaryMargin: EdgeInsets.all(side),
-                    child: Center(
-                      child: GestureDetector(
-                        onTap: () {}, // клик по самой картинке не закрывает
-                        onDoubleTap: () => _tc.value = Matrix4.identity(),
-                        child: SizedBox.square(
-                          dimension: side,
-                          child: Image.memory(b, fit: BoxFit.contain, filterQuality: FilterQuality.high, gaplessPlayback: true),
+        child: Material(
+          type: MaterialType.transparency,
+          child: Stack(children: [
+            Positioned.fill(
+              child: FutureBuilder<Uint8List?>(
+                future: widget.bytes,
+                builder: (context, snap) {
+                  final b = snap.data;
+                  return LayoutBuilder(builder: (context, box) {
+                    final side = (box.biggest.shortestSide - 80).clamp(120.0, 4000.0).toDouble();
+                    final center = box.biggest.center(Offset.zero);
+                    final Widget picture;
+                    if (b != null) {
+                      picture = Image.memory(b, fit: BoxFit.contain, filterQuality: FilterQuality.high, gaplessPlayback: true);
+                    } else if (snap.connectionState != ConnectionState.done && widget.fallback != null) {
+                      // Пока грузится крупная — видна обычная, размытая до загрузки не будет
+                      picture = Stack(fit: StackFit.expand, children: [
+                        widget.fallback!,
+                        const Center(child: SizedBox.square(dimension: 28, child: CircularProgressIndicator(strokeWidth: 2.5))),
+                      ]);
+                    } else if (snap.connectionState != ConnectionState.done) {
+                      picture = const Center(child: SizedBox.square(dimension: 28, child: CircularProgressIndicator(strokeWidth: 2.5)));
+                    } else {
+                      picture = widget.fallback ??
+                          const Center(child: Text('Картинку не получилось загрузить', style: TextStyle(color: Colors.white70)));
+                    }
+                    return Listener(
+                      onPointerSignal: (e) {
+                        if (e is PointerScrollEvent && e.scrollDelta.dy != 0) {
+                          _zoom(e.localPosition - center, e.scrollDelta.dy < 0 ? 1.18 : 1 / 1.18);
+                        }
+                      },
+                      child: MouseRegion(
+                        cursor: _scale > 1 ? SystemMouseCursors.grab : SystemMouseCursors.basic,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          // Клик мимо картинки закрывает просмотр
+                          onTapUp: (d) {
+                            final r = Rect.fromCenter(center: center + _pan, width: side * _scale, height: side * _scale);
+                            if (!r.contains(d.localPosition)) Navigator.of(context).maybePop();
+                          },
+                          onDoubleTap: _reset,
+                          onPanUpdate: (d) {
+                            if (_scale > 1) setState(() => _pan += d.delta);
+                          },
+                          child: SizedBox.expand(
+                            child: Center(
+                              child: Transform(
+                                alignment: Alignment.center,
+                                transform: Matrix4.identity()
+                                  ..translate(_pan.dx, _pan.dy)
+                                  ..scale(_scale),
+                                child: SizedBox.square(dimension: side, child: picture),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  );
-                });
-              },
+                    );
+                  });
+                },
+              ),
             ),
-          ),
-          Positioned(
-            top: 44,
-            right: 20,
-            child: IconButton.filledTonal(
-              tooltip: 'Закрыть (Esc)',
-              onPressed: () => Navigator.of(context).maybePop(),
-              icon: const Icon(Icons.close_rounded),
+            Positioned(
+              top: 44,
+              right: 20,
+              child: IconButton.filledTonal(
+                tooltip: 'Закрыть (Esc)',
+                onPressed: () => Navigator.of(context).maybePop(),
+                icon: const Icon(Icons.close_rounded),
+              ),
             ),
-          ),
-        ]),
+          ]),
+        ),
       ),
     );
   }

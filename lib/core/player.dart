@@ -38,6 +38,21 @@ class PlayerController extends ChangeNotifier {
 
   /// Панель с текстом песни открыта
   final ValueNotifier<bool> lyricsOpen = ValueNotifier(false);
+
+  /// Панель очереди открыта. Справа показывается одна панель: текст песни или очередь
+  final ValueNotifier<bool> queueOpen = ValueNotifier(false);
+
+  void toggleLyricsPanel() {
+    final open = !lyricsOpen.value;
+    if (open) queueOpen.value = false;
+    lyricsOpen.value = open;
+  }
+
+  void toggleQueuePanel() {
+    final open = !queueOpen.value;
+    if (open) lyricsOpen.value = false;
+    queueOpen.value = open;
+  }
   final List<StreamSubscription<dynamic>> _subs = [];
 
   /// Позиция меняется часто, поэтому отдельно — чтобы не перерисовывать всё окно
@@ -51,7 +66,22 @@ class PlayerController extends ChangeNotifier {
 
   List<String> _origin = [];
   List<String> queue = [];
-  int index = -1;
+  int _index = -1;
+
+  /// Сколько следующих за текущим треков человек поставил в очередь сам («Добавить в очередь»).
+  /// Они стоят сразу после текущего и играют раньше всего остального
+  int userAhead = 0;
+
+  int get index => _index;
+  set index(int v) {
+    // Прошли вперёд — пользовательские треки заканчиваются по одному; назад или с нуля — очередь снова обычная
+    if (v > _index) {
+      userAhead = userAhead - (v - _index) < 0 ? 0 : userAhead - (v - _index);
+    } else if (v < _index) {
+      userAhead = 0;
+    }
+    _index = v;
+  }
 
   /// Пока не null, очередь сама пополняется из него, когда заканчивается
   QueueFeeder? feeder;
@@ -223,6 +253,7 @@ class PlayerController extends ChangeNotifier {
       queue = List.of(_origin);
       index = start;
     }
+    userAhead = 0;
     await _open();
   }
 
@@ -232,6 +263,7 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     queue.insert(index + 1, t.id);
+    userAhead++;
     if (feeder != null) _userAdded.add(t.id);
     // И в исходный порядок — иначе после выключения перемешивания трек пропадёт
     final oi = _origin.indexOf(current!.id);
@@ -239,21 +271,38 @@ class PlayerController extends ChangeNotifier {
     _queueChanged();
   }
 
-  /// В конец очереди
+  /// «Добавить в очередь»: после того, что человек уже добавил, но раньше остального, что подобрал плеер
   void addToQueue(Track t) {
     if (current == null) {
       unawaited(playTracks([t], 0));
       return;
     }
-    queue.add(t.id);
-    _origin.add(t.id);
+    final at = (index + 1 + userAhead).clamp(0, queue.length);
+    queue.insert(at, t.id);
+    userAhead++;
+    final oi = _origin.indexOf(current!.id);
+    _origin.insert(oi < 0 ? _origin.length : (oi + userAhead).clamp(0, _origin.length), t.id);
     if (feeder != null) _userAdded.add(t.id);
+    _queueChanged();
+  }
+
+  /// Убрать из очереди всё, что поставил человек (остальное остаётся)
+  void clearUserQueue() {
+    if (userAhead <= 0 || index < 0) return;
+    final gone = queue.sublist(index + 1, (index + 1 + userAhead).clamp(0, queue.length));
+    queue.removeRange(index + 1, (index + 1 + userAhead).clamp(0, queue.length));
+    userAhead = 0;
+    for (final id in gone) {
+      _origin.remove(id);
+      _userAdded.remove(id);
+    }
     _queueChanged();
   }
 
   /// Убирает трек из очереди (текущий не трогаем)
   void removeAt(int queueIndex) {
     if (queueIndex <= index || queueIndex >= queue.length) return;
+    if (queueIndex - index <= userAhead) userAhead--;
     final id = queue.removeAt(queueIndex);
     if (shuffle) {
       _origin.remove(id);
@@ -268,8 +317,11 @@ class PlayerController extends ChangeNotifier {
     if (from <= index || from >= queue.length) return;
     to = to.clamp(index + 1, queue.length - 1);
     if (from == to) return;
+    final wasUser = from - index <= userAhead;
     final id = queue.removeAt(from);
     queue.insert(to, id);
+    final z = wasUser ? userAhead - 1 : userAhead;
+    userAhead = (to <= index + z || (wasUser && to == index + z + 1)) ? z + 1 : z;
     if (!shuffle) _origin = List.of(queue);
     _queueChanged();
   }
@@ -285,6 +337,7 @@ class PlayerController extends ChangeNotifier {
     queue = ids;
     _origin = List.of(ids);
     index = 0;
+    userAhead = 0;
     await _open();
     _topUpFeed();
   }
@@ -379,6 +432,8 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _queueChanged() {
+    final ahead = queue.length - index - 1;
+    if (userAhead > ahead) userAhead = ahead < 0 ? 0 : ahead;
     notifyListeners();
     _saveSession();
     _preloadNext();
@@ -824,6 +879,7 @@ class PlayerController extends ChangeNotifier {
           index = 0;
         }
       }
+      userAhead = 0; // порядок перемешан или возвращён — «своих» треков в начале очереди больше нет
     }
     notifyListeners();
     _saveSession();

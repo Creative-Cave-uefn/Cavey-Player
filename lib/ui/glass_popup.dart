@@ -219,3 +219,60 @@ class GlassMenuButton<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) => IconButton(tooltip: tooltip, icon: icon, onPressed: () => _open(context));
 }
+
+/// Стеклянное окошко у кнопки, которое не закрывается от нажатий внутри: только от нажатия снаружи или Esc.
+/// Содержимое само перестраивается (builder вызывается один раз), поэтому меняться может и размер окошка
+Future<void> showGlassPopover({required BuildContext context, required WidgetBuilder builder, double width = 240}) {
+  final box = context.findRenderObject() as RenderBox;
+  final overlay = Navigator.of(context).overlay!.context.findRenderObject() as RenderBox;
+  final rect = Rect.fromPoints(
+    box.localToGlobal(box.size.bottomLeft(Offset.zero), ancestor: overlay),
+    box.localToGlobal(box.size.bottomRight(Offset.zero), ancestor: overlay),
+  );
+  return Navigator.of(context).push(_GlassPopoverRoute(
+    position: RelativeRect.fromRect(rect, Offset.zero & overlay.size),
+    builder: builder,
+    width: width,
+  ));
+}
+
+class _GlassPopoverRoute extends PopupRoute<void> {
+  final RelativeRect position;
+  final WidgetBuilder builder;
+  final double width;
+  _GlassPopoverRoute({required this.position, required this.builder, required this.width});
+
+  @override
+  Color? get barrierColor => null;
+  @override
+  bool get barrierDismissible => true;
+  @override
+  String? get barrierLabel => 'Закрыть';
+  @override
+  Duration get transitionDuration => const Duration(milliseconds: 160);
+
+  @override
+  Widget buildPage(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation) {
+    final size = MediaQuery.sizeOf(context);
+    return CustomSingleChildLayout(
+      delegate: _MenuLayout(position, size),
+      child: FadeTransition(
+        opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+        child: ScaleTransition(
+          alignment: Alignment.topLeft,
+          scale: Tween(begin: 0.96, end: 1.0).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
+          child: SizedBox(
+            width: width,
+            child: GlassPanel(
+              radius: 16,
+              tint: C.glassLight,
+              blur: 32,
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Material(type: MaterialType.transparency, child: Builder(builder: builder)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

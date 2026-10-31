@@ -117,6 +117,7 @@ class LikedPage extends StatelessWidget {
           title: 'Любимое',
           subtitle: tracks.isEmpty ? null : countTracks(tracks.length),
           heroColor: const Color(0xFFB3261E),
+          heroLeft: true,
           tracks: tracks,
           compact: compact,
           actions: [
@@ -189,14 +190,9 @@ class AlbumPage extends StatelessWidget {
               icon: const Icon(Icons.more_horiz_rounded),
               onSelected: (v) {
                 if (v == 'edit') editAlbumDialog(context, album);
-                if (v == 'cover') changeAlbumCover(context, album);
-                if (v == 'reset') app.lib.setAlbumCover(album.key, '');
               },
               itemBuilder: (_) => [
-                const PopupMenuItem(value: 'edit', child: Text('Изменить альбом…')),
-                const PopupMenuItem(value: 'cover', child: Text('Изменить обложку…')),
-                if (app.lib.albumCover(album.key) != null)
-                  const PopupMenuItem(value: 'reset', child: Text('Вернуть обложку из файлов')),
+                const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
               ],
             ),
           ],
@@ -265,20 +261,8 @@ class PlaylistPage extends StatelessWidget {
               tooltip: 'Ещё',
               icon: const Icon(Icons.more_horiz_rounded),
               onSelected: (v) async {
-                if (v == 'rename') {
-                  final name = await askText(context, title: 'Название плейлиста', action: 'Сохранить', initial: p.name);
-                  if (name != null && name.isNotEmpty) lib.renamePlaylist(p.id, name);
-                } else if (v == 'cover') {
-                  final cv = await coverDialog(
-                    context,
-                    title: 'Обложка плейлиста',
-                    current: CoverImage(track: coverTrack, fileId: ownCover, label: p.name, size: 120, radius: 0),
-                    canReset: ownCover != null,
-                    note: 'Её увидят все друзья.',
-                  );
-                  if (cv != null) lib.setPlaylistCover(p.id, cv);
-                } else if (v == 'cover_reset') {
-                  lib.setPlaylistCover(p.id, '');
+                if (v == 'edit') {
+                  await editPlaylistDialog(context, p, coverTrack: coverTrack);
                 } else if (v == 'public') {
                   lib.setPlaylistPublic(p.id, true);
                   lib.messages.add('Плейлист «${p.name}» теперь видят все друзья');
@@ -302,9 +286,7 @@ class PlaylistPage extends StatelessWidget {
                   lib.isPlaylistPublic(p.id)
                       ? const PopupMenuItem(value: 'private', child: Text('Сделать приватным'))
                       : const PopupMenuItem(value: 'public', child: Text('Сделать открытым')),
-                const PopupMenuItem(value: 'rename', child: Text('Переименовать')),
-                const PopupMenuItem(value: 'cover', child: Text('Изменить обложку…')),
-                if (ownCover != null) const PopupMenuItem(value: 'cover_reset', child: Text('Убрать свою обложку')),
+                const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
                 const PopupMenuItem(value: 'delete', child: Text('Удалить плейлист')),
               ],
             ),
@@ -380,10 +362,14 @@ class TracksPage extends StatefulWidget {
     this.onEditCover,
     this.editCoverTooltip = 'Изменить',
     this.searchInBanner = false,
+    this.heroLeft = false,
   });
 
-  /// Поиск по трекам отдельной строкой под шапкой, а не справа от неё
+  /// Поиск по трекам в одном ряду с кнопками «Слушать…», слева от них, а не справа от шапки
   final bool searchInBanner;
+
+  /// Шапка с цветным свечением, но всё выровнено по левой стороне, как у остальных списков
+  final bool heroLeft;
 
   @override
   State<TracksPage> createState() => _TracksPageState();
@@ -768,12 +754,41 @@ class _TracksPageState extends State<TracksPage> {
       _sel.retainAll(present);
     }
 
-    Widget buttons(WrapAlignment align) => Wrap(
+    // Поле поиска одной высоты с кнопками рядом
+    Widget searchBox(String hint, {double width = 300}) => SizedBox(
+          width: width,
+          height: 48,
+          child: TextField(
+            controller: _search,
+            focusNode: _searchFocus,
+            onChanged: (v) => setState(() => _query = v),
+            expands: true,
+            maxLines: null,
+            minLines: null,
+            textAlignVertical: TextAlignVertical.center,
+            decoration: InputDecoration(
+              hintText: hint,
+              prefixIcon: const Icon(Icons.search_rounded, size: 18),
+              suffixIcon: _query.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 16),
+                      onPressed: () => setState(() {
+                        _search.clear();
+                        _query = '';
+                      }),
+                    ),
+            ),
+          ),
+        );
+
+    Widget buttons(WrapAlignment align, {Widget? leading}) => Wrap(
           spacing: 12,
           runSpacing: 10,
           alignment: align,
           crossAxisAlignment: WrapCrossAlignment.center,
           children: [
+            if (leading != null) leading,
             FilledButton.icon(
               onPressed: visible.isEmpty
                   ? null
@@ -799,6 +814,7 @@ class _TracksPageState extends State<TracksPage> {
         );
 
     final hero = widget.heroColor;
+    final left = widget.heroLeft;
     final heroHeader = hero == null
         ? null
         : Stack(children: [
@@ -807,47 +823,26 @@ class _TracksPageState extends State<TracksPage> {
             SizedBox(
               width: double.infinity,
               child: Padding(
-              padding: EdgeInsets.fromLTRB(pad, widget.compact ? 72 : 96, pad, 36),
-              child: Column(children: [
+              padding: EdgeInsets.fromLTRB(pad, widget.compact ? 72 : (left ? 64 : 96), pad, left ? 24 : 36),
+              child: Column(crossAxisAlignment: left ? CrossAxisAlignment.start : CrossAxisAlignment.center, children: [
                 SelectionArea(
-                  child: Text(widget.title, textAlign: TextAlign.center, style: display(widget.compact ? 30 : 44, weight: FontWeight.w700)),
+                  child: Text(widget.title,
+                      textAlign: left ? TextAlign.start : TextAlign.center, style: display(widget.compact ? 30 : (left ? 36 : 44), weight: FontWeight.w700)),
                 ),
                 if (widget.subtitle != null) ...[
                   const SizedBox(height: 10),
                   SelectionArea(
-                    child: Text(widget.subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                    child: Text(widget.subtitle!,
+                        textAlign: left ? TextAlign.start : TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 15)),
                   ),
                 ],
                 if (widget.tracks.isNotEmpty) ...[
-                  const SizedBox(height: 24),
-                  buttons(WrapAlignment.center),
+                  SizedBox(height: left ? 22 : 24),
+                  buttons(left ? WrapAlignment.start : WrapAlignment.center,
+                      leading: widget.tracks.length > 8 ? searchBox('Найти трек или исполнителя', width: 280) : null),
                 ] else if (widget.actions.isNotEmpty) ...[
                   const SizedBox(height: 18),
-                  Wrap(spacing: 12, alignment: WrapAlignment.center, children: widget.actions),
-                ],
-                if (widget.tracks.length > 8) ...[
-                  const SizedBox(height: 22),
-                  SizedBox(
-                    width: 320,
-                    child: TextField(
-                      controller: _search,
-                      focusNode: _searchFocus,
-                      onChanged: (v) => setState(() => _query = v),
-                      decoration: InputDecoration(
-                        hintText: 'Найти трек или исполнителя',
-                        prefixIcon: const Icon(Icons.search_rounded, size: 18),
-                        suffixIcon: _query.isEmpty
-                            ? null
-                            : IconButton(
-                                icon: const Icon(Icons.close_rounded, size: 16),
-                                onPressed: () => setState(() {
-                                  _search.clear();
-                                  _query = '';
-                                }),
-                              ),
-                      ),
-                    ),
-                  ),
+                  Wrap(spacing: 12, alignment: left ? WrapAlignment.start : WrapAlignment.center, children: widget.actions),
                 ],
               ]),
               ),
@@ -888,7 +883,8 @@ class _TracksPageState extends State<TracksPage> {
             ],
             if (widget.tracks.isNotEmpty) ...[
               const SizedBox(height: 22),
-              buttons(WrapAlignment.start),
+              buttons(WrapAlignment.start,
+                  leading: widget.searchInBanner ? searchBox('Найти трек, исполнителя или альбом', width: 340) : null),
             ] else if (widget.actions.isNotEmpty) ...[
               const SizedBox(height: 16),
               Row(children: widget.actions),
@@ -922,29 +918,7 @@ class _TracksPageState extends State<TracksPage> {
       ]),
     );
 
-    final Widget? bannerChild = widget.searchInBanner && widget.tracks.isNotEmpty
-        ? ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 460),
-            child: TextField(
-              controller: _search,
-              focusNode: _searchFocus,
-              onChanged: (v) => setState(() => _query = v),
-              decoration: InputDecoration(
-                hintText: 'Найти трек, исполнителя или альбом',
-                prefixIcon: const Icon(Icons.search_rounded, size: 18),
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(Icons.close_rounded, size: 16),
-                        onPressed: () => setState(() {
-                          _search.clear();
-                          _query = '';
-                        }),
-                      ),
-              ),
-            ),
-          )
-        : widget.banner;
+    final Widget? bannerChild = widget.banner;
     final banner = bannerChild == null
         ? null
         : Padding(padding: EdgeInsets.fromLTRB(pad, 0, pad, 14), child: Align(alignment: Alignment.centerLeft, child: bannerChild));
@@ -1264,8 +1238,7 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
   final liked = Services.of(context).lib.isLiked(track.id);
   return [
     PopupMenuItem(value: 'like', child: Text(liked ? 'Убрать из любимого' : 'Добавить в любимое')),
-    const PopupMenuItem(value: 'next', child: Text('Играть следующим')),
-    const PopupMenuItem(value: 'queue', child: Text('В конец очереди')),
+    const PopupMenuItem(value: 'queue', child: Text('Добавить в очередь')),
     const PopupMenuItem(value: 'wave', child: Text('Моя волна по треку')),
     const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
     if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
@@ -1296,14 +1269,11 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
     return;
   }
   switch (v) {
-    case 'next':
-      app.player.playNext(track);
-      app.lib.messages.add('«${track.title}» заиграет следующим');
     case 'wave':
       startWaveFrom(context, track);
     case 'queue':
       app.player.addToQueue(track);
-      app.lib.messages.add('«${track.title}» добавлен в конец очереди');
+      app.lib.messages.add('«${track.title}» добавлен в очередь');
     case 'like':
       final was = app.lib.isLiked(track.id);
       app.lib.toggleLike(track.id);

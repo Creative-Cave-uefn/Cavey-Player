@@ -35,7 +35,7 @@ class _MissingAlbumTracksState extends State<MissingAlbumTracks> {
   Future<(WebAlbum, List<WebTrack>)?> _load(AppServices app) async {
     final a = widget.album;
     final artists = a.artist == 'Разные исполнители' ? a.artists : [a.artist, ...a.artists.where((n) => n != a.artist)];
-    final found = await app.web.findAlbum(a.title, artists);
+    final found = await app.web.findAlbum(a.title, artists, haveTitles: [for (final t in a.tracks) t.title]);
     if (found == null) return null;
     return app.web.albumById(found.id);
   }
@@ -62,13 +62,9 @@ class _MissingAlbumTracksState extends State<MissingAlbumTracks> {
             if (missing.isEmpty) return const SizedBox(height: 24);
             return Padding(
               padding: EdgeInsets.fromLTRB(pad, 28, pad, 32),
+              // Без своего фона и рамки: панель продолжает список треков
               child: Container(
-                padding: const EdgeInsets.fromLTRB(18, 16, 18, 10),
-                decoration: BoxDecoration(
-                  color: C.raised.withValues(alpha: 0.55),
-                  border: Border.all(color: C.line),
-                  borderRadius: BorderRadius.circular(14),
-                ),
+                padding: const EdgeInsets.fromLTRB(0, 4, 0, 10),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
                     Icon(Icons.cloud_download_outlined, color: C.accent),

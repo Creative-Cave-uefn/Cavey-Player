@@ -497,8 +497,12 @@ class WebInfoService extends ChangeNotifier {
 
   /// Ищет в Deezer тот же альбом, что в библиотеке: название должно совпасть (без скобок, регистра и знаков),
   /// исполнитель — совпасть или входить в название исполнителя Deezer. Не нашёлся уверенно — null
-  Future<WebAlbum?> findAlbum(String title, List<String> artists) {
-    final key = '${_normTitle(title)}|${artists.take(3).map(_key).join(',')}';
+  ///
+  /// [haveTitles] — названия треков, которые уже есть в библиотеке в этом альбоме. Если исполнитель у альбома в
+  /// Deezer другой (сборники, саундтреки: в библиотеке исполнители отдельных треков, в Deezer — составитель),
+  /// ищем только по названию и берём альбом, в котором нашлись эти треки
+  Future<WebAlbum?> findAlbum(String title, List<String> artists, {List<String> haveTitles = const []}) {
+    final key = '${_normTitle(title)}|${artists.take(3).map(_key).join(',')}|${haveTitles.length}';
     return _findAlbum[key] ??= () async {
       final want = _normTitle(title);
       if (want.isEmpty) return null;
@@ -521,6 +525,20 @@ class WebInfoService extends ChangeNotifier {
           final hits = list.where((a) => _normTitle(a.title) == want && artistOk(a)).toList()
             ..sort((a, b) => b.tracks.compareTo(a.tracks));
           if (hits.isNotEmpty) return hits.first;
+        } catch (_) {
+          return null;
+        }
+      }
+      if (haveTitles.isNotEmpty) {
+        try {
+          final have = {for (final t in haveTitles) trackTitleKey(t)}..remove('');
+          final j = await _deezer('/search/album', {'q': title, 'limit': '15'}, true);
+          final list = [for (final x in (j['data'] as List? ?? const [])) if (x is Map) WebAlbum.fromDeezer(x)];
+          final same = list.where((a) => _normTitle(a.title) == want).toList()..sort((a, b) => b.tracks.compareTo(a.tracks));
+          for (final a in same.take(4)) {
+            final tracks = await albumTracks(a.id);
+            if (tracks.any((t) => have.contains(trackTitleKey(t.title)))) return a;
+          }
         } catch (_) {
           return null;
         }

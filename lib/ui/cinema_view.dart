@@ -26,24 +26,39 @@ class _CinemaPageState extends State<CinemaPage> {
   bool _lyrics = true;
 
   /// У текущего трека текста нет: режим текста выключается сам, плеер встаёт по центру.
-  /// У следующего трека с текстом он снова появится, если его не выключали кнопкой
+  /// У следующего трека с текстом он снова появится, если его не выключали кнопкой.
+  /// Решает по тому, что лежит в сервисе текстов, — ровно по тому же, что показала бы панель,
+  /// поэтому срабатывает и при первом поиске, а не только когда ответ уже сохранён
   bool _none = false;
-  String? _checked;
+  String? _noneFor;
+  String? _asked;
 
-  void _check(Track t) {
-    final app = Services.of(context);
-    final known = app.player.duration > Duration.zero;
-    final key = '${t.id}:$known';
-    if (_checked == key) return;
-    _checked = key;
-    final id = t.id;
-    app.lyrics.forTrack(t, app.player.duration).then((l) {
-      if (!mounted || app.player.current?.id != id) return;
-      final none = l == null || l.instrumental || l.lines.isEmpty;
-      if (none != _none) setState(() => _none = none);
-    }, onError: (Object _) {
+  /// Пока текст ищется — остаётся прежнее решение; нашёлся или не нашёлся — решение по ответу
+  bool _noText(Track t) {
+    final lyr = Services.of(context).lyrics;
+    if (_noneFor != t.id) {
+      _noneFor = t.id;
+      _none = false;
+    }
+    if (lyr.known(t)) {
+      final l = lyr.cached(t);
+      _none = l == null || l.instrumental || l.lines.isEmpty;
+    } else if (lyr.failed(t) && !lyr.loading(t)) {
       // Нет сети — это не «текста нет»: панель остаётся и сама предложит повторить
-      if (mounted && _none) setState(() => _none = false);
+      _none = false;
+    }
+    return _none;
+  }
+
+  /// Поиск обычно уже начат плеером; если нет — начинаем, чтобы узнать ответ и со скрытой панелью текста
+  void _ask(Track t) {
+    if (_asked == t.id) return;
+    _asked = t.id;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final app = Services.of(context);
+      if (app.lyrics.known(t) || app.lyrics.loading(t)) return;
+      app.lyrics.forTrack(t, app.player.duration).then<void>((_) {}, onError: (Object _) {});
     });
   }
 
@@ -69,11 +84,12 @@ class _CinemaPageState extends State<CinemaPage> {
     final app = Services.of(context);
     final p = app.player;
     return ListenableBuilder(
-      listenable: Listenable.merge([p, app.lib]),
+      listenable: Listenable.merge([p, app.lib, app.lyrics]),
       builder: (context, _) {
         final t = p.current;
-        if (t != null) _check(t);
-        final showLyrics = _lyrics && !_none;
+        if (t != null) _ask(t);
+        final none = t != null && _noText(t);
+        final showLyrics = _lyrics && !none;
         return Stack(children: [
           if (t == null)
             const EmptyState(
@@ -115,22 +131,23 @@ class _CinemaPageState extends State<CinemaPage> {
                 Expanded(child: lyrics),
               ]);
             }),
+          // Выход — там же, где в плеере кнопка входа; левее него — кнопка текста. Обе приглушены, чтобы не бросались в глаза
           Positioned(
-            left: 16,
-            top: 10,
+            right: 23,
+            bottom: 24,
             child: IconButton(
-              tooltip: 'Закрыть (Esc)',
+              tooltip: 'Выйти из кинотеатра (Esc)',
               onPressed: _close,
-              icon: const Icon(Icons.close_rounded, size: 26, color: C.text),
+              icon: Icon(Icons.fullscreen_exit_rounded, size: 26, color: C.text.withValues(alpha: 0.55)),
             ),
           ),
           Positioned(
-            right: 20,
-            bottom: 18,
+            right: 23 + 48 + 4,
+            bottom: 24,
             child: IconButton(
-              tooltip: _none ? 'У этого трека текста нет' : (_lyrics ? 'Скрыть текст' : 'Показать текст'),
-              onPressed: _none ? null : () => setState(() => _lyrics = !_lyrics),
-              icon: Icon(Icons.lyrics_outlined, color: showLyrics ? C.text : C.muted),
+              tooltip: none ? 'У этого трека текста нет' : (_lyrics ? 'Скрыть текст' : 'Показать текст'),
+              onPressed: none ? null : () => setState(() => _lyrics = !_lyrics),
+              icon: Icon(Icons.lyrics_outlined, color: showLyrics ? C.text.withValues(alpha: 0.55) : C.text.withValues(alpha: 0.28)),
             ),
           ),
         ]);

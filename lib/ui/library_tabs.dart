@@ -11,6 +11,7 @@ const libraryTabs = <(String, Nav)>[
   ('Синглы и EP', Nav('albums', 'ep')),
   ('Исполнители', Nav('artists')),
   ('Плейлисты', Nav('playlists')),
+  ('Коллекция', Nav('collection')),
   ('Недавно добавленное', Nav('recent')),
 ];
 
@@ -63,8 +64,9 @@ class LibraryTabsPage extends StatelessWidget {
         ),
       ),
       Expanded(
-        // Страница обрезается по верхнему краю: при прокрутке не наезжает на вкладки
-        child: ClipRect(child: LibraryFrame(child: child)),
+        // Страница обрезается по верхнему краю: при прокрутке не наезжает на вкладки.
+        // Свой слой подсветки внутри обрезки: иначе подсветка плитки, ушедшей под вкладки, рисуется поверх заголовка
+        child: ClipRect(child: Material(type: MaterialType.transparency, child: LibraryFrame(child: child))),
       ),
     ]);
   }

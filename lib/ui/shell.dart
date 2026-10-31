@@ -34,6 +34,8 @@ import 'widgets.dart';
 import 'glass_popup.dart';
 import 'library_home.dart';
 import 'library_tabs.dart';
+import 'collection_page.dart';
+import 'queue_panel.dart';
 
 class Nav {
   final String kind; // all, albums, album, liked, playlist, sources, accounts
@@ -375,11 +377,16 @@ class _ShellState extends State<Shell> {
                             ),
                           ]),
                         ),
-                        // В кинотеатре текст и так на половине экрана
+                        // В кинотеатре текст и так на половине экрана. Справа одна панель: текст песни или очередь
                         if (nav.kind != 'cinema')
                           ValueListenableBuilder<bool>(
                             valueListenable: app.player.lyricsOpen,
                             builder: (context, open, _) => open ? const LyricsPanel() : const SizedBox.shrink(),
+                          ),
+                        if (nav.kind != 'cinema')
+                          ValueListenableBuilder<bool>(
+                            valueListenable: app.player.queueOpen,
+                            builder: (context, open, _) => open ? const QueuePanel() : const SizedBox.shrink(),
                           ),
                       ]),
                     ),
@@ -534,6 +541,8 @@ class _ShellState extends State<Shell> {
 
   Widget _page(Nav nav, bool compact) {
     switch (nav.kind) {
+      case 'collection':
+        return CollectionPage(key: const ValueKey('collection'), compact: compact);
       case 'playlists':
         return PlaylistsPage(key: const ValueKey('playlists'), compact: compact);
       case 'albums':
@@ -631,7 +640,9 @@ class _ToastCard extends StatelessWidget {
   }
 }
 
-/// Левая панель с ручкой на правом краю: тянем влево — остаются значки и обложки, вправо — полная панель
+/// Левая панель с ручкой на правом краю: тянем влево — остаются значки и обложки, вправо — полная панель.
+/// Сворачивается плавно: надписи и крупные обложки укатываются вправо, мелкие обложки выезжают слева.
+/// Разворачивается зеркально
 class _SidebarHost extends StatefulWidget {
   final bool compact;
   const _SidebarHost({required this.compact});
@@ -640,39 +651,31 @@ class _SidebarHost extends StatefulWidget {
   State<_SidebarHost> createState() => _SidebarHostState();
 }
 
-class _SidebarHostState extends State<_SidebarHost> {
+class _SidebarHostState extends State<_SidebarHost> with SingleTickerProviderStateMixin {
   double _startW = 248;
   double _dx = 0;
 
-  /// Какой вид содержимого сейчас: при сужении панели он меняется только когда край уже доехал,
-  /// поэтому надписи не пропадают рывком — их закрывает сам край панели
-  bool? _contentNarrow;
-  Timer? _switch;
+  /// 0 — полная панель, 1 — узкая. Время и кривая те же, что у ширины панели в окне, поэтому всё едет вместе
+  late final AnimationController _ctl = AnimationController(vsync: this, duration: const Duration(milliseconds: 320));
+  late final Animation<double> _t = CurvedAnimation(parent: _ctl, curve: Curves.easeOutCubic);
+  bool _started = false;
 
   @override
   void dispose() {
-    _switch?.cancel();
+    _ctl.dispose();
     super.dispose();
   }
 
   void _follow(bool narrow) {
-    final cur = _contentNarrow;
-    if (cur == null) {
-      _contentNarrow = narrow;
+    if (!_started) {
+      _started = true;
+      _ctl.value = narrow ? 1 : 0;
       return;
     }
-    if (cur == narrow) {
-      _switch?.cancel();
-      return;
-    }
-    if (!narrow) {
-      // Расширяем: сразу полный вид, край панели открывает надписи по мере движения
-      _switch?.cancel();
-      _contentNarrow = false;
-    } else if (_switch == null || !_switch!.isActive) {
-      _switch = Timer(const Duration(milliseconds: 330), () {
-        if (mounted) setState(() => _contentNarrow = true);
-      });
+    if (narrow && _ctl.value < 1 && _ctl.status != AnimationStatus.forward) {
+      _ctl.forward();
+    } else if (!narrow && _ctl.value > 0 && _ctl.status != AnimationStatus.reverse) {
+      _ctl.reverse();
     }
   }
 
@@ -686,7 +689,6 @@ class _SidebarHostState extends State<_SidebarHost> {
         // Узкое окно всегда держит узкую панель; ручка нужна только на широком
         final narrow = widget.compact || mini;
         _follow(narrow);
-        final content = _contentNarrow ?? narrow;
         void setMini(bool v) {
           if (v == mini) return;
           app.settings.view['sidebar.mini'] = v ? '1' : '0';
@@ -703,9 +705,9 @@ class _SidebarHostState extends State<_SidebarHost> {
                 borderRadius: BorderRadius.circular(24),
                 child: OverflowBox(
                   alignment: Alignment.topLeft,
-                  minWidth: content ? 72 : 240,
-                  maxWidth: content ? 72 : 240,
-                  child: _Sidebar(compact: content),
+                  minWidth: 240,
+                  maxWidth: 240,
+                  child: _Sidebar(t: _t),
                 ),
               ),
             ),
@@ -739,25 +741,59 @@ class _SidebarHostState extends State<_SidebarHost> {
   }
 }
 
+/// Два вида одного блока панели и переход между ними: полный уезжает вправо и гаснет,
+/// узкий выезжает слева. [t] — 0 полный вид, 1 узкий
+class _SlideSwap extends StatelessWidget {
+  final double t;
+  final Widget full;
+  final Widget mini;
+  const _SlideSwap({required this.t, required this.full, required this.mini});
+
+  static const fullW = 240.0;
+  static const miniW = 72.0;
+
+  @override
+  Widget build(BuildContext context) {
+    if (t <= 0) return SizedBox(width: fullW, child: full);
+    if (t >= 1) return SizedBox(width: miniW, child: mini);
+    return Stack(clipBehavior: Clip.none, children: [
+      Opacity(
+        opacity: (1 - t * 1.25).clamp(0.0, 1.0),
+        child: Transform.translate(offset: Offset(t * 90, 0), child: SizedBox(width: fullW, child: full)),
+      ),
+      Positioned(
+        left: 0,
+        top: 0,
+        width: miniW,
+        child: Opacity(
+          opacity: ((t - 0.15) / 0.85).clamp(0.0, 1.0),
+          child: Transform.translate(offset: Offset(-(1 - t) * 60, 0), child: mini),
+        ),
+      ),
+    ]);
+  }
+}
+
 class _Sidebar extends StatelessWidget {
-  final bool compact;
-  const _Sidebar({required this.compact});
+  final Animation<double> t;
+  const _Sidebar({required this.t});
 
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final nav = NavScope.of(context);
     return SizedBox(
-      width: compact ? 72 : 240,
+      width: 240,
       child: ListenableBuilder(
-        listenable: Listenable.merge([app.lib, nav, app.downloads, app.social]),
+        listenable: Listenable.merge([app.lib, nav, app.downloads, app.social, t]),
         builder: (context, _) {
           final lib = app.lib;
           final cur = nav.value;
+          final v = t.value;
           Widget item(IconData icon, String label, Nav target, {Widget? trailing, List<String> also = const []}) => _NavItem(
                 icon: icon,
                 label: label,
-                compact: compact,
+                t: v,
                 selected: cur.same(target) || also.contains(cur.kind),
                 trailing: trailing,
                 onTap: () => nav.go(target),
@@ -779,15 +815,31 @@ class _Sidebar extends StatelessWidget {
           ];
           final unread = unreadNotices(app);
           final head = <Widget>[
+            // Значок остаётся на месте (сдвигается на пару пикселей), название укатывается вправо
             Padding(
-              padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 26, 0, 22),
-              child: compact
-                  ? const Center(child: BrandMark(size: 34))
-                  : const Align(alignment: Alignment.centerLeft, child: Wordmark()),
+              padding: const EdgeInsets.fromLTRB(0, 26, 0, 22),
+              child: SizedBox(
+                height: 34,
+                child: Stack(clipBehavior: Clip.none, children: [
+                  Positioned(left: 22 - 2.5 * v, top: 0, child: const BrandMark(size: 33)),
+                  Positioned(
+                    left: 22 + 33 + 10,
+                    top: 0,
+                    bottom: 0,
+                    child: Opacity(
+                      opacity: (1 - v * 1.5).clamp(0.0, 1.0),
+                      child: Transform.translate(
+                        offset: Offset(v * 80, 0),
+                        child: Center(child: Text('Cavey', maxLines: 1, softWrap: false, style: brand(22))),
+                      ),
+                    ),
+                  ),
+                ]),
+              ),
             ),
             item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
             item(Icons.library_music_outlined, 'Медиатека', const Nav('all'),
-                also: const ['albums', 'artists', 'recent', 'songs', 'playlists']),
+                also: const ['albums', 'artists', 'recent', 'songs', 'playlists', 'collection']),
             const SizedBox(height: 14),
             item(Icons.travel_explore_rounded, 'Поиск в интернете', const Nav('websearch')),
             item(Icons.new_releases_outlined, 'Новинки', const Nav('new')),
@@ -806,35 +858,43 @@ class _Sidebar extends StatelessWidget {
                       )
                     : null),
             const SizedBox(height: 18),
-            _PlaylistsHeader(compact: compact, selected: cur.same(const Nav('playlists')), mode: mode),
+            _SlideSwap(
+              t: v,
+              full: _PlaylistsHeader(compact: false, selected: cur.same(const Nav('collection')), mode: mode),
+              mini: _PlaylistsHeader(compact: true, selected: cur.same(const Nav('collection')), mode: mode),
+            ),
           ];
 
-          final playlists = <Widget>[
-            if (mode == 'covers')
-              _SideTiles(
-                entries: entries,
-                compact: compact,
-                current: cur,
-                cols: compact ? 1 : int.tryParse(app.settings.viewOf('sidebar.cols', '2'))?.clamp(2, 4) ?? 2,
-                names: !compact && on('sidebar.names'),
-              )
-            else
-              for (final e in entries)
-                _SideRow(entry: e, compact: compact, selected: cur.same(e.target), onTap: () => nav.go(e.target)),
-            if (entries.isEmpty && !compact)
-              const Padding(
-                padding: EdgeInsets.fromLTRB(22, 4, 16, 0),
-                child: Text('Пока пусто. Здесь ваши плейлисты и то, что вы отметили сердечком: плейлисты друзей, альбомы и исполнители.',
-                    style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
-              ),
-          ];
+          // Коллекция в двух видах: крупном и узком (мелкие обложки в один столбец)
+          Widget collection(bool compact) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                if (mode == 'covers')
+                  _SideTiles(
+                    entries: entries,
+                    compact: compact,
+                    current: cur,
+                    cols: compact ? 1 : int.tryParse(app.settings.viewOf('sidebar.cols', '2'))?.clamp(2, 4) ?? 2,
+                    names: !compact && on('sidebar.names'),
+                  )
+                else
+                  for (final e in entries) _SideRow(entry: e, compact: compact, selected: cur.same(e.target), onTap: () => nav.go(e.target)),
+                if (entries.isEmpty && !compact)
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(22, 4, 16, 0),
+                    child: Text('Пока пусто. Здесь ваши плейлисты и то, что вы отметили сердечком: плейлисты друзей, альбомы и исполнители.',
+                        style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+                  ),
+              ]);
+          final playlists = <Widget>[_SlideSwap(t: v, full: collection(false), mini: collection(true))];
 
+          Widget footPart(bool compact) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                UploadLine(compact: compact),
+                _UpdateLine(compact: compact),
+              ]);
           final foot = <Widget>[
-            NowListeningSidebar(compact: compact),
+            _SlideSwap(t: v, full: const NowListeningSidebar(compact: false), mini: const NowListeningSidebar(compact: true)),
             const Divider(height: 1),
             const SizedBox(height: 8),
-            UploadLine(compact: compact),
-            _UpdateLine(compact: compact),
+            _SlideSwap(t: v, full: footPart(false), mini: footPart(true)),
             const SizedBox(height: 10),
           ];
 
@@ -869,7 +929,7 @@ Future<void> newPlaylistFlow(BuildContext context) async {
   nav.go(Nav('playlist', id));
 }
 
-/// «Коллекция»: заголовок — ссылка на страницу со всеми плейлистами; рядом настройки вида и «+»
+/// «Коллекция»: заголовок — ссылка на вкладку «Коллекция» в медиатеке; рядом настройки вида и «+»
 class _PlaylistsHeader extends StatelessWidget {
   final bool compact;
   final bool selected;
@@ -878,14 +938,13 @@ class _PlaylistsHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final app = Services.of(context);
     final nav = NavScope.of(context);
     if (compact) {
       return Column(children: [
         IconButton(
-          tooltip: 'Все плейлисты',
+          tooltip: 'Коллекция',
           icon: Icon(Icons.queue_music_rounded, color: selected ? C.accent : C.muted),
-          onPressed: () => nav.go(const Nav('playlists')),
+          onPressed: () => nav.go(const Nav('collection')),
         ),
         IconButton(
           tooltip: 'Новый плейлист',
@@ -894,19 +953,13 @@ class _PlaylistsHeader extends StatelessWidget {
         ),
       ]);
     }
-    bool on(String k) => app.settings.viewOf(k, '1') == '1';
-    void flip(String k) {
-      app.settings.view[k] = on(k) ? '0' : '1';
-      app.lib.viewChanged();
-    }
-
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 4, 4),
       child: Row(children: [
         Expanded(
           child: InkWell(
             borderRadius: BorderRadius.circular(8),
-            onTap: () => nav.go(const Nav('playlists')),
+            onTap: () => nav.go(const Nav('collection')),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
               child: Row(children: [
@@ -918,36 +971,12 @@ class _PlaylistsHeader extends StatelessWidget {
             ),
           ),
         ),
-        GlassMenuButton<String>(
-          tooltip: 'Что и как показывать',
-          icon: Icon(mode == 'covers' ? Icons.grid_view_rounded : Icons.view_agenda_outlined, size: 18),
-          onSelected: (v) {
-            switch (v) {
-              case 'both' || 'covers':
-                app.settings.view['sidebar.playlists'] = v;
-                app.lib.viewChanged();
-              case 'pl':
-                flip('sidebar.showPl');
-              case 'al':
-                flip('sidebar.showAl');
-              case 'ar':
-                flip('sidebar.showAr');
-              case 'names':
-                flip('sidebar.names');
-            }
-          },
-          itemBuilder: (_) => [
-            CheckedPopupMenuItem(value: 'both', checked: mode == 'both', child: const Text('Список с обложкой')),
-            CheckedPopupMenuItem(value: 'covers', checked: mode == 'covers', child: const Text('Обложки')),
-            if (mode == 'covers') ...[
-              CheckedPopupMenuItem(value: 'names', checked: on('sidebar.names'), child: const Text('Подписи')),
-              PopupMenuItem<String>(enabled: false, child: _CoverSizeSlider(app: app)),
-            ],
-            const PopupMenuDivider(),
-            CheckedPopupMenuItem(value: 'pl', checked: on('sidebar.showPl'), child: const Text('Плейлисты')),
-            CheckedPopupMenuItem(value: 'al', checked: on('sidebar.showAl'), child: const Text('Альбомы')),
-            CheckedPopupMenuItem(value: 'ar', checked: on('sidebar.showAr'), child: const Text('Исполнители')),
-          ],
+        Builder(
+          builder: (btn) => IconButton(
+            tooltip: 'Что и как показывать',
+            icon: Icon(mode == 'covers' ? Icons.grid_view_rounded : Icons.view_agenda_outlined, size: 18),
+            onPressed: () => showGlassPopover(context: btn, width: 250, builder: (_) => const _CollectionViewPanel()),
+          ),
         ),
         IconButton(
           tooltip: 'Новый плейлист',
@@ -960,22 +989,104 @@ class _PlaylistsHeader extends StatelessWidget {
   }
 }
 
+/// Окошко «Что и как показывать»: не закрывается от нажатий, при смене вида плавно растёт или сжимается,
+/// а пункты сдвигаются на новые места
+class _CollectionViewPanel extends StatelessWidget {
+  const _CollectionViewPanel();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return ListenableBuilder(
+      listenable: app.lib,
+      builder: (context, _) {
+        final mode = app.settings.viewOf('sidebar.playlists', 'both') == 'covers' ? 'covers' : 'both';
+        bool on(String k) => app.settings.viewOf(k, '1') == '1';
+        void set(String k, String v) {
+          app.settings.view[k] = v;
+          app.lib.viewChanged();
+        }
+
+        void flip(String k) => set(k, on(k) ? '0' : '1');
+        final covers = mode == 'covers';
+        return AnimatedSize(
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            _PopCheck('Список с обложкой', !covers, () => set('sidebar.playlists', 'both')),
+            _PopCheck('Обложки', covers, () => set('sidebar.playlists', 'covers')),
+            // Подписи и размер есть только у плиток: появляются и пропадают плавно
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeIn,
+              transitionBuilder: (child, anim) => FadeTransition(opacity: anim, child: SizeTransition(sizeFactor: anim, axisAlignment: -1, child: child)),
+              child: covers
+                  ? Column(key: const ValueKey('cv'), mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      _PopCheck('Подписи', on('sidebar.names'), () => flip('sidebar.names')),
+                      Padding(padding: const EdgeInsets.symmetric(horizontal: 18), child: _CoverSizeSlider(app: app)),
+                    ])
+                  : const SizedBox(key: ValueKey('nocv'), width: double.infinity),
+            ),
+            const Padding(padding: EdgeInsets.symmetric(vertical: 5), child: Divider(height: 1, color: C.divider)),
+            _PopCheck('Плейлисты', on('sidebar.showPl'), () => flip('sidebar.showPl')),
+            _PopCheck('Альбомы', on('sidebar.showAl'), () => flip('sidebar.showAl')),
+            _PopCheck('Исполнители', on('sidebar.showAr'), () => flip('sidebar.showAr')),
+          ]),
+        );
+      },
+    );
+  }
+}
+
+/// Строка окошка с галочкой
+class _PopCheck extends StatelessWidget {
+  final String label;
+  final bool checked;
+  final VoidCallback onTap;
+  const _PopCheck(this.label, this.checked, this.onTap);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        hoverColor: C.hoverOverlay,
+        onTap: onTap,
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 38),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          alignment: Alignment.centerLeft,
+          child: Row(children: [
+            SizedBox(
+              width: 20,
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 140),
+                opacity: checked ? 1 : 0,
+                child: Icon(Icons.check_rounded, size: 18, color: C.accent),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Text(label, style: const TextStyle(color: C.text, fontSize: 14))),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
 /// Размер обложек в боковой панели: 4, 3 или 2 в ряд
-class _CoverSizeSlider extends StatefulWidget {
+class _CoverSizeSlider extends StatelessWidget {
   final AppServices app;
   const _CoverSizeSlider({required this.app});
 
   @override
-  State<_CoverSizeSlider> createState() => _CoverSizeSliderState();
-}
-
-class _CoverSizeSliderState extends State<_CoverSizeSlider> {
-  @override
   Widget build(BuildContext context) {
-    final app = widget.app;
     final cols = int.tryParse(app.settings.viewOf('sidebar.cols', '2'))?.clamp(2, 4) ?? 2;
     return SizedBox(
-      width: 220,
+      height: 38,
       child: Row(children: [
         const Text('Размер', style: TextStyle(color: C.text, fontSize: 14)),
         Expanded(
@@ -986,7 +1097,7 @@ class _CoverSizeSliderState extends State<_CoverSizeSlider> {
             // Вправо — крупнее, то есть меньше обложек в ряд
             value: (6 - cols).toDouble(),
             onChanged: (v) {
-              setState(() => app.settings.view['sidebar.cols'] = '${6 - v.round()}');
+              app.settings.view['sidebar.cols'] = '${6 - v.round()}';
               app.lib.viewChanged();
             },
           ),
@@ -1160,7 +1271,9 @@ class _NavItem extends StatelessWidget {
   final IconData icon;
   final String label;
   final bool selected;
-  final bool compact;
+
+  /// 0 — полная панель, 1 — узкая. Значок стоит на месте, подпись укатывается вправо и гаснет
+  final double t;
   final VoidCallback onTap;
   final Widget? trailing;
   final Widget? leading;
@@ -1169,7 +1282,7 @@ class _NavItem extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.selected,
-    required this.compact,
+    required this.t,
     required this.onTap,
     this.trailing,
     this.leading,
@@ -1178,41 +1291,67 @@ class _NavItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = selected ? C.text : C.muted;
-    final body = InkWell(
+    final fade = (1 - t * 1.5).clamp(0.0, 1.0);
+    // Подсветка выбранного пункта сужается вместе с панелью: 220 → 52
+    final width = 220 - (220 - 52) * t;
+    Widget body = InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Container(
         height: 40,
-        // 16: центр значка совпадает с узкой панелью, и при её сворачивании значки не прыгают
-        padding: EdgeInsets.symmetric(horizontal: compact ? 0 : 16),
         decoration: BoxDecoration(
           color: selected ? C.hover : null,
           borderRadius: BorderRadius.circular(12),
         ),
-        child: Row(
-          mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start,
-          children: [
-            Stack(clipBehavior: Clip.none, children: [
-              Icon(icon, size: 20, color: selected ? C.accent : color),
-              if (compact && trailing != null) Positioned(right: -8, top: -6, child: trailing!),
-            ]),
-            if (!compact) ...[
-              const SizedBox(width: 14),
-              Expanded(
-                child: Text(label,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: color, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+        // Содержимое всегда выложено на полную ширину, лишнее обрезает край подсветки
+        child: ClipRect(
+          child: OverflowBox(
+            alignment: Alignment.centerLeft,
+            minWidth: 0,
+            maxWidth: 220,
+            child: SizedBox(
+              width: 220,
+              child: Row(
+                children: [
+                  // 16: центр значка совпадает с узкой панелью, и при её сворачивании значки не прыгают
+                  const SizedBox(width: 16),
+                  Stack(clipBehavior: Clip.none, children: [
+                    Icon(icon, size: 20, color: selected ? C.accent : color),
+                    if (trailing != null && t > 0)
+                      Positioned(right: -8, top: -6, child: Opacity(opacity: t.clamp(0.0, 1.0), child: trailing!)),
+                  ]),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Opacity(
+                      opacity: fade,
+                      child: Transform.translate(
+                        offset: Offset(t * 70, 0),
+                        child: Row(children: [
+                          Expanded(
+                            child: Text(label,
+                                maxLines: 1,
+                                softWrap: false,
+                                overflow: TextOverflow.clip,
+                                style: TextStyle(color: color, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+                          ),
+                          if (leading != null) ...[leading!, const SizedBox(width: 4)],
+                          if (trailing != null) trailing!,
+                          const SizedBox(width: 16),
+                        ]),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              if (leading != null) ...[leading!, const SizedBox(width: 4)],
-              if (trailing != null) trailing!,
-            ],
-          ],
+            ),
+          ),
         ),
       ),
     );
+    if (t >= 1) body = Tooltip(message: label, child: body);
     return Padding(
-      padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 10, vertical: 1),
-      child: compact ? Tooltip(message: label, child: body) : body,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 1),
+      child: Align(alignment: Alignment.centerLeft, child: SizedBox(width: width, child: body)),
     );
   }
 }

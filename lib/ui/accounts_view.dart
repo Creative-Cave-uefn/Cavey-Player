@@ -703,7 +703,6 @@ class _KaraokeSection extends StatelessWidget {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           value: k.enabled,
-          activeColor: C.accent,
           title: const Text('Вычислять время каждого слова по звуку'),
           subtitle: const Text(
             'В кинотеатре текст заливается слово за словом точно в такт. Считает программа Whisper на этом компьютере, '
@@ -1110,7 +1109,6 @@ class _TraySectionState extends State<_TraySection> {
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         value: app.settings.trayOnClose,
-        activeColor: C.accent,
         title: const Text('Сворачивать в трей при закрытии окна'),
         subtitle: const Text(
           'Музыка играет дальше, а Cavey остаётся значком у часов. Закрыть совсем можно пунктом «Выйти» в меню значка.',
@@ -1128,7 +1126,6 @@ class _TraySectionState extends State<_TraySection> {
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         value: app.settings.globalMediaKeys,
-        activeColor: C.accent,
         title: const Text('Медиаклавиши, когда окно не активно'),
         subtitle: const Text(
           '⏮ ⏯ ⏭ на клавиатуре (в том числе Fn+F-клавиши ноутбука) работают, даже если Cavey свёрнут или спрятан в трей.',
@@ -1166,7 +1163,6 @@ class _DiscordSectionState extends State<_DiscordSection> {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           value: app.settings.discord,
-          activeColor: C.accent,
           title: const Text('Показывать в Discord, что я слушаю'),
           subtitle: const Text('Друзья в Discord увидят название трека и исполнителя, пока музыка играет.',
               style: TextStyle(color: C.faint, fontSize: 13)),

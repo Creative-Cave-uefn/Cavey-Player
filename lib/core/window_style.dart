@@ -51,13 +51,11 @@ const _dwmaTextColor = 36;
 /// Нужна и при своей шапке: при наведении на угол с кнопками окна Windows иногда проступает
 /// системная полоса, и без этого она светло-серая
 void tintCaption() {
+  if (!Platform.isWindows) return;
   final build = windowsBuild();
-  if (build < 17763) return;
   try {
     final user32 = DynamicLibrary.open('user32.dll');
-    final dwm = DynamicLibrary.open('dwmapi.dll');
     final find = user32.lookupFunction<_FindWindowC, _FindWindowD>('FindWindowW');
-    final set = dwm.lookupFunction<_DwmSetC, _DwmSetD>('DwmSetWindowAttribute');
     final cls = 'FLUTTER_RUNNER_WIN32_WINDOW'.toNativeUtf16();
     int hwnd;
     try {
@@ -66,6 +64,10 @@ void tintCaption() {
       malloc.free(cls);
     }
     if (hwnd == 0) return;
+    _paintBackdrop(user32, hwnd);
+    if (build < 17763) return;
+    final dwm = DynamicLibrary.open('dwmapi.dll');
+    final set = dwm.lookupFunction<_DwmSetC, _DwmSetD>('DwmSetWindowAttribute');
     final v = malloc<Uint32>();
     try {
       void put(int attr, int value) {
@@ -85,6 +87,29 @@ void tintCaption() {
     }
   } catch (e) {
     AppLog.warn('Не удалось покрасить полосу окна', e);
+  }
+}
+
+int _backdropBrush = 0;
+int _backdropColor = -1;
+
+/// Кисть, которой Windows закрашивает участки окна, куда Flutter ещё не успел нарисовать. По умолчанию она светло-серая:
+/// при наведении на кнопки в верхней полосе на кадр проступал серый прямоугольник. Красим её в цвет фона
+void _paintBackdrop(DynamicLibrary user32, int hwnd) {
+  final color = colorRef(C.bg);
+  if (_backdropBrush == 0 || _backdropColor != color) {
+    final gdi = DynamicLibrary.open('gdi32.dll');
+    final create = gdi.lookupFunction<IntPtr Function(Uint32), int Function(int)>('CreateSolidBrush');
+    final del = gdi.lookupFunction<Int32 Function(IntPtr), int Function(int)>('DeleteObject');
+    final brush = create(color);
+    if (brush == 0) return;
+    final setClass = user32.lookupFunction<IntPtr Function(IntPtr, Int32, IntPtr), int Function(int, int, int)>('SetClassLongPtrW');
+    const gclpHbrBackground = -10;
+    setClass(hwnd, gclpHbrBackground, brush);
+    // Старую кисть класса окна не трогаем — она системная; свою прошлую удаляем
+    if (_backdropBrush != 0) del(_backdropBrush);
+    _backdropBrush = brush;
+    _backdropColor = color;
   }
 }
 
