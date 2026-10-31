@@ -119,6 +119,9 @@ class WinProc {
   }
 }
 
+typedef _LastErrorC = Uint32 Function();
+typedef _LastErrorD = int Function();
+
 typedef _CreatePipeC = Int32 Function(Pointer<IntPtr>, Pointer<IntPtr>, Pointer<_SecurityAttributes>, Uint32);
 typedef _CreatePipeD = int Function(Pointer<IntPtr>, Pointer<IntPtr>, Pointer<_SecurityAttributes>, int);
 typedef _SetHandleInfoC = Int32 Function(IntPtr, Uint32, Uint32);
@@ -147,6 +150,8 @@ void _worker(List<Object?> msg) {
   final cmd = msg.skip(2).cast<String>().join(' ');
 
   final k32 = DynamicLibrary.open('kernel32.dll');
+  final lastError = k32.lookupFunction<_LastErrorC, _LastErrorD>('GetLastError');
+  void report(String message) => port.send(Uint8List.fromList(utf8.encode('$message\n')));
   final createPipe = k32.lookupFunction<_CreatePipeC, _CreatePipeD>('CreatePipe');
   final setHandleInfo = k32.lookupFunction<_SetHandleInfoC, _SetHandleInfoD>('SetHandleInformation');
   final createFile = k32.lookupFunction<_CreateFileC, _CreateFileD>('CreateFileW');
@@ -171,6 +176,7 @@ void _worker(List<Object?> msg) {
     final hRead = arena<IntPtr>();
     final hWrite = arena<IntPtr>();
     if (createPipe(hRead, hWrite, sa, 0) == 0) {
+      report('CreatePipe: Windows error ${lastError()}');
       port.send(['exit', -1]);
       return;
     }
@@ -198,9 +204,11 @@ void _worker(List<Object?> msg) {
       si,
       pi,
     );
+    final startError = ok == 0 ? lastError() : 0;
     close(hWrite.value); // иначе чтение не закончится
     if (nul != -1) close(nul);
     if (ok == 0) {
+      report('Не удалось запустить $exe: Windows error $startError');
       close(hRead.value);
       port.send(['exit', -1]);
       return;
@@ -219,7 +227,8 @@ void _worker(List<Object?> msg) {
     close(pi.ref.hProcess);
     close(pi.ref.hThread);
     port.send(['exit', code.value]);
-  } catch (_) {
+  } catch (e) {
+    report('Ошибка запуска $exe: $e');
     port.send(['exit', -1]);
   } finally {
     arena.releaseAll();

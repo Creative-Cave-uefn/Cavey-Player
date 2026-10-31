@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'tools.dart';
+import 'winproc.dart';
 
 /// Installs in the application's tools folder; credentials remain with Zotify.
 class ZotifyInstall {
@@ -20,14 +21,21 @@ class ZotifyInstall {
     for (final c in script.codeUnits) {
       bytes.addAll([c & 255, c >> 8]);
     }
-    final output = await Tools.run('powershell.exe', [
+    final powershell = powershellExecutable;
+    if (!await File(powershell).exists()) throw Exception('PowerShell не найден: $powershell');
+    log('Запускаю установщик через PowerShell…');
+    final output = <String>[];
+    final code = await WinProc.run(powershell, [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', base64.encode(bytes),
-    ], onLine: log);
-    if (!output.contains('CAVE_ZOTIFY_INSTALL_OK') || !await exe.exists()) {
-      throw Exception('Не удалось установить Zotify. Подробности в журнале ниже. Может потребоваться App Installer (winget) из Microsoft Store.');
+    ], (line) { output.add(line.trim()); log(line); });
+    if (code != 0 || !output.contains('CAVE_ZOTIFY_INSTALL_OK') || !await exe.exists()) {
+      throw Exception('Установщик Zotify завершился с кодом $code. Подробности — в журнале выше.');
     }
     return exe.path;
   }
+
+  static String get powershellExecutable =>
+      '${Platform.environment['SystemRoot'] ?? r'C:\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 
   static String scriptFor(String rootPath, String executable) {
     // Data paths enter PowerShell only as single-quoted literals.
@@ -73,9 +81,11 @@ Run-Checked PIP @('install', 'https://get.zotify.xyz')
 Run-Checked EXE @('--help')
 Write-Output 'CAVE_ZOTIFY_INSTALL_OK'
 '''
-        .replaceAll('ROOT', quote(rootPath))
-        .replaceAll('PIP', quote('${rootPath}\\Scripts\\pip.exe'))
-        .replaceAll('EXE', quote(executable));
+        .replaceAllMapped(RegExp(r'\b(ROOT|PIP|EXE)\b'), (match) => switch (match[1]) {
+          'ROOT' => quote(rootPath),
+          'PIP' => quote('${rootPath}\\Scripts\\pip.exe'),
+          _ => quote(executable),
+        });
   }
 
 }
