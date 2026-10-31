@@ -734,11 +734,11 @@ class _AccentSectionState extends State<_AccentSection> {
 
   @override
   Widget build(BuildContext context) {
-    final current = C.accent.toARGB32();
+    final current = C.accent.value;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
         Expanded(child: Text('Акцентный цвет', style: display(20))),
-        if (current != C.defaultAccent.toARGB32()) TextButton(onPressed: () => _pick(null), child: const Text('Как было')),
+        if (current != C.defaultAccent.value) TextButton(onPressed: () => _pick(null), child: const Text('Как было')),
       ]),
       const SizedBox(height: 6),
       const Text('Цвет кнопок, переключателей, ползунков и выделений.', style: TextStyle(color: C.faint, fontSize: 13)),
@@ -749,7 +749,7 @@ class _AccentSectionState extends State<_AccentSection> {
             message: name,
             child: Semantics(
               button: true,
-              selected: current == color.toARGB32(),
+              selected: current == color.value,
               label: name,
               child: GestureDetector(
                 onTap: () => _pick(color),
@@ -761,9 +761,9 @@ class _AccentSectionState extends State<_AccentSection> {
                     decoration: BoxDecoration(
                       color: color,
                       shape: BoxShape.circle,
-                      border: Border.all(color: current == color.toARGB32() ? C.text : C.line, width: current == color.toARGB32() ? 2.5 : 1),
+                      border: Border.all(color: current == color.value ? C.text : C.line, width: current == color.value ? 2.5 : 1),
                     ),
-                    child: current == color.toARGB32()
+                    child: current == color.value
                         ? Icon(Icons.check_rounded, size: 20, color: color.computeLuminance() > 0.42 ? const Color(0xFF241C06) : Colors.white)
                         : null,
                   ),

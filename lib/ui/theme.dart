@@ -50,7 +50,7 @@ class C {
     return m == null ? null : Color(0xFF000000 | int.parse(m.group(1)!, radix: 16));
   }
 
-  static String accentHex(Color c) => '#${(c.toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
+  static String accentHex(Color c) => '#${(c.value & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
 }
 
 /// Готовые акценты для настроек: жёлтый — фирменный, остальные подобраны под тёмное стекло
