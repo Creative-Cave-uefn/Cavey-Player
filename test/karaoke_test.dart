@@ -161,9 +161,9 @@ void main() {
         HeardWord('ждет', ms(14900), ms(15300)),
       ];
       final t = KaraokeAligner.timeLines(texts, heard);
-      expect(t[0], ms(5000));
+      expect(t[0], ms(5400)); // однобуквенное «я» не сопоставляется — строка начинается с «иду»
       expect(t[1], ms(9000));
-      expect(t[2], ms(14000));
+      expect(t[2], ms(14200)); // «и» тоже пропущено
     });
 
     test('язык по тексту', () {
