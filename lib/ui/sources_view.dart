@@ -12,7 +12,9 @@ import 'glass_popup.dart';
 
 /// Папки с музыкой, приглашение друзей и отключение: раздел страницы «Настройки»
 class LibrarySection extends StatefulWidget {
-  const LibrarySection({super.key});
+  /// Какие части показать: 'folders' — папки с музыкой, 'invite' — пригласить друзей, 'leave' — отключение
+  final Set<String> parts;
+  const LibrarySection({super.key, this.parts = const {'folders', 'invite', 'leave'}});
   @override
   State<LibrarySection> createState() => _LibrarySectionState();
 }
@@ -75,200 +77,206 @@ class _LibrarySectionState extends State<LibrarySection> {
         final hubLink = folderUrl(app.settings.hubId ?? '');
         final last = DateTime.tryParse(app.settings.lastScan ?? '');
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('Папки с музыкой', style: display(20)),
-          const SizedBox(height: 10),
-          const Text(
-            'Библиотека собирается из папок на Google Дисках. Папки могут лежать у разных людей и на разных аккаунтах.',
-            style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
-          ),
-          const SizedBox(height: 18),
-          _Panel(children: [
-            Row(children: [
-              Expanded(
-                child: TextField(
-                  controller: _link,
-                  enabled: !_adding,
-                  decoration: const InputDecoration(
-                    hintText: 'Ссылка на папку Google Диска',
-                    prefixIcon: Icon(Icons.link_rounded, size: 18),
-                  ),
-                  onSubmitted: (_) => _add(),
-                ),
-              ),
-              const SizedBox(width: 12),
-              FilledButton(onPressed: _adding ? null : _add, child: const Text('Добавить папку')),
-            ]),
-            if (_error != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: Text(_error!, style: const TextStyle(color: C.danger)),
-              ),
+          if (widget.parts.contains('folders')) ...[
+            Text('Папки с музыкой', style: display(20)),
             const SizedBox(height: 10),
             const Text(
-              'Подойдёт своя папка или та, которой с вами поделились. Если она открыта для другого вашего '
-              'аккаунта, сначала подключите его в разделе «Аккаунты» выше.',
-              style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
+              'Библиотека собирается из папок на Google Дисках. Папки могут лежать у разных людей и на разных аккаунтах.',
+              style: TextStyle(color: C.muted, fontSize: 15, height: 1.5),
             ),
-          ]),
-          const SizedBox(height: 18),
-          Text(
-            'Музыка в библиотеке: ${countTracks(lib.data.tracks.length - lib.data.hidden.length)}, '
-            '${formatBytes(lib.data.tracks.values.where((t) => !lib.data.hidden.contains(t.id)).fold(0, (a, t) => a + t.size))}',
-            style: const TextStyle(color: C.muted, fontSize: 14),
-          ),
-          const SizedBox(height: 18),
-          if (lib.data.sources.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text('Папок пока нет.', style: TextStyle(color: C.muted)),
-            ),
-          for (final s in lib.data.sources)
-            _SourceRow(
-              name: s.name,
-              detail:
-                  '${countTracks(lib.tracksIn(s.id))} · ${formatBytes(lib.data.tracks.values.where((t) => t.source == s.id).fold(0, (a, t) => a + t.size))}, добавил(а) ${lib.firstNameOf(s.addedBy)}',
-              via: app.settings.sourceAccess[s.id],
-              addedBy: s.addedBy,
-              warning: lib.suspiciousSources[s.id] == null
-                  ? null
-                  : 'Не нашёл ${lib.suspiciousSources[s.id]} треков. Из общей библиотеки они не убраны — похоже, пропал доступ к папке.',
-              onPrune: lib.suspiciousSources[s.id] == null
-                  ? null
-                  : () async {
-                      final ok = await confirm(context,
-                          title: 'Убрать пропавшие треки?',
-                          text: 'Из «${s.name}» исчезли ${lib.suspiciousSources[s.id]} треков, и они пропадут из библиотеки у всех друзей. '
-                              'Делайте это, только если файлы действительно удалены, а не пропал доступ.',
-                          action: 'Убрать');
-                      if (ok) await lib.rescanAndPrune(s.id);
-                    },
-              onOpen: () => launchUrl(Uri.parse(folderUrl(s.id))),
-            ),
-          const SizedBox(height: 18),
-          Row(children: [
-            OutlinedButton.icon(
-              onPressed: lib.scan.running || lib.data.sources.isEmpty ? null : () => lib.scanAll(),
-              icon: const Icon(Icons.refresh_rounded, size: 18),
-              label: const Text('Обновить библиотеку'),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: lib.scan.running
-                  ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(
-                        lib.scan.total > 0 ? '${lib.scan.text}: ${lib.scan.done} из ${lib.scan.total}' : lib.scan.text,
-                        style: const TextStyle(color: C.muted, fontSize: 13),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 6),
-                      LinearProgressIndicator(value: lib.scan.total > 0 ? lib.scan.done / lib.scan.total : null),
-                    ])
-                  : Text(
-                      last == null
-                          ? 'Новые файлы подхватываются сами раз в 10 минут'
-                          : 'Проверено в ${TimeOfDay.fromDateTime(last.toLocal()).format(context)}. Дальше — само, раз в 10 минут.',
-                      style: const TextStyle(color: C.faint, fontSize: 13),
+            const SizedBox(height: 18),
+            _Panel(children: [
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _link,
+                    enabled: !_adding,
+                    decoration: const InputDecoration(
+                      hintText: 'Ссылка на папку Google Диска',
+                      prefixIcon: Icon(Icons.link_rounded, size: 18),
                     ),
-            ),
-          ]),
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: () => NavScope.of(context).go(const Nav('duplicates')),
-              icon: const Icon(Icons.content_copy_rounded, size: 16),
-              label: Text(lib.duplicates.isEmpty
-                  ? 'Дубликатов нет'
-                  : 'Дубликаты: ${lib.duplicates.length} ${plural(lib.duplicates.length, 'группа', 'группы', 'групп')}'),
-            ),
-          ),
-          const SizedBox(height: 44),
-          Text('Пригласить друзей', style: display(20)),
-          const SizedBox(height: 10),
-          const Text(
-            'Введите почту друга: Cavey откроет ему общую папку и папки с музыкой, а Google пришлёт письмо. '
-            'Друг установит Cavey, войдёт с этой почтой, и библиотека подключится сама.',
-            style: TextStyle(color: C.muted, height: 1.5),
-          ),
-          const SizedBox(height: 14),
-          _Panel(children: [
-            Row(children: [
-              Expanded(
-                child: TextField(
-                  controller: _friend,
-                  enabled: !_inviting,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
-                    hintText: 'Почта друга',
-                    prefixIcon: Icon(Icons.mail_outline_rounded, size: 18),
+                    onSubmitted: (_) => _add(),
                   ),
-                  onSubmitted: (_) => _invite(),
                 ),
+                const SizedBox(width: 12),
+                FilledButton(onPressed: _adding ? null : _add, child: const Text('Добавить папку')),
+              ]),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(_error!, style: const TextStyle(color: C.danger)),
+                ),
+              const SizedBox(height: 10),
+              const Text(
+                'Подойдёт своя папка или та, которой с вами поделились. Если она открыта для другого вашего '
+                'аккаунта, сначала подключите его в разделе «Аккаунты» выше.',
+                style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
               ),
-              const SizedBox(width: 12),
-              FilledButton(onPressed: _inviting ? null : _invite, child: const Text('Пригласить')),
             ]),
-            if (_inviteResult != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: Text(_inviteResult!,
-                    style: TextStyle(color: _inviteFailed ? C.danger : C.muted, height: 1.4)),
+            const SizedBox(height: 18),
+            Text(
+              'Музыка в библиотеке: ${countTracks(lib.data.tracks.length - lib.data.hidden.length)}, '
+              '${formatBytes(lib.data.tracks.values.where((t) => !lib.data.hidden.contains(t.id)).fold(0, (a, t) => a + t.size))}',
+              style: const TextStyle(color: C.muted, fontSize: 14),
+            ),
+            const SizedBox(height: 18),
+            if (lib.data.sources.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Text('Папок пока нет.', style: TextStyle(color: C.muted)),
               ),
+            for (final s in lib.data.sources)
+              _SourceRow(
+                name: s.name,
+                detail:
+                    '${countTracks(lib.tracksIn(s.id))} · ${formatBytes(lib.data.tracks.values.where((t) => t.source == s.id).fold(0, (a, t) => a + t.size))}, добавил(а) ${lib.firstNameOf(s.addedBy)}',
+                via: app.settings.sourceAccess[s.id],
+                addedBy: s.addedBy,
+                warning: lib.suspiciousSources[s.id] == null
+                    ? null
+                    : 'Не нашёл ${lib.suspiciousSources[s.id]} треков. Из общей библиотеки они не убраны — похоже, пропал доступ к папке.',
+                onPrune: lib.suspiciousSources[s.id] == null
+                    ? null
+                    : () async {
+                        final ok = await confirm(context,
+                            title: 'Убрать пропавшие треки?',
+                            text: 'Из «${s.name}» исчезли ${lib.suspiciousSources[s.id]} треков, и они пропадут из библиотеки у всех друзей. '
+                                'Делайте это, только если файлы действительно удалены, а не пропал доступ.',
+                            action: 'Убрать');
+                        if (ok) await lib.rescanAndPrune(s.id);
+                      },
+                onOpen: () => launchUrl(Uri.parse(folderUrl(s.id))),
+              ),
+            const SizedBox(height: 18),
+            Row(children: [
+              OutlinedButton.icon(
+                onPressed: lib.scan.running || lib.data.sources.isEmpty ? null : () => lib.scanAll(),
+                icon: const Icon(Icons.refresh_rounded, size: 18),
+                label: const Text('Обновить библиотеку'),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: lib.scan.running
+                    ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(
+                          lib.scan.total > 0 ? '${lib.scan.text}: ${lib.scan.done} из ${lib.scan.total}' : lib.scan.text,
+                          style: const TextStyle(color: C.muted, fontSize: 13),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 6),
+                        LinearProgressIndicator(value: lib.scan.total > 0 ? lib.scan.done / lib.scan.total : null),
+                      ])
+                    : Text(
+                        last == null
+                            ? 'Новые файлы подхватываются сами раз в 10 минут'
+                            : 'Проверено в ${TimeOfDay.fromDateTime(last.toLocal()).format(context)}. Дальше — само, раз в 10 минут.',
+                        style: const TextStyle(color: C.faint, fontSize: 13),
+                      ),
+              ),
+            ]),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => NavScope.of(context).go(const Nav('duplicates')),
+                icon: const Icon(Icons.content_copy_rounded, size: 16),
+                label: Text(lib.duplicates.isEmpty
+                    ? 'Дубликатов нет'
+                    : 'Дубликаты: ${lib.duplicates.length} ${plural(lib.duplicates.length, 'группа', 'группы', 'групп')}'),
+              ),
+            ),
+          ],
+          if (widget.parts.contains('folders') && widget.parts.contains('invite')) const SizedBox(height: 44),
+          if (widget.parts.contains('invite')) ...[
+            Text('Пригласить друзей', style: display(20)),
             const SizedBox(height: 10),
             const Text(
-              'Пока приложение Google в режиме тестирования, почту друга нужно ещё добавить в Test users в Google Cloud.',
-              style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
+              'Введите почту друга: Cavey откроет ему общую папку и папки с музыкой, а Google пришлёт письмо. '
+              'Друг установит Cavey, войдёт с этой почтой, и библиотека подключится сама.',
+              style: TextStyle(color: C.muted, height: 1.5),
             ),
-          ]),
-          const SizedBox(height: 14),
-          const Text('Или отправьте ссылку на общую папку сами:', style: TextStyle(color: C.faint, fontSize: 13)),
-          const SizedBox(height: 8),
-          _Panel(children: [
-            Row(children: [
-              Icon(Icons.folder_rounded, color: C.accent),
-              const SizedBox(width: 12),
-              Expanded(child: SelectableText(hubLink, style: const TextStyle(fontSize: 13))),
-              const SizedBox(width: 12),
-              TextButton.icon(
-                onPressed: () async {
-                  await Clipboard.setData(ClipboardData(text: hubLink));
-                  lib.messages.add('Ссылка скопирована');
-                },
-                icon: const Icon(Icons.copy_rounded, size: 16),
-                label: const Text('Скопировать'),
-              ),
-              TextButton.icon(
-                onPressed: () => launchUrl(Uri.parse(hubLink)),
-                icon: const Icon(Icons.open_in_new_rounded, size: 16),
-                label: const Text('Открыть на Диске'),
+            const SizedBox(height: 14),
+            _Panel(children: [
+              Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _friend,
+                    enabled: !_inviting,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      hintText: 'Почта друга',
+                      prefixIcon: Icon(Icons.mail_outline_rounded, size: 18),
+                    ),
+                    onSubmitted: (_) => _invite(),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                FilledButton(onPressed: _inviting ? null : _invite, child: const Text('Пригласить')),
+              ]),
+              if (_inviteResult != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(_inviteResult!,
+                      style: TextStyle(color: _inviteFailed ? C.danger : C.muted, height: 1.4)),
+                ),
+              const SizedBox(height: 10),
+              const Text(
+                'Пока приложение Google в режиме тестирования, почту друга нужно ещё добавить в Test users в Google Cloud.',
+                style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
               ),
             ]),
-          ]),
-          const SizedBox(height: 44),
-          Text('Отключение', style: display(20)),
-          const SizedBox(height: 10),
-          const Text(
-            'Отключение действует только на этом компьютере. Треки, плейлисты и лайки в общей библиотеке остаются у друзей как были: '
-            'ничего не удаляется. Cavey сам к библиотеке больше не подключится, пока вы не подключитесь вручную.',
-            style: TextStyle(color: C.muted, height: 1.5),
-          ),
-          const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
-              style: TextButton.styleFrom(foregroundColor: C.danger),
-              onPressed: () async {
-                final ok = await confirm(context,
-                    title: 'Отключиться от этой библиотеки?',
-                    text: 'Библиотека пропадёт только с этого компьютера. У друзей и на Диске всё останется как было, '
-                        'никакие треки не удалятся. Сами к библиотеке Cavey больше не подключится: '
-                        'подключиться снова можно вручную, по ссылке или кнопкой поиска.',
-                    action: 'Отключиться');
-                if (ok) await lib.leaveHub();
-              },
-              child: const Text('Отключиться от этой библиотеки'),
+            const SizedBox(height: 14),
+            const Text('Или отправьте ссылку на общую папку сами:', style: TextStyle(color: C.faint, fontSize: 13)),
+            const SizedBox(height: 8),
+            _Panel(children: [
+              Row(children: [
+                Icon(Icons.folder_rounded, color: C.accent),
+                const SizedBox(width: 12),
+                Expanded(child: SelectableText(hubLink, style: const TextStyle(fontSize: 13))),
+                const SizedBox(width: 12),
+                TextButton.icon(
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: hubLink));
+                    lib.messages.add('Ссылка скопирована');
+                  },
+                  icon: const Icon(Icons.copy_rounded, size: 16),
+                  label: const Text('Скопировать'),
+                ),
+                TextButton.icon(
+                  onPressed: () => launchUrl(Uri.parse(hubLink)),
+                  icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                  label: const Text('Открыть на Диске'),
+                ),
+              ]),
+            ]),
+          ],
+          if (widget.parts.contains('leave') && widget.parts.length > 1) const SizedBox(height: 44),
+          if (widget.parts.contains('leave')) ...[
+            Text('Отключение', style: display(20)),
+            const SizedBox(height: 10),
+            const Text(
+              'Отключение действует только на этом компьютере. Треки, плейлисты и лайки в общей библиотеке остаются у друзей как были: '
+              'ничего не удаляется. Cavey сам к библиотеке больше не подключится, пока вы не подключитесь вручную.',
+              style: TextStyle(color: C.muted, height: 1.5),
             ),
-          ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                style: TextButton.styleFrom(foregroundColor: C.danger),
+                onPressed: () async {
+                  final ok = await confirm(context,
+                      title: 'Отключиться от этой библиотеки?',
+                      text: 'Библиотека пропадёт только с этого компьютера. У друзей и на Диске всё останется как было, '
+                          'никакие треки не удалятся. Сами к библиотеке Cavey больше не подключится: '
+                          'подключиться снова можно вручную, по ссылке или кнопкой поиска.',
+                      action: 'Отключиться');
+                  if (ok) await lib.leaveHub();
+                },
+                child: const Text('Отключиться от этой библиотеки'),
+              ),
+            ),
+          ],
         ]);
       },
     );

@@ -63,7 +63,7 @@ class AllTracksPage extends StatelessWidget {
                       ? 'Добавьте папку с музыкой с Google Диска — свою или ту, которой поделился друг.'
                       : 'В добавленных папках пока нет аудиофайлов. Загрузите музыку на Диск и обновите библиотеку.',
                   action: FilledButton(
-                    onPressed: () => NavScope.of(context).go(const Nav('accounts')),
+                    onPressed: () => NavScope.of(context).go(const Nav('accounts', 'library')),
                     child: Text(lib.data.sources.isEmpty ? 'Добавить папку' : 'Открыть папки'),
                   ),
                 ),

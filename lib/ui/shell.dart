@@ -585,9 +585,10 @@ class _ShellState extends State<Shell> {
         );
       case 'duplicates':
         return const DuplicatesPage(key: ValueKey('duplicates'));
-      case 'sources': // старая вкладка «Папки с музыкой» теперь внутри настроек
+      case 'sources': // старая вкладка «Папки с музыкой» теперь в настройках, на вкладке «Библиотека»
+        return const AccountsPage(key: ValueKey('accounts:library'), tab: 'library');
       case 'accounts':
-        return const AccountsPage(key: ValueKey('accounts'));
+        return AccountsPage(key: ValueKey('accounts:${nav.id}'), tab: nav.id);
       default:
         return LibraryHomePage(key: const ValueKey('all'), compact: compact);
     }
