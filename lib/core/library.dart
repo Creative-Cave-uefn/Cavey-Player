@@ -517,8 +517,12 @@ class LibraryController extends ChangeNotifier {
   Future<LibraryData> _downloadLatest(String email) async {
     final bytes = await drive.download(email, settings.libFileId!);
     if (bytes.isEmpty) return LibraryData();
-    return LibraryData.fromJson(jsonDecode(utf8.decode(bytes)));
+    // И6: разбор большого JSON — в фоновом потоке, чтобы интерфейс не дёргался
+    final parsed = bytes.length > 200000 ? await compute(_decodeJson, bytes) : _decodeJson(bytes);
+    return LibraryData.fromJson(parsed);
   }
+
+  static dynamic _decodeJson(Uint8List bytes) => jsonDecode(utf8.decode(bytes));
 
   Future<void> reload() async {
     if (!hasHub) return;
@@ -591,6 +595,11 @@ class LibraryController extends ChangeNotifier {
     _flushTimer?.cancel();
     if (_pending.isEmpty || !hasHub) return;
     await _flush().timeout(const Duration(seconds: 6), onTimeout: () {});
+    if (_localTimer != null) {
+      _localTimer!.cancel();
+      _localTimer = null;
+      await _saveLocalNow();
+    }
   }
 
   void _scheduleFlush([Duration? delay]) {
@@ -661,11 +670,30 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
-  Future<void> _saveLocal() => store.writeJson('library_cache.json', {
-        'hub': settings.hubId,
-        'modified': _libModified,
-        'data': data.toJson(),
+  // И6: локальную копию записываем не чаще раза в 5 секунд: при потоке правок (сканирование) это были лишние рывки
+  DateTime _localAt = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _localTimer;
+
+  Future<void> _saveLocal() async {
+    final wait = const Duration(seconds: 5) - DateTime.now().difference(_localAt);
+    if (wait > Duration.zero) {
+      _localTimer ??= Timer(wait, () {
+        _localTimer = null;
+        unawaited(_saveLocalNow());
       });
+      return;
+    }
+    await _saveLocalNow();
+  }
+
+  Future<void> _saveLocalNow() {
+    _localAt = DateTime.now();
+    return store.writeJson('library_cache.json', {
+      'hub': settings.hubId,
+      'modified': _libModified,
+      'data': data.toJson(),
+    });
+  }
 
   // ---------- источники ----------
 

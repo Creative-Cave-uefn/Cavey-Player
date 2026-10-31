@@ -20,6 +20,7 @@ import 'core/dl/tools.dart';
 import 'core/drive.dart';
 import 'core/library.dart';
 import 'core/lyric_sources.dart';
+import 'core/perf.dart';
 import 'core/lyrics.dart';
 import 'core/player.dart';
 import 'core/social.dart';
@@ -125,6 +126,7 @@ class AppServices {
         lyrics.forTrack(next, Duration(milliseconds: next.durationMs!)).then<void>((_) {}, onError: (Object _) {});
       }
     };
+    PerfLog.start(); // И1: раз в минуту в журнал — кадры и время отрисовки
     accounts.addListener(lib.saveSettings);
     await lib.start();
     // Картинки первых треков читаем с диска заранее, чтобы список открылся уже с обложками

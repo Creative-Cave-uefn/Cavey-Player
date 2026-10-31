@@ -476,24 +476,34 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
     return RepaintBoundary(
       child: Stack(fit: StackFit.expand, children: [
         const ColoredBox(color: C.bg),
+        // И3: яркость и контраст задаём самому движущемуся слою (фильтр на каждой картинке), а не
+        // отдельным слоем поверх всего окна на каждый кадр
         ValueListenableBuilder<(double, double)>(
           valueListenable: AmbientScope.look,
-          // Всегда ColorFiltered (а не только при настройке): иначе смена дерева сбросила бы картинку фона
-          builder: (context, look, child) => ColorFiltered(colorFilter: AmbientScope.filter(look.$1, look.$2), child: child),
-          child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 600),
-          switchInCurve: Curves.easeOut,
-          switchOutCurve: Curves.easeIn,
-          layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
-          child: img == null
-              ? (_color != null ? _ColorGlow(key: ValueKey(_color), color: _color!) : const _BrandGlow(key: ValueKey('brand')))
-              : CustomPaint(
-                  key: ValueKey(img),
-                  painter: _LivingPainter(img, _blob[img] ?? img, _clock),
-                  child: const SizedBox.expand(),
-                ),
+          builder: (context, look, _) {
+            final filter = AmbientScope.filter(look.$1, look.$2);
+            return AnimatedSwitcher(
+              duration: const Duration(milliseconds: 600),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              layoutBuilder: (current, previous) => Stack(fit: StackFit.expand, children: [...previous, if (current != null) current]),
+              child: img == null
+                  ? ColorFiltered(
+                      key: ValueKey(_color ?? 'brand'),
+                      colorFilter: filter,
+                      child: _color != null ? _ColorGlow(color: _color!) : const _BrandGlow(),
+                    )
+                  : CustomPaint(
+                      key: ValueKey(img),
+                      painter: _LivingPainter(img, _blob[img] ?? img, _clock, filter),
+                      child: const SizedBox.expand(),
+                    ),
+            );
+          },
         ),
-        ),
+        // Всё затемнение — в отдельном слое: оно не меняется, и каждый кадр перерисовывается только движущийся фон
+        RepaintBoundary(
+          child: Stack(fit: StackFit.expand, children: [
         // В кинотеатре фон ярче: часть затемнения убираем
         ValueListenableBuilder<bool>(
           valueListenable: AmbientScope.vivid,
@@ -527,6 +537,8 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
             duration: const Duration(milliseconds: 700),
             child: c == null ? const SizedBox.expand(key: ValueKey('no-glow')) : SmoothGlow(key: ValueKey(c), color: c),
           ),
+        ),
+          ]),
         ),
       ]),
     );
@@ -654,7 +666,8 @@ class _LivingPainter extends CustomPainter {
   final ui.Image base;
   final ui.Image blob;
   final ValueListenable<double> clock;
-  _LivingPainter(this.base, this.blob, this.clock) : super(repaint: clock);
+  final ColorFilter filter;
+  _LivingPainter(this.base, this.blob, this.clock, this.filter) : super(repaint: clock);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -662,7 +675,9 @@ class _LivingPainter extends CustomPainter {
     final w = size.width, h = size.height;
     final m = math.max(w, h);
     final c = size.center(Offset.zero);
-    final paint = Paint()..filterQuality = FilterQuality.medium;
+    final paint = Paint()
+      ..filterQuality = FilterQuality.medium
+      ..colorFilter = filter;
 
     void layer(ui.Image img, double rot, Offset off, double scale, double alpha) {
       canvas.save();
@@ -686,5 +701,5 @@ class _LivingPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_LivingPainter old) => !identical(old.base, base) || !identical(old.blob, blob);
+  bool shouldRepaint(_LivingPainter old) => !identical(old.base, base) || !identical(old.blob, blob) || old.filter != filter;
 }
