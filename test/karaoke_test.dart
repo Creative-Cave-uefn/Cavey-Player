@@ -129,7 +129,7 @@ void main() {
         var t = 15000 + li * 4000; // каждая строка звучит ровно на 5 с позже отметки в тексте
         for (final w in texts[li].split(' ')) {
           heard.add(HeardWord(w, ms(t), ms(t + 300)));
-          t += 400;
+          t += 1000;
         }
       }
       expect(words.isNotEmpty, true);
