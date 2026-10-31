@@ -17,7 +17,7 @@ const kReleasesRepo = 'Creative-Cave-uefn/cave-player-releases';
 
 // Модуль скачки (YouTube, Soulseek, Bandcamp) — отдельная программа в приватном репозитории
 // cave-downloader. Cavey скачивает её из релизов этого репозитория по ключу доступа,
-// который вшивается в сборку плеера (секрет DOWNLOADER_TOKEN в GitHub Actions): токен
+// который вшивается в сборку плеера (секрет DOWNLOADER_READ_TOKEN в GitHub Actions): токен
 // GitHub только на чтение содержимого этого одного репозитория. Без ключа (сборка для
 // разработки) модуль берётся из CAVE_DOWNLOADER_EXE.
 // Для своей копии репозитория: --dart-define=DOWNLOADER_REPO=владелец/репо
