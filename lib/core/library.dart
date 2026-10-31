@@ -1089,20 +1089,63 @@ class LibraryController extends ChangeNotifier {
   }
 
   /// Такая песня уже есть в библиотеке (видимая копия) — чтобы не качать и не загружать её снова
+  /// Ищет не только точное совпадение: в названии может стоять исполнитель («Korn - Freak On a Leash»),
+  /// исполнитель может быть записан иначе («KoЯn», «The Weeknd» и «Weeknd», «A feat. B»)
   Track? existing(String artist, String title) {
     final k = dupKey(artist, title);
     if (k.isEmpty) return null;
     if (_dupVersion != _version) {
       _dupVersion = _version;
       _dupIndex = {};
+      _titleIndex = {};
       for (final t in allTracks) {
         final tk = dupKey(t.artist, t.title);
         if (tk.isNotEmpty) _dupIndex.putIfAbsent(tk, () => t);
+        final tt = titleKey(t.artist, t.title);
+        if (tt.isNotEmpty) _titleIndex.putIfAbsent(tt, () => []).add(t);
       }
     }
-    return _dupIndex[k];
+    final exact = _dupIndex[k];
+    if (exact != null) return exact;
+    for (final c in _titleIndex[titleKey(artist, title)] ?? const <Track>[]) {
+      if (artistsMatch(artist, c.artist)) return c;
+    }
+    return null;
   }
 
+  /// Название без мусора и без исполнителя в начале («Korn - Blind» → «blind»)
+  static String titleKey(String artist, String title) {
+    var t = _norm(title);
+    for (final a in [...splitArtists(artist), artist]) {
+      final n = _norm(a);
+      if (n.isNotEmpty && t.startsWith('$n ') && t.length > n.length + 1) {
+        t = t.substring(n.length + 1).trim();
+        break;
+      }
+    }
+    // «… - Remastered 2011», «… 2011 Remaster» без скобок
+    t = t.replaceAll(RegExp(r'\s+(\d{4}\s+)?remaster(ed)?(\s+\d{4})?(\s+version)?$'), '').trim();
+    return t;
+  }
+
+  /// Один и тот же исполнитель, записанный по-разному: совпадает хоть один из соавторов,
+  /// без «the», пробелов и знаков; короткие имена — только точно
+  static bool artistsMatch(String a, String b) {
+    Set<String> keys(String s) => {
+          for (final x in [...splitArtists(s), s])
+            if (_norm(x).replaceAll(RegExp(r'^the '), '').replaceAll(' ', '') case final k when k.isNotEmpty) k,
+        };
+    final ka = keys(a), kb = keys(b);
+    for (final x in ka) {
+      for (final y in kb) {
+        if (x == y) return true;
+        if (x.length >= 4 && y.length >= 4 && (x.startsWith(y) || y.startsWith(x))) return true;
+      }
+    }
+    return false;
+  }
+
+  Map<String, List<Track>> _titleIndex = {};
   Map<String, Track> _dupIndex = {};
   int _dupVersion = -1;
 
@@ -1215,12 +1258,23 @@ class LibraryController extends ChangeNotifier {
     return n;
   }
 
-  static String _norm(String s) => s
-      .toLowerCase()
+  static String _norm(String s) => _latinize(s
+      .toLowerCase())
       .replaceAll(RegExp(r'[\(\[][^\)\]]*(official|video|audio|lyrics|клип|remaster|hq|hd|feat|ft\.|prod\.|при уч)[^\)\]]*[\)\]]'), '')
       .replaceAll('ё', 'е')
       .replaceAll(RegExp(r'[^\p{L}\p{N}]+', unicode: true), ' ')
       .trim();
+
+  static const _lookalike = {
+    'а': 'a', 'в': 'b', 'е': 'e', 'к': 'k', 'м': 'm', 'н': 'h', 'о': 'o', 'р': 'p', 'с': 'c', 'т': 't', 'у': 'y', 'х': 'x', 'я': 'r', 'и': 'n',
+  };
+
+  /// Латинское слово с кириллической буквой-двойником («koяn») → латиница («korn»)
+  static String _latinize(String s) => s.replaceAllMapped(RegExp(r'[\p{L}]+', unicode: true), (m) {
+        final w = m[0]!;
+        if (!w.contains(RegExp(r'[a-z]')) || !w.contains(RegExp(r'[а-яё]'))) return w;
+        return w.split('').map((c) => _lookalike[c] ?? c).join();
+      });
 
   // ---------- правка, скрытие, удаление ----------
 

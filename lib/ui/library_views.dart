@@ -14,6 +14,7 @@ import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 // ---------- исполнители ----------
 
@@ -389,7 +390,7 @@ class _DuplicatesPageState extends State<DuplicatesPage> {
             for (final t in g)
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 6),
-                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
+                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
                 child: Row(children: [
                   Radio<String>(
                     value: t.id,
@@ -533,7 +534,7 @@ Future<void> uploadPaths(BuildContext context, List<String> paths) async {
   }
   String? target = sources.length == 1 ? sources.first.id : null;
   if (target == null) {
-    target = await showDialog<String>(
+    target = await showGlassDialog<String>(
       context: context,
       builder: (ctx) => SimpleDialog(
         title: Text('Куда загрузить ${countTracks(audio.length)}?', style: display(18)),
@@ -598,7 +599,7 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
   final album = TextEditingController(text: t.album);
   final choice = CoverChoice();
   final albumHasOwn = lib.albumCover(t.albumKey) != null;
-  final ok = await showDialog<bool>(
+  final ok = await showGlassDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text('Изменить трек', style: display(18)),
@@ -665,7 +666,7 @@ Future<bool> editTracksDialog(BuildContext context, List<Track> tracks) async {
   final choice = CoverChoice();
   final sameCover = tracks.map(app.covers.keyOf).toSet().length == 1;
   final anyAlbumOwn = tracks.any((t) => lib.albumCover(t.albumKey) != null);
-  final ok = await showDialog<bool>(
+  final ok = await showGlassDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text('Изменить ${countTracks(tracks.length)}', style: display(18)),

@@ -6,10 +6,12 @@ import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/player.dart';
+import 'cinema_view.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 class PlayerBar extends StatelessWidget {
   final bool compact;
@@ -21,120 +23,159 @@ class PlayerBar extends StatelessWidget {
     final p = app.player;
     return _SeekGestures(
       player: p,
+      child: Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
       child: Container(
-      height: 92,
-      decoration: const BoxDecoration(color: C.surface, border: Border(top: BorderSide(color: C.line))),
-      padding: const EdgeInsets.symmetric(horizontal: 18),
-      child: ListenableBuilder(
-        listenable: Listenable.merge([p, app.lib]),
-        builder: (context, _) {
-          final t = p.current;
-          final nowPlaying = Row(children: [
-            t == null
-                ? CoverImage(track: t, size: 58, radius: 6)
-                : Tooltip(
-                    message: 'Открыть альбом',
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: GestureDetector(
-                        onTap: () => NavScope.of(context).go(Nav('album', t.albumKey)),
-                        child: CoverImage(track: t, size: 58, radius: 6),
-                      ),
-                    ),
-                  ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: t == null
-                  ? const Text('Выберите трек', style: TextStyle(color: C.faint))
-                  // Текст можно выделить зажатой левой кнопкой и скопировать; обычный клик по ссылке работает как раньше
-                  : SelectionArea(
-                      child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        // Название ведёт в альбом, как и обложка
-                        Links(
-                          parts: [LinkPart(t.title, () => NavScope.of(context).go(Nav('album', t.albumKey)))],
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 3),
-                        Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 13)),
-                      ]),
-                    ),
-            ),
-            if (t != null) LikeButton(track: t),
-          ]);
+        height: 76,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(38), border: Border.all(color: C.line)),
+        child: ListenableBuilder(
+          listenable: Listenable.merge([p, app.lib, app.wave]),
+          builder: (context, _) {
+            final t = p.current;
+            const ink = C.text;
 
-          final controls = Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              IconButton(
-                tooltip: p.shuffle ? 'Выключить перемешивание' : 'Перемешать',
-                onPressed: p.toggleShuffle,
-                icon: Icon(Icons.shuffle_rounded, color: p.shuffle ? C.accent : C.muted),
-              ),
+            final controls = Row(mainAxisSize: MainAxisSize.min, children: [
+              if (!compact)
+                IconButton(
+                  tooltip: p.shuffle ? 'Выключить перемешивание' : 'Перемешать',
+                  onPressed: p.toggleShuffle,
+                  icon: Icon(Icons.shuffle_rounded, size: 20, color: p.shuffle ? C.accent : C.muted),
+                ),
               IconButton(
                 tooltip: 'Предыдущий',
                 onPressed: t == null ? null : p.previous,
-                icon: const Icon(Icons.skip_previous_rounded, size: 26, color: C.text),
+                icon: const Icon(Icons.fast_rewind_rounded, size: 30, color: ink),
               ),
-              const SizedBox(width: 6),
-              p.buffering && t != null
-                  ? const SizedBox.square(
-                      dimension: 40,
-                      child: Padding(padding: EdgeInsets.all(9), child: CircularProgressIndicator(strokeWidth: 2.5)),
-                    )
-                  : PlayCircle(playing: p.playing, size: 40, onPressed: t == null ? null : p.toggle),
-              const SizedBox(width: 6),
+              SizedBox.square(
+                dimension: 48,
+                child: p.buffering && t != null
+                    ? const Padding(padding: EdgeInsets.all(13), child: CircularProgressIndicator(strokeWidth: 2.5, color: ink))
+                    : IconButton(
+                        tooltip: p.playing ? 'Пауза' : 'Играть',
+                        onPressed: t == null ? null : p.toggle,
+                        icon: Icon(p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 36, color: ink),
+                      ),
+              ),
               IconButton(
                 tooltip: 'Следующий',
                 onPressed: t == null ? null : p.next,
-                icon: const Icon(Icons.skip_next_rounded, size: 26, color: C.text),
+                icon: const Icon(Icons.fast_forward_rounded, size: 30, color: ink),
               ),
-              IconButton(
-                tooltip: switch (p.repeat) {
-                  RepeatSetting.off => 'Повторять всё',
-                  RepeatSetting.all => 'Повторять трек',
-                  RepeatSetting.one => 'Не повторять',
-                },
-                onPressed: p.cycleRepeat,
-                icon: Icon(
-                  p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
-                  color: p.repeat == RepeatSetting.off ? C.muted : C.accent,
+              if (!compact)
+                IconButton(
+                  tooltip: switch (p.repeat) {
+                    RepeatSetting.off => 'Повторять всё',
+                    RepeatSetting.all => 'Повторять трек',
+                    RepeatSetting.one => 'Не повторять',
+                  },
+                  onPressed: p.cycleRepeat,
+                  icon: Icon(
+                    p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+                    size: 20,
+                    color: p.repeat == RepeatSetting.off ? C.muted : C.accent,
+                  ),
                 ),
-              ),
-            ]),
-            _Progress(player: p),
-          ]);
-
-          final lyricsButton = ValueListenableBuilder<bool>(
-            valueListenable: p.lyricsOpen,
-            builder: (context, open, _) => IconButton(
-              tooltip: open ? 'Скрыть текст песни' : 'Текст песни',
-              onPressed: () => p.lyricsOpen.value = !open,
-              icon: Icon(Icons.lyrics_outlined, color: open ? C.accent : C.muted),
-            ),
-          );
-
-          final right = Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-            lyricsButton,
-            IconButton(
-              tooltip: 'Очередь',
-              onPressed: t == null ? null : () => _showQueue(context),
-              icon: const Icon(Icons.queue_music_rounded),
-            ),
-            _VolumeControl(p),
-          ]);
-
-          if (compact) {
-            return Row(children: [
-              Expanded(flex: 4, child: nowPlaying),
-              Expanded(flex: 5, child: controls),
-              lyricsButton,
             ]);
-          }
-          return Row(children: [
-            Expanded(flex: 3, child: nowPlaying),
-            Expanded(flex: 4, child: controls),
-            Expanded(flex: 3, child: right),
-          ]);
-        },
+
+            // Карточка трека: тёмная вставка посреди капсулы, прогресс — тонкой полосой по низу
+            final card = Container(
+              height: 56,
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(color: const Color(0x4D000000), borderRadius: BorderRadius.circular(16)),
+              child: Stack(children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(7, 0, 6, 3),
+                  child: Row(children: [
+                    t == null
+                        ? CoverImage(track: t, size: 42, radius: 9)
+                        : Tooltip(
+                            message: 'Открыть альбом',
+                            child: MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: GestureDetector(
+                                onTap: () => NavScope.of(context).go(Nav('album', t.albumKey)),
+                                child: CoverImage(track: t, size: 42, radius: 9),
+                              ),
+                            ),
+                          ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: t == null
+                          ? const Text('Выберите трек', style: TextStyle(color: C.faint))
+                          // Текст можно выделить зажатой левой кнопкой и скопировать; обычный клик по ссылке работает как раньше
+                          : SelectionArea(
+                              child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                // Название ведёт в альбом, как и обложка
+                                Links(
+                                  parts: [LinkPart(t.title, () => NavScope.of(context).go(Nav('album', t.albumKey)))],
+                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                                ),
+                                const SizedBox(height: 2),
+                                Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 13)),
+                              ]),
+                            ),
+                    ),
+                    if (t != null && !compact) _Time(player: p),
+                    if (t != null && app.wave.active) ...[
+                      IconButton(
+                        tooltip: app.wave.isUpvoted(t.id)
+                            ? 'Нравится в волне — нажмите, чтобы отменить'
+                            : 'Нравится в волне: больше похожего, но без сохранения в любимое',
+                        visualDensity: VisualDensity.compact,
+                        iconSize: 18,
+                        onPressed: app.wave.upvote,
+                        icon: Icon(app.wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
+                            color: app.wave.isUpvoted(t.id) ? C.accent : C.muted),
+                      ),
+                      IconButton(
+                        tooltip: 'Не нравится — больше не ставить в волне',
+                        visualDensity: VisualDensity.compact,
+                        iconSize: 18,
+                        onPressed: app.wave.dislike,
+                        icon: const Icon(Icons.thumb_down_alt_outlined, color: C.muted),
+                      ),
+                    ],
+                    if (t != null) LikeButton(track: t),
+                  ]),
+                ),
+                Positioned(left: 0, right: 0, bottom: 0, child: _Progress(player: p)),
+              ]),
+            );
+
+            final lyricsButton = ValueListenableBuilder<bool>(
+              valueListenable: p.lyricsOpen,
+              builder: (context, open, _) => IconButton(
+                tooltip: open ? 'Скрыть текст песни' : 'Текст песни',
+                onPressed: () => p.lyricsOpen.value = !open,
+                icon: Icon(Icons.lyrics_outlined, color: open ? C.accent : ink),
+              ),
+            );
+
+            if (compact) {
+              return Row(children: [
+                controls,
+                const SizedBox(width: 8),
+                Expanded(child: card),
+                lyricsButton,
+              ]);
+            }
+            return Row(children: [
+              controls,
+              const SizedBox(width: 12),
+              Expanded(child: Center(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 620), child: card))),
+              const SizedBox(width: 12),
+              lyricsButton,
+              const CinemaButton(),
+              IconButton(
+                tooltip: 'Очередь',
+                onPressed: t == null ? null : () => _showQueue(context),
+                icon: const Icon(Icons.queue_music_rounded, color: ink),
+              ),
+              _VolumeControl(p),
+            ]);
+          },
+        ),
       ),
     ),
     );
@@ -142,7 +183,7 @@ class PlayerBar extends StatelessWidget {
 
   void _showQueue(BuildContext context) {
     final app = Services.of(context);
-    showDialog<void>(
+    showGlassDialog<void>(
       context: context,
       builder: (ctx) => Dialog(
         alignment: Alignment.bottomRight,
@@ -263,51 +304,91 @@ class _Progress extends StatefulWidget {
   State<_Progress> createState() => _ProgressState();
 }
 
+/// Тонкая полоса прогресса по низу карточки трека: клик и перетаскивание перематывают,
+/// при наведении становится толще
 class _ProgressState extends State<_Progress> {
   double? _drag;
+  bool _hover = false;
+
+  void _seekTo(double dx, double width, {bool commit = false}) {
+    final total = widget.player.duration.inMilliseconds.toDouble();
+    if (total <= 0 || width <= 0) return;
+    final v = (dx / width).clamp(0.0, 1.0) * total;
+    if (commit) {
+      setState(() => _drag = null);
+      widget.player.seek(Duration(milliseconds: v.round()));
+    } else {
+      setState(() => _drag = v);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final p = widget.player;
-    const timeStyle = TextStyle(color: C.faint, fontSize: 12, fontFeatures: [FontFeature.tabularFigures()]);
-    return ValueListenableBuilder<Duration>(
-      valueListenable: p.position,
-      builder: (context, pos, _) {
-        final total = p.duration.inMilliseconds.toDouble();
-        final value = (_drag ?? pos.inMilliseconds.toDouble()).clamp(0.0, total <= 0 ? 1.0 : total).toDouble();
-        return Listener(
-          // Колесо над полосой: ±5 секунд за щелчок, с Shift ±1 секунда
-          onPointerSignal: (e) {
-            if (e is! PointerScrollEvent || p.current == null) return;
-            if (e.scrollDelta.dy.abs() <= e.scrollDelta.dx.abs() || e.scrollDelta.dy == 0) return;
-            final shift = HardwareKeyboard.instance.isShiftPressed;
-            p.seekBy(Duration(seconds: shift ? 1 : 5) * (e.scrollDelta.dy < 0 ? 1 : -1));
+    return LayoutBuilder(builder: (context, box) {
+      final w = box.maxWidth;
+      return Listener(
+        // Колесо над полосой: ±5 секунд за щелчок, с Shift ±1 секунда
+        onPointerSignal: (e) {
+          if (e is! PointerScrollEvent || p.current == null) return;
+          if (e.scrollDelta.dy.abs() <= e.scrollDelta.dx.abs() || e.scrollDelta.dy == 0) return;
+          final shift = HardwareKeyboard.instance.isShiftPressed;
+          p.seekBy(Duration(seconds: shift ? 1 : 5) * (e.scrollDelta.dy < 0 ? 1 : -1));
+        },
+        child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (d) => _seekTo(d.localPosition.dx, w, commit: true),
+          onHorizontalDragUpdate: (d) => _seekTo(d.localPosition.dx, w),
+          onHorizontalDragEnd: (_) {
+            final v = _drag;
+            if (v == null) return;
+            setState(() => _drag = null);
+            p.seek(Duration(milliseconds: v.round()));
           },
-          child: Row(children: [
-          SizedBox(
-            width: 44,
-            child: Text(formatDuration(Duration(milliseconds: value.round())), textAlign: TextAlign.right, style: timeStyle),
-          ),
-          Expanded(
-            child: SizedBox(
-              height: 24,
-              child: Slider(
-                value: value,
-                max: total <= 0 ? 1.0 : total,
-                onChanged: total <= 0 ? null : (v) => setState(() => _drag = v),
-                onChangeEnd: (v) async {
-                  await p.seek(Duration(milliseconds: v.round()));
-                  if (mounted) setState(() => _drag = null);
-                },
-              ),
+          child: SizedBox(
+            height: 10,
+            child: ValueListenableBuilder<Duration>(
+              valueListenable: p.position,
+              builder: (context, pos, _) {
+                final total = p.duration.inMilliseconds.toDouble();
+                final value = _drag ?? pos.inMilliseconds.toDouble();
+                final f = total <= 0 ? 0.0 : (value / total).clamp(0.0, 1.0);
+                final h = _hover || _drag != null ? 4.0 : 2.5;
+                return Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Stack(children: [
+                    Container(height: h, width: w, color: const Color(0x26FFFFFF)),
+                    Container(height: h, width: w * f, color: const Color(0xD9FFFFFF)),
+                  ]),
+                );
+              },
             ),
           ),
-          SizedBox(width: 44, child: Text(formatDuration(p.duration), style: timeStyle)),
-        ]),
-        );
-      },
-    );
+        ),
+      ),
+      );
+    });
   }
+}
+
+/// «1:24 / 3:41» в карточке трека
+class _Time extends StatelessWidget {
+  final PlayerController player;
+  const _Time({required this.player});
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<Duration>(
+        valueListenable: player.position,
+        builder: (context, pos, _) => Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Text('${formatDuration(pos)} / ${formatDuration(player.duration)}',
+              style: const TextStyle(color: C.faint, fontSize: 12, fontFeatures: [FontFeature.tabularFigures()])),
+        ),
+      );
 }
 
 

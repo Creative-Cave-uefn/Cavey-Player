@@ -4,6 +4,7 @@ import '../app.dart';
 import 'cover_picker.dart';
 import 'theme.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 /// Окно «Мой профиль»: ник, аватарка и баннер. Картинки кадрируются мышью и ложатся в общую папку на Диске.
 Future<void> editProfileDialog(BuildContext context) async {
@@ -15,7 +16,7 @@ Future<void> editProfileDialog(BuildContext context) async {
   final avatar = CoverChoice();
   final banner = CoverChoice();
   final googleName = lib.data.members[me] ?? me.split('@').first;
-  final ok = await showDialog<bool>(
+  final ok = await showGlassDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text('Мой профиль', style: display(18)),

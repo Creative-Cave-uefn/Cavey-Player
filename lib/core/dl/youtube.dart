@@ -18,7 +18,19 @@ class Candidate {
   final String title;
   final String channel;
   final double? duration;
-  Candidate(this.id, this.title, this.channel, this.duration);
+
+  /// Найден в YouTube Music среди «Песен»: это студийная запись с официального канала, а не клип и не концерт
+  final bool song;
+
+  /// Страница на SoundCloud; null — ролик YouTube
+  final String? soundcloud;
+  Candidate(this.id, this.title, this.channel, this.duration, {this.song = false, this.soundcloud});
+
+  /// Что отдать yt-dlp для скачивания
+  String get url => soundcloud ?? 'https://www.youtube.com/watch?v=$id';
+
+  /// Где нашли — для журнала
+  String get site => soundcloud != null ? 'SoundCloud' : (song ? 'YouTube Music' : 'YouTube');
 }
 
 /// Скачанный файл: путь, исполнитель, название, номер в плейлисте
@@ -30,12 +42,18 @@ class Entry {
   Entry(this.path, this.artist, this.title, this.index);
 }
 
+/// Не та версия: концерт, ремикс, кавер, замедленная и т. п. Штраф, если этого слова нет в самом запросе
 const _badWords = [
   'live', 'remix', 'cover', 'slowed', 'reverb', 'sped up', 'speed up', 'speedup',
-  'nightcore', 'lyrics', 'lyric', 'karaoke', 'instrumental', '8d', '16d',
-  'official video', 'music video', 'clip', 'клип', 'кавер', 'ремикс', 'концерт',
-  'acoustic', 'mashup', 'bass boosted', 'bassboosted', 'tiktok', 'pitched',
+  'nightcore', 'karaoke', 'instrumental', '8d', '16d',
+  'кавер', 'ремикс', 'концерт', 'живьём', 'вживую', 'live at', 'live from', 'live in', 'unplugged', 'session', 'sessions',
+  'performance', 'concert', 'tour', 'festival', 'acoustic', 'mashup', 'bass boosted', 'bassboosted', 'tiktok', 'pitched',
+  'reaction', 'tutorial', 'lesson', 'drum cover', 'guitar cover', 'piano', 'full album', 'extended', '1 hour', 'loop',
+  'teaser', 'trailer', 'snippet', 'demo',
 ];
+
+/// Клип, а не трек: часто с вступлением, сценками и другой длиной. Штраф меньше — у клипа бывает чистый звук
+const _videoWords = ['official video', 'music video', 'official music video', 'video', 'mv', 'clip', 'клип', 'lyric video', 'lyrics', 'lyric', 'visualizer', 'visualiser'];
 
 final _progressRe = RegExp(r'^\[download\]\s+\d+(?:\.\d+)?%');
 
@@ -57,19 +75,48 @@ class YouTube {
     log(line);
   }
 
-  Future<List<Candidate>> search(String query, [int n = searchResults]) async {
+  Future<List<Candidate>> search(String query, [int n = searchResults]) => _list('ytsearch$n:$query', n);
+
+  /// Поиск в YouTube Music только среди песен: там студийные записи с официальных каналов, без клипов и концертов
+  Future<List<Candidate>> searchSongs(String query, [int n = searchResults]) =>
+      _list('https://music.youtube.com/search?q=${Uri.encodeQueryComponent(query)}#songs', n, song: true);
+
+  /// Поиск на SoundCloud — запасной источник, когда на YouTube нет студийной версии.
+  /// Без --flat-playlist: иначе SoundCloud не отдаёт длительность, а по ней выбирается оригинал
+  Future<List<Candidate>> searchSoundCloud(String query, [int n = 6]) async {
     try {
-      final out = await Tools.run(tools.ytdlp.path, [...tools.jsArgs, '-J', '--flat-playlist', '--no-warnings', 'ytsearch$n:$query']);
+      final out = await Tools.run(tools.ytdlp.path, [...tools.jsArgs, '-J', '--no-warnings', '--skip-download', 'scsearch$n:$query']);
       final json = out.firstWhere((l) => l.startsWith('{'), orElse: () => '');
       if (json.isEmpty) return [];
       final data = jsonDecode(json) as Map;
       return [
         for (final e in (data['entries'] as List? ?? const []))
-          if (e is Map && e['id'] != null)
-            Candidate('${e['id']}', '${e['title'] ?? ''}', '${e['channel'] ?? e['uploader'] ?? ''}', (e['duration'] as num?)?.toDouble())
+          if (e is Map && (e['webpage_url'] ?? e['url']) != null)
+            Candidate('sc:${e['id']}', '${e['title'] ?? ''}', '${e['uploader'] ?? e['artist'] ?? ''}', (e['duration'] as num?)?.toDouble(),
+                soundcloud: '${e['webpage_url'] ?? e['url']}'),
       ];
     } catch (e) {
-      log('Поиск на YouTube не удался: $e');
+      log('Поиск на SoundCloud не удался: $e');
+      return [];
+    }
+  }
+
+  Future<List<Candidate>> _list(String target, int n, {bool song = false}) async {
+    try {
+      final out = await Tools.run(
+          tools.ytdlp.path, [...tools.jsArgs, '-J', '--flat-playlist', '--no-warnings', '--playlist-end', '$n', target]);
+      final json = out.firstWhere((l) => l.startsWith('{'), orElse: () => '');
+      if (json.isEmpty) return [];
+      final data = jsonDecode(json) as Map;
+      return [
+        for (final e in (data['entries'] as List? ?? const []))
+          if (e is Map && e['id'] != null && '${e['id']}'.length == 11)
+            Candidate('${e['id']}', '${e['title'] ?? ''}', '${e['channel'] ?? e['uploader'] ?? e['artist'] ?? ''}',
+                (e['duration'] as num?)?.toDouble(),
+                song: song),
+      ];
+    } catch (e) {
+      log(song ? 'Поиск в YouTube Music не удался: $e' : 'Поиск на YouTube не удался: $e');
       return [];
     }
   }
@@ -93,15 +140,22 @@ class YouTube {
     final channel = c.channel.toLowerCase();
     if (channel.endsWith('- topic')) {
       s += 60;
+    } else if (c.song) {
+      s += 55; // песня из YouTube Music — та же студийная запись, что и на «Topic»-канале
     } else if (meta.artist.isNotEmpty && channel.contains(meta.artist.toLowerCase())) {
       s += 10;
     }
+    // SoundCloud без входа часто отдаёт 30-секундный отрывок — длительность это выдаст, но и название подскажет
+    if (c.soundcloud != null && hasWord(c.title.toLowerCase(), 'preview')) s -= 45;
+    // Каналы VEVO выкладывают клипы
+    if (channel.endsWith('vevo') && !c.song) s -= 20;
     final title = c.title.toLowerCase();
     final query = '${meta.title} ${meta.artist}'.toLowerCase();
     for (final w in _badWords.toSet()) {
-      if (hasWord(title, w) && !hasWord(query, w)) s -= 25;
+      if (hasWord(title, w) && !hasWord(query, w)) s -= 45;
     }
-    if (title.contains('official audio')) s += 5;
+    if (!_videoWords.any((w) => hasWord(query, w)) && _videoWords.any((w) => hasWord(title, w))) s -= 20;
+    if (title.contains('official audio') || hasWord(title, 'audio')) s += 8;
     final wantTitle = normTitle(meta.title);
     if (wantTitle.isNotEmpty && !normTitle(c.title).contains(wantTitle)) s -= 40;
     return s;
@@ -109,7 +163,10 @@ class YouTube {
 
   Future<List<Candidate>> ranked(TrackMeta meta) async {
     final query = '${meta.artist} ${meta.title}'.trim();
-    var cands = await search(query);
+    // Сначала песни из YouTube Music, потом обычный поиск — в нём бывают клипы и концерты
+    final both = await Future.wait([searchSongs(query), search(query)]);
+    final seen0 = <String>{};
+    var cands = [for (final c in [...both[0], ...both[1]]) if (seen0.add(c.id)) c];
     if (cands.isEmpty) cands = await search('$query audio');
     int byScore(Candidate a, Candidate b) => score(b, meta).compareTo(score(a, meta));
     cands.sort(byScore);
@@ -120,6 +177,15 @@ class YouTube {
         if (seen.add(c.id)) cands.add(c);
       }
       cands.sort(byScore);
+    }
+    // На YouTube так и нет студийной версии — смотрим SoundCloud
+    if (cands.isEmpty || score(cands.first, meta) < 40) {
+      final sc = await searchSoundCloud(query);
+      if (sc.isNotEmpty) {
+        log('На YouTube уверенного варианта нет, смотрю SoundCloud…');
+        cands.addAll(sc);
+        cands.sort(byScore);
+      }
     }
     return cands;
   }

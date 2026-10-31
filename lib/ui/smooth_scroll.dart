@@ -243,7 +243,7 @@ class _AnchorIcon extends StatelessWidget {
       width: 32,
       height: 32,
       decoration: BoxDecoration(
-        color: C.surface.withValues(alpha: 0.92),
+        color: C.panelRaised,
         shape: BoxShape.circle,
         border: Border.all(color: C.accent, width: 1.5),
         boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 8)],

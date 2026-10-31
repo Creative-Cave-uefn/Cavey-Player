@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart' show Media, NativePlayer, Player;
 
 import 'audio_cache.dart';
+import 'automix.dart';
 import 'auth.dart';
 import 'crossfade.dart';
 import 'drive.dart';
@@ -14,6 +15,14 @@ import 'store.dart';
 import 'stream_proxy.dart';
 
 enum RepeatSetting { off, all, one }
+
+/// Источник бесконечной очереди («Моя волна»): даёт следующие треки и узнаёт, как их слушали
+abstract class QueueFeeder {
+  List<String> more(int n);
+
+  /// Трек сменился: [listened] — сколько он играл, [skipped] — переключили сами, а не доиграл
+  void heard(Track t, Duration listened, {required bool skipped});
+}
 
 /// Очередь и воспроизведение. Звук идёт потоком прямо с Google Диска:
 /// плеер (libmpv) сам запрашивает нужные куски файла с токеном в заголовке.
@@ -43,6 +52,12 @@ class PlayerController extends ChangeNotifier {
   List<String> _origin = [];
   List<String> queue = [];
   int index = -1;
+
+  /// Пока не null, очередь сама пополняется из него, когда заканчивается
+  QueueFeeder? feeder;
+
+  /// Что человек сам поставил в очередь волны: при пересборке не выбрасываем
+  final Set<String> _userAdded = {};
   DateTime? _openedAt;
 
   /// Трек восстановлен из прошлой сессии, но ещё не открыт: откроем по первому нажатию
@@ -169,6 +184,7 @@ class PlayerController extends ChangeNotifier {
             'dur': duration.inMilliseconds,
             'shuffle': shuffle,
             'repeat': repeat.name,
+            if (feeder != null) 'wave': true,
           };
     return lib.saveSettings();
   }
@@ -177,6 +193,7 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> playTracks(List<Track> list, int start) async {
     if (list.isEmpty) return;
+    feeder = null; // выбрали что-то сами — волна выключается
     _origin = [for (final t in list) t.id];
     if (shuffle) {
       final first = _origin[start];
@@ -198,6 +215,7 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     queue.insert(index + 1, t.id);
+    if (feeder != null) _userAdded.add(t.id);
     // И в исходный порядок — иначе после выключения перемешивания трек пропадёт
     final oi = _origin.indexOf(current!.id);
     _origin.insert(oi < 0 ? _origin.length : oi + 1, t.id);
@@ -212,6 +230,7 @@ class PlayerController extends ChangeNotifier {
     }
     queue.add(t.id);
     _origin.add(t.id);
+    if (feeder != null) _userAdded.add(t.id);
     _queueChanged();
   }
 
@@ -238,10 +257,104 @@ class PlayerController extends ChangeNotifier {
     _queueChanged();
   }
 
+  // ---------- бесконечная очередь ----------
+
+  /// Включает очередь из [f], начиная с [first]
+  Future<void> playFeed(QueueFeeder f, List<String> first) async {
+    final ids = [for (final id in first) if (lib.data.tracks[id] != null) id];
+    if (ids.isEmpty) return;
+    feeder = f;
+    _userAdded.clear();
+    queue = ids;
+    _origin = List.of(ids);
+    index = 0;
+    await _open();
+    _topUpFeed();
+  }
+
+  /// После перезапуска: волна снова пополняет восстановленную очередь
+  void attachFeeder(QueueFeeder f) {
+    feeder = f;
+    notifyListeners();
+  }
+
+  /// Заменяет всё, что дальше видимых следующих треков (например, сменили характер волны)
+  void replaceUpcoming(List<String> ids) {
+    if (index < 0) return;
+    final head = queue.take(index + 1 + visibleAhead).toList();
+    queue = [...head, for (final id in ids) if (lib.data.tracks[id] != null && !head.contains(id)) id];
+    _origin = List.of(queue);
+    _queueChanged();
+  }
+
+  /// Ставит трек сразу после двух следующих: их уже видно на странице волны, их не двигаем.
+  /// Волна так вставляет только что скачанное
+  void insertSoon(String id) {
+    if (index < 0 || lib.data.tracks[id] == null || queue.skip(index).contains(id)) return;
+    final at = (index + 1 + visibleAhead).clamp(0, queue.length);
+    queue.insert(at, id);
+    _origin = List.of(queue);
+    _queueChanged();
+  }
+
+  /// Сколько следующих треков уже видно (страница волны показывает два): при пересборке их не меняем
+  static const visibleAhead = 2;
+
+  /// Пересобирает очередь волны после видимых следующих треков — их человек уже видит, они не должны
+  /// вдруг смениться. Остаётся то, что поставили руками, и то, что [keep] просит оставить
+  void refillFeed({bool Function(String id)? keep}) {
+    if (feeder == null || index < 0) return;
+    final head = queue.take(index + 1 + visibleAhead).toList();
+    final tail = [
+      for (final id in queue.skip(index + 1 + visibleAhead))
+        if (_userAdded.contains(id) || (keep?.call(id) ?? false)) id
+    ];
+    queue = [...head, ...tail];
+    _origin = List.of(queue);
+    _topUpFeed(force: true);
+    _queueChanged();
+  }
+
+  /// Убирает из следующих треки, подходящие под [test]. [keepVisible] — не трогать уже видимые следующие
+  void dropUpcoming(bool Function(String id) test, {bool keepVisible = false}) {
+    if (index < 0) return;
+    final before = queue.length;
+    final keep = index + 1 + (keepVisible ? visibleAhead : 0);
+    queue = [...queue.take(keep), ...queue.skip(keep).where((id) => !test(id))];
+    if (queue.length == before) return;
+    _origin = List.of(queue);
+    _queueChanged();
+  }
+
+  void _topUpFeed({bool force = false}) {
+    final f = feeder;
+    if (f == null || index < 0) return;
+    final ahead = queue.length - index - 1;
+    if (ahead >= 3 && !force) return;
+    if (ahead >= 5) return;
+    final add = [for (final id in f.more(5 - ahead)) if (lib.data.tracks[id] != null) id];
+    if (add.isEmpty) return;
+    queue.addAll(add);
+    _origin.addAll(add);
+    _queueChanged();
+  }
+
+  void _reportHeard({required bool skipped}) {
+    final f = feeder, cur = current;
+    if (f == null || cur == null || _resumeAt != null) return;
+    try {
+      f.heard(cur, position.value, skipped: skipped);
+    } catch (e) {
+      AppLog.warn('Моя волна', e);
+    }
+    _topUpFeed();
+  }
+
   /// Оставляет только то, что играет сейчас
   void clearUpcoming() {
     final cur = current;
     if (cur == null) return;
+    feeder = null;
     queue = [cur.id];
     _origin = [cur.id];
     index = 0;
@@ -263,6 +376,7 @@ class PlayerController extends ChangeNotifier {
     } else if (repeat == RepeatSetting.all && queue.isNotEmpty) {
       nextId = queue.first;
     }
+    _prepareMix();
     if (nextId == null || cache.has(nextId)) return;
     cache.enqueue(nextId);
     final t = lib.data.tracks[nextId];
@@ -307,6 +421,32 @@ class PlayerController extends ChangeNotifier {
   /// Социальные функции (слушаем вместе с другом) могут запретить переход
   bool Function()? crossfadeBlocked;
 
+  /// Умный переход: профили звука треков и темп трека (если известен)
+  MixAnalyzer? mixer;
+  double? Function(Track t)? tempoOf;
+  bool get smartMix => settings.viewOf('mix.smart', '1') == '1';
+
+  /// План умного перехода с текущего трека на следующий; null — профили ещё не готовы, переход обычный
+  MixPlan? _smartPlan() {
+    final m = mixer, cur = current, ni = _autoNextIndex();
+    if (!smartMix || m == null || cur == null || ni == null) return null;
+    final a = m.profile(cur.id), b = m.profile(queue[ni]);
+    if (a == null || b == null) return null;
+    // Профиль от другого файла (трек заменили) — не доверяем
+    if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
+    return MixPlan.make(a, b, maxSec: settings.crossfadeSec.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur));
+  }
+
+  /// Профили звука текущего и следующего трека — считаем заранее, пока трек играет
+  void _prepareMix() {
+    final m = mixer;
+    if (m == null || !smartMix || settings.crossfadeSec <= 0) return;
+    final cur = current;
+    if (cur != null) m.prepare(cur.id);
+    final ni = _autoNextIndex();
+    if (ni != null) m.prepare(queue[ni]);
+  }
+
   Duration _prevPos = Duration.zero;
   bool _fading = false;
   Timer? _fadeTimer;
@@ -334,26 +474,38 @@ class PlayerController extends ChangeNotifier {
     _prevPos = d;
     if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
     if (crossfadeBlocked?.call() ?? false) return;
-    if (!crossfadeDue(seconds: settings.crossfadeSec, duration: duration, position: d, previous: prev)) return;
-    if (_autoNextIndex() == null) return;
-    unawaited(_startCrossfade());
+    if (settings.crossfadeSec <= 0 || _autoNextIndex() == null) return;
+    // Профили смотрим только ближе к концу трека — не на каждом тике позиции
+    final plan = duration - d < const Duration(seconds: 60) ? _smartPlan() : null;
+    final step = d - prev;
+    final due = plan != null
+        ? d >= plan.start && prev < plan.start && step >= Duration.zero && step < const Duration(seconds: 2)
+        : crossfadeDue(seconds: settings.crossfadeSec, duration: duration, position: d, previous: prev);
+    if (!due) return;
+    unawaited(_startCrossfade(plan));
   }
 
-  Future<void> _startCrossfade() async {
+  Future<void> _startCrossfade([MixPlan? plan]) async {
     final nextIndex = _autoNextIndex();
     if (nextIndex == null || _fading) return;
     final nextTrack = lib.data.tracks[queue[nextIndex]];
     if (nextTrack == null) return;
     _fading = true;
     final seq = ++_openSeq;
-    final seconds = settings.crossfadeSec.clamp(1, 10).toInt();
+    final lengthMs = plan?.length.inMilliseconds ?? settings.crossfadeSec.clamp(1, 10).toInt() * 1000;
+    final match = plan?.inGain ?? 1.0;
     try {
-      AppLog.info('Плавный переход на «${nextTrack.title}» ($seconds с)');
+      AppLog.info(plan == null
+          ? 'Плавный переход на «${nextTrack.title}» (${lengthMs ~/ 1000} с)'
+          : 'Умный переход на «${nextTrack.title}»: с ${plan.start.inMilliseconds / 1000} с, ${(lengthMs / 1000).toStringAsFixed(1)} с, '
+              'следующий с ${plan.inStart.inMilliseconds / 1000} с, громкость ×${match.toStringAsFixed(2)}');
       final media = await _mediaFor(nextTrack);
       if (seq != _openSeq || !_fading) return; // пока готовили, человек сам что-то переключил
       final incoming = _q ??= Player();
       await incoming.setVolume(0);
       await incoming.open(media, play: true);
+      // Пустое вступление следующего трека пропускаем
+      if (plan != null && plan.inStart > const Duration(milliseconds: 300)) await incoming.seek(plan.inStart);
       if (seq != _openSeq || !_fading) {
         await incoming.stop();
         return;
@@ -364,6 +516,7 @@ class PlayerController extends ChangeNotifier {
       _q = old;
       _outgoing = old;
       _bind(_p);
+      _reportHeard(skipped: false); // волна учитывает дослушанный трек, как при обычном переходе
       index = nextIndex;
       cache.touch(nextTrack);
       error = null;
@@ -380,16 +533,18 @@ class PlayerController extends ChangeNotifier {
       unawaited(_whenReady(seq, nextTrack));
       _preloadNext();
       _saveSession();
+      _topUpFeed();
       final started = DateTime.now();
       _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-        final t = DateTime.now().difference(started).inMilliseconds / (seconds * 1000);
+        final t = DateTime.now().difference(started).inMilliseconds / lengthMs;
         if (t >= 1) {
           _endFade();
           return;
         }
         final g = fadeGains(t);
         _outGain = g.$1;
-        _inGain = g.$2;
+        // Следующий трек входит на громкости уходящего и к концу перехода выходит на свою
+        _inGain = g.$2 * (match + (1 - match) * t);
         _applyVolume();
       });
     } catch (e) {
@@ -522,6 +677,7 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> next({bool auto = false}) async {
     if (queue.isEmpty) return;
+    _reportHeard(skipped: !auto);
     if (index + 1 < queue.length) {
       index++;
     } else if (repeat == RepeatSetting.all) {
@@ -531,6 +687,7 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     await _open();
+    _topUpFeed();
   }
 
   Future<void> previous() async {
@@ -544,8 +701,12 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> jumpTo(int queueIndex) async {
     if (queueIndex < 0 || queueIndex >= queue.length) return;
-    index = queueIndex;
+    final target = queue[queueIndex];
+    if (queueIndex > index) _reportHeard(skipped: true);
+    final at = queue.indexOf(target); // волна могла убрать треки перед ним
+    index = at >= 0 ? at : queueIndex.clamp(0, queue.length - 1);
     await _open();
+    _topUpFeed();
   }
 
   Future<void> toggle() async {

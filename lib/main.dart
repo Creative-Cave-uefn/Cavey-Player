@@ -7,7 +7,6 @@ import 'package:media_kit/media_kit.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
-import 'core/window_style.dart';
 import 'ui/smooth_scroll.dart';
 import 'core/log.dart';
 import 'core/share_link.dart';
@@ -31,7 +30,8 @@ Future<void> main(List<String> args) async {
     MediaKit.ensureInitialized();
     try {
       await windowManager.ensureInitialized();
-      await setupWindowStyle();
+      // Системную шапку прячем: вместо неё своя, прозрачная, поверх стеклянного фона
+      if (Platform.isWindows) await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
     } catch (e) {
       AppLog.warn('Окно: управление не запустилось', e);
     }

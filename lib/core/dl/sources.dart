@@ -177,6 +177,48 @@ Future<TrackMeta?> deezerTrack(String url) async {
   return _deezerMeta(t);
 }
 
+/// Версии, которые не нужны, если о них не просили
+const _otherVersion = ['live', 'remix', 'acoustic', 'instrumental', 'karaoke', 'cover', 'sped up', 'slowed', 'demo', 'concert'];
+
+/// Лучший трек Deezer для подходящего результата поиска: та же песня и тот же исполнитель, без «live» и ремиксов,
+/// если их нет в запросе. null — уверенного совпадения нет
+int? pickDeezer(List<Map> results, String artist, String title, String query) {
+  final want = normTitle(title);
+  final who = normTitle(artist);
+  final q = query.toLowerCase();
+  for (final t in results) {
+    final name = '${t['title'] ?? ''}';
+    final got = normTitle(name);
+    if (want.isEmpty || got.isEmpty) continue;
+    if (!(got == want || got.startsWith('$want ') || want.startsWith('$got '))) continue;
+    if (who.isNotEmpty) {
+      final a = normTitle('${(t['artist'] as Map?)?['name'] ?? ''}');
+      if (!(a == who || a.contains(who) || who.contains(a))) continue;
+    }
+    final low = '$name ${(t['title_version'] ?? '')}'.toLowerCase();
+    if (_otherVersion.any((w) => hasWord(low, w) && !hasWord(q, w))) continue;
+    final id = (t['id'] as num?)?.toInt();
+    if (id != null) return id;
+  }
+  return null;
+}
+
+/// Текст «Исполнитель - Название» → трек Deezer: длительность, альбом, год и обложка.
+/// По длительности потом выбирается студийная запись на YouTube, а не клип или концерт
+Future<TrackMeta?> deezerFind(String text) async {
+  final (artist, title) = text.contains(' - ') ? splitArtistTitle('', text) : ('', text);
+  final t = title.isEmpty ? text : title;
+  Future<List<Map>> search(String q) async {
+    final data = jsonDecode(await fetchText('https://api.deezer.com/search?limit=15&q=${Uri.encodeQueryComponent(q)}'));
+    return [for (final x in ((data as Map)['data'] as List? ?? const [])) if (x is Map) x];
+  }
+
+  var id = artist.isEmpty ? null : pickDeezer(await search('artist:"$artist" track:"$t"'), artist, t, text);
+  id ??= pickDeezer(await search(text), artist, t, text);
+  if (id == null) return null;
+  return deezerTrack('https://www.deezer.com/track/$id');
+}
+
 Future<(String, List<TrackMeta>)?> deezerAlbum(String url) async {
   final m = RegExp(r'/album/(\d+)').firstMatch(url);
   if (m == null) return null;

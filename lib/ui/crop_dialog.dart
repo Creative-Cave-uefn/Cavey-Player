@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import 'theme.dart';
+import 'glass_popup.dart';
 
 /// Окно кадрирования: картинку двигают мышью и увеличивают колесом или ползунком, рамка стоит на месте.
 /// Возвращает PNG вырезанной области или null (отмена, или файл не открылся как картинка).
@@ -40,7 +41,7 @@ Future<Uint8List?> cropImageDialog(
     img.dispose();
     return null;
   }
-  final result = await showDialog<Uint8List>(
+  final result = await showGlassDialog<Uint8List>(
     context: context,
     builder: (ctx) => _CropDialog(image: img, title: title, aspect: aspect, outWidth: outWidth, round: round),
   );

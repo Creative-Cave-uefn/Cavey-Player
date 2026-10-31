@@ -7,8 +7,10 @@ import '../config.dart';
 import '../core/log.dart';
 import '../core/updater.dart';
 import 'sources_view.dart';
+import 'ambient.dart';
 import 'theme.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 class AccountsPage extends StatefulWidget {
   const AccountsPage({super.key});
@@ -56,7 +58,7 @@ class _AccountsPageState extends State<AccountsPage> {
           for (final a in accounts.accounts)
             Container(
               padding: const EdgeInsets.symmetric(vertical: 14),
-              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
+              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
               child: Row(children: [
                 Avatar(email: a.email, name: a.name, size: 40),
                 const SizedBox(width: 16),
@@ -88,7 +90,7 @@ class _AccountsPageState extends State<AccountsPage> {
                     padding: const EdgeInsets.only(right: 8),
                     child: FilledButton(onPressed: () => _signIn(hint: a.email), child: const Text('Войти снова')),
                   ),
-                PopupMenuButton<String>(
+                GlassMenuButton<String>(
                   tooltip: 'Действия',
                   icon: const Icon(Icons.more_horiz_rounded),
                   onSelected: (v) async {
@@ -140,7 +142,11 @@ class _AccountsPageState extends State<AccountsPage> {
           const SizedBox(height: 44),
           const _PlaybackSection(),
           const SizedBox(height: 44),
+          const _LookSection(),
+          const SizedBox(height: 44),
           const _TraySection(),
+          const SizedBox(height: 36),
+          const _KaraokeSection(),
           const SizedBox(height: 44),
           const _CacheSection(),
           if (!app.keysBuiltIn) ...[
@@ -561,6 +567,63 @@ class _LogSectionState extends State<_LogSection> {
   }
 }
 
+/// Точное караоке: время слов считает Whisper по звуку
+class _KaraokeSection extends StatelessWidget {
+  const _KaraokeSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final k = Services.of(context).karaoke;
+    return ListenableBuilder(
+      listenable: k,
+      builder: (context, _) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Точное караоке', style: display(20)),
+        const SizedBox(height: 10),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: k.enabled,
+          activeColor: C.accent,
+          title: const Text('Вычислять время каждого слова по звуку'),
+          subtitle: const Text(
+            'В кинотеатре текст заливается слово за словом точно в такт. Считает программа Whisper на этом компьютере, '
+            'в фоне и на половине ядер: около минуты на трек. Посчитанное сохраняется в общей папке — '
+            'каждый трек считается один раз на всю компанию. Без этого слова загораются по слогам примерно.',
+            style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+          ),
+          onChanged: k.setEnabled,
+        ),
+        if (k.enabled) ...[
+          const SizedBox(height: 6),
+          Wrap(spacing: 8, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+            const Text('Модель:', style: TextStyle(color: C.muted)),
+            for (final (id, label) in const [('base', 'Быстрая — 142 МБ'), ('small', 'Точная — 466 МБ')])
+              ChoiceChip(
+                label: Text(label),
+                selected: k.model == id,
+                onSelected: (_) => k.setModel(id),
+                selectedColor: C.accent,
+                labelStyle: TextStyle(color: k.model == id ? C.accentInk : C.text),
+              ),
+          ]),
+          const SizedBox(height: 6),
+          const Text('Для русского и японского лучше «Точная». Модель скачивается один раз, при первом треке.',
+              style: TextStyle(color: C.faint, fontSize: 13)),
+          if (k.status.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Row(children: [
+              k.status.startsWith('Не получилось')
+                  ? const Icon(Icons.error_outline_rounded, size: 16, color: C.danger)
+                  : SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2, value: k.progress)),
+              const SizedBox(width: 10),
+              Expanded(child: Text(k.status, style: const TextStyle(color: C.muted, fontSize: 13))),
+            ]),
+          ],
+        ],
+      ]),
+    );
+  }
+}
+
 class _PlaybackSection extends StatefulWidget {
   const _PlaybackSection();
   @override
@@ -598,6 +661,80 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           child: Text(sec == 0 ? 'Выключено' : '$sec с', textAlign: TextAlign.right, style: const TextStyle(color: C.muted)),
         ),
       ]),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: app.player.smartMix,
+        onChanged: sec == 0
+            ? null
+            : (v) {
+                setState(() => app.settings.view['mix.smart'] = v ? '1' : '0');
+                app.lib.saveSettings();
+              },
+        title: const Text('Умный переход'),
+        subtitle: const Text(
+          'Как Automix в Spotify: переход начинается там, где песня на самом деле затихает, тишина в начале следующей '
+          'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
+          'Ползунок выше задаёт самый длинный переход. Звук трека разбирается один раз в фоне; пока не готово — обычный переход.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+        ),
+      ),
+    ]);
+  }
+}
+
+/// Яркость и контраст фона окна
+class _LookSection extends StatefulWidget {
+  const _LookSection();
+  @override
+  State<_LookSection> createState() => _LookSectionState();
+}
+
+class _LookSectionState extends State<_LookSection> {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final (bright, contrast) = AmbientScope.lookOf(app.settings);
+    void set(String key, double v) {
+      setState(() => app.settings.view[key] = v.toStringAsFixed(2));
+      AmbientScope.look.value = AmbientScope.lookOf(app.settings);
+    }
+
+    Widget row(String label, String key, double v, double min, double max) => Row(children: [
+          SizedBox(width: 110, child: Text(label, style: const TextStyle(color: C.muted))),
+          Expanded(
+            child: Slider(
+              value: v,
+              min: min,
+              max: max,
+              onChanged: (x) => set(key, x),
+              onChangeEnd: (_) => app.lib.saveSettings(),
+            ),
+          ),
+          SizedBox(width: 56, child: Text('${(v * 100).round()}%', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+        ]);
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Expanded(child: Text('Фон', style: display(20))),
+        if (bright != 1 || contrast != 1)
+          TextButton(
+            onPressed: () {
+              setState(() {
+                app.settings.view.remove('ambient.bright');
+                app.settings.view.remove('ambient.contrast');
+              });
+              AmbientScope.look.value = AmbientScope.lookOf(app.settings);
+              app.lib.saveSettings();
+            },
+            child: const Text('Как было'),
+          ),
+      ]),
+      const SizedBox(height: 6),
+      const Text('Цвета фона из обложки трека или фото профиля: сделайте их ярче или контрастнее.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+      const SizedBox(height: 4),
+      row('Яркость', 'ambient.bright', bright, 0.4, 1.8),
+      row('Контраст', 'ambient.contrast', contrast, 0.5, 1.8),
     ]);
   }
 }

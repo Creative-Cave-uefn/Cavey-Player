@@ -7,7 +7,10 @@ import 'package:window_manager/window_manager.dart';
 import 'config.dart';
 import 'core/preview.dart';
 import 'core/web_info.dart';
+import 'core/karaoke.dart';
+import 'core/wave.dart';
 import 'core/audio_cache.dart';
+import 'core/automix.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
@@ -26,8 +29,9 @@ import 'core/tray_cleanup.dart';
 import 'core/media_keys.dart';
 import 'core/share_link.dart';
 import 'core/updater.dart';
-import 'core/window_style.dart';
+import 'ui/ambient.dart';
 import 'ui/onboarding.dart';
+import 'ui/window_bar.dart';
 import 'ui/shell.dart';
 import 'ui/theme.dart';
 import 'ui/tray_dialog.dart';
@@ -54,6 +58,8 @@ class AppServices {
   /// Фото, описания и новинки исполнителей из интернета, отрывки треков
   late final WebInfoService web;
   late final PreviewPlayer preview;
+  late final WaveService wave;
+  late final KaraokeService karaoke;
   late final MediaKeys mediaKeys;
 
   /// Ссылка caveplayer://track/…, пришедшая при запуске или от второй копии; окно её обрабатывает и очищает
@@ -130,6 +136,17 @@ class AppServices {
         store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
+    app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
+    // Умный переход: профили звука треков и темп из Deezer (если уже узнали)
+    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')));
+    final tempo = <String, double?>{};
+    player.tempoOf = (t) {
+      if (tempo.containsKey(t.id)) return tempo[t.id];
+      tempo[t.id] = null;
+      if (t.artists.isNotEmpty) app.web.bpm(t.artists.first, t.title).then((b) => tempo[t.id] = b).catchError((Object _) => null);
+      return null;
+    };
+    app.wave = await WaveService.open(store, lib, player, social, app.web, downloads);
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
@@ -151,6 +168,7 @@ class AppServices {
   Future<void> shutdown() async {
     try {
       await player.flushSession();
+      await wave.flush();
       await lib.flushNow();
     } catch (_) {}
     try {
@@ -184,10 +202,20 @@ class CavePlayerApp extends StatelessWidget {
         title: 'Cave Player',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
+        // Стеклянный фон под всеми экранами, включая первый запуск и диалоги.
         // Выделяемый текст не должен менять указатель на «текстовый»: над ссылками остаётся рука, над остальным — стрелка
         builder: (context, child) => DefaultSelectionStyle(
           mouseCursor: MouseCursor.defer,
-          child: CaptionFrame(child: child ?? const SizedBox()),
+          child: Stack(children: [
+            const Positioned.fill(child: AmbientBackground()),
+            // Своя шапка окна сверху, всё остальное под ней — шапка сливается со стеклом
+            Positioned.fill(
+              child: Column(children: [
+                if (WindowBar.enabled) const WindowBar(),
+                Expanded(child: child ?? const SizedBox.shrink()),
+              ]),
+            ),
+          ]),
         ),
         home: ListenableBuilder(
           listenable: Listenable.merge([app.accounts, app.lib]),

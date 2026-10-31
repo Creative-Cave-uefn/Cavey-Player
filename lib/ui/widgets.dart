@@ -8,6 +8,7 @@ import '../core/covers.dart';
 import '../core/models.dart';
 import 'shell.dart';
 import 'theme.dart';
+import 'glass_popup.dart';
 
 String plural(int n, String one, String few, String many) {
   final m10 = n % 10, m100 = n % 100;
@@ -50,7 +51,7 @@ class Wordmark extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('Cave Player', maxLines: 1, style: display(size, weight: FontWeight.w700, height: 1)),
+          Text('Cave Player', maxLines: 1, style: brand(size)),
           SizedBox(height: size * 0.18),
           Container(
             height: size * 0.16,
@@ -133,11 +134,19 @@ class _CoverImageState extends State<CoverImage> {
     final key = id != null ? 'cv_$id' : (t == null ? null : svc.keyOf(t));
     final px = _wantPx;
     final bucket = CoverService.bucketFor(px);
-    if (key == _key && bucket == _px) return;
+    final wantsNow = id != null || (t != null && svc.wants(t));
+    if (key == _key && bucket == _px) {
+      // Тот же трек, но у него появилась обложка (досканировали, нашли cover.jpg) — сразу просим её,
+      // а не ждём, пока виджет пересоздадут сменой вкладки
+      final became = wantsNow && !_wants;
+      _wants = wantsNow;
+      if (became && _bytes == null) _request();
+      return;
+    }
     final sameKey = key == _key;
     _key = key;
     _px = bucket;
-    _wants = id != null || (t != null && svc.wants(t));
+    _wants = wantsNow;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
     if (!sameKey || peek != null) _bytes = peek;
     if (peek == null && _wants) _request();
@@ -160,10 +169,12 @@ class _CoverImageState extends State<CoverImage> {
 
   /// Сервис что-то догрузил или пришло время повторить: если у нас картинки ещё нет, пробуем снова
   void _onReady() {
-    if (!mounted || _bytes != null || !_wants || _key == null) return;
+    if (!mounted || _bytes != null || _key == null) return;
     final t = widget.track;
     final id = widget.fileId;
     final svc = _svc!;
+    _wants = id != null || (t != null && svc.wants(t));
+    if (!_wants) return;
     final px = _wantPx;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
     if (peek != null) {
@@ -189,6 +200,7 @@ class _CoverImageState extends State<CoverImage> {
             : Image.memory(
                 bytes,
                 fit: BoxFit.cover,
+                gaplessPlayback: true,
                 cacheWidth: (widget.size * dpr).round(),
                 errorBuilder: (_, __, ___) => placeholder,
               ),
@@ -388,7 +400,7 @@ class EmptyState extends StatelessWidget {
 Future<String?> askText(BuildContext context,
     {required String title, required String action, String initial = '', String hint = ''}) {
   final ctrl = TextEditingController(text: initial);
-  return showDialog<String>(
+  return showGlassDialog<String>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(title, style: display(18)),
@@ -410,7 +422,7 @@ Future<String?> askText(BuildContext context,
 }
 
 Future<bool> confirm(BuildContext context, {required String title, required String text, required String action}) async {
-  final r = await showDialog<bool>(
+  final r = await showGlassDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(title, style: display(18)),

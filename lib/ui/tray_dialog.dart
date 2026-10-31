@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
 import 'theme.dart';
+import 'glass_popup.dart';
 
 /// Первый раз по крестику: свернуть в трей или закрыть совсем.
 /// true — в трей, false — закрыть, null — человек передумал.
 Future<bool?> askTrayOnClose(BuildContext context) {
-  return showDialog<bool>(
+  return showGlassDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text('Закрыть Cave Player?', style: display(18)),

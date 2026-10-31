@@ -6,13 +6,16 @@ import 'package:flutter/services.dart';
 import '../app.dart';
 import '../core/models.dart';
 import 'albums_view.dart';
+import 'ambient.dart';
 import 'cover_picker.dart';
 import 'download_view.dart';
 import 'library_views.dart';
 import 'shell.dart';
 import 'share_dialog.dart';
 import 'theme.dart';
+import 'wave_view.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 /// Ctrl+F: каждое увеличение просит открытый список треков поставить курсор в поиск
 final searchRequests = ValueNotifier<int>(0);
@@ -22,7 +25,8 @@ final selectionBarOpen = ValueNotifier<bool>(false);
 
 class AllTracksPage extends StatelessWidget {
   final bool compact;
-  const AllTracksPage({super.key, required this.compact});
+  final String title;
+  const AllTracksPage({super.key, required this.compact, this.title = 'Песни'});
 
   @override
   Widget build(BuildContext context) {
@@ -34,45 +38,14 @@ class AllTracksPage extends StatelessWidget {
         final tracks = lib.allTracks;
         final albums = lib.albums.length;
         return TracksPage(
-          title: 'Все треки',
+          title: title,
           subtitle: tracks.isEmpty
               ? null
               : '${countTracks(tracks.length)} в $albums ${plural(albums, 'альбоме', 'альбомах', 'альбомах')}',
           tracks: tracks,
           compact: compact,
-          actions: [
-            OutlinedButton.icon(
-              onPressed: () => NavScope.of(context).go(const Nav('download')),
-              icon: const Icon(Icons.cloud_download_outlined, size: 18),
-              label: const Text('Скачать по ссылке'),
-            ),
-            OutlinedButton.icon(
-              onPressed: lib.data.sources.isEmpty || lib.upload.running ? null : () => pickAndUpload(context),
-              icon: const Icon(Icons.upload_rounded, size: 18),
-              label: const Text('Загрузить'),
-            ),
-            Tooltip(
-              message: lib.scan.running
-                  ? (lib.scan.total > 0 ? '${lib.scan.text}: ${lib.scan.done} из ${lib.scan.total}' : lib.scan.text)
-                  : 'Проверить папки на новые треки',
-              child: OutlinedButton.icon(
-                onPressed: lib.scan.running || lib.data.sources.isEmpty ? null : () => lib.scanAll(),
-                icon: lib.scan.running
-                    ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.sync_rounded, size: 18),
-                label: Text(lib.scan.running ? 'Обновляю…' : 'Обновить'),
-              ),
-            ),
-          ],
-          banner: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Wrap(spacing: 10, runSpacing: 10, children: [
-              _SectionChip(icon: Icons.album_outlined, label: 'Альбомы', target: const Nav('albums')),
-              _SectionChip(icon: Icons.mic_none_rounded, label: 'Исполнители', target: const Nav('artists')),
-              _SectionChip(icon: Icons.schedule_rounded, label: 'Недавно добавленное', target: const Nav('recent')),
-            ]),
-            const SizedBox(height: 12),
-            const DropHint(),
-          ]),
+          actions: libraryActions(context),
+          banner: const DropHint(),
           empty: lib.scan.running
               ? EmptyState(
                   icon: Icons.downloading_rounded,
@@ -96,24 +69,33 @@ class AllTracksPage extends StatelessWidget {
   }
 }
 
-/// Плашка-переход под заголовком «Все треки»
-class _SectionChip extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Nav target;
-  const _SectionChip({required this.icon, required this.label, required this.target});
-
-  @override
-  Widget build(BuildContext context) {
-    return ActionChip(
-      avatar: Icon(icon, size: 18, color: C.accent),
-      label: Text(label),
-      onPressed: () => NavScope.of(context).go(target),
-      backgroundColor: C.surface,
-      side: const BorderSide(color: C.line),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-    );
-  }
+/// Кнопки библиотеки: скачать по ссылке, загрузить файлы, проверить папки
+List<Widget> libraryActions(BuildContext context) {
+  final lib = Services.of(context).lib;
+  return [
+            OutlinedButton.icon(
+              onPressed: () => NavScope.of(context).go(const Nav('download')),
+              icon: const Icon(Icons.cloud_download_outlined, size: 18),
+              label: const Text('Скачать по ссылке'),
+            ),
+            OutlinedButton.icon(
+              onPressed: lib.data.sources.isEmpty || lib.upload.running ? null : () => pickAndUpload(context),
+              icon: const Icon(Icons.upload_rounded, size: 18),
+              label: const Text('Загрузить'),
+            ),
+            Tooltip(
+              message: lib.scan.running
+                  ? (lib.scan.total > 0 ? '${lib.scan.text}: ${lib.scan.done} из ${lib.scan.total}' : lib.scan.text)
+                  : 'Проверить папки на новые треки',
+              child: OutlinedButton.icon(
+                onPressed: lib.scan.running || lib.data.sources.isEmpty ? null : () => lib.scanAll(),
+                icon: lib.scan.running
+                    ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.sync_rounded, size: 18),
+                label: Text(lib.scan.running ? 'Обновляю…' : 'Обновить'),
+              ),
+            ),
+          ];
 }
 
 class LikedPage extends StatelessWidget {
@@ -187,7 +169,7 @@ class AlbumPage extends StatelessWidget {
           numbered: true,
           compact: compact,
           actions: [
-            PopupMenuButton<String>(
+            GlassMenuButton<String>(
               tooltip: 'Ещё',
               icon: const Icon(Icons.more_horiz_rounded),
               onSelected: (v) {
@@ -257,7 +239,7 @@ class PlaylistPage extends StatelessWidget {
               tracks: tracks,
               onChanged: (v) => app.cache.setPlaylistOffline(playlistId, v),
             ),
-            PopupMenuButton<String>(
+            GlassMenuButton<String>(
               tooltip: 'Ещё',
               icon: const Icon(Icons.more_horiz_rounded),
               onSelected: (v) async {
@@ -498,10 +480,9 @@ class _TracksPageState extends State<TracksPage> {
       bottom: 14,
       child: Center(
         child: Material(
-          color: C.raised,
-          elevation: 10,
-          borderRadius: BorderRadius.circular(14),
-          child: Padding(
+          type: MaterialType.transparency,
+          child: GlassPanel(
+            radius: 16,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             child: Wrap(spacing: 4, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
               Text('Выбрано: ${picked.length}', style: const TextStyle(fontWeight: FontWeight.w600)),
@@ -715,7 +696,7 @@ class _TracksPageState extends State<TracksPage> {
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.line))),
+      decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
       height: 32,
       child: Row(children: [
         const SizedBox(width: 28, child: Text('#', style: TextStyle(fontSize: 12, color: C.faint))),
@@ -787,18 +768,8 @@ class _TracksPageState extends State<TracksPage> {
     final heroHeader = hero == null
         ? null
         : Stack(children: [
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [hero.withValues(alpha: 0.85), C.bg],
-                    stops: const [0.0, 1.0],
-                  ),
-                ),
-              ),
-            ),
+            // Свечение цветом шапки: плавно уходит в прозрачность и медленно «дышит»
+            AmbientGlow(color: hero.withValues(alpha: 0.45)),
             SizedBox(
               width: double.infinity,
               child: Padding(
@@ -971,7 +942,7 @@ class _TracksPageState extends State<TracksPage> {
                     itemCount: visible.length,
                     itemExtent: 58,
                     proxyDecorator: (child, i, anim) => Material(
-                      color: C.raised,
+                      color: C.panelRaised,
                       elevation: 6,
                       borderRadius: BorderRadius.circular(8),
                       child: child,
@@ -1205,7 +1176,7 @@ class TrackMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return PopupMenuButton<String>(
+    return GlassMenuButton<String>(
       tooltip: 'Действия',
       icon: const Icon(Icons.more_horiz_rounded, size: 20),
       onSelected: (v) => onTrackMenu(context, v, track, playlistId, onSelect: onSelect),
@@ -1218,7 +1189,7 @@ class TrackMenu extends StatelessWidget {
 Future<void> showTrackMenu(BuildContext context, Track track, String? playlistId, Offset at,
     {VoidCallback? onSelect, bool selected = false}) async {
   final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-  final v = await showMenu<String>(
+  final v = await showGlassMenu<String>(
     context: context,
     position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
     items: trackMenuItems(context, track, playlistId, canSelect: onSelect != null, selected: selected),
@@ -1234,6 +1205,7 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
     PopupMenuItem(value: 'like', child: Text(liked ? 'Убрать из любимого' : 'Добавить в любимое')),
     const PopupMenuItem(value: 'next', child: Text('Играть следующим')),
     const PopupMenuItem(value: 'queue', child: Text('В конец очереди')),
+    const PopupMenuItem(value: 'wave', child: Text('Моя волна по треку')),
     const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
     if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
     const PopupMenuDivider(),
@@ -1265,6 +1237,8 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
     case 'next':
       app.player.playNext(track);
       app.lib.messages.add('«${track.title}» заиграет следующим');
+    case 'wave':
+      startWaveFrom(context, track);
     case 'queue':
       app.player.addToQueue(track);
       app.lib.messages.add('«${track.title}» добавлен в конец очереди');
@@ -1310,7 +1284,7 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
 Future<bool> addToPlaylistDialog(BuildContext context, List<String> trackIds) async {
   final app = Services.of(context);
   final lib = app.lib;
-  final choice = await showDialog<String>(
+  final choice = await showGlassDialog<String>(
     context: context,
     builder: (ctx) => SimpleDialog(
       title: Text('В плейлист', style: display(18)),

@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
+import 'ambient.dart';
 import 'company_view.dart';
 import 'shell.dart';
 import 'profile_edit.dart';
@@ -16,6 +17,7 @@ import 'tracks_view.dart';
 import 'web_pages.dart';
 import 'web_views.dart';
 import 'widgets.dart';
+import 'glass_popup.dart';
 
 // Страницы исполнителя и пользователя: общая раскладка — цветной фон, круглое фото,
 // имя, кнопки «i», «играть» и ещё одна, сетка «Топ-песни» и ряды плиток.
@@ -58,7 +60,10 @@ Color _darken(Color c) {
   return hsl.withLightness(0.32).withSaturation(math.min(hsl.saturation, 0.5)).toColor();
 }
 
-Future<Color?> _trackTint(AppServices app, Track t) async {
+/// Цвет обложки, если уже посчитан (без ожидания)
+Color? trackTintNow(AppServices app, Track t) => _tintCache[app.covers.keyOf(t)];
+
+Future<Color?> trackTint(AppServices app, Track t) async {
   final key = app.covers.keyOf(t);
   final cached = _tintCache[key];
   if (cached != null) return cached;
@@ -84,6 +89,8 @@ class ProfileLayout extends StatefulWidget {
   /// Свой баннер человека (id картинки на Диске): показывается сверху и плавно уходит в фон
   final String? bannerFileId;
 
+  /// Чем красить фон окна, пока открыт этот профиль (важнее обложки текущего трека)
+  final AmbientSource? ambient;
   /// Дополнительные кнопки сбоку от шапки (например, «Слушать вместе»); на узком окне уходят под кнопки
   final Widget? extras;
 
@@ -100,6 +107,7 @@ class ProfileLayout extends StatefulWidget {
     this.onInfo,
     this.thirdButton,
     this.bannerFileId,
+    this.ambient,
     this.extras,
   });
 
@@ -157,18 +165,12 @@ class _ProfileLayoutState extends State<ProfileLayout> {
     final pad = compact ? 20.0 : 40.0;
     final photo = compact ? 160.0 : 220.0;
     Widget page(Color? tint) {
-      final top = (tint ?? C.raised).withValues(alpha: 0.85);
       return Stack(children: [
         if (bannerFileId != null)
           _backdrop(Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId)))
         else
-          _backdrop(
-            DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [top, C.bg], stops: const [0.0, 0.75]),
-              ),
-            ),
-          ),
+          // Свечение цветом профиля — на всё окно, плавное, медленно «дышит»
+          AmbientGlow(color: tint?.withValues(alpha: 0.4)),
         CustomScrollView(controller: _scroll, slivers: [
           SliverToBoxAdapter(
             child: Padding(
@@ -222,12 +224,14 @@ class _ProfileLayoutState extends State<ProfileLayout> {
       ]);
     }
 
-    if (tintFuture == null) return page(tintNow);
-    return FutureBuilder<Color?>(
-      future: tintFuture,
-      initialData: tintNow,
-      builder: (context, snap) => page(snap.data ?? tintNow),
-    );
+    final body = tintFuture == null
+        ? page(tintNow)
+        : FutureBuilder<Color?>(
+            future: tintFuture,
+            initialData: tintNow,
+            builder: (context, snap) => page(snap.data ?? tintNow),
+          );
+    return AmbientOverride(source: widget.ambient, child: body);
   }
 }
 
@@ -240,27 +244,54 @@ class _Banner extends StatelessWidget {
   Widget build(BuildContext context) {
     final covers = Services.of(context).covers;
     return LayoutBuilder(builder: (context, box) {
-      final h = (box.maxWidth / 3).clamp(300.0, 620.0).toDouble();
-      return ShaderMask(
-        blendMode: BlendMode.dstIn,
-        shaderCallback: (r) => const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Colors.white, Colors.white, Colors.transparent],
-          stops: [0.0, 0.6, 1.0],
-        ).createShader(r),
-        child: SizedBox(
-          width: box.maxWidth,
-          height: h,
-          child: ClipRect(
-            child: Stack(fit: StackFit.expand, children: [
-              ImageFiltered(
-                imageFilter: ui.ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-                // Баннер размыт, поэтому хватает копии в 640 px: она читается с диска мгновенно
-                child: CoverImage(track: null, fileId: fileId, label: '', size: box.maxWidth, height: h, radius: 0, maxPx: 640),
+      // Карточка со скруглёнными углами и отступом от краёв: раньше баннер упирался в панель и шапку окна
+      const margin = 12.0;
+      final w = box.maxWidth - margin * 2;
+      final h = (w / 3).clamp(300.0, 620.0).toDouble();
+      // Края растворяются в фон окна по плавной кривой — без резкой границы и без «лесенки»
+      List<Color> fade(int n, {bool reverse = false}) => [
+            for (var i = 0; i <= n; i++)
+              () {
+                final t = i / n;
+                final e = t * t * (3 - 2 * t);
+                return Colors.white.withValues(alpha: reverse ? 1 - e : e);
+              }(),
+          ];
+      final steps = [for (var i = 0; i <= 12; i++) i / 12];
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(margin, 4, margin, 0),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: ShaderMask(
+            // снизу: плавно в прозрачность с середины
+            blendMode: BlendMode.dstIn,
+            shaderCallback: (r) => LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Colors.white, Colors.white, ...fade(12, reverse: true)],
+              stops: [0.0, 0.45, for (final s in steps) 0.45 + s * 0.55],
+            ).createShader(r),
+            child: ShaderMask(
+              // по бокам: мягко растворяется у левого и правого края
+              blendMode: BlendMode.dstIn,
+              shaderCallback: (r) => LinearGradient(
+                colors: [...fade(12), ...fade(12, reverse: true)],
+                stops: [for (final s in steps) s * 0.12, for (final s in steps) 0.88 + s * 0.12],
+              ).createShader(r),
+              child: SizedBox(
+                width: w,
+                height: h,
+                child: Stack(fit: StackFit.expand, children: [
+                  ImageFiltered(
+                    // mirror, а не clamp: у краёв clamp тянет крайний ряд пикселей в полосы — тот самый «шов»
+                    imageFilter: ui.ImageFilter.blur(sigmaX: 6, sigmaY: 6, tileMode: TileMode.mirror),
+                    // Баннер размыт, поэтому хватает копии в 640 px: она читается с диска мгновенно
+                    child: CoverImage(track: null, fileId: fileId, label: '', size: w, height: h, radius: 0, maxPx: 640),
+                  ),
+                  ColoredBox(color: Colors.black.withValues(alpha: 0.4)),
+                ]),
               ),
-              ColoredBox(color: Colors.black.withValues(alpha: 0.45)),
-            ]),
+            ),
           ),
         ),
       );
@@ -372,7 +403,7 @@ class TrackGrid extends StatelessWidget {
         },
         onSecondaryTapUp: (d) => showTrackMenu(context, t, null, d.globalPosition),
         child: Container(
-          decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.line.withValues(alpha: 0.7)))),
+          decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
           padding: const EdgeInsets.only(left: 4),
           child: Row(children: [
             CoverImage(track: t, size: 46, radius: 4),
@@ -548,7 +579,13 @@ class ArtistProfilePage extends StatelessWidget {
           compact: compact,
           // Фото из интернета; пока его нет — обложка одного из треков
           avatar: ArtistPhoto(name: a.name, size: 220, fallback: CoverImage(track: a.coverTrack, size: 220, radius: 0)),
-          tintFuture: _trackTint(app, a.coverTrack),
+          // Фон окна — по фото исполнителя; нет фото — по обложке одного из его треков
+          ambient: AmbientSource(
+            'artist:${a.key}',
+            url: () async => (app.web.artistCached(a.name) ?? await app.web.artist(a.name))?.picture,
+            fallback: AmbientSource(app.covers.keyOf(a.coverTrack), bytes: () => app.covers.forTrack(a.coverTrack)),
+          ),
+          tintFuture: trackTint(app, a.coverTrack),
           tintNow: _tintCache[app.covers.keyOf(a.coverTrack)],
           name: a.name,
           subtitle: '${countTracks(a.tracks.length)}, $albumsN ${plural(albumsN, 'альбом', 'альбома', 'альбомов')} на Диске',
@@ -557,12 +594,19 @@ class ArtistProfilePage extends StatelessWidget {
             app.player.playTracks(ranked, 0);
           },
           onInfo: () => _showInfo(context, app, a, ranked),
-          thirdButton: _roundButton(
-            fav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-            () => lib.toggleFavArtist(a.key),
-            tooltip: fav ? 'Убрать из любимых исполнителей' : 'В любимые исполнители',
-            color: fav ? C.accent : null,
-          ),
+          thirdButton: Row(mainAxisSize: MainAxisSize.min, children: [
+            _roundButton(
+              fav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+              () => lib.toggleFavArtist(a.key),
+              tooltip: fav ? 'Убрать из любимых исполнителей' : 'В любимые исполнители',
+              color: fav ? C.accent : null,
+            ),
+            const SizedBox(width: 10),
+            _roundButton(Icons.waves_rounded, () {
+              app.wave.startFromArtist(a.name);
+              NavScope.of(context).go(const Nav('wave'));
+            }, tooltip: 'Моя волна по исполнителю'),
+          ]),
           sections: [
             WebArtistSections(
               key: ValueKey('web:${a.key}'),
@@ -616,7 +660,7 @@ class ArtistProfilePage extends StatelessWidget {
       plays += app.social.playsOf(t.id);
     }
     final who = byWho.entries.toList()..sort((x, y) => y.value.compareTo(x.value));
-    showDialog<void>(
+    showGlassDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(a.name, style: display(18)),
@@ -703,6 +747,15 @@ class UserProfilePage extends StatelessWidget {
           compact: compact,
           avatar: Avatar(email: email, name: name, size: 220),
           bannerFileId: lib.profileBanner(email),
+          // Фон — по баннеру человека, иначе по аватару, иначе его цветом
+          ambient: AmbientSource(
+            'user:$email:${lib.profileBanner(email)}:${lib.profileAvatar(email)}',
+            bytes: () async {
+              final id = lib.profileBanner(email) ?? lib.profileAvatar(email);
+              return id == null ? null : app.covers.forFile(id);
+            },
+            color: friendColor(email),
+          ),
           extras: email == lib.me ? null : ListenActions(email: email),
           thirdButton: email == lib.me
               ? _roundButton(Icons.edit_rounded, () => editProfileDialog(context), tooltip: 'Изменить профиль')
@@ -779,7 +832,7 @@ class UserProfilePage extends StatelessWidget {
         if (day.compareTo(key) >= 0) week += tracks.values.fold(0, (a, b) => a + b);
       });
     }
-    showDialog<void>(
+    showGlassDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(name, style: display(18)),

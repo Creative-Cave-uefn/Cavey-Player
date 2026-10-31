@@ -6,6 +6,7 @@ import '../app.dart';
 import '../core/desktop_notify.dart';
 import '../core/notices.dart';
 import 'theme.dart';
+import 'glass_popup.dart';
 
 /// Правый нижний угол над плеером: живые уведомления «Вам» башенкой (новое — выше) и под ними значок облака,
 /// пока изменения сохраняются на Диск (подпись раскрывается при наведении).
@@ -107,15 +108,11 @@ class _NoticeCard extends StatelessWidget {
     };
     return Material(
       type: MaterialType.transparency,
-      child: Container(
+      child: SizedBox(
         width: 340,
+        child: GlassPanel(
+        radius: 16,
         padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
-        decoration: BoxDecoration(
-          color: C.raised,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: C.line),
-          boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 14, offset: Offset(0, 4))],
-        ),
         child: Row(children: [
           Icon(icon, size: 18, color: C.accent),
           const SizedBox(width: 12),
@@ -147,6 +144,7 @@ class _NoticeCard extends StatelessWidget {
           ),
         ]),
       ),
+      ),
     );
   }
 }
@@ -172,14 +170,12 @@ class _SaveCloudState extends State<_SaveCloud> {
       child: AnimatedSize(
         duration: const Duration(milliseconds: 160),
         alignment: Alignment.centerRight,
-        child: Container(
-          height: 30,
+        child: GlassPanel(
+          radius: 15,
+          shadow: const [],
           padding: EdgeInsets.symmetric(horizontal: _hover ? 12 : 7),
-          decoration: BoxDecoration(
-            color: C.raised.withValues(alpha: _hover ? 1 : 0.85),
-            borderRadius: BorderRadius.circular(15),
-            border: Border.all(color: C.line),
-          ),
+          child: SizedBox(
+          height: 28,
           child: Row(mainAxisSize: MainAxisSize.min, children: [
             if (_hover)
               Padding(
@@ -189,6 +185,7 @@ class _SaveCloudState extends State<_SaveCloud> {
               ),
             Icon(err != null ? Icons.cloud_off_rounded : Icons.cloud_upload_outlined, size: 16, color: color),
           ]),
+          ),
         ),
       ),
     );
