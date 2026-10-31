@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding, WidgetsBindingObserver;
 
 import '../config.dart';
 import 'drive.dart';
@@ -102,6 +103,16 @@ class ChartEntry {
   ChartEntry(this.track, this.plays, this.listeners);
 }
 
+/// Е5: окно вернулось из свёрнутого состояния — сразу обновляем статусы
+class _ResumeWatcher with WidgetsBindingObserver {
+  final VoidCallback onResume;
+  _ResumeWatcher(this.onResume);
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) onResume();
+  }
+}
+
 class SocialController extends ChangeNotifier {
   final LibraryController lib;
   final DriveApi drive;
@@ -111,6 +122,12 @@ class SocialController extends ChangeNotifier {
   final Map<String, String> _fileModified = {}; // fileId → modifiedTime
   final Map<String, String> _fileOwner = {}; // email → fileId
   String? _myFileId;
+
+  /// В какой папке лежит [_myFileId]: писать свой файл можно только в текущую cave-data
+  String? _myFileFolder;
+
+  /// Для какой библиотеки собраны сведения о файлах: сменили библиотеку — всё собираем заново
+  String? _hubSeen;
   bool _loadedMine = false;
 
   /// Своя история уже подтянулась с Диска (а с ней и друзья)
@@ -120,6 +137,7 @@ class SocialController extends ChangeNotifier {
   Map<String, Map<String, int>> _myPlays = {};
 
   Timer? _pollTimer;
+  _ResumeWatcher? _resume;
   Timer? _heartbeat;
   Timer? _writeTimer;
   Timer? _followTimer;
@@ -148,7 +166,15 @@ class SocialController extends ChangeNotifier {
     player.addListener(_onPlayer);
     player.position.addListener(_onPosition);
     // Часто: по этому опросу приходят уведомления от друзей. Один короткий список файлов — Диску это не в тягость
-    _pollTimer = Timer.periodic(const Duration(seconds: 6), (_) => poll());
+    _pollTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+      // Е5: музыка не играет и окно скрыто — опрашиваем раз в минуту
+      final st = WidgetsBinding.instance.lifecycleState;
+      final hidden = st == AppLifecycleState.hidden || st == AppLifecycleState.paused;
+      if (hidden && !player.playing && DateTime.now().difference(lastPoll ?? DateTime(2000)) < const Duration(seconds: 60)) return;
+      unawaited(poll());
+    });
+    _resume = _ResumeWatcher(() => unawaited(poll()));
+    WidgetsBinding.instance.addObserver(_resume!);
     _heartbeat = Timer.periodic(const Duration(seconds: 30), (_) {
       if (player.playing) _markDirty();
     });
@@ -237,9 +263,56 @@ class SocialController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Библиотеку сменили (переезд, подключение к другой, отключение): файлы старой cave-data больше не наши.
+  /// Без этого статус до перезапуска писался бы в файл старой библиотеки
+  void _checkHub() {
+    final hub = lib.settings.hubId;
+    if (hub == _hubSeen) return;
+    final changed = _hubSeen != null;
+    _hubSeen = hub;
+    if (!changed) return; // первый запуск: сбрасывать нечего
+    AppLog.info('Статусы: библиотека сменилась, свой файл в cave-data ищу заново');
+    _myFileId = null;
+    _myFileFolder = null;
+    _loadedMine = false;
+    _fileModified.clear();
+    _fileOwner.clear();
+    members.clear();
+    _myEvents = [];
+    _myPlays = {};
+  }
+
+  void _forgetMyFile(String why) {
+    AppLog.warn('Свой файл статуса: $why — создам новый в cave-data');
+    _myFileId = null;
+    _myFileFolder = null;
+  }
+
+  /// Своего файла не видно в cave-data. Спрашиваем у Диска напрямую: список файлов может
+  /// отставать на несколько секунд после создания, и тогда трогать ничего не нужно
+  Future<void> _verifyMine(String main) async {
+    final id = _myFileId;
+    if (id == null) return;
+    try {
+      final f = await lib.withHub((e) => drive.getFile(e, id, fields: 'id,parents,trashed'));
+      if (_myFileId != id) return;
+      final parents = [for (final p in (f['parents'] as List? ?? const [])) '$p'];
+      if (f['trashed'] == true) {
+        _forgetMyFile('файл в корзине');
+      } else if (!parents.contains(main)) {
+        _forgetMyFile('файл лежит не в cave-data');
+      }
+    } on DriveException catch (e) {
+      if (e.notFound && _myFileId == id) _forgetMyFile('файла больше нет на Диске');
+    } catch (_) {
+      // нет сети — проверим в следующий раз
+    }
+  }
+
   Future<void> _write() async {
     final m = me;
     if (!lib.hasHub || m == null || !_dirty) return;
+    _checkHub();
     if (!_loadedMine) {
       await poll(); // сначала подтягиваем свой файл, чтобы не затереть историю с другого компьютера
       if (!_loadedMine) {
@@ -256,16 +329,25 @@ class SocialController extends ChangeNotifier {
     try {
       final body = jsonEncode(_myJson());
       final folder = await lib.dataFolder();
+      // Папку cave-data сменили (своя папка в настройках или сброс): старый файл не трогаем, пишем в новую
+      if (_myFileId != null && _myFileFolder != folder) _forgetMyFile('cave-data сменилась');
       await lib.withHub((email) async {
         final id = _myFileId;
-        if (id == null) {
-          final f = await drive.createFile(email, folder, 'user-$m.json', body);
-          _myFileId = f['id'] as String;
-          _fileModified[_myFileId!] = '${f['modifiedTime']}';
-        } else {
-          _fileModified[id] = await drive.updateFile(email, id, body);
+        if (id != null) {
+          try {
+            _fileModified[id] = await drive.updateFile(email, id, body);
+            _measureSkew(_fileModified[id]);
+            return;
+          } on DriveException catch (e) {
+            if (!e.notFound) rethrow;
+            _forgetMyFile('файла больше нет на Диске');
+          }
         }
-        _measureSkew(_fileModified[_myFileId ?? id]);
+        final f = await drive.createFile(email, folder, 'user-$m.json', body);
+        _myFileId = f['id'] as String;
+        _myFileFolder = folder;
+        _fileModified[_myFileId!] = '${f['modifiedTime']}';
+        _measureSkew(_fileModified[_myFileId!]);
       });
       if (lastWrite == null) AppLog.info('Статус сохранён в cave-data');
       lastWrite = DateTime.now();
@@ -291,33 +373,59 @@ class SocialController extends ChangeNotifier {
 
   Future<void> poll() async {
     if (!lib.hasHub || me == null || _polling) return;
+    _checkHub();
     _polling = true;
     try {
       final main = await lib.dataFolder();
       // Читаем все папки cave-data и для каждого друга берём самый свежий файл
       final latest = <String, DriveFile>{};
-      for (final folder in {main, ...lib.dataFolders}) {
-        final files = await lib.withHub((email) => drive.listChildren(email, folder));
+      final where = <String, String>{}; // почта → папка, где лежит выбранный файл
+      final mineInMain = <String>{}; // все мои файлы в основной cave-data
+      final folders = {main, ...lib.dataFolders}.toList();
+      // Е4: папки cave-data читаем параллельно
+      final listed = await Future.wait([for (final folder in folders) lib.withHub((email) => drive.listChildren(email, folder))]);
+      for (var fi = 0; fi < folders.length; fi++) {
+        final folder = folders[fi];
+        final files = listed[fi];
         for (final f in files) {
-          if (!f.name.startsWith('user-') || !f.name.endsWith('.json')) continue;
+          if (f.isFolder || !f.name.startsWith('user-') || !f.name.endsWith('.json')) continue;
           final email = f.name.substring(5, f.name.length - 5);
+          if (email.isEmpty) continue;
+          if (email == me && folder == main) mineInMain.add(f.id);
           final prev = latest[email];
           // Свой файл предпочитаем в основной папке, чтобы писать туда же
           final better = prev == null ||
               (email == me ? folder == main && prev.modifiedTime.compareTo(f.modifiedTime) <= 0 : f.modifiedTime.compareTo(prev.modifiedTime) > 0);
-          if (better) latest[email] = f;
+          if (better) {
+            latest[email] = f;
+            where[email] = folder;
+          }
         }
       }
+      // Свой файл куда-то делся из cave-data (удалили, в корзине, перенесли) — проверяем и пишем заново
+      if (_myFileId != null && !mineInMain.contains(_myFileId)) await _verifyMine(main);
+      final toLoad = <Future<void> Function()>[];
       for (final entry in latest.entries) {
         final email = entry.key;
         final f = entry.value;
         if (email == me) {
-          _myFileId ??= f.id;
+          // Писать свой файл можно только в основную cave-data. Нашёлся только в старой копии папки —
+          // историю из него читаем, а писать будем в новый файл в основной
+          if (_myFileId == null && where[email] == main) {
+            _myFileId = f.id;
+            _myFileFolder = main;
+          }
           if (_loadedMine) continue;
         }
         if (_fileModified[f.id] == f.modifiedTime && members.containsKey(email)) continue;
-        await _load(f.id, email, serverTime: f.modifiedTime);
-        _fileModified[f.id] = f.modifiedTime;
+        toLoad.add(() async {
+          await _load(f.id, email, serverTime: f.modifiedTime);
+          _fileModified[f.id] = f.modifiedTime;
+        });
+      }
+      // Е4: файлы друзей читаем по 4 одновременно
+      for (var i = 0; i < toLoad.length; i += 4) {
+        await Future.wait([for (final job in toLoad.skip(i).take(4)) job()]);
       }
       lastPoll = DateTime.now();
       pollError = null;
@@ -557,6 +665,7 @@ class SocialController extends ChangeNotifier {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    if (_resume != null) WidgetsBinding.instance.removeObserver(_resume!);
     _heartbeat?.cancel();
     _writeTimer?.cancel();
     _followTimer?.cancel();

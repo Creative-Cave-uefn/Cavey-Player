@@ -612,6 +612,13 @@ class LibraryController extends ChangeNotifier {
         String? modified;
         for (var attempt = 0;; attempt++) {
           final before = (await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime'))['modifiedTime'];
+          // Е1: файл не менялся с нашего последнего чтения и новых правок за время сохранения нет —
+          // локальная копия уже и есть актуальная, скачивать целиком не нужно
+          if (before != null && before == _libModified && _pending.length == batch.length) {
+            latest = data;
+            modified = await drive.updateFile(email, settings.libFileId!, jsonEncode(latest.toJson()));
+            break;
+          }
           latest = await _downloadLatest(email);
           // Пока качали, человек отключился или сменил библиотеку: в чужой файл ничего не пишем
           if (settings.libFileId != libAtStart) throw _Abandoned();
