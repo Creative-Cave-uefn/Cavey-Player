@@ -46,7 +46,9 @@ class DeezerMusic {
   }
   static Future<void> prepareBridge(Tools t) async {
     await t.dir.create(recursive:true);
-    await bridge(t).writeAsString(_script, encoding:utf8, flush:true);
+    if (!await bridge(t).exists()) {
+      await bridge(t).writeAsString(_script, encoding:utf8, flush:true);
+    }
   }
   static Future<int> runProcess(String exe,List<String> args,void Function(String) log) async {
     if (Platform.isWindows) return WinProc.run(exe,args,log);
