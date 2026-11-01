@@ -132,6 +132,9 @@ jobs:
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          CAVE_DEEZER_ARL_DEFAULT: ${{ secrets.CAVE_DEEZER_ARL }}
+          CAVE_SOULSEEK_USERNAME_DEFAULT: ${{ secrets.CAVE_SOULSEEK_USERNAME }}
+          CAVE_SOULSEEK_PASSWORD_DEFAULT: ${{ secrets.CAVE_SOULSEEK_PASSWORD }}
         run: |
           $out = flutter build windows --release `
             --build-name $env:APP_VERSION --build-number ${{ github.run_number }} `
@@ -142,7 +145,10 @@ jobs:
             "--dart-define=DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}" `
             "--dart-define=SHARE_URL=${{ vars.SHARE_URL }}" `
             "--dart-define=GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID" `
-            "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET" 2>&1 | Out-String
+            "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET" `
+            "--dart-define=CAVE_DEEZER_ARL_DEFAULT=$env:CAVE_DEEZER_ARL_DEFAULT" `
+            "--dart-define=CAVE_SOULSEEK_USERNAME_DEFAULT=$env:CAVE_SOULSEEK_USERNAME_DEFAULT" `
+            "--dart-define=CAVE_SOULSEEK_PASSWORD_DEFAULT=$env:CAVE_SOULSEEK_PASSWORD_DEFAULT" 2>&1 | Out-String
           $code = $LASTEXITCODE
           Write-Output $out
           if ($code -ne 0) {
