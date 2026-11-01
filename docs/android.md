@@ -59,9 +59,11 @@ streaming proxy listens on 127.0.0.1. Google Drive traffic remains HTTPS.
 ## Build via GitHub Actions
 
 1. Add Actions repository secret GOOGLE_WEB_CLIENT_ID with the Web OAuth client ID.
-2. Open Actions > Android MVP APK > Run workflow on feature/android-mvp.
-3. Download the private cavey-android-mvp artifact when the run is successful.
-4. Register the SHA-1 shown in the job output in your Android OAuth client.
+2. A push to feature/android-mvp triggers the workflow automatically. The
+   manual Run workflow button may not appear until the workflow also exists on
+   the default branch.
+3. Download the private cavey-android-mvp artifact after a successful build.
+4. Register the SHA-1 shown in that job output in your Android OAuth client.
 
 The workflow does NOT publish a GitHub Release, so Android test builds do not
 appear in the Windows app updater.
