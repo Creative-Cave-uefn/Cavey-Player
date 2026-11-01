@@ -16,6 +16,7 @@ import 'text.dart';
 import 'tools.dart';
 import 'youtube.dart';
 import 'bandcamp.dart';
+import 'deezer.dart';
 import 'sockseek.dart';
 
 const albumWorkers = 3;
@@ -73,6 +74,12 @@ class DownloadService extends ChangeNotifier {
   bool installing = false;
 
   DownloadService(this.lib, this.tools, this.work);
+
+  Future<void>? _fullToolsSetup;
+  Future<void> _ensureFullTools(void Function(String) log) => _fullToolsSetup ??= () async {
+    if (!tools.ready) await tools.ensure(log);
+    await tools.updateIfOld(log);
+  }();
 
   bool get busy => _running || installing;
 
@@ -157,6 +164,16 @@ class DownloadService extends ChangeNotifier {
     await temp.create(recursive: true);
     AppLog.info('Загрузчик: ${job.input}');
     try {
+      if (lib.settings.downloadProvider == 'deezer' || lib.settings.downloadProvider == 'full') {
+        final ok = lib.settings.downloadProvider == 'deezer'
+            ? await _deezer(job, temp, log) : await _full(job, temp, log);
+        job.state = ok ? JobState.done : JobState.failed;
+        if (job.done > 0 && !job.quiet) {
+          lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
+          lib.messages.add('Скачано и добавлено в библиотеку: ${job.done}');
+        }
+        return;
+      }
       if (lib.settings.downloadProvider == 'sockseek') {
         log('Загрузчик: Sockseek / Soulseek');
         final tracks = await _sockseekTracks(job.input);
@@ -216,6 +233,171 @@ class DownloadService extends ChangeNotifier {
       } catch (_) {}
       notifyListeners();
     }
+  }
+
+  // ---------- Deezer and prioritized full-source search ----------
+
+  Future<bool> _deezer(DownloadJob job, Directory temp, void Function(String) log) async {
+    final result = await DeezerMusic.download(tools, job.input, Directory('${temp.path}/deezer'), log);
+    job.total = result.total;
+    job.title = result.tracks.length == 1
+        ? '${result.tracks.first.artist} - ${result.tracks.first.title}'
+        : 'Deezer: ${result.total} треков';
+    for (final entry in result.tracks) {
+      try {
+        final track = await lib.uploadOne(entry.file, sourceId: job.sourceId,
+            folderId: job.target, path: job.path);
+        job.done++; job.onTrack?.call(track); _notify();
+      } catch (_) { log('Deezer: не удалось добавить запись в библиотеку.'); }
+    }
+    job.failed = (job.total - job.done).clamp(0, job.total);
+    _summary(job, log);
+    return job.done > 0;
+  }
+
+  Future<bool> _full(DownloadJob job, Directory temp, void Function(String) log) async {
+    final input = job.input;
+    if (!await DeezerMusic.python(tools).exists()) {
+      try { await DeezerMusic.install(tools, log); }
+      catch (_) { log('Deezer: недоступен. Продолжаю поиск в других источниках.'); }
+    }
+    if (!await Sockseek.executable(tools).exists()) {
+      try { await Sockseek.install(tools, log); }
+      catch (_) { log('Soulseek: недоступен. Продолжаю поиск в других источниках.'); }
+    }
+    if (Bandcamp.accepts(input)) {
+      await _ensureFullTools(log);
+      return _bandcamp(job, YouTube(tools, temp, log), temp, log);
+    }
+    if (Bandcamp.youtubeUrl(input)) {
+      await _ensureFullTools(log);
+      return _route(job, YouTube(tools, temp, log), temp, log);
+    }
+    final uri = Uri.tryParse(input);
+    final domain = uri?.host.toLowerCase() ?? '';
+    List<TrackMeta>? album;
+    String albumName = '';
+    PlaylistInfo? playlist;
+    try {
+      if (domain == 'deezer.com' || domain.endsWith('.deezer.com')) {
+        if (input.contains('/playlist/')) return _deezer(job, temp, log);
+        if (input.contains('/album/')) {
+          final response = await deezerAlbum(input);
+          albumName = response?.$1 ?? ''; album = response?.$2;
+        }
+      } else if (domain == 'open.spotify.com' || input.startsWith('spotify:')) {
+        if (input.contains('/playlist/') || input.startsWith('spotify:playlist:')) {
+          playlist = await spotifyPlaylist(input);
+          albumName = playlist?.name ?? ''; album = playlist?.metas;
+        } else if (input.contains('/album/') || input.startsWith('spotify:album:')) {
+          final response = await spotifyAlbum(input);
+          albumName = response?.$1 ?? ''; album = response?.$2;
+        }
+      } else if (domain.startsWith('music.yandex.')) {
+        if (input.contains('/album/')) {
+          final response = await yandexAlbum(input);
+          albumName = response?.$1 ?? ''; album = response?.$2;
+        } else if (!input.contains('/track/')) {
+          playlist = await yandexPlaylist(input);
+          albumName = playlist?.name ?? ''; album = playlist?.metas;
+        }
+      }
+    } catch (_) { log('Не удалось получить весь список треков по ссылке.'); }
+    if (album != null && album.isNotEmpty) {
+      return _fullAlbum(job, temp, log, albumName, album, playlist: playlist);
+    }
+    TrackMeta? meta;
+    try {
+      if (domain == 'deezer.com' || domain.endsWith('.deezer.com')) meta = await deezerTrack(input);
+      else if (domain == 'open.spotify.com' || input.startsWith('spotify:')) meta = await spotifyTrack(input, log);
+      else if (domain.startsWith('music.yandex.')) meta = await yandexTrack(input);
+      else if (uri?.hasScheme != true) meta = await deezerFind(input);
+    } catch (_) {}
+    if (meta == null && uri?.hasScheme == true && !input.startsWith('spotify:')) {
+      throw FormatException('Полный поиск: неизвестная ссылка. Поддерживаются Deezer, Spotify, Яндекс, YouTube и Bandcamp.');
+    }
+    if (meta == null) {
+      final (artist, title) = splitArtistTitle('', input);
+      if (artist.isEmpty || title.isEmpty) throw FormatException('Для полного поиска используйте «Исполнитель - Название».');
+      meta = TrackMeta(artist: artist, title: title);
+    }
+    job.total = 1; job.title = meta.label;
+    final t = await _fullOne(job, temp, meta, log, folderId: job.target, path: job.path);
+    _summary(job, log);
+    return t != null;
+  }
+
+  Future<bool> _fullAlbum(DownloadJob job, Directory temp, void Function(String) log,
+      String name, List<TrackMeta> tracks, {PlaylistInfo? playlist}) async {
+    job.title = name.isEmpty ? 'Полный поиск' : name;
+    job.total = tracks.length;
+    final folder = safeName(job.title);
+    final folderId = await lib.ensureSubfolder(job.sourceId, job.sourceId, folder);
+    final ids = List<String?>.filled(tracks.length, null);
+    await _pool(List.generate(tracks.length, (i) => i), albumWorkers, (i) async {
+      final track = await _fullOne(job, temp, tracks[i], log, folderId: folderId, path: folder);
+      ids[i] = track?.id;
+      log('[${i + 1}/${tracks.length}] ${track == null ? 'не найдено' : 'OK'}: ${tracks[i].label}');
+    });
+    _summary(job, log);
+    if (playlist != null && job.makePlaylist) {
+      await _makePlaylist(job, YouTube(tools, temp, log), playlist.name, ids, playlist.coverUrl, log);
+    }
+    return job.done + job.skipped > 0;
+  }
+
+  Future<Track?> _fullOne(DownloadJob job, Directory temp, TrackMeta meta,
+      void Function(String) log, {required String folderId, required String path}) async {
+    final old = lib.existing(meta.artist, meta.title);
+    if (old != null) { job.skipped++; return old; }
+    final root = Directory('${temp.path}/full-${YouTube.unique()}');
+    await root.create(recursive: true);
+    await Directory('${root.path}/soulseek').create(recursive: true);
+    if (await DeezerMusic.python(tools).exists() && DeezerMusic.accepts(meta.label)) {
+      try {
+        log('${meta.label} → Deezer');
+        final result = await DeezerMusic.download(tools, meta.label, Directory('${root.path}/deezer'), log);
+        if (result.tracks.isNotEmpty) {
+          final t = await lib.uploadOne(result.tracks.first.file,
+              sourceId: job.sourceId, folderId: folderId, path: path);
+          job.done++; job.onTrack?.call(t); _notify();
+          return t;
+        }
+      } catch (_) { log('Deezer: не найдено. Пробую Soulseek.'); }
+    }
+    if (await Sockseek.executable(tools).exists()) {
+      try {
+        log('${meta.label} → Soulseek');
+        final files = await Sockseek.download(tools, [meta], Directory('${root.path}/soulseek'), log);
+        if (files.isNotEmpty) {
+          final t = await lib.uploadOne(files.first, sourceId: job.sourceId,
+              folderId: folderId, path: path);
+          job.done++; job.onTrack?.call(t); _notify();
+          return t;
+        }
+      } catch (_) { log('Soulseek: не найдено. Пробую YouTube.'); }
+    }
+    try {
+      await _ensureFullTools(log);
+      final yt = YouTube(tools, root, log);
+      final t = await _sourceTrack(job, yt, root, meta, folderId: folderId, path: path, recordFailure: false);
+      if (t != null) return t;
+    } catch (_) { log('YouTube: источник недоступен.'); }
+    try {
+      await _ensureFullTools(log);
+      final url = await Bandcamp.findTrack(meta.artist, meta.title);
+      if (url != null) {
+        log('${meta.label} → Bandcamp');
+        final yt = YouTube(tools, root, log);
+        final entries = await yt.download('${root.path}/%(id)s.%(ext)s', url);
+        if (entries.isNotEmpty) {
+          await yt.tag(entries.first.path, meta);
+          return _upload(job, yt, File(entries.first.path), folderId: folderId, path: path);
+        }
+      }
+    } catch (_) { log('Bandcamp: не найдено.'); }
+    job.failed++; job.failedNames.add(meta.label); _notify();
+    return null;
   }
 
   // Resolve metadata before P2P search; never guess a different recording via YouTube.
@@ -380,7 +562,7 @@ class DownloadService extends ChangeNotifier {
 
   /// Возвращает трек из библиотеки: уже имевшийся или только что загруженный. null — не получилось
   Future<Track?> _sourceTrack(DownloadJob job, YouTube yt, Directory temp, TrackMeta meta,
-      {required String folderId, required String path, File? cover, String prefix = ''}) async {
+      {required String folderId, required String path, File? cover, String prefix = '', bool recordFailure = true}) async {
     // Такая песня уже есть в библиотеке — второй копии не нужно
     final same = lib.existing(meta.artist, meta.title);
     if (same != null) {
@@ -390,8 +572,7 @@ class DownloadService extends ChangeNotifier {
     }
     final cands = await yt.ranked(meta);
     if (cands.isEmpty) {
-      job.failed++;
-      job.failedNames.add(meta.label);
+      if (recordFailure) { job.failed++; job.failedNames.add(meta.label); }
       return null;
     }
     // У каждого трека своя папка: при параллельной загрузке альбома файлы не перепутаются
@@ -412,8 +593,7 @@ class DownloadService extends ChangeNotifier {
       final file = YouTube.moveTo(entries.first.path, dir.path, clampName(meta.label), prefix);
       return _upload(job, yt, File(file), folderId: folderId, path: path);
     }
-    job.failed++;
-    job.failedNames.add(meta.label);
+    if (recordFailure) { job.failed++; job.failedNames.add(meta.label); }
     return null;
   }
 
