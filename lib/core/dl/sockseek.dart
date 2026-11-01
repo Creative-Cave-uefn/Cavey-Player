@@ -26,7 +26,7 @@ class Sockseek {
     // Optional local credential bootstrap. Never use values from build defines or Git.
     String local(String name, String fallback) {
       final value = Platform.environment[name]?.trim() ?? '';
-      return value.isNotEmpty && !value.contains('\\n') && !value.contains('\\r') ? value : fallback;
+      return value.isNotEmpty && !value.contains('\n') && !value.contains('\r') ? value : fallback;
     }
     final username = local('CAVE_SOULSEEK_USERNAME', 'YOUR_SOULSEEK_USERNAME');
     final password = local('CAVE_SOULSEEK_PASSWORD', 'YOUR_SOULSEEK_PASSWORD');
