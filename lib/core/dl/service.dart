@@ -195,8 +195,10 @@ class DownloadService extends ChangeNotifier {
     if (!a.startsWith('$base${Platform.pathSeparator}')) {
       throw StateError('Модуль передал файл за пределами рабочей папки.');
     }
-    if (!RegExp(image
-        ? r'\.(png|jpg|jpeg|webp)
+    if (!RegExp(
+      image ? r'\.(png|jpg|jpeg|webp|img)$' : r'\.(mp3|flac|wav|m4a|aac|ogg|opus|webm)$',
+      caseSensitive: false,
+    ).hasMatch(real)) {
       throw const FormatException('Модуль передал неподдерживаемый формат файла.');
     }
     return File(real);
