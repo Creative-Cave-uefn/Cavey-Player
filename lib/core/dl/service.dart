@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart';
 import '../audio_cache.dart';
 import '../covers.dart';
 import '../library.dart';
+import '../log.dart';
 import '../models.dart';
 import 'winproc.dart';
 
@@ -111,6 +112,14 @@ class DownloadService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// A reset localhost socket is a transport failure, not a missing song.
+  /// Replaying a download job is safe because the downloader checks the library
+  /// for existing tracks before each upload.
+  static bool retryableDisconnect(Object error) =>
+      error is SocketException ||
+      (error is StateError &&
+          error.toString().contains('Модуль отключился до завершения задания'));
+
   Future<void> _pump() async {
     if (_running) return;
     _running = true;
@@ -121,8 +130,22 @@ class DownloadService extends ChangeNotifier {
         job.state = JobState.running;
         notifyListeners();
         try {
-          final value = await _callModule(job.replaceTrackId == null ? 'download' : 'replace', job: job,
-            onLog: (s) { job.add(s); _notify(); });
+          Object? value;
+          for (var attempt = 0; attempt < 2; attempt++) {
+            try {
+              value = await _callModule(job.replaceTrackId == null ? 'download' : 'replace',
+                  job: job, onLog: (s) { job.add(s); _notify(); });
+              break;
+            } catch (e, stack) {
+              AppLog.error('Связь с Cavey-Downloader при загрузке', e, stack);
+              if (attempt > 0 || job.replaceTrackId != null ||
+                  !retryableDisconnect(e)) rethrow;
+              job.add('Локальное соединение с загрузчиком оборвалось. '
+                  'Перезапускаю задание один раз; уже добавленные песни будут пропущены.');
+              _notify();
+              await Future<void>.delayed(const Duration(milliseconds: 700));
+            }
+          }
           job.state = value == true ? JobState.done : JobState.failed;
           if (job.state == JobState.done && job.done > 0 && !job.quiet && job.replaceTrackId == null) {
             lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
