@@ -103,6 +103,24 @@ class AudioCache extends ChangeNotifier {
     }
   }
 
+  /// Audio was replaced in Drive under the same ID: cached bytes are now stale.
+  Future<void> invalidate(String id) async {
+    _queue.remove(id);
+    _failed.remove(id);
+    if (!_active.contains(id)) {
+      final f = fileFor(id);
+      if (await f.exists()) {
+        sizeBytes -= await f.length();
+        await f.delete();
+      }
+      _have.remove(id);
+    } else {
+      // Download in progress: force refresh after it finishes.
+      _failed.add(id);
+    }
+    notifyListeners();
+  }
+
   // ---------- офлайн ----------
 
   Set<String> get pinnedIds {
