@@ -1,5 +1,6 @@
 import 'dart:io';
 import '../core/dl/sockseek.dart';
+import '../core/dl/deezer.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -984,6 +985,35 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
     }
   }
 
+  Future<void> _installDeezer() async {
+    final app = Services.of(context);
+    setState(() { _installing = true; _installLog = 'Устанавливаю Deezer…'; });
+    try {
+      await DeezerMusic.install(app.downloads.tools, (line) {
+        if (mounted) setState(() => _installLog += '\n$line');
+      });
+      app.settings.downloadProvider = 'deezer';
+      await app.lib.saveSettings();
+    } catch (e) {
+      if (mounted) setState(() => _installLog += '\nОшибка: $e');
+    } finally { if (mounted) setState(() => _installing = false); }
+  }
+
+  Future<void> _configureDeezer() async {
+    final app = Services.of(context);
+    try {
+      await DeezerMusic.prepareConfig(app.downloads.tools);
+      final path = DeezerMusic.config(app.downloads.tools).absolute.path;
+      if (Platform.isWindows) {
+        await Process.start('notepad.exe', [path], mode: ProcessStartMode.detached);
+      } else {
+        await launchUrl(Uri.file(path));
+      }
+    } catch (e) {
+      if (mounted) setState(() => _installLog = 'Не удалось открыть конфиг Deezer: $e');
+    }
+  }
+
   Future<void> _checkMatch() async {
     final app = Services.of(context);
     final track = app.player.current;
@@ -1016,7 +1046,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text('Загрузчик музыки', style: display(20)),
       const SizedBox(height: 10),
-      const Text('Используется только один источник за раз. Режим Bandcamp принимает ссылки на треки и альбомы; '           'Soulseek ищет по названию или ссылке на каталог; YouTube — обычный поиск и ссылки.',
+      const Text('Deezer загружает через локальную Python-библиотеку. Полный поиск последовательно пробует Deezer → Soulseek → YouTube → Bandcamp для каждого трека. Альбомы обрабатываются параллельно (до 3 треков).',
           style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
       const SizedBox(height: 12),
       DropdownButtonFormField<String>(
@@ -1024,6 +1054,8 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
         decoration: const InputDecoration(labelText: 'Активный загрузчик'),
         items: const [
           DropdownMenuItem(value: 'youtube', child: Text('YouTube / YouTube Music')),
+          DropdownMenuItem(value: 'deezer', child: Text('Deezer (локальный модуль)')),
+          DropdownMenuItem(value: 'full', child: Text('Полный поиск (Deezer → Soulseek → YouTube → Bandcamp)')),
           DropdownMenuItem(value: 'sockseek', child: Text('Sockseek (Soulseek)')),
           DropdownMenuItem(value: 'bandcamp', child: Text('Bandcamp (ссылки)')),
         ],
@@ -1047,6 +1079,22 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
           icon: const Icon(Icons.settings_outlined), label: const Text('Открыть конфиг Soulseek'),
         ),
       ]),
+      const SizedBox(height: 10),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        FilledButton.icon(
+          onPressed: _installing || app.downloads.busy ? null : _installDeezer,
+          icon: const Icon(Icons.download_rounded), label: const Text('Установить Deezer'),
+        ),
+        OutlinedButton.icon(
+          onPressed: _installing || app.downloads.busy ? null : _configureDeezer,
+          icon: const Icon(Icons.settings_outlined), label: const Text('Открыть конфиг Deezer'),
+        ),
+      ]),
+      const SizedBox(height: 8),
+      const Text('Deezer требует Python 3.10+ и ваш cookie ARL. Файл deezer_auth.ini остаётся только на этом устройстве. '
+          'Не публикуйте ARL в GitHub. Качество зависит от подписки и доступности релиза.',
+          style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+      const SizedBox(height: 8),
       const Text('Sockseek бесплатный. Откройте конфиг, замените username и password на данные отдельного аккаунта Soulseek и сохраните файл. '
           'Пароль хранится локально в этом файле открытым текстом. Данные Spotify не подходят. '
           'Поиск: «Исполнитель - Название» либо ссылки Spotify, Яндекс Музыки и Deezer. '
