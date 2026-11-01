@@ -1,6 +1,8 @@
 // Поиск лучшей версии трека на YouTube, скачивание через yt-dlp и запись тегов
 // через ffmpeg. Перенесено из music_downloaderV2.py.
 
+import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,7 +13,7 @@ import 'tools.dart';
 
 const searchResults = 8; // сколько вариантов с YouTube сравнивать
 const maxDownloadTries = 3; // сколько лучших вариантов пробовать
-const fragments = 4; // потоков на скачивание одного файла
+const fragments = 3; // не перегружаем YouTube одновременными фрагментами
 
 class Candidate {
   final String id;
@@ -73,30 +75,99 @@ class YouTube {
     log(line);
   }
 
-  Future<List<Candidate>> search(String query, [int n = searchResults]) => _list('ytsearch$n:$query', n);
+  // Shared by concurrent album workers: avoid request bursts and HTTP 429.
+  static const maxConcurrentSearches = 2;
+  static int _activeSearches = 0;
+  static final Queue<Completer<void>> _searchWaiters = Queue<Completer<void>>();
 
-  /// Поиск в YouTube Music только среди песен: там студийные записи с официальных каналов, без клипов и концертов
-  Future<List<Candidate>> searchSongs(String query, [int n = searchResults]) =>
-      _list('https://music.youtube.com/search?q=${Uri.encodeQueryComponent(query)}#songs', n, song: true);
-
-  Future<List<Candidate>> _list(String target, int n, {bool song = false}) async {
-    try {
-      final out = await Tools.run(
-          tools.ytdlp.path, [...tools.jsArgs, '-J', '--flat-playlist', '--no-warnings', '--playlist-end', '$n', target]);
-      final json = out.firstWhere((l) => l.startsWith('{'), orElse: () => '');
-      if (json.isEmpty) return [];
-      final data = jsonDecode(json) as Map;
-      return [
-        for (final e in (data['entries'] as List? ?? const []))
-          if (e is Map && e['id'] != null && '${e['id']}'.length == 11)
-            Candidate('${e['id']}', '${e['title'] ?? ''}', '${e['channel'] ?? e['uploader'] ?? e['artist'] ?? ''}',
-                (e['duration'] as num?)?.toDouble(),
-                song: song),
-      ];
-    } catch (e) {
-      log(song ? 'Поиск в YouTube Music не удался: $e' : 'Поиск на YouTube не удался: $e');
-      return [];
+  static Future<T> _limitSearch<T>(Future<T> Function() action) async {
+    if (_activeSearches >= maxConcurrentSearches) {
+      final waiter = Completer<void>();
+      _searchWaiters.add(waiter);
+      await waiter.future;
+    } else {
+      _activeSearches++;
     }
+    try {
+      return await action();
+    } finally {
+      if (_searchWaiters.isNotEmpty) {
+        _searchWaiters.removeFirst().complete();
+      } else {
+        _activeSearches--;
+      }
+    }
+  }
+
+  static bool retryable(String message) => RegExp(
+      r'(?:\b(?:429|500|502|503|504)\b|too many requests|rate limit|timed? out|'
+      r'connection (?:reset|refused|aborted)|temporar(?:ily|y)|network (?:error|unreachable))',
+      caseSensitive: false).hasMatch(message);
+
+  static List<String> searchQueries(TrackMeta meta) {
+    final base = '${meta.artist} ${meta.title}'.trim();
+    return ['$base official audio', base, '$base audio', '$base topic', '$base lyrics'];
+  }
+
+  Future<List<Candidate>> search(String query, [int n = searchResults]) =>
+      _list('ytsearch$n:$query', n);
+
+  /// The #songs URL fragment isn't transmitted to the server; don't rely on it.
+  Future<List<Candidate>> searchSongs(String query, [int n = searchResults]) =>
+      _list('https://music.youtube.com/search?q=${Uri.encodeQueryComponent(query)}', n, song: true);
+
+  Future<List<Candidate>> _list(String target, int n, {bool song = false}) =>
+      _limitSearch(() => _searchWithRetries(target, n, song: song));
+
+  Future<List<Candidate>> _searchWithRetries(String target, int n, {required bool song}) async {
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        final out = await Tools.run(tools.ytdlp.path, [
+          ...tools.jsArgs,
+          '--socket-timeout', '20',
+          '--extractor-retries', '3',
+          '--retry-sleep', 'extractor:exp=1:6',
+          '--sleep-requests', '0.35',
+          '-J', '--flat-playlist', '--no-warnings',
+          '--playlist-end', '$n', target,
+        ]);
+        final payload = out.firstWhere((line) => line.startsWith('{'), orElse: () => '');
+        if (payload.isNotEmpty) {
+          final data = jsonDecode(payload);
+          if (data is! Map) return [];
+          return [
+            for (final e in (data['entries'] as List? ?? const []))
+              if (e is Map && e['id'] != null && '${e['id']}'.length == 11)
+                Candidate(
+                  '${e['id']}',
+                  '${e['title'] ?? ''}',
+                  '${e['channel'] ?? e['uploader'] ?? e['artist'] ?? ''}',
+                  (e['duration'] as num?)?.toDouble(),
+                  song: song && (e['track'] != null || e['album'] != null ||
+                      e['artist'] != null ||
+                      '${e['channel'] ?? ''}'.toLowerCase().endsWith(' - topic')),
+                ),
+          ];
+        }
+        final detail = out.where((line) =>
+            line.contains('ERROR') || line.contains('WARNING')).take(3).join(' ');
+        if (attempt < 2 && retryable(detail)) {
+          log('YouTube: временная ошибка поиска, попытка ${attempt + 2}/3.');
+          await Future<void>.delayed(Duration(seconds: 2 << attempt));
+          continue;
+        }
+        if (detail.isNotEmpty) log('YouTube: ${detail.length > 280 ? detail.substring(0, 280) : detail}');
+        return [];
+      } catch (e) {
+        if (attempt < 2 && retryable('$e')) {
+          await Future<void>.delayed(Duration(seconds: 2 << attempt));
+          continue;
+        }
+        log(song ? 'YouTube Music: поиск недоступен ($e).' : 'YouTube: поиск недоступен ($e).');
+        return [];
+      }
+    }
+    return [];
   }
 
   static double score(Candidate c, TrackMeta meta) {
@@ -138,23 +209,34 @@ class YouTube {
   }
 
   Future<List<Candidate>> ranked(TrackMeta meta) async {
-    final query = '${meta.artist} ${meta.title}'.trim();
-    // Сначала песни из YouTube Music, потом обычный поиск — в нём бывают клипы и концерты
-    final both = await Future.wait([searchSongs(query), search(query)]);
-    final seen0 = <String>{};
-    var cands = [for (final c in [...both[0], ...both[1]]) if (seen0.add(c.id)) c];
-    if (cands.isEmpty) cands = await search('$query audio');
-    int byScore(Candidate a, Candidate b) => score(b, meta).compareTo(score(a, meta));
-    cands.sort(byScore);
-    // Нет уверенного варианта — добавляем поиск по официальным «Topic»-каналам
-    if (cands.isEmpty || score(cands.first, meta) < 40) {
-      final seen = {for (final c in cands) c.id};
-      for (final c in await search('$query topic')) {
-        if (seen.add(c.id)) cands.add(c);
+    final queries = searchQueries(meta);
+    final first = await Future.wait([
+      searchSongs(queries[1]),
+      search(queries[0]),
+      search(queries[1]),
+    ]);
+    final seen = <String>{};
+    final candidates = <Candidate>[
+      for (final group in first)
+        for (final c in group)
+          if (seen.add(c.id)) c,
+    ];
+    void sort() => candidates.sort((a, b) => score(b, meta).compareTo(score(a, meta)));
+    sort();
+    if (candidates.isEmpty || score(candidates.first, meta) < 65) {
+      final extra = await Future.wait([
+        search(queries[2]),
+        search(queries[3]),
+        search(queries[4]),
+      ]);
+      for (final group in extra) {
+        for (final c in group) {
+          if (seen.add(c.id)) candidates.add(c);
+        }
       }
-      cands.sort(byScore);
+      sort();
     }
-    return cands;
+    return candidates;
   }
 
   /// Скачивает аудио в mp3. Возвращает скачанные файлы.
@@ -166,6 +248,13 @@ class YouTube {
       '--ffmpeg-location', tools.dir.path,
       playlist ? '--yes-playlist' : '--no-playlist',
       '--concurrent-fragments', '$fragments',
+      '--socket-timeout', '20',
+      '--retries', '5',
+      '--fragment-retries', '5',
+      '--extractor-retries', '3',
+      '--retry-sleep', 'http:exp=1:8',
+      '--retry-sleep', 'fragment:exp=1:8',
+      '--retry-sleep', 'extractor:exp=1:8',
       '--newline',
       '-x', '--audio-format', 'mp3', '--audio-quality', '0',
       '--embed-metadata',
