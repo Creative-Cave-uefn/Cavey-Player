@@ -237,6 +237,13 @@ class DownloadService extends ChangeNotifier {
 
   // ---------- Deezer and prioritized full-source search ----------
 
+  void _fullNotifyTrack(DownloadJob job, Track track) {
+    job.done++;
+    try { job.onTrack?.call(track); }
+    catch (e) { AppLog.warn('Загрузчик: обработчик после загрузки', e); }
+    _notify();
+  }
+
   Future<bool> _deezer(DownloadJob job, Directory temp, void Function(String) log) async {
     final result = await DeezerMusic.download(tools, job.input, Directory('${temp.path}/deezer'), log);
     job.total = result.total;
@@ -247,7 +254,7 @@ class DownloadService extends ChangeNotifier {
       try {
         final track = await lib.uploadOne(entry.file, sourceId: job.sourceId,
             folderId: job.target, path: job.path);
-        job.done++; job.onTrack?.call(track); _notify();
+        _fullNotifyTrack(job, track);
       } catch (_) { log('Deezer: не удалось добавить запись в библиотеку.'); }
     }
     job.failed = (job.total - job.done).clamp(0, job.total);
@@ -370,7 +377,7 @@ class DownloadService extends ChangeNotifier {
         if (result.tracks.isNotEmpty) {
           final t = await lib.uploadOne(result.tracks.first.file,
               sourceId: job.sourceId, folderId: folderId, path: path);
-          job.done++; job.onTrack?.call(t); _notify();
+          _fullNotifyTrack(job, t);
           return t;
         }
       } catch (_) { log('Deezer: не найдено. Пробую Soulseek.'); }
@@ -382,7 +389,7 @@ class DownloadService extends ChangeNotifier {
         if (files.isNotEmpty) {
           final t = await lib.uploadOne(files.first, sourceId: job.sourceId,
               folderId: folderId, path: path);
-          job.done++; job.onTrack?.call(t); _notify();
+          _fullNotifyTrack(job, t);
           return t;
         }
       } catch (_) { log('Soulseek: не найдено. Пробую YouTube.'); }
