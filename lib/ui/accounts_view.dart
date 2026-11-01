@@ -1,6 +1,4 @@
 import 'dart:io';
-import '../core/dl/sockseek.dart';
-import '../core/dl/deezer.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -960,7 +958,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
     final app = Services.of(context);
     setState(() { _installing = true; _installLog = 'Устанавливаю Sockseek…'; });
     try {
-      await Sockseek.install(app.downloads.tools, (line) {
+      await app.downloads.installProvider('sockseek', (line) {
         if (mounted) setState(() => _installLog = '$_installLog\n$line');
       });
       app.settings.downloadProvider = 'sockseek';
@@ -973,8 +971,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
   Future<void> _configureSockseek() async {
     final app = Services.of(context);
     try {
-      await Sockseek.prepareConfig(app.downloads.tools);
-      final path = Sockseek.config(app.downloads.tools).absolute.path;
+      final path = await app.downloads.providerConfig('sockseek');
       if (Platform.isWindows) {
         await Process.start('notepad.exe', [path], mode: ProcessStartMode.detached);
       } else {
@@ -989,7 +986,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
     final app = Services.of(context);
     setState(() { _installing = true; _installLog = 'Устанавливаю Deezer…'; });
     try {
-      await DeezerMusic.install(app.downloads.tools, (line) {
+      await app.downloads.installProvider('deezer', (line) {
         if (mounted) setState(() => _installLog += '\n$line');
       });
       app.settings.downloadProvider = 'deezer';
@@ -1002,8 +999,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
   Future<void> _configureDeezer() async {
     final app = Services.of(context);
     try {
-      await DeezerMusic.prepareConfig(app.downloads.tools);
-      final path = DeezerMusic.config(app.downloads.tools).absolute.path;
+      final path = await app.downloads.providerConfig('deezer');
       if (Platform.isWindows) {
         await Process.start('notepad.exe', [path], mode: ProcessStartMode.detached);
       } else {
