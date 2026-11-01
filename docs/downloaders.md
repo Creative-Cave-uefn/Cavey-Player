@@ -1,3 +1,20 @@
+
+> **Новая архитектура (ветка `feat/unified-links-youtube-reliability`):**
+> Cavey Player содержит только интерфейс, очередь, IPC и операции Google Drive. Deezer Downloader, Soulseek,
+> yt-dlp, Deno, Bandcamp и поиск аудио находятся в отдельном `Cavey-Downloader.exe`.
+> Публичное получение **обложек** из Deezer по-прежнему выполняется в Player через `lib/core/deezer_art.dart`.
+> Устаревшие инструкции ниже, описывающие загрузчики как часть исходников Player, относятся к прежней архитектуре.
+> Плеер проверяет IPC protocol **2** и не использует встроенный ARL при сборке Flutter.
+>
+> **Упаковка приватного модуля:** репозиторий `Creative-Cave-uefn/Cavey-Player` должен иметь
+> Actions Secret `DOWNLOADER_READ_TOKEN` с правом Contents: Read к приватному
+> `Creative-Cave-uefn/Cavey-Downloader`. CI компилирует самостоятельный EXE, кладёт рядом с Cavey.exe
+> и включает его в ZIP и Inno Setup. Без этого секрета полноценный установщик не может быть собран.
+> Для локальной разработки допускается `CAVE_DOWNLOADER_EXE=<полный путь к модулю>`.
+> Секреты Deezer и Soulseek передаются **только на этапе компиляции отдельного модуля**,
+> а не Flutter Player. Поскольку бинарные файлы можно анализировать, они не являются защищённым
+> хранилищем секретов.
+
 # Источники загрузки Cavey
 
 ## Режимы
