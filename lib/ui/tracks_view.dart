@@ -1261,15 +1261,10 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
     case 'album':
       NavScope.of(context).go(Nav('album', track.albumKey));
     case 'redownload':
-      final mine = track.by.isEmpty || track.by == app.lib.me;
-      if (!mine) {
-        app.lib.messages.add('Перекачивать можно только свои файлы.');
-        return;
-      }
       final ok = await confirm(context,
         title: 'Перекачать «${track.title}»?',
         text: 'Cavey найдёт новую версию трека через выбранный источник и заменит аудио в том же файле Google Диска. '
-            'ID, ссылки, лайки, плейлисты и ручные метаданные сохранятся. Старую аудиозапись после успешной замены вернуть не получится.',
+            'ID, ссылки, лайки, плейлисты и ручные метаданные сохранятся. Для замены нужны права записи в файл. Старую аудиозапись после успешной замены вернуть не получится.',
         action: 'Перекачать',
       );
       if (ok && context.mounted) {
