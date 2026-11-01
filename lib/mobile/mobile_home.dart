@@ -472,7 +472,7 @@ class MiniPlayer extends StatelessWidget {
           ValueListenableBuilder<Duration>(valueListenable: p.position,
             builder: (_, pos, __) => LinearProgressIndicator(
               value: p.duration.inMilliseconds <= 0 ? 0
-                : (pos.inMilliseconds / p.duration.inMilliseconds).clamp(0.0, 1.0),
+                : (pos.inMilliseconds / p.duration.inMilliseconds).clamp(0.0, 1.0).toDouble(),
               minHeight: 2)),
           Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             child: Row(children: [
@@ -520,7 +520,7 @@ class FullPlayer extends StatelessWidget {
           const Spacer(),
           LayoutBuilder(builder: (context, constraints) => Center(
             child: TrackCover(services: services, track: t,
-              size: constraints.maxWidth.clamp(0.0, 340.0)))),
+              size: constraints.maxWidth.clamp(0.0, 340.0).toDouble())))),
           const Spacer(),
           Row(children: [
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
@@ -540,7 +540,7 @@ class FullPlayer extends StatelessWidget {
             builder: (_, position, __) {
               final max = p.duration.inMilliseconds.toDouble();
               final value = max <= 0 ? 0.0
-                : position.inMilliseconds.toDouble().clamp(0.0, max);
+                : position.inMilliseconds.toDouble().clamp(0.0, max).toDouble();
               return Column(children: [
                 Slider(value: value, max: max <= 0 ? 1 : max,
                   onChanged: max <= 0 ? null : (v) =>
