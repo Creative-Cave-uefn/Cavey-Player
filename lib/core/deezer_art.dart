@@ -32,7 +32,7 @@ class DeezerArt {
 
   static Future<Map<String, dynamic>?> _get(String path, String query) async {
     final uri = Uri.https('api.deezer.com', path, {'q': query, 'limit': '20'});
-    final response = await _client.get(uri).timeout(const Duration(seconds: 6));
+    final response = await _client.get(uri).timeout(const Duration(seconds: 5));
     if (response.statusCode != 200 || response.bodyBytes.length > 500000) return null;
     final body = jsonDecode(utf8.decode(response.bodyBytes));
     if (body is! Map || body['error'] != null) return null;
@@ -61,28 +61,22 @@ class DeezerArt {
   }
 
   static Future<DeezerArtwork?> _search(String artist, String title, String album) async {
-    // Start both catalog requests together, but still prefer an exact album
-    // when it exists. A slow album lookup no longer serializes the track lookup.
-    final albumSearch = album.trim().isEmpty
-        ? Future<Map<String, dynamic>?>.value(null)
-        : _get('/search/album', '$artist $album').catchError((Object _) => null);
-    final trackSearch = title.trim().isEmpty
-        ? Future<Map<String, dynamic>?>.value(null)
-        : _get('/search', '$artist $title').catchError((Object _) => null);
-    final results = await Future.wait([albumSearch, trackSearch]);
-    String? url;
-    var matchedAlbum = album;
-    for (final item in (results[0]?['data'] as List? ?? const [])) {
-      if (item is! Map) continue;
-      final who = item['artist'];
-      if (who is! Map || !same('${who['name'] ?? ''}', artist) ||
-          !same('${item['title'] ?? ''}', album)) continue;
-      url = '${item['cover_xl'] ?? item['cover_big'] ?? ''}';
-      matchedAlbum = '${item['title'] ?? album}';
-      break;
+    // Race both metadata endpoints. An exact match from either can start the
+    // image download immediately; do not wait for a slow unrelated endpoint.
+    (String, String)? albumMatch(Map<String, dynamic>? data) {
+      for (final item in (data?['data'] as List? ?? const [])) {
+        if (item is! Map) continue;
+        final who = item['artist'];
+        if (who is! Map || !same('${who['name'] ?? ''}', artist) ||
+            !same('${item['title'] ?? ''}', album)) continue;
+        return ('${item['cover_xl'] ?? item['cover_big'] ?? ''}',
+            '${item['title'] ?? album}');
+      }
+      return null;
     }
-    if (url == null || url.isEmpty) {
-      for (final item in (results[1]?['data'] as List? ?? const [])) {
+
+    (String, String)? trackMatch(Map<String, dynamic>? data) {
+      for (final item in (data?['data'] as List? ?? const [])) {
         if (item is! Map) continue;
         final who = item['artist'];
         final release = item['album'];
@@ -90,17 +84,35 @@ class DeezerArt {
         if (!same('${who['name'] ?? ''}', artist) ||
             !same('${item['title_short'] ?? item['title'] ?? ''}', title)) continue;
         if (album.trim().isNotEmpty && !same('${release['title'] ?? ''}', album)) continue;
-        url = '${release['cover_xl'] ?? release['cover_big'] ?? ''}';
-        matchedAlbum = '${release['title'] ?? album}';
-        break;
+        return ('${release['cover_xl'] ?? release['cover_big'] ?? ''}',
+            '${release['title'] ?? album}');
       }
+      return null;
     }
-    if (url == null || url.isEmpty) return null;
+
+    final lookups = <Future<(String, String)?>>[
+      if (album.trim().isNotEmpty)
+        _get('/search/album', '$artist $album')
+            .then(albumMatch).catchError((Object _) => null),
+      if (title.trim().isNotEmpty)
+        _get('/search', '$artist $title')
+            .then(trackMatch).catchError((Object _) => null),
+    ];
+    if (lookups.isEmpty) return null;
+    final first = await Future.any(lookups);
+    // If the first request has no match, try all results without issuing any
+    // additional HTTP requests. Prefer a valid non-empty artwork URL.
+    final matches = first != null && first.$1.isNotEmpty
+        ? <(String, String)>[first]
+        : [for (final match in await Future.wait(lookups))
+            if (match != null && match.$1.isNotEmpty) match];
+    if (matches.isEmpty) return null;
+    final (url, matchedAlbum) = matches.first;
     final uri = Uri.tryParse(url);
     if (uri == null || uri.scheme != 'https' ||
         !(uri.host == 'dzcdn.net' || uri.host.endsWith('.dzcdn.net'))) return null;
     try {
-      final response = await _client.get(uri).timeout(const Duration(seconds: 9));
+      final response = await _client.get(uri).timeout(const Duration(seconds: 7));
       if (response.statusCode != 200 || response.bodyBytes.length > 8 * 1024 * 1024 ||
           response.bodyBytes.length < 1000) return null;
       final decoded = img.decodeImage(response.bodyBytes);
