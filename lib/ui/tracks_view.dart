@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
+import '../core/library.dart' show LibraryController;
 import '../core/models.dart';
 import 'albums_view.dart';
 import 'ambient.dart';
@@ -118,6 +119,7 @@ class LikedPage extends StatelessWidget {
           subtitle: tracks.isEmpty ? null : countTracks(tracks.length),
           heroColor: const Color(0xFFB3261E),
           heroLeft: true,
+          defaultSort: 'liked',
           tracks: tracks,
           compact: compact,
           actions: [
@@ -179,6 +181,7 @@ class AlbumPage extends StatelessWidget {
           onEditCover: () => editAlbumDialog(context, album),
           editCoverTooltip: 'Изменить альбом',
           footer: MissingAlbumTracks(album: album),
+          onReorder: (track, after) => app.lib.moveAlbumTrack(albumKey, track.id, after?.id),
           actions: [
             FavButton(
               on: app.lib.isFavAlbum(album),
@@ -190,9 +193,11 @@ class AlbumPage extends StatelessWidget {
               icon: const Icon(Icons.more_horiz_rounded),
               onSelected: (v) {
                 if (v == 'edit') editAlbumDialog(context, album);
+                if (v == 'order') app.lib.resetAlbumOrder(albumKey);
               },
               itemBuilder: (_) => [
                 const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
+                if (app.lib.hasAlbumOrder(albumKey)) const PopupMenuItem(value: 'order', child: Text('Вернуть порядок по номерам')),
               ],
             ),
           ],
@@ -363,7 +368,11 @@ class TracksPage extends StatefulWidget {
     this.editCoverTooltip = 'Изменить',
     this.searchInBanner = false,
     this.heroLeft = false,
+    this.defaultSort,
   });
+
+  /// Сортировка, с которой открывается страница, пока человек не выбрал свою (например, 'liked' — свежие любимые сверху)
+  final String? defaultSort;
 
   /// Поиск по трекам в одном ряду с кнопками «Слушать…», слева от них, а не справа от шапки
   final bool searchInBanner;
@@ -376,6 +385,9 @@ class TracksPage extends StatefulWidget {
 }
 
 class _TracksPageState extends State<TracksPage> {
+  static const _addedColW = 120.0;
+  static const _uploadColW = 110.0;
+
   final _search = TextEditingController();
   final _searchFocus = FocusNode();
   String _query = '';
@@ -420,6 +432,9 @@ class _TracksPageState extends State<TracksPage> {
 
   /// Перетаскивать можно, когда виден весь плейлист в своём порядке
   bool get _canReorder => widget.onReorder != null && _sort.isEmpty && _query.trim().isEmpty && !_selecting;
+
+  /// Порядок менять нельзя только из-за сортировки или поиска — об этом подсказка над списком
+  bool get _reorderBlocked => widget.onReorder != null && (_sort.isNotEmpty || _query.trim().isNotEmpty);
 
   static bool _typing() {
     final ctx = FocusManager.instance.primaryFocus?.context;
@@ -605,8 +620,41 @@ class _TracksPageState extends State<TracksPage> {
   }
   String _sort = ''; // пусто — порядок как есть
   bool _desc = false;
+  bool _sortLoaded = false;
 
-  List<Track> _visible(String Function(String) nameOf, Map<String, int>? addedAt) {
+  /// Ключ в настройках, под которым страница помнит свою сортировку: у каждого плейлиста и страницы свой
+  String get _sortKey => 'sort.${widget.playlistId != null ? 'pl:${widget.playlistId}' : widget.title}';
+
+  bool get _isDefaultSort => _sort == (widget.defaultSort ?? '') && _desc == (widget.defaultSort != null);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_sortLoaded) return;
+    _sortLoaded = true;
+    final saved = Services.of(context).settings.view[_sortKey];
+    if (saved != null) {
+      final i = saved.lastIndexOf('|');
+      _sort = i < 0 ? saved : saved.substring(0, i);
+      _desc = i >= 0 && saved.substring(i + 1) == '1';
+    } else {
+      _sort = widget.defaultSort ?? '';
+      _desc = widget.defaultSort != null;
+    }
+  }
+
+  /// Запоминает выбор: при следующем открытии этой страницы сортировка та же
+  void _rememberSort() {
+    final app = Services.of(context);
+    if (_isDefaultSort) {
+      app.settings.view.remove(_sortKey);
+    } else {
+      app.settings.view[_sortKey] = '$_sort|${_desc ? 1 : 0}';
+    }
+    app.lib.saveSettings();
+  }
+
+  List<Track> _visible(LibraryController lib, String Function(String) nameOf, Map<String, int>? addedAt) {
     final q = _query.trim().toLowerCase();
     var list = q.isEmpty
         ? widget.tracks
@@ -638,41 +686,59 @@ class _TracksPageState extends State<TracksPage> {
           final r = (addedAt?[a.id] ?? 0).compareTo(addedAt?[b.id] ?? 0);
           return r != 0 ? r : (pos[a.id] ?? 0).compareTo(pos[b.id] ?? 0);
         },
+      'liked' => (Track a, Track b) => lib.likedAtOf(a).compareTo(lib.likedAtOf(b)),
       _ => (Track a, Track b) => when(a).compareTo(when(b)),
     };
-    list = List.of(list)..sort(cmp);
+    // Равные по ключу не должны менять места от перерисовки к перерисовке: добавляем название и id
+    int stable(Track a, Track b) {
+      final r = cmp(a, b);
+      if (r != 0) return r;
+      final t = byText(a.title, b.title);
+      return t != 0 ? t : a.id.compareTo(b.id);
+    }
+
+    list = List.of(list)..sort(stable);
     return _desc ? list.reversed.toList() : list;
   }
 
-  void _setSort(String key) => setState(() {
-        if (_sort == key) {
-          if (_desc == (key == 'added' || key == 'padded')) {
-            _desc = !_desc;
-          } else {
-            _sort = ''; // третий клик — вернуть исходный порядок
-            _desc = false;
-          }
+  void _setSort(String key) {
+    setState(() {
+      if (_sort == key) {
+        if (_desc == (key == 'added' || key == 'padded')) {
+          _desc = !_desc;
         } else {
-          _sort = key;
-          _desc = key == 'added' || key == 'padded'; // новые сверху
+          _resetSort(); // третий клик — вернуть исходный порядок
         }
-      });
+      } else {
+        _sort = key;
+        _desc = key == 'added' || key == 'padded'; // новые сверху
+      }
+    });
+    _rememberSort();
+  }
+
+  void _resetSort() {
+    _sort = widget.defaultSort ?? '';
+    _desc = widget.defaultSort != null;
+  }
 
   /// «Название / Исполнитель»: 1–2 клика — по названию (↑, ↓), 3–4 — по исполнителю (↑, ↓), 5-й сбрасывает
-  void _setTitleArtist() => setState(() {
-        if (_sort != 'title' && _sort != 'artist') {
-          _sort = 'title';
-          _desc = false;
-        } else if (!_desc) {
-          _desc = true;
-        } else if (_sort == 'title') {
-          _sort = 'artist';
-          _desc = false;
-        } else {
-          _sort = '';
-          _desc = false;
-        }
-      });
+  void _setTitleArtist() {
+    setState(() {
+      if (_sort != 'title' && _sort != 'artist') {
+        _sort = 'title';
+        _desc = false;
+      } else if (!_desc) {
+        _desc = true;
+      } else if (_sort == 'title') {
+        _sort = 'artist';
+        _desc = false;
+      } else {
+        _resetSort();
+      }
+    });
+    _rememberSort();
+  }
 
   Widget _titleArtistLabel() {
     Widget part(String text, bool active) => Text(text,
@@ -732,10 +798,10 @@ class _TracksPageState extends State<TracksPage> {
           Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: label('by', 'Загрузил(а)'))),
         ],
         if (widget.playlistId != null && !compact)
-          SizedBox(width: 120, child: Align(alignment: Alignment.centerLeft, child: label('padded', 'Дата добавления'))),
-        SizedBox(
-            width: 88,
-            child: widget.playlistId != null ? null : Align(alignment: Alignment.centerRight, child: label('added', 'Новые'))),
+          SizedBox(width: _addedColW, child: Align(alignment: Alignment.centerLeft, child: label('padded', 'Дата добавления'))),
+        if (!compact) SizedBox(width: _uploadColW, child: Align(alignment: Alignment.centerLeft, child: label('added', 'Дата загрузки'))),
+        // Ровно столько же занимают сердечко с аватарками и «…» в строке: столбцы шапки и строк совпадают
+        const SizedBox(width: kRowActionsW),
         SizedBox(width: 60, child: Align(alignment: Alignment.centerRight, child: label('dur', 'Длительность', icon: Icons.schedule_rounded))),
       ]),
     );
@@ -746,7 +812,7 @@ class _TracksPageState extends State<TracksPage> {
     final app = Services.of(context);
     final pl = widget.playlistId == null ? null : app.lib.playlist(widget.playlistId!);
     final addedAt = pl == null ? null : {for (final t in widget.tracks) t.id: app.lib.playlistAddedAt(pl, t.id)};
-    final visible = _visible(app.lib.firstNameOf, addedAt);
+    final visible = _visible(app.lib, app.lib.firstNameOf, addedAt);
     _visibleNow = visible;
     final pad = widget.compact ? 20.0 : 36.0;
     if (_selecting) {
@@ -824,21 +890,20 @@ class _TracksPageState extends State<TracksPage> {
             SizedBox(
               width: double.infinity,
               child: Padding(
-              padding: EdgeInsets.fromLTRB(pad, widget.compact ? 72 : (left ? 64 : 96), pad, left ? 24 : 36),
-              child: Column(crossAxisAlignment: left ? CrossAxisAlignment.start : CrossAxisAlignment.center, children: [
+              padding: EdgeInsets.fromLTRB(pad, widget.compact ? 72 : (left ? 72 : 96), pad, left ? 28 : 36),
+              // Заголовок и число треков всегда по центру; кнопки и поиск у «Любимого» остаются слева
+              child: Column(crossAxisAlignment: left ? CrossAxisAlignment.stretch : CrossAxisAlignment.center, children: [
                 SelectionArea(
-                  child: Text(widget.title,
-                      textAlign: left ? TextAlign.start : TextAlign.center, style: display(widget.compact ? 30 : (left ? 36 : 44), weight: FontWeight.w700)),
+                  child: Text(widget.title, textAlign: TextAlign.center, style: display(widget.compact ? 34 : 44, weight: FontWeight.w700)),
                 ),
                 if (widget.subtitle != null) ...[
-                  const SizedBox(height: 10),
+                  SizedBox(height: left ? 14 : 10),
                   SelectionArea(
-                    child: Text(widget.subtitle!,
-                        textAlign: left ? TextAlign.start : TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                    child: Text(widget.subtitle!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70, fontSize: 16)),
                   ),
                 ],
                 if (widget.tracks.isNotEmpty) ...[
-                  SizedBox(height: left ? 22 : 24),
+                  SizedBox(height: left ? 32 : 24),
                   buttons(left ? WrapAlignment.start : WrapAlignment.center,
                       leading: widget.tracks.length > 8 ? searchBox('Найти трек или исполнителя', width: 340) : null),
                 ] else if (widget.actions.isNotEmpty) ...[
@@ -951,6 +1016,7 @@ class _TracksPageState extends State<TracksPage> {
               selected: _sel.contains(visible[i].id),
               onSelect: (shift) => _onSelect(visible, i, shift),
               addedAt: addedAt?[visible[i].id],
+              dragIndex: _canReorder ? i : null,
             );
         final list = CustomScrollView(
             // Вернулись назад — список на том же месте
@@ -963,6 +1029,21 @@ class _TracksPageState extends State<TracksPage> {
               child: Padding(
                 padding: EdgeInsets.symmetric(horizontal: pad, vertical: 24),
                 child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
+              ),
+            ),
+          if (visible.isNotEmpty && _reorderBlocked)
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(pad, 0, pad, 6),
+              sliver: SliverToBoxAdapter(
+                child: Row(children: [
+                  Icon(Icons.drag_indicator_rounded, size: 14, color: C.faint),
+                  const SizedBox(width: 6),
+                  Text(
+                      _query.trim().isNotEmpty && _sort.isEmpty
+                          ? 'Очистите поиск, чтобы менять порядок треков перетаскиванием'
+                          : 'Сбросьте сортировку и поиск, чтобы менять порядок треков перетаскиванием',
+                      style: TextStyle(color: C.faint, fontSize: 12)),
+                ]),
               ),
             ),
           if (visible.isNotEmpty)
@@ -1042,7 +1123,11 @@ class TrackRow extends StatelessWidget {
     this.selected = false,
     this.onSelect,
     this.addedAt,
+    this.dragIndex,
   });
+
+  /// Номер в списке, который можно перетаскивать: у строки появляется ручка (при наведении вместо номера)
+  final int? dragIndex;
 
   @override
   Widget build(BuildContext context) {
@@ -1080,8 +1165,12 @@ class TrackRow extends StatelessWidget {
             selected: selected,
             child: current
                 ? Icon(playing ? Icons.graphic_eq_rounded : Icons.pause_rounded, size: 18, color: C.accent)
-                : Text('${index + 1}', // номер по порядку в этом списке, а не номер из тегов трека
-                    style: const TextStyle(color: C.faint, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()])),
+                : _NumberOrHandle(
+                    // номер по порядку в этом списке, а не номер из тегов трека
+                    number: Text('${index + 1}',
+                        style: const TextStyle(color: C.faint, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()])),
+                    dragIndex: dragIndex,
+                  ),
           ),
           const SizedBox(width: 8),
           CoverImage(track: track, size: 40, radius: 5),
@@ -1130,9 +1219,21 @@ class TrackRow extends StatelessWidget {
               child: Text(formatAddedDate(addedAt!), maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: C.muted, fontSize: 13)),
             ),
-          LikeButton(track: track),
-          TrackMenu(
-              track: track, playlistId: playlistId, onSelect: onSelect == null ? null : () => onSelect!(false), selected: selected),
+          if (!compact)
+            SizedBox(
+              width: 110,
+              child: Text(formatUploadDate(track.added.isNotEmpty ? track.added : track.modified),
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+            ),
+          // Сердечко с аватарками друзей и «…» занимают всегда одну и ту же ширину [kRowActionsW]
+          LikeButton(track: track, slot: true),
+          SizedBox(
+            width: 40,
+            child: Center(
+              child: TrackMenu(
+                  track: track, playlistId: playlistId, onSelect: onSelect == null ? null : () => onSelect!(false), selected: selected),
+            ),
+          ),
           // Длительность — в самом правом столбце, правее кнопки «…»
           SizedBox(
             width: 60,
@@ -1151,50 +1252,111 @@ class TrackRow extends StatelessWidget {
   }
 }
 
-/// Сердечко + цветные точки друзей, которым трек тоже нравится
+/// Ширина блока справа в строке трека: аватарки друзей, сердечко и «…». Шапка списка резервирует столько же
+const kRowActionsW = 52.0 + 40 + 40;
+
+/// Сердечко + маленькие аватарки друзей, которым трек тоже нравится (до трёх внахлёст, дальше «+N»)
 class LikeButton extends StatelessWidget {
   final Track track;
   final double size;
-  const LikeButton({super.key, required this.track, this.size = 18});
+
+  /// В строках списков: под аватарки всегда отведено одно и то же место, чтобы столбцы не плавали
+  final bool slot;
+  const LikeButton({super.key, required this.track, this.size = 18, this.slot = false});
 
   @override
   Widget build(BuildContext context) {
     final lib = Services.of(context).lib;
     final liked = lib.isLiked(track.id);
     final others = (lib.data.likes[track.id] ?? const <String>{}).where((e) => e != lib.me).toList();
-    return Row(mainAxisSize: MainAxisSize.min, children: [
-      if (others.isNotEmpty)
-        Tooltip(
-          message: 'Нравится: ${others.map(lib.firstNameOf).join(', ')}',
-          child: SizedBox(
-            width: (8 + ((others.length > 3 ? 3 : others.length) - 1) * 6).toDouble(),
-            height: 10,
-            child: Stack(children: [
-              for (var i = 0; i < others.length && i < 3; i++)
-                Positioned(
-                  left: i * 6.0,
-                  top: 1,
-                  child: Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: friendColor(others[i]),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: C.bg, width: 1),
+    const face = 18.0;
+    const step = 10.0;
+    final shown = others.length > 3 ? 3 : others.length;
+    final extra = others.length - shown;
+    final friends = others.isEmpty
+        ? null
+        : Tooltip(
+            message: 'Нравится: ${others.map(lib.firstNameOf).join(', ')}',
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              SizedBox(
+                width: face + (shown - 1) * step,
+                height: face,
+                child: Stack(children: [
+                  for (var i = 0; i < shown; i++)
+                    Positioned(
+                      left: i * step,
+                      top: 0,
+                      child: Container(
+                        padding: const EdgeInsets.all(1),
+                        decoration: BoxDecoration(color: C.bg, shape: BoxShape.circle),
+                        child: Avatar(email: others[i], name: lib.nameOf(others[i]), size: face - 2),
+                      ),
                     ),
-                  ),
+                ]),
+              ),
+              if (extra > 0)
+                Padding(
+                  padding: const EdgeInsets.only(left: 3),
+                  child: Text('+$extra', style: TextStyle(color: C.muted, fontSize: 11, fontWeight: FontWeight.w600)),
                 ),
             ]),
-          ),
-        ),
-      IconButton(
-        tooltip: liked ? 'Убрать из любимого' : 'В любимое',
-        iconSize: size,
-        visualDensity: VisualDensity.compact,
-        onPressed: () => lib.toggleLike(track.id),
-        icon: Icon(liked ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: liked ? C.accent : C.faint),
-      ),
+          );
+    final heart = IconButton(
+      tooltip: liked ? 'Убрать из любимого' : 'В любимое',
+      iconSize: size,
+      visualDensity: VisualDensity.compact,
+      onPressed: () => lib.toggleLike(track.id),
+      icon: Icon(liked ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: liked ? C.accent : C.faint),
+    );
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      if (slot)
+        SizedBox(width: kRowActionsW - 80, child: Align(alignment: Alignment.centerRight, child: friends))
+      else if (friends != null)
+        friends,
+      slot ? SizedBox(width: 40, child: heart) : heart,
     ]);
+  }
+}
+
+/// Номер строки; когда список можно перетаскивать, при наведении вместо него — ручка
+class _NumberOrHandle extends StatefulWidget {
+  final Widget number;
+  final int? dragIndex;
+  const _NumberOrHandle({required this.number, required this.dragIndex});
+
+  @override
+  State<_NumberOrHandle> createState() => _NumberOrHandleState();
+}
+
+class _NumberOrHandleState extends State<_NumberOrHandle> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final i = widget.dragIndex;
+    if (i == null) return widget.number;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: SizedBox(
+        width: 24,
+        height: 40,
+        child: Center(
+          child: _hover
+              ? ReorderableDragStartListener(
+                  index: i,
+                  child: Tooltip(
+                    message: 'Перетащите, чтобы изменить порядок',
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.grab,
+                      child: Icon(Icons.drag_indicator_rounded, size: 20, color: C.muted),
+                    ),
+                  ),
+                )
+              : widget.number,
+        ),
+      ),
+    );
   }
 }
 
@@ -1479,6 +1641,14 @@ List<LinkPart> trackLinks(BuildContext context, Track t, {bool album = false}) {
     parts.add(LinkPart(t.displayAlbum, () => nav.go(Nav('album', t.albumKey))));
   }
   return parts;
+}
+
+/// Дата появления файла на Диске: «12 окт. 2026» (в этом году без года). Пусто, если даты нет
+String formatUploadDate(String iso) {
+  final d = DateTime.tryParse(iso)?.toLocal();
+  if (d == null) return '';
+  const months = ['янв.', 'февр.', 'марта', 'апр.', 'мая', 'июня', 'июля', 'авг.', 'сент.', 'окт.', 'нояб.', 'дек.'];
+  return '${d.day} ${months[d.month - 1]}${d.year == DateTime.now().year ? '' : ' ${d.year}'}';
 }
 
 /// «сегодня», «вчера», «3 дн. назад», дальше дата

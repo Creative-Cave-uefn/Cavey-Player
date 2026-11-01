@@ -299,7 +299,7 @@ class FriendTag extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              FriendDot(email),
+              Avatar(email: email, name: lib.nameOf(email), size: 20),
               const SizedBox(width: 8),
               Flexible(
                 child: Text(lib.firstNameOf(email),
