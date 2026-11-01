@@ -154,7 +154,7 @@ class AppServices {
       social.onUserAction();
       showInDiscord();
     };
-    final downloads = DownloadService(lib, Tools(store.sub('tools')), store.sub('downloads'), cache: cache);
+    final downloads = DownloadService(lib, Tools(store.sub('tools')), store.sub('downloads'), cache: cache, covers: covers);
     // First launch: create local source configs from build defaults. Never overwrite
     // an explicit credential already entered by this user.
     try {
