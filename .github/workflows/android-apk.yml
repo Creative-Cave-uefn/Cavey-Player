@@ -2,6 +2,9 @@ name: Android MVP APK
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - feature/android-mvp
