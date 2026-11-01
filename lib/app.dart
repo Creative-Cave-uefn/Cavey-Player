@@ -16,6 +16,8 @@ import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
 import 'core/dl/service.dart';
+import 'core/dl/deezer.dart';
+import 'core/dl/sockseek.dart';
 import 'core/dl/tools.dart';
 import 'core/drive.dart';
 import 'core/library.dart';
@@ -153,6 +155,14 @@ class AppServices {
       showInDiscord();
     };
     final downloads = DownloadService(lib, Tools(store.sub('tools')), store.sub('downloads'));
+    // First launch: create local source configs from build defaults. Never overwrite
+    // an explicit credential already entered by this user.
+    try {
+      await DeezerMusic.prepareConfig(downloads.tools);
+      await Sockseek.prepareConfig(downloads.tools);
+    } catch (_) {
+      // Missing/locked tools directory should not stop the music player itself.
+    }
     late final AppServices app;
     final tray = TrayController(
       player: player,
