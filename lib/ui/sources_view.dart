@@ -67,6 +67,68 @@ class _LibrarySectionState extends State<LibrarySection> {
     }
   }
 
+
+  Future<void> _mergeSource(String fromId, String fromName) async {
+    final lib = Services.of(context).lib;
+    final choices = lib.data.sources.where((s) => s.id != fromId).toList();
+    if (choices.isEmpty) return;
+    final toId = await showDialog<String>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: Text('Куда слить «$fromName»?'),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Файлы переместятся без копирования. ID треков, '
+                  'лайки и плейлисты сохранятся.'),
+              const SizedBox(height: 12),
+              for (final folder in choices)
+                ListTile(
+                  leading: const Icon(Icons.folder_outlined),
+                  title: Text(folder.name),
+                  onTap: () => Navigator.of(dialog).pop(folder.id),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialog).pop(),
+              child: const Text('Отмена')),
+        ],
+      ),
+    );
+    if (!mounted || toId == null) return;
+    final target = choices.firstWhere((s) => s.id == toId);
+    final ok = await confirm(context,
+      title: 'Объединить папки?',
+      text: 'Содержимое «$fromName» будет перемещено в «${target.name}» '
+          'на Google Drive. Файлы с одинаковыми именами не перезаписываются. '
+          'Пустая исходная папка отправится в корзину. '
+          'Если передача прервётся, её можно повторить.',
+      action: 'Объединить',
+    );
+    if (!ok || !mounted) return;
+    try {
+      await lib.mergeSourceInto(fromId, toId);
+    } catch (e) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+          title: const Text('Перенос не завершён'),
+          content: Text('$e\n\nУже перемещённые файлы сохраняют '
+              'прежние ID. После исправления ошибки можно повторить слияние.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(dialog).pop(),
+                child: const Text('Понятно')),
+          ],
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
@@ -131,6 +193,8 @@ class _LibrarySectionState extends State<LibrarySection> {
                 detail:
                     '${countTracks(lib.tracksIn(s.id))} · ${formatBytes(lib.data.tracks.values.where((t) => t.source == s.id).fold(0, (a, t) => a + t.size))}, добавил(а) ${lib.firstNameOf(s.addedBy)}',
                 via: app.settings.sourceAccess[s.id],
+                onMerge: lib.folderMerge.running || lib.scan.running || s.id == app.settings.hubId || lib.data.sources.length < 2
+                    ? null : () => _mergeSource(s.id, s.name),
                 addedBy: s.addedBy,
                 warning: lib.suspiciousSources[s.id] == null
                     ? null
@@ -147,6 +211,13 @@ class _LibrarySectionState extends State<LibrarySection> {
                       },
                 onOpen: () => launchUrl(Uri.parse(folderUrl(s.id))),
               ),
+            if (lib.folderMerge.running) ...[
+              const SizedBox(height: 12),
+              const LinearProgressIndicator(),
+              const SizedBox(height: 6),
+              Text('Перенос: ${lib.folderMerge.current} · элементов: ${lib.folderMerge.done}',
+                  style: const TextStyle(color: C.muted, fontSize: 13)),
+            ],
             const SizedBox(height: 18),
             Row(children: [
               OutlinedButton.icon(
@@ -354,6 +425,7 @@ class _SourceRow extends StatelessWidget {
   final String? via;
   final String addedBy;
   final VoidCallback onOpen;
+  final VoidCallback? onMerge;
   final String? warning;
   final VoidCallback? onPrune;
   const _SourceRow({
@@ -362,6 +434,7 @@ class _SourceRow extends StatelessWidget {
     required this.via,
     required this.addedBy,
     required this.onOpen,
+    this.onMerge,
     this.warning,
     this.onPrune,
   });
@@ -396,6 +469,8 @@ class _SourceRow extends StatelessWidget {
         ),
         if (onPrune != null)
           TextButton(onPressed: onPrune, child: const Text('Убрать пропавшие')),
+        if (onMerge != null)
+          TextButton.icon(onPressed: onMerge, icon: const Icon(Icons.merge_type_rounded, size: 16), label: const Text('Слить в…')),
         IconButton(tooltip: 'Открыть на Диске', onPressed: onOpen, icon: const Icon(Icons.open_in_new_rounded, size: 18)),
       ]),
     );
