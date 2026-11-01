@@ -6,9 +6,10 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/models.dart';
 import '../core/wave.dart';
-import 'cinema_view.dart' show NowPanel;
+import 'cinema_view.dart' show NowControls;
 import 'shell.dart';
 import 'theme.dart';
+import 'tracks_view.dart' show showTrackMenu;
 import 'web_views.dart';
 import 'widgets.dart';
 import 'ambient.dart';
@@ -48,9 +49,10 @@ class WavePage extends StatelessWidget {
                   child: active ? _NowFlow(compact: compact, height: box.maxHeight - 68) : _Idle(compact: compact),
                 ),
                 Positioned(
-                  left: compact ? 20 : 104,
-                  top: 18,
-                  child: Text('Моя волна', style: display(compact ? 20 : 22, color: C.muted)),
+                  left: 0,
+                  right: 0,
+                  top: 12,
+                  child: IgnorePointer(child: Center(child: Text('Моя волна', style: display(compact ? 24 : 30, color: C.muted)))),
                 ),
                 Positioned(
                   right: 18,
@@ -131,9 +133,10 @@ class _SettingsButton extends StatelessWidget {
   }
 }
 
-/// Карусель обложек прежних размеров (центр до 300): у играющего трека плеер как в кинотеатре
-/// (обложка, название, перемотка, управление, громкость), по бокам — соседние треки очереди без наложений.
-/// Панели плеера внизу на странице нет: всё управление в центральной карточке
+/// Карусель карточек вокруг играющего трека. Все карточки, и центральная тоже, — одинаковые «подложки» с обложкой,
+/// названием и исполнителем; при смене трека каждая плавно переезжает на своё новое место (новый трек
+/// выезжает в центр, а не появляется в нём сразу). Под центральной подложкой — подпись «почему этот трек»
+/// и управление: перемотка, «не нравится» / «нравится», громкость. Сердечко — по центру обложки при наведении
 class _NowFlow extends StatelessWidget {
   final bool compact;
   final double height;
@@ -148,11 +151,12 @@ class _NowFlow extends StatelessWidget {
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
       const gap = 22.0, pad = 24.0; // зазор между карточками и рамка соседней карточки
-      const panelExtra = 262.0; // всё, что под обложкой в центральной карточке
-      final byHeight = height - panelExtra;
-      // Прежние размеры карусели: центральная карточка до 300 (в узком окне до 230), дальше только по месту
-      final maxBig = compact ? 230.0 : 300.0;
-      final big = math.max(140.0, math.min(maxBig, math.min(byHeight, w - 2 * pad)));
+      const textShare = 0.27; // высота блока с названием в долях от обложки
+      const controls = 214.0; // подпись и управление под центральной подложкой
+      final byHeight = (height - controls - 24) / (1 + textShare);
+      // Центральная карточка до 340 (в узком окне до 260), дальше только по месту
+      final maxBig = compact ? 260.0 : 340.0;
+      final big = math.max(150.0, math.min(maxBig, math.min(byHeight, w - 2 * pad)));
       final s1 = big * 0.74, s2 = big * 0.56;
       final dx1 = big / 2 + gap + (s1 + pad) / 2;
       final dx2 = dx1 + (s1 + pad) / 2 + gap + (s2 + pad) / 2;
@@ -162,35 +166,43 @@ class _NowFlow extends StatelessWidget {
       final slots = <int, ({double size, double dx, double angle, double opacity})>{
         -2: (size: s2, dx: -dx2, angle: -0.42, opacity: 0.55),
         -1: (size: s1, dx: -dx1, angle: -0.32, opacity: 0.85),
+        0: (size: big, dx: 0, angle: 0, opacity: 1),
         1: (size: s1, dx: dx1, angle: 0.32, opacity: 0.85),
         2: (size: s2, dx: dx2, angle: 0.42, opacity: 0.55),
       };
+      final bigH = big + 24 + big * textShare;
       final cards = <Widget>[];
       final seen = <String, int>{};
-      for (final o in const [-2, 2, -1, 1]) {
+      // Центральная — последней, чтобы лежала поверх соседних
+      for (final o in const [-2, 2, -1, 1, 0]) {
         final i = p.index + o;
         if (i < 0 || i >= p.queue.length) continue;
         final track = app.lib.data.tracks[p.queue[i]];
         if (track == null) continue;
-        if (!showNear || (!showFar && o.abs() == 2)) continue;
+        if (o != 0 && (!showNear || (!showFar && o.abs() == 2))) continue;
         final slot = slots[o]!;
         final n = seen[track.id] = (seen[track.id] ?? 0) + 1;
-        final h = slot.size + 24 + slot.size * 0.24;
+        final h = slot.size + 24 + slot.size * textShare;
+        final duration = const Duration(milliseconds: 520);
         cards.add(AnimatedPositioned(
+          // Ключ по треку: пока трек меняет место в карусели, это одна и та же карточка, и она едет, а не появляется заново
           key: ValueKey('${track.id}#$n'),
-          duration: const Duration(milliseconds: 450),
-          curve: Curves.easeOutCubic,
+          duration: duration,
+          curve: Curves.easeInOutCubic,
           left: cx + slot.dx - slot.size / 2 - 12,
-          top: (big - h) / 2 + h * 0.12,
+          top: (big - slot.size) / 2,
           width: slot.size + 24,
           height: h,
-          child: AnimatedOpacity(
-            duration: const Duration(milliseconds: 450),
-            opacity: slot.opacity,
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0.0, end: slot.opacity),
+            duration: duration,
+            curve: Curves.easeOutCubic,
+            // Новая карточка не вспыхивает на месте, а проявляется (старт с нуля)
+            builder: (context, op, child) => Opacity(opacity: op.clamp(0.0, 1.0), child: child),
             child: TweenAnimationBuilder<double>(
               tween: Tween(end: slot.angle),
-              duration: const Duration(milliseconds: 450),
-              curve: Curves.easeOutCubic,
+              duration: duration,
+              curve: Curves.easeInOutCubic,
               builder: (context, a, child) => Transform(
                 alignment: Alignment.center,
                 transform: Matrix4.identity()
@@ -198,65 +210,115 @@ class _NowFlow extends StatelessWidget {
                   ..rotateY(a),
                 child: child,
               ),
-              child: _FlowCard(track: track, current: false, onTap: () => p.jumpTo(i)),
+              child: _FlowCard(track: track, current: o == 0, onTap: o == 0 ? null : () => p.jumpTo(i)),
             ),
           ),
         ));
       }
-      cards.add(Positioned(
-        left: cx - big / 2,
-        top: 0,
-        width: big,
-        child: NowPanel(
-          key: ValueKey(t.id),
-          width: big,
-          caption: wave.reasonFor(t.id),
-          leftAction: _RoundGlass(
-            tooltip: 'Не нравится — больше не попадётся',
-            icon: Icons.thumb_down_alt_outlined,
-            onPressed: wave.dislike,
-          ),
-          rightAction: _RoundGlass(
-            tooltip: wave.isUpvoted(t.id) ? 'Нравится в волне — нажмите, чтобы отменить' : 'Нравится: больше похожего, без сохранения в любимое',
-            icon: wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
-            color: wave.isUpvoted(t.id) ? C.accent : C.text,
-            onPressed: wave.upvote,
+      final caption = wave.reasonFor(t.id);
+      return Column(children: [
+        SizedBox(height: bigH, child: Stack(clipBehavior: Clip.none, children: cards)),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 20,
+          child: Center(
+            child: Text(caption,
+                maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: const TextStyle(color: C.faint, fontSize: 13)),
           ),
         ),
-      ));
-      return Column(children: [
-        SizedBox(height: big + panelExtra, child: Stack(clipBehavior: Clip.none, children: cards)),
-        if (wave.discoverStatus.isNotEmpty)
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 1.6)),
-            const SizedBox(width: 10),
-            Flexible(child: Text(wave.discoverStatus, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 13))),
-          ]),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: big,
+          child: NowControls(
+            leftAction: _RoundGlass(
+              tooltip: 'Не нравится — больше не попадётся',
+              icon: Icons.thumb_down_alt_outlined,
+              onPressed: wave.dislike,
+            ),
+            rightAction: _RoundGlass(
+              tooltip: wave.isUpvoted(t.id) ? 'Нравится в волне — нажмите, чтобы отменить' : 'Нравится: больше похожего, без сохранения в любимое',
+              icon: wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
+              color: wave.isUpvoted(t.id) ? C.accent : C.text,
+              onPressed: wave.upvote,
+            ),
+          ),
+        ),
       ]);
     });
   }
 }
 
-class _FlowCard extends StatelessWidget {
+class _FlowCard extends StatefulWidget {
   final Track track;
   final bool current;
   final VoidCallback? onTap;
   const _FlowCard({required this.track, required this.current, this.onTap});
 
   @override
+  State<_FlowCard> createState() => _FlowCardState();
+}
+
+class _FlowCardState extends State<_FlowCard> {
+  bool _hover = false;
+
+  @override
   Widget build(BuildContext context) {
+    final track = widget.track;
+    final current = widget.current;
+    final app = Services.of(context);
     final card = Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: const Color(0x38000000),
         borderRadius: BorderRadius.circular(26),
-        border: Border.all(color: const Color(0x40FFFFFF)),
+        border: Border.all(color: current ? const Color(0x66FFFFFF) : const Color(0x40FFFFFF)),
       ),
       child: LayoutBuilder(builder: (context, box) {
         final s = box.maxWidth;
         return Column(children: [
           // Обложка одного размера, а масштаб — через FittedBox: при анимации картинка не перечитывается
-          SizedBox.square(dimension: s, child: FittedBox(child: CoverImage(track: track, size: 300, radius: 20))),
+          SizedBox.square(
+            dimension: s,
+            child: Stack(children: [
+              Positioned.fill(child: FittedBox(child: CoverImage(track: track, size: 300, radius: 20))),
+              // Сердечко по центру обложки играющего трека, при наведении
+              if (current)
+                Positioned.fill(
+                  child: Center(
+                    child: ListenableBuilder(
+                      listenable: app.lib,
+                      builder: (context, _) {
+                        final liked = app.lib.isLiked(track.id);
+                        final show = _hover;
+                        return IgnorePointer(
+                          ignoring: !show,
+                          child: AnimatedOpacity(
+                            opacity: show ? 1 : 0,
+                            duration: const Duration(milliseconds: 160),
+                            child: Tooltip(
+                              message: liked ? 'Убрать из любимого' : 'В любимое',
+                              child: Material(
+                                color: const Color(0x80000000),
+                                shape: const CircleBorder(),
+                                child: InkWell(
+                                  customBorder: const CircleBorder(),
+                                  onTap: () => app.lib.toggleLike(track.id),
+                                  child: SizedBox.square(
+                                    dimension: math.max(48.0, s * 0.2),
+                                    child: Icon(liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                                        size: math.max(26.0, s * 0.11), color: liked ? C.accent : Colors.white),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ),
+            ]),
+          ),
           const Spacer(),
           Text(track.title,
               maxLines: 1,
@@ -272,8 +334,18 @@ class _FlowCard extends StatelessWidget {
         ]);
       }),
     );
-    if (onTap == null) return card;
-    return MouseRegion(cursor: SystemMouseCursors.click, child: GestureDetector(onTap: onTap, child: card));
+    // Правый клик — меню трека (вместо кнопки «…»)
+    return MouseRegion(
+      cursor: widget.onTap == null ? MouseCursor.defer : SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        onSecondaryTapUp: (d) => showTrackMenu(context, track, null, d.globalPosition),
+        child: card,
+      ),
+    );
   }
 }
 

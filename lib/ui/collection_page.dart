@@ -57,6 +57,10 @@ class CollectionPage extends StatelessWidget {
                   title: p.name,
                   subtitle: '${lib.firstNameOf(p.by)} · ${countTracks(p.items.length)}',
                   onTap: () => nav.go(Nav('playlist', p.id)),
+                  onPlay: () {
+                    final list = lib.playlistTracks(p.id);
+                    if (list.isNotEmpty) app.player.playTracks(list, 0);
+                  },
                 ),
             ], 176),
             const SizedBox(height: 30),
@@ -70,6 +74,7 @@ class CollectionPage extends StatelessWidget {
                   title: a.title,
                   subtitle: a.artist,
                   onTap: () => nav.go(Nav('album', a.key)),
+                  onPlay: () => app.player.playTracks(a.tracks, 0),
                 ),
             ], 176),
             const SizedBox(height: 30),
@@ -88,6 +93,7 @@ class CollectionPage extends StatelessWidget {
                   title: a.name,
                   subtitle: '',
                   onTap: () => nav.go(Nav('artist', a.key)),
+                  onPlay: () => app.player.playTracks(topTracksOf(app, a), 0),
                 ),
             ], 150),
           ],
@@ -103,12 +109,13 @@ class _Tile extends StatelessWidget {
   final String subtitle;
   final VoidCallback onTap;
   final bool round;
-  const _Tile({required this.cover, required this.title, required this.subtitle, required this.onTap, this.round = false});
+  final VoidCallback? onPlay;
+  const _Tile({required this.cover, required this.title, required this.subtitle, required this.onTap, this.round = false, this.onPlay});
 
   @override
-  Widget build(BuildContext context) => InkWell(
-        borderRadius: BorderRadius.circular(10),
+  Widget build(BuildContext context) => TileInk(
         onTap: onTap,
+        onPlay: onPlay,
         child: LayoutBuilder(
           builder: (context, box) => Column(crossAxisAlignment: round ? CrossAxisAlignment.center : CrossAxisAlignment.start, children: [
             cover(box.maxWidth),

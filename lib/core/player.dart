@@ -312,16 +312,22 @@ class PlayerController extends ChangeNotifier {
     _queueChanged();
   }
 
-  /// Переставляет трек из следующих: индексы — позиции в [queue]
-  void moveInQueue(int from, int to) {
+  /// Переставляет трек из следующих: индексы — позиции в [queue].
+  /// [asUser] — к какому списку трек относится после переноса: true — «добавлено вами», false — «подобрано плеером».
+  /// Так трек можно перетащить из одного списка в другой, даже на границу между ними
+  void moveInQueue(int from, int to, {bool? asUser}) {
     if (from <= index || from >= queue.length) return;
     to = to.clamp(index + 1, queue.length - 1);
-    if (from == to) return;
     final wasUser = from - index <= userAhead;
+    if (from == to && (asUser == null || asUser == wasUser)) return;
     final id = queue.removeAt(from);
     queue.insert(to, id);
     final z = wasUser ? userAhead - 1 : userAhead;
-    userAhead = (to <= index + z || (wasUser && to == index + z + 1)) ? z + 1 : z;
+    if (asUser != null) {
+      userAhead = asUser ? z + 1 : z;
+    } else {
+      userAhead = (to <= index + z || (wasUser && to == index + z + 1)) ? z + 1 : z;
+    }
     if (!shuffle) _origin = List.of(queue);
     _queueChanged();
   }

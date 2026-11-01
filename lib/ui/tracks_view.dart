@@ -762,12 +762,13 @@ class _TracksPageState extends State<TracksPage> {
             controller: _search,
             focusNode: _searchFocus,
             onChanged: (v) => setState(() => _query = v),
-            expands: true,
-            maxLines: null,
-            minLines: null,
+            maxLines: 1,
             textAlignVertical: TextAlignVertical.center,
             decoration: InputDecoration(
+              // Высота как у кнопок рядом; текст и подсказка строго в одну строку
+              constraints: const BoxConstraints.tightFor(height: 48),
               hintText: hint,
+              hintMaxLines: 1,
               prefixIcon: const Icon(Icons.search_rounded, size: 18),
               suffixIcon: _query.isEmpty
                   ? null
@@ -839,7 +840,7 @@ class _TracksPageState extends State<TracksPage> {
                 if (widget.tracks.isNotEmpty) ...[
                   SizedBox(height: left ? 22 : 24),
                   buttons(left ? WrapAlignment.start : WrapAlignment.center,
-                      leading: widget.tracks.length > 8 ? searchBox('Найти трек или исполнителя', width: 280) : null),
+                      leading: widget.tracks.length > 8 ? searchBox('Найти трек или исполнителя', width: 340) : null),
                 ] else if (widget.actions.isNotEmpty) ...[
                   const SizedBox(height: 18),
                   Wrap(spacing: 12, alignment: left ? WrapAlignment.start : WrapAlignment.center, children: widget.actions),
@@ -884,7 +885,7 @@ class _TracksPageState extends State<TracksPage> {
             if (widget.tracks.isNotEmpty) ...[
               const SizedBox(height: 22),
               buttons(WrapAlignment.start,
-                  leading: widget.searchInBanner ? searchBox('Найти трек, исполнителя или альбом', width: 340) : null),
+                  leading: widget.searchInBanner ? searchBox('Найти трек, исполнителя или альбом', width: 400) : null),
             ] else if (widget.actions.isNotEmpty) ...[
               const SizedBox(height: 16),
               Row(children: widget.actions),
@@ -940,7 +941,6 @@ class _TracksPageState extends State<TracksPage> {
         Widget row(BuildContext context, int i) => TrackRow(
               track: visible[i],
               index: i,
-              numbered: widget.numbered,
               current: visible[i].id == currentId,
               playing: app.player.playing,
               compact: widget.compact,
@@ -1013,7 +1013,6 @@ class _TracksPageState extends State<TracksPage> {
 class TrackRow extends StatelessWidget {
   final Track track;
   final int index;
-  final bool numbered;
   final bool current;
   final bool playing;
   final bool compact;
@@ -1033,7 +1032,6 @@ class TrackRow extends StatelessWidget {
     super.key,
     required this.track,
     required this.index,
-    required this.numbered,
     required this.current,
     required this.playing,
     required this.compact,
@@ -1082,7 +1080,7 @@ class TrackRow extends StatelessWidget {
             selected: selected,
             child: current
                 ? Icon(playing ? Icons.graphic_eq_rounded : Icons.pause_rounded, size: 18, color: C.accent)
-                : Text(numbered && track.no != null ? '${track.no}' : '${index + 1}',
+                : Text('${index + 1}', // номер по порядку в этом списке, а не номер из тегов трека
                     style: const TextStyle(color: C.faint, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()])),
           ),
           const SizedBox(width: 8),

@@ -754,8 +754,9 @@ class _SlideSwap extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (t <= 0) return SizedBox(width: fullW, child: full);
-    if (t >= 1) return SizedBox(width: miniW, child: mini);
+    // Align снимает жёсткую ширину родителя (панель растягивает детей на 240), иначе узкий вид растягивался бы до полной ширины
+    if (t <= 0) return Align(alignment: Alignment.topLeft, child: SizedBox(width: fullW, child: full));
+    if (t >= 1) return Align(alignment: Alignment.topLeft, child: SizedBox(width: miniW, child: mini));
     return Stack(clipBehavior: Clip.none, children: [
       Opacity(
         opacity: (1 - t * 1.25).clamp(0.0, 1.0),

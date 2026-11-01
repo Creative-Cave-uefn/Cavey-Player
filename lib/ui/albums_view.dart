@@ -131,10 +131,10 @@ class _AlbumsPageState extends State<AlbumsPage> {
                     count: albums.length,
                     builder: (context, i) {
                       final a = albums[i];
-                      return InkWell(
-                        borderRadius: BorderRadius.circular(10),
+                      return TileInk(
                         onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-                        // Правый клик: сменить обложку альбома
+                        onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
+                        // Правый клик: меню альбома
                         onSecondaryTapUp: (d) => showAlbumMenu(context, a, d.globalPosition),
                         child: LayoutBuilder(
                           builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

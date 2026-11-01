@@ -95,9 +95,13 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                     count: lists.length,
                     builder: (context, i) {
                       final p = lists[i];
-                      return InkWell(
-                        borderRadius: BorderRadius.circular(10),
+                      return TileInk(
                         onTap: () => NavScope.of(context).go(Nav('playlist', p.id)),
+                        onPlay: () {
+                          final app = Services.of(context);
+                          final list = app.lib.playlistTracks(p.id);
+                          if (list.isNotEmpty) app.player.playTracks(list, 0);
+                        },
                         child: LayoutBuilder(
                           builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                             PlaylistCover(playlist: p, size: box.maxWidth, radius: 10),

@@ -128,7 +128,7 @@ class PlayerBar extends StatelessWidget {
                           stops: [0.0, 0.58, 1.0],
                         ).createShader(r),
                         blendMode: BlendMode.dstIn,
-                        child: CoverImage(track: t, size: 104, height: 74, radius: 0),
+                        child: CoverImage(track: t, size: 104, height: 74, radius: 0, fill: true),
                       ),
                     ),
                   ),
@@ -456,14 +456,27 @@ class _VolumeControl extends StatefulWidget {
   State<_VolumeControl> createState() => _VolumeControlState();
 }
 
-class _VolumeControlState extends State<_VolumeControl> {
+class _VolumeControlState extends State<_VolumeControl> with SingleTickerProviderStateMixin {
   double _acc = 0;
   Timer? _save;
+
+  // Колесо двигает громкость плавно: ползунок доезжает до цели за короткую анимацию, а не прыгает
+  late final AnimationController _anim = AnimationController(vsync: this, duration: const Duration(milliseconds: 220))..addListener(_tick);
+  double _from = 0;
+  double? _to;
 
   @override
   void dispose() {
     _save?.cancel();
+    _anim.dispose();
     super.dispose();
+  }
+
+  void _tick() {
+    final to = _to;
+    if (to == null) return;
+    final v = _from + (to - _from) * Curves.easeOutCubic.transform(_anim.value);
+    widget.p.setVolume(v);
   }
 
   void _onScroll(PointerSignalEvent e) {
@@ -476,11 +489,21 @@ class _VolumeControlState extends State<_VolumeControl> {
       final whole = _acc.truncate();
       if (whole == 0) return;
       _acc -= whole;
-      final v = (p.volume + whole).clamp(0, 100).toDouble();
-      p.setVolume(v);
+      // Цель считаем от прежней цели: быстрые щелчки колеса складываются, а не теряются по пути
+      final v = ((_anim.isAnimating ? (_to ?? p.volume) : p.volume) + whole).clamp(0, 100).toDouble();
+      _from = p.volume;
+      _to = v;
+      _anim.forward(from: 0);
       _save?.cancel();
-      _save = Timer(const Duration(milliseconds: 500), () => p.setVolume(v, save: true));
+      _save = Timer(const Duration(milliseconds: 600), () => p.setVolume(v, save: true));
     });
+  }
+
+  /// Пользователь взялся за ползунок сам — колёсная анимация больше не тянет громкость к своей цели
+  void _stopAnim() {
+    _to = null;
+    _anim.stop();
+    _save?.cancel();
   }
 
   @override
@@ -494,7 +517,10 @@ class _VolumeControlState extends State<_VolumeControl> {
           tooltip: p.volume == 0 ? 'Включить звук' : 'Выключить звук',
           visualDensity: VisualDensity.compact,
           iconSize: 20,
-          onPressed: p.toggleMute,
+          onPressed: () {
+            _stopAnim();
+            p.toggleMute();
+          },
           icon: Icon(
             p.volume == 0
                 ? Icons.volume_off_rounded
@@ -507,13 +533,10 @@ class _VolumeControlState extends State<_VolumeControl> {
           child: Slider(
             value: p.volume.clamp(0.0, 100.0).toDouble(),
             max: 100,
+            onChangeStart: (_) => _stopAnim(),
             onChanged: (v) => p.setVolume(v),
             onChangeEnd: (v) => p.setVolume(v, save: true),
           ),
-        ),
-        SizedBox(
-          width: 36,
-          child: Text('${p.volume.round()}%', textAlign: TextAlign.right, style: const TextStyle(fontSize: 12, color: C.faint)),
         ),
       ]),
     );

@@ -157,17 +157,14 @@ class _CoverViewerState extends State<_CoverViewer> {
                 builder: (context, snap) {
                   final b = snap.data;
                   return LayoutBuilder(builder: (context, box) {
-                    final side = (box.biggest.shortestSide - 80).clamp(120.0, 4000.0).toDouble();
+                    final side = (box.biggest.shortestSide - 170).clamp(120.0, 4000.0).toDouble();
                     final center = box.biggest.center(Offset.zero);
                     final Widget picture;
                     if (b != null) {
                       picture = Image.memory(b, fit: BoxFit.contain, filterQuality: FilterQuality.high, gaplessPlayback: true);
                     } else if (snap.connectionState != ConnectionState.done && widget.fallback != null) {
-                      // Пока грузится крупная — видна обычная, размытая до загрузки не будет
-                      picture = Stack(fit: StackFit.expand, children: [
-                        widget.fallback!,
-                        const Center(child: SizedBox.square(dimension: 28, child: CircularProgressIndicator(strokeWidth: 2.5))),
-                      ]);
+                      // Пока грузится крупная — видна обычная, без колеса загрузки: оригинал подменит её сам, как придёт
+                      picture = widget.fallback!;
                     } else if (snap.connectionState != ConnectionState.done) {
                       picture = const Center(child: SizedBox.square(dimension: 28, child: CircularProgressIndicator(strokeWidth: 2.5)));
                     } else {

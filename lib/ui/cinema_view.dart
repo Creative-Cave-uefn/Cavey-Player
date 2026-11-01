@@ -170,8 +170,7 @@ class NowPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final p = app.player;
-    final t = p.current!;
+    final t = app.player.current!;
     final liked = app.lib.isLiked(t.id);
     return SizedBox(
       width: width,
@@ -207,6 +206,22 @@ class NowPanel extends StatelessWidget {
           SizedBox.square(dimension: 34, child: Center(child: TrackMenu(track: t))),
         ]),
         const SizedBox(height: 18),
+        NowControls(leftAction: leftAction, rightAction: rightAction),
+      ]),
+    );
+  }
+}
+
+/// Перемотка, кнопки управления и громкость: нижняя часть плеера в кинотеатре и в «Моей волне»
+class NowControls extends StatelessWidget {
+  /// Вместо перемешивания и повтора по краям кнопок управления
+  final Widget? leftAction, rightAction;
+  const NowControls({super.key, this.leftAction, this.rightAction});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = Services.of(context).player;
+    return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         _Seek(player: p),
         const SizedBox(height: 12),
         // Кнопки сжимаются под ширину обложки, а не вылезают вправо: иначе «Играть» уезжает от центра
@@ -250,8 +265,7 @@ class NowPanel extends StatelessWidget {
           ),
           const Icon(Icons.volume_up_rounded, size: 20, color: C.muted),
         ]),
-      ]),
-    );
+    ]);
   }
 }
 

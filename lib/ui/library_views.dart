@@ -14,6 +14,7 @@ import 'library_tabs.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
+import 'profile_view.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
 
@@ -169,9 +170,12 @@ Widget _artistsSliver(BuildContext context, AppServices app, List<Artist> items,
         count: items.length,
         builder: (context, i) {
           final a = items[i];
-          return InkWell(
-            borderRadius: BorderRadius.circular(12),
+          return TileInk(
             onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+            onPlay: () {
+              final app = Services.of(context);
+              app.player.playTracks(topTracksOf(app, a), 0);
+            },
             child: LayoutBuilder(
               builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
                 Stack(children: [

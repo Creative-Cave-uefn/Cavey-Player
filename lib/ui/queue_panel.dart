@@ -61,66 +61,114 @@ class QueuePanel extends StatelessWidget {
     Track? at(int qi) => qi >= 0 && qi < p.queue.length ? app.lib.data.tracks[p.queue[qi]] : null;
 
     Widget title(String text, {Widget? trailing}) => Padding(
-          padding: const EdgeInsets.fromLTRB(22, 16, 10, 6),
+          padding: const EdgeInsets.fromLTRB(12, 16, 0, 6),
           child: Row(children: [
             Expanded(child: Text(text, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700))),
             if (trailing != null) trailing,
           ]),
         );
 
-    Widget list(int base, int count) => ReorderableListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          buildDefaultDragHandles: false,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          itemCount: count,
-          onReorder: (from, to) {
-            if (to > from) to--;
-            if (from == to) return;
-            p.moveInQueue(base + from, base + to);
-          },
-          proxyDecorator: (child, i, anim) => Material(color: C.panelRaised, elevation: 6, borderRadius: BorderRadius.circular(10), child: child),
-          itemBuilder: (context, i) {
-            final qi = base + i;
-            final t = at(qi);
-            return ReorderableDragStartListener(
-              key: ValueKey('q$qi:${p.queue[qi]}'),
-              index: i,
-              child: t == null
-                  ? const SizedBox(height: 1)
-                  : _QueueRow(track: t, onTap: () => p.jumpTo(qi), onRemove: () => p.removeAt(qi)),
-            );
-          },
-        );
-
-    return ListView(padding: const EdgeInsets.only(bottom: 24), children: [
-      title('Сейчас играет'),
-      Padding(padding: const EdgeInsets.symmetric(horizontal: 10), child: _QueueRow(track: cur, current: true, playing: p.playing)),
-      if (user > 0) ...[
-        title('Далее в очереди',
-            trailing: TextButton(
-              onPressed: p.clearUserQueue,
-              style: TextButton.styleFrom(visualDensity: VisualDensity.compact, foregroundColor: C.muted),
-              child: const Text('Очистить очередь', style: TextStyle(fontSize: 13)),
-            )),
-        list(firstUp, user),
-      ],
+    // Один общий список: заголовки разделов — неподвижные элементы, строки треков тянутся куда угодно,
+    // в том числе из «подобрано плеером» в «добавлено вами» и обратно
+    final entries = <_QEntry>[
+      const _QEntry.header(true),
+      if (user == 0) const _QEntry.empty() else for (var i = 0; i < user; i++) _QEntry.track(firstUp + i),
       if (ctxTotal > 0) ...[
-        title(p.feeder != null ? 'Далее в волне' : 'Далее подобрано'),
-        list(ctxStart, ctxShown),
-        if (ctxTotal > ctxShown)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(22, 10, 22, 0),
-            child: Text('…и ещё ${ctxTotal - ctxShown}', style: const TextStyle(color: C.faint, fontSize: 13)),
-          ),
-      ] else if (user == 0)
-        const Padding(
-          padding: EdgeInsets.fromLTRB(22, 16, 22, 0),
-          child: Text('Дальше ничего нет. Добавьте треки через меню «…» у песни: «Добавить в очередь».',
-              style: TextStyle(color: C.faint, height: 1.5, fontSize: 13)),
-        ),
-    ]);
+        const _QEntry.header(false),
+        for (var i = 0; i < ctxShown; i++) _QEntry.track(ctxStart + i),
+      ],
+    ];
+
+    void onReorder(int from, int to) {
+      if (to > from) to--;
+      if (from == to) return;
+      final moved = entries[from];
+      if (moved.qi == null) return;
+      // Список без переносимого элемента: ищем место вставки и раздел, в который трек попал
+      final rest = [...entries]..removeAt(from);
+      var tracksBefore = 0;
+      var userSection = true;
+      for (var i = 0; i < to && i < rest.length; i++) {
+        final e = rest[i];
+        if (e.qi != null) tracksBefore++;
+        if (e.isHeader) userSection = e.userHeader;
+      }
+      p.moveInQueue(moved.qi!, firstUp + tracksBefore, asUser: userSection);
+    }
+
+    return ReorderableListView.builder(
+      buildDefaultDragHandles: false,
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 24),
+      header: Padding(
+        padding: const EdgeInsets.only(bottom: 4),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          title('Сейчас играет'),
+          _QueueRow(track: cur, current: true, playing: p.playing),
+        ]),
+      ),
+      footer: ctxTotal > ctxShown
+          ? Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+              child: Text('…и ещё ${ctxTotal - ctxShown}', style: const TextStyle(color: C.faint, fontSize: 13)),
+            )
+          : null,
+      itemCount: entries.length,
+      onReorder: onReorder,
+      proxyDecorator: (child, i, anim) => Material(color: C.panelRaised, elevation: 6, borderRadius: BorderRadius.circular(10), child: child),
+      itemBuilder: (context, i) {
+        final e = entries[i];
+        if (e.isHeader) {
+          return Container(
+            key: ValueKey('h${e.userHeader}'),
+            child: e.userHeader
+                ? title('Далее в очереди',
+                    trailing: user > 0
+                        ? TextButton(
+                            onPressed: p.clearUserQueue,
+                            style: TextButton.styleFrom(visualDensity: VisualDensity.compact, foregroundColor: C.muted),
+                            child: const Text('Очистить очередь', style: TextStyle(fontSize: 13)),
+                          )
+                        : null)
+                : title(p.feeder != null ? 'Далее в волне' : 'Далее подобрано'),
+          );
+        }
+        if (e.qi == null) {
+          return Container(
+            key: const ValueKey('empty-user'),
+            height: 56,
+            alignment: Alignment.centerLeft,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: const Text('Пусто. Добавьте трек через «…» или перетащите сюда из списка ниже.',
+                maxLines: 2, style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+          );
+        }
+        final qi = e.qi!;
+        final t = at(qi);
+        return ReorderableDragStartListener(
+          key: ValueKey('q$qi:${p.queue[qi]}'),
+          index: i,
+          child: t == null ? const SizedBox(height: 1) : _QueueRow(track: t, onTap: () => p.jumpTo(qi), onRemove: () => p.removeAt(qi)),
+        );
+      },
+    );
   }
+}
+
+/// Строка общего списка очереди: заголовок раздела, подсказка «пусто» или трек под номером [qi] в очереди плеера
+class _QEntry {
+  final int? qi;
+  final bool isHeader;
+  final bool userHeader;
+  const _QEntry.header(this.userHeader)
+      : qi = null,
+        isHeader = true;
+  const _QEntry.empty()
+      : qi = null,
+        isHeader = false,
+        userHeader = false;
+  const _QEntry.track(int this.qi)
+      : isHeader = false,
+        userHeader = false;
 }
 
 class _QueueRow extends StatefulWidget {

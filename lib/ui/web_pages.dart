@@ -235,10 +235,16 @@ class WebTrackGrid extends StatelessWidget {
 
 /// Плитка альбома или исполнителя: квадратная (круглая) картинка и подписи
 Widget webTile(BuildContext context,
-    {required String image, required String title, required String subtitle, required VoidCallback onTap, bool round = false, bool have = false}) {
-  return InkWell(
-    borderRadius: BorderRadius.circular(10),
+    {required String image,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+    VoidCallback? onPlay,
+    bool round = false,
+    bool have = false}) {
+  return TileInk(
     onTap: onTap,
+    onPlay: onPlay,
     child: Column(crossAxisAlignment: round ? CrossAxisAlignment.center : CrossAxisAlignment.start, children: [
       AspectRatio(
         aspectRatio: 1,
@@ -248,7 +254,7 @@ Widget webTile(BuildContext context,
             if (have)
               Positioned(
                 right: 8,
-                bottom: 8,
+                top: 8,
                 child: Tooltip(
                   message: 'Уже есть в библиотеке',
                   child: Container(
@@ -284,7 +290,19 @@ Widget albumTile(BuildContext context, WebAlbum a, {bool withArtist = false}) {
     subtitle: [if (withArtist) a.artist, a.typeLabel, if (a.year.isNotEmpty) a.year].join(' · '),
     have: app.web.inLibrary(a.artist.toLowerCase(), a),
     onTap: () => NavScope.of(context).go(Nav('webalbum', '${a.id}')),
+    onPlay: () => _playWebList(context, () => app.web.albumTracks(a.id)),
   );
+}
+
+/// Кнопка «Играть» на плитке из интернета: грузим треки и включаем первый (скачанные — целиком, остальные — отрывком)
+Future<void> _playWebList(BuildContext context, Future<List<WebTrack>> Function() load) async {
+  try {
+    final tracks = await load();
+    if (!context.mounted || tracks.isEmpty) return;
+    playWeb(context, tracks.first, tracks);
+  } catch (e) {
+    if (context.mounted) Services.of(context).lib.messages.add('Не получилось включить: $e');
+  }
 }
 
 Widget artistTile(BuildContext context, WebArtist a) => webTile(
@@ -294,6 +312,7 @@ Widget artistTile(BuildContext context, WebArtist a) => webTile(
       subtitle: '',
       round: true,
       onTap: () => NavScope.of(context).go(Nav('webartist', '${a.id}')),
+      onPlay: () => _playWebList(context, () => Services.of(context).web.top(a.id)),
     );
 
 /// Сетка плиток на всю ширину (раздел целиком)

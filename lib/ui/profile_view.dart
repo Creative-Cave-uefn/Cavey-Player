@@ -332,7 +332,10 @@ class SectionTitle extends StatelessWidget {
   final String text;
   final VoidCallback? onTap;
   final Widget? trailing;
-  const SectionTitle(this.text, {super.key, this.onTap, this.trailing});
+
+  /// Рядом с заголовком (например, «обновление»)
+  final Widget? badge;
+  const SectionTitle(this.text, {super.key, this.onTap, this.trailing, this.badge});
 
   @override
   Widget build(BuildContext context) {
@@ -344,6 +347,7 @@ class SectionTitle extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(children: [
         onTap == null ? title : InkWell(borderRadius: BorderRadius.circular(6), onTap: onTap, child: title),
+        if (badge != null) ...[const SizedBox(width: 12), badge!],
         const Spacer(),
         if (trailing != null) trailing!,
       ]),
@@ -445,7 +449,10 @@ class TileRow extends StatefulWidget {
 
   /// «›» у заголовка — открыть раздел целиком
   final VoidCallback? onMore;
-  const TileRow({super.key, required this.title, required this.tiles, this.tileWidth = 220, this.height = 270, this.onMore});
+
+  /// Идёт обновление: плитки затемнены и не нажимаются, рядом с заголовком значок «обновление»
+  final bool updating;
+  const TileRow({super.key, required this.title, required this.tiles, this.tileWidth = 220, this.height = 270, this.onMore, this.updating = false});
 
   @override
   State<TileRow> createState() => _TileRowState();
@@ -473,6 +480,7 @@ class _TileRowState extends State<TileRow> {
       SectionTitle(
         widget.title,
         onTap: widget.onMore,
+        badge: widget.updating ? const UpdatingBadge() : null,
         trailing: many
             ? Row(mainAxisSize: MainAxisSize.min, children: [
                 IconButton(onPressed: () => _scroll(-1), icon: const Icon(Icons.chevron_left_rounded), tooltip: 'Назад'),
@@ -480,7 +488,12 @@ class _TileRowState extends State<TileRow> {
               ])
             : null,
       ),
-      SizedBox(
+      AnimatedOpacity(
+        opacity: widget.updating ? 0.35 : 1,
+        duration: const Duration(milliseconds: 220),
+        child: IgnorePointer(
+          ignoring: widget.updating,
+          child: SizedBox(
         height: widget.height,
         child: ScrollConfiguration(
           behavior: ScrollConfiguration.of(context).copyWith(dragDevices: {PointerDeviceKind.touch, PointerDeviceKind.mouse}),
@@ -493,15 +506,57 @@ class _TileRowState extends State<TileRow> {
           ),
         ),
       ),
+        ),
+      ),
     ]);
   }
 }
 
+/// «Обновление» рядом с заголовком полки: вращающийся значок и подпись
+class UpdatingBadge extends StatefulWidget {
+  const UpdatingBadge({super.key});
+
+  @override
+  State<UpdatingBadge> createState() => _UpdatingBadgeState();
+}
+
+class _UpdatingBadgeState extends State<UpdatingBadge> with SingleTickerProviderStateMixin {
+  late final AnimationController _spin = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100))..repeat();
+
+  @override
+  void dispose() {
+    _spin.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      RotationTransition(turns: _spin, child: const Icon(Icons.sync_rounded, size: 16, color: C.muted)),
+      const SizedBox(width: 6),
+      const Text('обновление', style: TextStyle(color: C.muted, fontSize: 13)),
+    ]);
+  }
+}
+
+String _trackWhen(Track t) => t.added.isNotEmpty ? t.added : t.modified;
+
+/// Треки исполнителя в порядке «Топ-песен»: чаще слушали, потом чаще лайкали, потом новее
+List<Track> topTracksOf(AppServices app, Artist a) => List<Track>.of(a.tracks)
+  ..sort((x, y) {
+    final p = app.social.playsOf(y.id).compareTo(app.social.playsOf(x.id));
+    if (p != 0) return p;
+    final l = (app.lib.data.likes[y.id]?.length ?? 0).compareTo(app.lib.data.likes[x.id]?.length ?? 0);
+    if (l != 0) return l;
+    return _trackWhen(y).compareTo(_trackWhen(x));
+  });
+
 /// Плитка: квадратная обложка, название и подпись
-Widget _tile(BuildContext context, {required Widget cover, required String title, required String subtitle, required VoidCallback onTap}) {
-  return InkWell(
-    borderRadius: BorderRadius.circular(10),
+Widget _tile(BuildContext context,
+    {required Widget cover, required String title, required String subtitle, required VoidCallback onTap, VoidCallback? onPlay}) {
+  return TileInk(
     onTap: onTap,
+    onPlay: onPlay,
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       AspectRatio(aspectRatio: 1, child: cover),
       const SizedBox(height: 10),
@@ -518,6 +573,7 @@ Widget _albumTile(BuildContext context, Album a) => _tile(
       title: a.title,
       subtitle: a.year.isEmpty ? countTracks(a.tracks.length) : '${a.year} · ${countTracks(a.tracks.length)}',
       onTap: () => NavScope.of(context).go(Nav('album', a.key)),
+      onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
     );
 
 // ---------- страница исполнителя ----------
@@ -532,7 +588,7 @@ class ArtistProfilePage extends StatelessWidget {
   final int? webId;
   const ArtistProfilePage({super.key, required this.artistKey, required this.compact, this.webId});
 
-  static String _when(Track t) => t.added.isNotEmpty ? t.added : t.modified;
+  static String _when(Track t) => _trackWhen(t);
 
   /// Главный ли исполнитель трека (первый в списке, у альбома — исполнитель альбома)
   static bool _primary(Track t, String key) {
@@ -552,14 +608,7 @@ class ArtistProfilePage extends StatelessWidget {
           return const EmptyState(icon: Icons.mic_none_rounded, title: 'Исполнитель пропал', text: 'Его треки удалили из библиотеки.');
         }
         // Топ: чаще слушали, потом чаще лайкали, потом новее
-        final ranked = List<Track>.of(a.tracks)
-          ..sort((x, y) {
-            final p = app.social.playsOf(y.id).compareTo(app.social.playsOf(x.id));
-            if (p != 0) return p;
-            final l = (lib.data.likes[y.id]?.length ?? 0).compareTo(lib.data.likes[x.id]?.length ?? 0);
-            if (l != 0) return l;
-            return _when(y).compareTo(_when(x));
-          });
+        final ranked = topTracksOf(app, a);
 
         final own = <Album>[];
         final guest = <Album>[];
@@ -819,6 +868,10 @@ class UserProfilePage extends StatelessWidget {
                       title: p.name,
                       subtitle: countTracks(p.items.length),
                       onTap: () => NavScope.of(context).go(Nav('playlist', p.id)),
+                      onPlay: () {
+                        final list = lib.playlistTracks(p.id);
+                        if (list.isNotEmpty) app.player.playTracks(list, 0);
+                      },
                     ),
                 ],
               ),
@@ -838,6 +891,7 @@ class UserProfilePage extends StatelessWidget {
                       title: a.title,
                       subtitle: 'Альбом · ${a.artist}',
                       onTap: () => NavScope.of(context).go(Nav('album', a.key)),
+                      onPlay: () => app.player.playTracks(a.tracks, 0),
                     ),
                   for (final p in favs.playlists)
                     _tile(
@@ -846,6 +900,10 @@ class UserProfilePage extends StatelessWidget {
                       title: p.name,
                       subtitle: 'Плейлист · ${lib.firstNameOf(p.by)}',
                       onTap: () => NavScope.of(context).go(Nav('playlist', p.id)),
+                      onPlay: () {
+                        final list = lib.playlistTracks(p.id);
+                        if (list.isNotEmpty) app.player.playTracks(list, 0);
+                      },
                     ),
                   for (final a in favs.artists)
                     _tile(
@@ -862,6 +920,7 @@ class UserProfilePage extends StatelessWidget {
                       title: a.name,
                       subtitle: 'Исполнитель',
                       onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+                      onPlay: () => app.player.playTracks(topTracksOf(app, a), 0),
                     ),
                 ],
               ),
