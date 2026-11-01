@@ -1091,7 +1091,7 @@ class _DownloaderSectionState extends State<_DownloaderSection> {
         ),
       ]),
       const SizedBox(height: 8),
-      const Text('Deezer требует Python 3.10+ и ваш cookie ARL. Файл deezer_auth.ini остаётся только на этом устройстве. '
+      const Text('Deezer требует Python 3.10+. Авторизация заполняется автоматически, если данные включены в сборку. Файл deezer_auth.ini остаётся на устройстве. '
           'Не публикуйте ARL в GitHub. Качество зависит от подписки и доступности релиза.',
           style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
       const SizedBox(height: 8),
