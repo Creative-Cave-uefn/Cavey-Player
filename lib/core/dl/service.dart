@@ -302,7 +302,9 @@ class DownloadService extends ChangeNotifier {
           if (out.tracks.isNotEmpty) downloaded = out.tracks.first.file;
         } else if (provider == 'sockseek') {
           if (!await Sockseek.executable(tools).exists()) await Sockseek.install(tools, log);
-          final out = await Sockseek.download(tools, [meta], Directory('${temp.path}/soulseek'), log);
+          final soulseekDir = Directory('${temp.path}/soulseek');
+          await soulseekDir.create(recursive: true);
+          final out = await Sockseek.download(tools, [meta], soulseekDir, log);
           if (out.isNotEmpty) downloaded = out.first;
         } else if (provider == 'youtube') {
           await _ensureFullTools(log);
