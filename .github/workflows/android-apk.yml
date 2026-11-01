@@ -1,0 +1,40 @@
+name: Android MVP APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/android-mvp
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Create Android runner
+        run: bash tool/setup_android.sh
+      - name: Analyze mobile code
+        run: flutter analyze lib/mobile_main.dart lib/mobile
+      - name: Build Android debug APK
+        env:
+          GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
+        run: |
+          flutter build apk --debug --target lib/mobile_main.dart \
+            --dart-define=GOOGLE_WEB_CLIENT_ID="$GOOGLE_WEB_CLIENT_ID"
+      - name: Show APK signing fingerprint
+        run: |
+          keytool -list -v -alias androiddebugkey \
+            -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -keypass android | grep -E "SHA1:|SHA256:"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cavey-android-mvp
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 7
