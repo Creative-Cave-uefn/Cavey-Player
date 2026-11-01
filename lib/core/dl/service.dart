@@ -554,14 +554,14 @@ class DownloadService extends ChangeNotifier {
       }
       return _finishYoutube(job, yt, entries, folderId: job.target, path: job.path);
     }
-    if (q.contains('music.apple.com')) {
+    if (link.source == MusicSource.appleMusic) {
       if (q.contains('/album/')) {
         final res = await appleAlbum(q);
         return res != null && await _album(job, yt, temp, res.$1, res.$2, log);
       }
       return _single(job, yt, temp, await appleTrack(q), 'Apple Music', log);
     }
-    if (q.contains('music.yandex.')) {
+    if (link.source == MusicSource.yandexMusic) {
       if (q.contains('/track/')) return _single(job, yt, temp, await yandexTrack(q), 'Яндекс Музыке', log);
       if (q.contains('/album/')) {
         final res = await yandexAlbum(q);
@@ -571,7 +571,7 @@ class DownloadService extends ChangeNotifier {
       log('Поддерживаются ссылки на трек, альбом и плейлист Яндекс Музыки.');
       return false;
     }
-    if (q.contains('deezer.com/')) {
+    if (link.source == MusicSource.deezer) {
       if (q.contains('/playlist/')) return _externalPlaylist(job, yt, temp, await deezerPlaylist(q), log);
       if (q.contains('/album/')) {
         final res = await deezerAlbum(q);
@@ -581,7 +581,7 @@ class DownloadService extends ChangeNotifier {
       log('Поддерживаются ссылки на трек, альбом и плейлист Deezer.');
       return false;
     }
-    if (q.contains('open.spotify.com') || q.startsWith('spotify:')) {
+    if (link.source == MusicSource.spotify) {
       if (q.contains('/album/') || q.startsWith('spotify:album:')) {
         final res = await spotifyAlbum(q);
         return res != null && await _album(job, yt, temp, res.$1, res.$2, log);
