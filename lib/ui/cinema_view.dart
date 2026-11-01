@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/models.dart';
 import '../core/player.dart';
 import 'ambient.dart';
 import 'lyrics_panel.dart';
@@ -21,7 +22,45 @@ class CinemaPage extends StatefulWidget {
 }
 
 class _CinemaPageState extends State<CinemaPage> {
+  /// Текст включён человеком (кнопка внизу справа)
   bool _lyrics = true;
+
+  /// У текущего трека текста нет: режим текста выключается сам, плеер встаёт по центру.
+  /// У следующего трека с текстом он снова появится, если его не выключали кнопкой.
+  /// Решает по тому, что лежит в сервисе текстов, — ровно по тому же, что показала бы панель,
+  /// поэтому срабатывает и при первом поиске, а не только когда ответ уже сохранён
+  bool _none = false;
+  String? _noneFor;
+  String? _asked;
+
+  /// Пока текст ищется — остаётся прежнее решение; нашёлся или не нашёлся — решение по ответу
+  bool _noText(Track t) {
+    final lyr = Services.of(context).lyrics;
+    if (_noneFor != t.id) {
+      _noneFor = t.id;
+      _none = false;
+    }
+    if (lyr.known(t)) {
+      final l = lyr.cached(t);
+      _none = l == null || l.instrumental || l.lines.isEmpty;
+    } else if (lyr.failed(t) && !lyr.loading(t)) {
+      // Нет сети — это не «текста нет»: панель остаётся и сама предложит повторить
+      _none = false;
+    }
+    return _none;
+  }
+
+  /// Поиск обычно уже начат плеером; если нет — начинаем, чтобы узнать ответ и со скрытой панелью текста
+  void _ask(Track t) {
+    if (_asked == t.id) return;
+    _asked = t.id;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final app = Services.of(context);
+      if (app.lyrics.known(t) || app.lyrics.loading(t)) return;
+      app.lyrics.forTrack(t, app.player.duration).then<void>((_) {}, onError: (Object _) {});
+    });
+  }
 
   @override
   void initState() {
@@ -45,9 +84,12 @@ class _CinemaPageState extends State<CinemaPage> {
     final app = Services.of(context);
     final p = app.player;
     return ListenableBuilder(
-      listenable: Listenable.merge([p, app.lib]),
+      listenable: Listenable.merge([p, app.lib, app.lyrics]),
       builder: (context, _) {
         final t = p.current;
+        if (t != null) _ask(t);
+        final none = t != null && _noText(t);
+        final showLyrics = _lyrics && !none;
         return Stack(children: [
           if (t == null)
             const EmptyState(
@@ -57,13 +99,13 @@ class _CinemaPageState extends State<CinemaPage> {
             )
           else
             LayoutBuilder(builder: (context, box) {
-              final narrow = box.maxWidth < 900 || !_lyrics;
+              final narrow = box.maxWidth < 900 || !showLyrics;
               final sideW = narrow ? box.maxWidth : box.maxWidth * 0.46;
-              final cover = (narrow && _lyrics ? box.maxHeight * 0.34 : sideW - 120)
+              final cover = (narrow && showLyrics ? box.maxHeight * 0.34 : sideW - 120)
                   .clamp(160.0, (box.maxHeight - 330).clamp(160.0, 560.0))
                   .toDouble();
               final left = NowPanel(width: cover);
-              if (!_lyrics) return Center(child: left);
+              if (!showLyrics) return Center(child: left);
               final lyrics = ShaderMask(
                 // Текст растворяется у верхнего и нижнего края, как в Apple Music
                 shaderCallback: (r) => const LinearGradient(
@@ -89,22 +131,23 @@ class _CinemaPageState extends State<CinemaPage> {
                 Expanded(child: lyrics),
               ]);
             }),
+          // Выход — там же, где в плеере кнопка входа; левее него — кнопка текста. Обе приглушены, чтобы не бросались в глаза
           Positioned(
-            left: 16,
-            top: 10,
+            right: 23,
+            bottom: 24,
             child: IconButton(
-              tooltip: 'Закрыть (Esc)',
+              tooltip: 'Выйти из кинотеатра (Esc)',
               onPressed: _close,
-              icon: const Icon(Icons.close_rounded, size: 26, color: C.text),
+              icon: Icon(Icons.fullscreen_exit_rounded, size: 26, color: C.text.withValues(alpha: 0.55)),
             ),
           ),
           Positioned(
-            right: 20,
-            bottom: 18,
+            right: 23 + 48 + 4,
+            bottom: 24,
             child: IconButton(
-              tooltip: _lyrics ? 'Скрыть текст' : 'Показать текст',
-              onPressed: () => setState(() => _lyrics = !_lyrics),
-              icon: Icon(Icons.lyrics_outlined, color: _lyrics ? C.text : C.muted),
+              tooltip: none ? 'У этого трека текста нет' : (_lyrics ? 'Скрыть текст' : 'Показать текст'),
+              onPressed: none ? null : () => setState(() => _lyrics = !_lyrics),
+              icon: Icon(Icons.lyrics_outlined, color: showLyrics ? C.text.withValues(alpha: 0.55) : C.text.withValues(alpha: 0.28)),
             ),
           ),
         ]);
@@ -127,8 +170,7 @@ class NowPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final p = app.player;
-    final t = p.current!;
+    final t = app.player.current!;
     final liked = app.lib.isLiked(t.id);
     return SizedBox(
       width: width,
@@ -164,9 +206,28 @@ class NowPanel extends StatelessWidget {
           SizedBox.square(dimension: 34, child: Center(child: TrackMenu(track: t))),
         ]),
         const SizedBox(height: 18),
+        NowControls(leftAction: leftAction, rightAction: rightAction),
+      ]),
+    );
+  }
+}
+
+/// Перемотка, кнопки управления и громкость: нижняя часть плеера в кинотеатре и в «Моей волне»
+class NowControls extends StatelessWidget {
+  /// Вместо перемешивания и повтора по краям кнопок управления
+  final Widget? leftAction, rightAction;
+  const NowControls({super.key, this.leftAction, this.rightAction});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = Services.of(context).player;
+    return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         _Seek(player: p),
         const SizedBox(height: 12),
-        Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+        // Кнопки сжимаются под ширину обложки, а не вылезают вправо: иначе «Играть» уезжает от центра
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
           leftAction ??
               IconButton(
                 tooltip: p.shuffle ? 'Выключить перемешивание' : 'Перемешать',
@@ -192,6 +253,7 @@ class NowPanel extends StatelessWidget {
                     size: 22, color: p.repeat == RepeatSetting.off ? C.muted : C.accent),
               ),
         ]),
+        ),
         const SizedBox(height: 12),
         Row(children: [
           const Icon(Icons.volume_down_rounded, size: 20, color: C.muted),
@@ -203,8 +265,7 @@ class NowPanel extends StatelessWidget {
           ),
           const Icon(Icons.volume_up_rounded, size: 20, color: C.muted),
         ]),
-      ]),
-    );
+    ]);
   }
 }
 
@@ -293,7 +354,7 @@ class CinemaButton extends StatelessWidget {
     return IconButton(
       tooltip: 'Кинотеатр: обложка и текст во весь экран',
       onPressed: () => nav.go(const Nav('cinema')),
-      icon: const Icon(Icons.theaters_rounded, color: C.text),
+      icon: const Icon(Icons.fullscreen_rounded, size: 26, color: C.text),
     );
   }
 }

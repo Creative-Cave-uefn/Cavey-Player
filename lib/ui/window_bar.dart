@@ -3,6 +3,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../app.dart';
+import '../core/window_style.dart';
+import 'shell.dart';
 import 'theme.dart';
 
 /// Своя «шапка» окна вместо системной: прозрачная полоса поверх стеклянного фона.
@@ -38,10 +41,23 @@ class _WindowBarState extends State<WindowBar> with WindowListener {
   }
 
   @override
-  void onWindowMaximize() => setState(() => _max = true);
+  void onWindowMaximize() {
+    setState(() => _max = true);
+    tintCaption();
+  }
 
   @override
-  void onWindowUnmaximize() => setState(() => _max = false);
+  void onWindowUnmaximize() {
+    setState(() => _max = false);
+    tintCaption();
+  }
+
+  // Системная рамка после смены фокуса снова может стать светлой — красим заново
+  @override
+  void onWindowFocus() => tintCaption();
+
+  @override
+  void onWindowBlur() => tintCaption();
 
   Future<void> _toggleMax() async {
     if (await windowManager.isMaximized()) {
@@ -56,6 +72,8 @@ class _WindowBarState extends State<WindowBar> with WindowListener {
     return SizedBox(
       height: WindowBar.height,
       child: Row(children: [
+        // Слева: настройки, «Назад» и «Вперёд» — на одном уровне с кнопками окна
+        const _NavButtons(),
         Expanded(
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
@@ -109,6 +127,107 @@ class _CaptionButtonState extends State<_CaptionButton> {
             height: WindowBar.height,
             color: bg,
             child: Icon(widget.icon, size: widget.iconSize, color: _hover && widget.danger ? Colors.white : C.muted),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Шестерёнка «Настройки» и стрелки истории. Видны, когда открыт основной экран
+class _NavButtons extends StatelessWidget {
+  const _NavButtons();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<NavController?>(
+      valueListenable: shellNav,
+      builder: (context, nav, _) {
+        if (nav == null) return const SizedBox(width: 8);
+        final app = Services.of(context);
+        return AnimatedBuilder(
+          animation: Listenable.merge([nav, app.accounts, app.lib]),
+          builder: (context, _) {
+            final inSettings = nav.value.kind == 'accounts' || nav.value.kind == 'sources';
+            final needSignIn = app.accounts.accounts.any((a) => a.needsSignIn);
+            final scanning = app.lib.scan.running;
+            return Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                _BarIcon(
+                  icon: Icons.settings_outlined,
+                  tooltip: needSignIn ? 'Настройки: нужно снова войти в аккаунт' : 'Настройки',
+                  active: inSettings,
+                  onTap: () => nav.go(const Nav('accounts')),
+                  badge: needSignIn
+                      ? const Icon(Icons.error_rounded, size: 11, color: C.danger)
+                      : scanning
+                          ? const SizedBox.square(dimension: 9, child: CircularProgressIndicator(strokeWidth: 1.6))
+                          : null,
+                ),
+                const SizedBox(width: 2),
+                _BarIcon(
+                  icon: Icons.chevron_left_rounded,
+                  tooltip: 'Назад (Alt+←)',
+                  size: 22,
+                  onTap: nav.canBack ? nav.back : null,
+                ),
+                _BarIcon(
+                  icon: Icons.chevron_right_rounded,
+                  tooltip: 'Вперёд (Alt+→)',
+                  size: 22,
+                  onTap: nav.canForward ? nav.forward : null,
+                ),
+              ]),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _BarIcon extends StatefulWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onTap;
+  final bool active;
+  final double size;
+  final Widget? badge;
+  const _BarIcon({required this.icon, required this.tooltip, required this.onTap, this.active = false, this.size = 17, this.badge});
+
+  @override
+  State<_BarIcon> createState() => _BarIconState();
+}
+
+class _BarIconState extends State<_BarIcon> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final on = widget.onTap != null;
+    final color = !on ? C.line : (widget.active ? C.accent : (_hover ? C.text : C.muted));
+    return Tooltip(
+      message: widget.tooltip,
+      waitDuration: const Duration(milliseconds: 600),
+      child: MouseRegion(
+        cursor: on ? SystemMouseCursors.click : MouseCursor.defer,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            width: 34,
+            height: WindowBar.height - 6,
+            decoration: BoxDecoration(
+              color: _hover && on ? C.hoverOverlay : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Stack(alignment: Alignment.center, children: [
+              Icon(widget.icon, size: widget.size, color: color),
+              if (widget.badge != null) Positioned(right: 5, top: 4, child: widget.badge!),
+            ]),
           ),
         ),
       ),

@@ -11,6 +11,7 @@ import 'ui/smooth_scroll.dart';
 import 'core/log.dart';
 import 'core/share_link.dart';
 import 'core/single_instance.dart';
+import 'core/window_style.dart';
 
 Future<void> main(List<String> args) async {
   runZonedGuarded(() async {
@@ -31,7 +32,12 @@ Future<void> main(List<String> args) async {
     try {
       await windowManager.ensureInitialized();
       // Системную шапку прячем: вместо неё своя, прозрачная, поверх стеклянного фона
-      if (Platform.isWindows) await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
+      if (Platform.isWindows) {
+        await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
+        tintCaption();
+      }
+      // Окно нельзя сжать до пары пикселей: меньше этого вёрстка уже не помещается
+      await windowManager.setMinimumSize(const Size(560, 440));
     } catch (e) {
       AppLog.warn('Окно: управление не запустилось', e);
     }

@@ -60,9 +60,22 @@ class Member {
   List<Map<String, dynamic>> events;
   Map<String, Map<String, int>> plays; // день → трек → сколько раз
 
+  /// Сколько раз всего человек слушал каждый трек (за всё время, с версии, где появился учёт)
+  Map<String, int> totals;
+
+  /// Сколько миллисекунд человек реально слушал: день → трек → мс
+  Map<String, Map<String, int>> time;
+
+  /// Реально прослушанное время по трекам за всё время, мс
+  Map<String, int> timeTotals;
+
   /// Версия приложения у человека (пишется в статус; у старых версий пусто)
   String version;
-  Member(this.email, this.name, this.updated, this.now, this.events, this.plays, [this.version = '']);
+  Member(this.email, this.name, this.updated, this.now, this.events, this.plays,
+      [this.version = '', Map<String, int>? totals, Map<String, Map<String, int>>? time, Map<String, int>? timeTotals])
+      : totals = totals ?? playTotalsFrom(plays),
+        time = time ?? {},
+        timeTotals = timeTotals ?? {};
 
   /// На сколько часы этого компьютера уходят от часов Google Диска. Статусы друзей мы сверяем
   /// со временем Диска, поэтому чужие или свои неточные часы больше не прячут «слушает сейчас».
@@ -84,6 +97,19 @@ class Member {
         if (m is Map) plays['$day'] = m.map((k, v) => MapEntry('$k', (v as num?)?.toInt() ?? 0));
       });
     }
+    // Учёт переделан: раньше за прослушивание считался весь трек целиком. Данные без метки версии
+    // учёта (и самой метки) не берём — статистика начинается с нуля
+    final fresh = ((j['lv'] as num?)?.toInt() ?? 0) >= kListenVersion;
+    final time = <String, Map<String, int>>{};
+    final lt = j['lt'];
+    if (fresh && lt is Map) {
+      lt.forEach((day, m) {
+        if (m is Map) time['$day'] = m.map((k, v) => MapEntry('$k', (v as num?)?.toInt() ?? 0));
+      });
+    }
+    final ltc = j['ltc'];
+    final tc = j['tc'];
+    if (!fresh) plays.clear();
     return Member(
       '${j['email']}',
       '${j['name'] ?? ''}',
@@ -92,8 +118,48 @@ class Member {
       [for (final e in (j['events'] as List? ?? const [])) if (e is Map) e.cast<String, dynamic>()],
       plays,
       '${j['v'] ?? ''}',
+      // Старые версии счётчика за всё время не пишут: считаем по прослушиваниям за последние дни
+      fresh && tc is Map ? tc.map((k, v) => MapEntry('$k', (v as num?)?.toInt() ?? 0)) : null,
+      time,
+      fresh && ltc is Map ? ltc.map((k, v) => MapEntry('$k', (v as num?)?.toInt() ?? 0)) : null,
     );
   }
+}
+
+/// Сколько раз слушали каждый трек по прослушиваниям за дни
+Map<String, int> playTotalsFrom(Map<String, Map<String, int>> plays) {
+  final out = <String, int>{};
+  for (final day in plays.values) {
+    day.forEach((id, n) => out[id] = (out[id] ?? 0) + n);
+  }
+  return out;
+}
+
+/// Версия учёта прослушивания. Со второй считаем реально прослушанное время, а не «трек включили — засчитали целиком»
+const kListenVersion = 2;
+
+/// Дольше этого между двумя отметками позиции — перемотка, а не воспроизведение: время не засчитываем
+const maxListenStep = Duration(milliseconds: 2500);
+
+/// Сколько прибавить к наслушанному между двумя отметками позиции. Только пока идёт звук и позиция
+/// сдвинулась вперёд на обычный шаг; перемотка, пауза и пересев на другой трек ничего не дают
+Duration listenStep({required bool playing, required Duration before, required Duration now}) {
+  if (!playing) return Duration.zero;
+  final d = now - before;
+  if (d <= Duration.zero || d > maxListenStep) return Duration.zero;
+  return d;
+}
+
+/// Сумма прослушанного времени (миллисекунды по трекам)
+Duration listenedSum(Iterable<int> ms) => Duration(milliseconds: ms.fold(0, (a, b) => a + b));
+
+/// «12 ч», «45 мин», «1 ч 20 мин» — для «Наслушал» и статистики
+String formatListened(Duration d) {
+  final h = d.inHours;
+  final m = d.inMinutes % 60;
+  if (h == 0) return '${d.inMinutes} мин';
+  if (h >= 10 || m == 0) return '$h ч';
+  return '$h ч $m мин';
 }
 
 class ChartEntry {
@@ -135,6 +201,12 @@ class SocialController extends ChangeNotifier {
 
   List<Map<String, dynamic>> _myEvents = [];
   Map<String, Map<String, int>> _myPlays = {};
+  Map<String, int> _myTotals = {};
+  Map<String, Map<String, int>> _myTime = {};
+  Map<String, int> _myTimeTotals = {};
+  String? _tickKey;
+  Duration _tickPos = Duration.zero;
+  Duration _tickHeard = Duration.zero;
 
   Timer? _pollTimer;
   _ResumeWatcher? _resume;
@@ -202,16 +274,33 @@ class SocialController extends ChangeNotifier {
     }
   }
 
-  /// Засчитываем прослушивание, когда трек играл хотя бы 30 секунд
+  /// Засчитываем прослушивание, когда трек действительно играл хотя бы 30 секунд (перемотка на 30-ю секунду не считается)
   void _onPosition() {
     final t = player.current;
     if (t == null) return;
     final key = '${t.id}@${player.openedAt?.millisecondsSinceEpoch}';
-    if (_countedFor == key || player.position.value < const Duration(seconds: 30)) return;
+    // Реально прослушанное время: копим шаги позиции, пока трек играет
+    final pos = player.position.value;
+    if (key != _tickKey) {
+      _tickKey = key;
+      _tickHeard = Duration.zero;
+    } else {
+      final step = listenStep(playing: player.playing, before: _tickPos, now: pos);
+      if (step > Duration.zero) {
+        final ms = step.inMilliseconds;
+        final m = _myTime.putIfAbsent(_day(DateTime.now()), () => {});
+        m[t.id] = (m[t.id] ?? 0) + ms;
+        _myTimeTotals[t.id] = (_myTimeTotals[t.id] ?? 0) + ms;
+        _tickHeard += step;
+      }
+    }
+    _tickPos = pos;
+    if (_countedFor == key || _tickHeard < const Duration(seconds: 30)) return;
     _countedFor = key;
     final day = _day(DateTime.now());
     final m = _myPlays.putIfAbsent(day, () => {});
     m[t.id] = (m[t.id] ?? 0) + 1;
+    _myTotals[t.id] = (_myTotals[t.id] ?? 0) + 1;
     _markDirty();
   }
 
@@ -242,9 +331,10 @@ class SocialController extends ChangeNotifier {
   }
 
   Map<String, dynamic> _myJson() {
-    // Храним прослушивания только за две недели
-    final cutoff = _day(DateTime.now().subtract(const Duration(days: 14)));
+    // Прослушивания по дням храним 400 дней: этого хватает на статистику за неделю, месяц и год
+    final cutoff = _day(DateTime.now().subtract(const Duration(days: 400)));
     _myPlays.removeWhere((day, _) => day.compareTo(cutoff) < 0);
+    _myTime.removeWhere((day, _) => day.compareTo(cutoff) < 0);
     return {
       'email': me,
       'name': lib.accounts.primary?.name ?? '',
@@ -253,6 +343,10 @@ class SocialController extends ChangeNotifier {
       'now': _myNow()?.toJson(),
       'events': _myEvents,
       'plays': _myPlays,
+      'tc': _myTotals,
+      'lv': kListenVersion,
+      'lt': _myTime,
+      'ltc': _myTimeTotals,
     };
   }
 
@@ -280,6 +374,9 @@ class SocialController extends ChangeNotifier {
     members.clear();
     _myEvents = [];
     _myPlays = {};
+    _myTotals = {};
+    _myTime = {};
+    _myTimeTotals = {};
   }
 
   void _forgetMyFile(String why) {
@@ -475,6 +572,18 @@ class SocialController extends ChangeNotifier {
           if ((mine[id] ?? 0) < n) mine[id] = n;
         });
       });
+      m.totals.forEach((id, n) {
+        if ((_myTotals[id] ?? 0) < n) _myTotals[id] = n;
+      });
+      m.time.forEach((day, tracks) {
+        final mine = _myTime.putIfAbsent(day, () => {});
+        tracks.forEach((id, n) {
+          if ((mine[id] ?? 0) < n) mine[id] = n;
+        });
+      });
+      m.timeTotals.forEach((id, n) {
+        if ((_myTimeTotals[id] ?? 0) < n) _myTimeTotals[id] = n;
+      });
       _loadedMine = true;
       _refreshMe();
       return;
@@ -568,6 +677,71 @@ class SocialController extends ChangeNotifier {
 
   /// Сколько раз трек прослушан: всей компанией или одним человеком [email].
   /// История хранится две недели, поэтому считается за этот срок.
+  /// Сколько раз трек слушал каждый человек за всё время (с этой версии; раньше — за последние дни)
+  Map<String, int> playsByUser(String trackId) {
+    final out = <String, int>{};
+    for (final m in members.values) {
+      var n = 0;
+      m.totals.forEach((id, c) {
+        if (id == trackId || lib.data.resolve(id) == trackId) n += c;
+      });
+      if (n > 0) out[m.email] = n;
+    }
+    return out;
+  }
+
+  /// Сколько реально наслушал человек: всего или с дня [since]
+  Duration listened(String email, {DateTime? since}) {
+    final m = members[email];
+    if (m == null) return Duration.zero;
+    if (since == null) return listenedSum(m.timeTotals.values);
+    final from = _day(since);
+    var ms = 0;
+    m.time.forEach((day, tracks) {
+      if (day.compareTo(from) < 0) return;
+      for (final v in tracks.values) {
+        ms += v;
+      }
+    });
+    return Duration(milliseconds: ms);
+  }
+
+  /// Наслушанное по дням за последние [days] дней (старые первыми) — для графика в профиле
+  List<(DateTime, Duration)> listenedByDay(String email, {int days = 30}) {
+    final m = members[email];
+    final today = DateTime.now();
+    return [
+      for (var i = days - 1; i >= 0; i--)
+        () {
+          final d = DateTime(today.year, today.month, today.day).subtract(Duration(days: i));
+          return (d, listenedSum((m?.time[_day(d)] ?? const <String, int>{}).values));
+        }(),
+    ];
+  }
+
+  /// Любимый исполнитель за последние [days] дней: чьи треки слушали дольше всего
+  String? topArtist(String email, {int days = 30}) {
+    final m = members[email];
+    if (m == null) return null;
+    final from = _day(DateTime.now().subtract(Duration(days: days - 1)));
+    final byArtist = <String, int>{};
+    final shown = <String, String>{};
+    m.time.forEach((day, tracks) {
+      if (day.compareTo(from) < 0) return;
+      tracks.forEach((id, ms) {
+        final t = lib.data.tracks[lib.data.resolve(id)];
+        if (t == null) return;
+        final name = t.artists.first;
+        final k = name.toLowerCase();
+        shown.putIfAbsent(k, () => name);
+        byArtist[k] = (byArtist[k] ?? 0) + ms ~/ 1000;
+      });
+    });
+    if (byArtist.isEmpty) return null;
+    final best = byArtist.entries.reduce((a, b) => a.value >= b.value ? a : b);
+    return shown[best.key];
+  }
+
   int playsOf(String trackId, {String? email}) {
     var n = 0;
     for (final m in members.values) {

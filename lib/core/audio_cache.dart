@@ -23,6 +23,7 @@ class AudioCache extends ChangeNotifier {
   final List<String> _queue = [];
   final Set<String> _active = {};
   final Set<String> _failed = {};
+  final Set<String> _invalidateAfterDownload = {};
   int sizeBytes = 0;
   Timer? _pinTimer;
 
@@ -94,6 +95,11 @@ class AudioCache extends ChangeNotifier {
       final email = await lib.accessFor(t.source);
       final f = fileFor(id);
       await drive.downloadToFile(email, id, f);
+      if (_invalidateAfterDownload.remove(id)) {
+        // A replacement completed while the old bytes were being cached.
+        if (await f.exists()) await f.delete();
+        return;
+      }
       _have.add(id);
       sizeBytes += await f.length();
       await _evict();
@@ -101,6 +107,32 @@ class AudioCache extends ChangeNotifier {
       _failed.add(id); // не пытаемся снова до перезапуска
       AppLog.warn('Не удалось сохранить «${t.title}» в кэш', e);
     }
+  }
+
+  /// Audio was replaced in Drive under the same ID: cached bytes are now stale.
+  Future<void> invalidate(String id) async {
+    _queue.remove(id);
+    _failed.remove(id);
+    if (!_active.contains(id)) {
+      final f = fileFor(id);
+      try {
+        if (await f.exists()) {
+          final length = await f.length();
+          await f.delete();
+          sizeBytes -= length;
+        }
+      } catch (e) {
+        // Windows may lock a currently playing file. Remote replacement already
+        // succeeded; never turn that success into a failed IPC operation.
+        AppLog.warn('Аудиокэш: старый файл занят, удалю позже', e);
+      }
+      _have.remove(id);
+    } else {
+      // Drop the in-flight old copy once it finishes.
+      _invalidateAfterDownload.add(id);
+      _have.remove(id);
+    }
+    notifyListeners();
   }
 
   // ---------- офлайн ----------

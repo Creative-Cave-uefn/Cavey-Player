@@ -5,6 +5,7 @@ import '../core/library.dart';
 import 'download_view.dart';
 import 'profile_view.dart';
 import 'shell.dart';
+import 'library_tabs.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
@@ -16,12 +17,30 @@ import 'widgets.dart';
 /// Альбом из 2–6 треков — EP, из одного — сингл. «Без альбома» в эти разделы не входит
 bool isShortRelease(Album a) => a.title != 'Без альбома' && a.tracks.length < 7;
 
-class LibraryHomePage extends StatelessWidget {
+/// Полки главной страницы медиатеки. Пока идёт проверка диска, показываем прежний снимок: список не прыгает
+/// от каждого найденного трека
+class _Shelves {
+  final List<Album> recent;
+  final List<Album> heavy;
+  final List<Artist> artists;
+  final List<Album> short;
+  _Shelves(this.recent, this.heavy, this.artists, this.short);
+}
+
+class LibraryHomePage extends StatefulWidget {
   final bool compact;
   const LibraryHomePage({super.key, required this.compact});
 
   @override
+  State<LibraryHomePage> createState() => _LibraryHomePageState();
+}
+
+class _LibraryHomePageState extends State<LibraryHomePage> {
+  _Shelves? _frozen;
+
+  @override
   Widget build(BuildContext context) {
+    final compact = widget.compact;
     final app = Services.of(context);
     return ListenableBuilder(
       listenable: Listenable.merge([app.lib, app.social]),
@@ -32,53 +51,50 @@ class LibraryHomePage extends StatelessWidget {
         if (tracks.isEmpty) return AllTracksPage(compact: compact, title: 'Медиатека');
         final albums = lib.albums;
         final artists = lib.artists;
-        final short = albums.where(isShortRelease).toList();
-        final playlists = lib.visiblePlaylists;
-        final liked = lib.liked.length;
+        final updating = lib.scan.running && _frozen != null;
         final pad = compact ? 20.0 : 36.0;
         final nav = NavScope.of(context);
 
-        // Недавно добавленное: альбомы по самому свежему треку
-        final recentAlbums = <Album>[];
-        final seen = <String>{};
-        final byKey = {for (final a in albums) a.key: a};
-        for (final t in lib.recent) {
-          if (seen.add(t.albumKey)) {
-            final a = byKey[t.albumKey];
-            if (a != null) recentAlbums.add(a);
+        _Shelves compute() {
+          final short = albums.where(isShortRelease).toList();
+          // Недавно добавленное: альбомы по самому свежему треку
+          final recentAlbums = <Album>[];
+          final seen = <String>{};
+          final byKey = {for (final a in albums) a.key: a};
+          for (final t in lib.recent) {
+            final a = lib.album(t.albumKey);
+            if (a != null && seen.add(a.key)) recentAlbums.add(a);
+            if (recentAlbums.length >= 18) break;
           }
-          if (recentAlbums.length >= 18) break;
+
+          // Часто слушаете: мои прослушивания, по альбомам (с этой версии — только реально проигранные)
+          final plays = <String, int>{};
+          final me = app.social.members[lib.me];
+          if (me != null) {
+            for (final day in me.plays.values) {
+              day.forEach((id, n) {
+                final t = lib.data.tracks[lib.data.resolve(id)];
+                final k = t == null ? null : lib.album(t.albumKey)?.key;
+                if (k != null) plays[k] = (plays[k] ?? 0) + n;
+              });
+            }
+          }
+          final heavy = [for (final k in (plays.keys.toList()..sort((a, b) => plays[b]!.compareTo(plays[a]!)))) if (byKey[k] case final a?) a]
+              .take(18)
+              .toList();
+          final topArtists = List<Artist>.of(artists)..sort((a, b) => b.tracks.length.compareTo(a.tracks.length));
+          return _Shelves(recentAlbums, heavy, topArtists, short.length >= 3 ? (List<Album>.of(short)..shuffle()).take(18).toList() : const []);
         }
 
-        // Часто слушаете: мои прослушивания за две недели, по альбомам
-        final plays = <String, int>{};
-        final me = app.social.members[lib.me];
-        if (me != null) {
-          for (final day in me.plays.values) {
-            day.forEach((id, n) {
-              final t = lib.data.tracks[lib.data.resolve(id)];
-              if (t != null) plays[t.albumKey] = (plays[t.albumKey] ?? 0) + n;
-            });
-          }
-        }
-        final heavy = [for (final k in (plays.keys.toList()..sort((a, b) => plays[b]!.compareTo(plays[a]!)))) if (byKey[k] case final a?) a]
-            .take(18)
-            .toList();
-
-        final topArtists = List<Artist>.of(artists)..sort((a, b) => b.tracks.length.compareTo(a.tracks.length));
-
-        final categories = <_Category>[
-          _Category(Icons.music_note_rounded, 'Песни', tracks.length, const Nav('songs')),
-          _Category(Icons.album_outlined, 'Альбомы', albums.length, const Nav('albums')),
-          if (short.isNotEmpty) _Category(Icons.radio_button_checked_rounded, 'Синглы и EP', short.length, const Nav('albums', 'ep')),
-          _Category(Icons.mic_none_rounded, 'Исполнители', artists.length, const Nav('artists')),
-          _Category(Icons.queue_music_rounded, 'Плейлисты', playlists.length, const Nav('playlists')),
-          _Category(Icons.favorite_border_rounded, 'Любимое', liked, const Nav('liked')),
-          _Category(Icons.schedule_rounded, 'Недавно добавленное', null, const Nav('recent')),
-        ];
+        final shelves = updating ? _frozen! : (_frozen = compute());
+        final recentAlbums = shelves.recent;
+        final heavy = shelves.heavy;
+        final topArtists = shelves.artists;
+        final shortShelf = shelves.short;
 
         return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
-          Text('Медиатека', style: display(compact ? 30 : 36, weight: FontWeight.w700)),
+          if (!LibraryFrame.on(context))
+            Text('Медиатека', style: display(compact ? 30 : 36, weight: FontWeight.w700)),
           const SizedBox(height: 8),
           Text(
             '${countTracks(tracks.length)} · ${albums.length} ${plural(albums.length, 'альбом', 'альбома', 'альбомов')} · '
@@ -87,17 +103,11 @@ class LibraryHomePage extends StatelessWidget {
           ),
           const SizedBox(height: 18),
           Wrap(spacing: 10, runSpacing: 10, children: libraryActions(context)),
-          const SizedBox(height: 26),
-          LayoutBuilder(builder: (context, box) {
-            final cols = box.maxWidth >= 980 ? 3 : (box.maxWidth >= 600 ? 2 : 1);
-            final w = (box.maxWidth - (cols - 1) * 10) / cols;
-            return Wrap(spacing: 10, runSpacing: 10, children: [
-              for (final c in categories) SizedBox(width: w, child: _CategoryTile(c)),
-            ]);
-          }),
+
           if (recentAlbums.isNotEmpty) ...[
             const SizedBox(height: 36),
             TileRow(
+              updating: updating,
               title: 'Недавно добавленное',
               onMore: () => nav.go(const Nav('recent')),
               tileWidth: 176,
@@ -107,11 +117,12 @@ class LibraryHomePage extends StatelessWidget {
           ],
           if (heavy.isNotEmpty) ...[
             const SizedBox(height: 28),
-            TileRow(title: 'Часто слушаете', tileWidth: 176, height: 236, tiles: [for (final a in heavy) _AlbumTile(a)]),
+            TileRow(updating: updating, title: 'Часто слушаете', tileWidth: 176, height: 236, tiles: [for (final a in heavy) _AlbumTile(a)]),
           ],
           if (topArtists.isNotEmpty) ...[
             const SizedBox(height: 28),
             TileRow(
+              updating: updating,
               title: 'Исполнители',
               onMore: () => nav.go(const Nav('artists')),
               tileWidth: 140,
@@ -119,59 +130,22 @@ class LibraryHomePage extends StatelessWidget {
               tiles: [for (final a in topArtists.take(20)) _ArtistTile(a)],
             ),
           ],
-          if (short.length >= 3) ...[
+          if (shortShelf.isNotEmpty) ...[
             const SizedBox(height: 28),
             TileRow(
+              updating: updating,
               title: 'Синглы и EP',
               onMore: () => nav.go(const Nav('albums', 'ep')),
               tileWidth: 176,
               height: 236,
-              tiles: [for (final a in (List<Album>.of(short)..shuffle()).take(18)) _AlbumTile(a)],
+              tiles: [for (final a in shortShelf) _AlbumTile(a)],
             ),
           ],
-          const SizedBox(height: 28),
-          const DropHint(),
+
         ]);
       },
     );
   }
-}
-
-class _Category {
-  final IconData icon;
-  final String label;
-  final int? count;
-  final Nav target;
-  const _Category(this.icon, this.label, this.count, this.target);
-}
-
-/// Строка раздела: стекло, значок, название, число и «›»
-class _CategoryTile extends StatelessWidget {
-  final _Category c;
-  const _CategoryTile(this.c);
-
-  @override
-  Widget build(BuildContext context) => Material(
-        color: C.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14), side: const BorderSide(color: C.line)),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: () => NavScope.of(context).go(c.target),
-          child: SizedBox(
-            height: 56,
-            child: Row(children: [
-              const SizedBox(width: 16),
-              Icon(c.icon, size: 22, color: C.accent),
-              const SizedBox(width: 14),
-              Expanded(child: Text(c.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600))),
-              if (c.count != null) Text('${c.count}', style: const TextStyle(color: C.faint, fontSize: 13)),
-              const SizedBox(width: 6),
-              const Icon(Icons.chevron_right_rounded, color: C.muted),
-              const SizedBox(width: 10),
-            ]),
-          ),
-        ),
-      );
 }
 
 class _AlbumTile extends StatelessWidget {
@@ -179,9 +153,9 @@ class _AlbumTile extends StatelessWidget {
   const _AlbumTile(this.a);
 
   @override
-  Widget build(BuildContext context) => InkWell(
-        borderRadius: BorderRadius.circular(10),
+  Widget build(BuildContext context) => TileInk(
         onTap: () => NavScope.of(context).go(Nav('album', a.key)),
+        onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
         child: LayoutBuilder(
           builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 10),
@@ -199,9 +173,12 @@ class _ArtistTile extends StatelessWidget {
   const _ArtistTile(this.a);
 
   @override
-  Widget build(BuildContext context) => InkWell(
-        borderRadius: BorderRadius.circular(10),
+  Widget build(BuildContext context) => TileInk(
         onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+        onPlay: () {
+          final app = Services.of(context);
+          app.player.playTracks(topTracksOf(app, a), 0);
+        },
         child: LayoutBuilder(
           builder: (context, box) => Column(children: [
             ArtistPhoto(

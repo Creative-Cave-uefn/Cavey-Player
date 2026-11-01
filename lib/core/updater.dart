@@ -67,6 +67,9 @@ class Updater extends ChangeNotifier {
   final AppStore store;
   UpdateState state = UpdateState.idle;
   String? latest;
+
+  /// Что изменилось во всех версиях между установленной и новой (новые сверху): версия и список изменений
+  List<(String, String)> changes = const [];
   double progress = 0;
   String? error;
   DateTime? lastCheck;
@@ -203,6 +206,40 @@ class Updater extends ChangeNotifier {
     return best;
   }
 
+  /// Описания всех обычных версий новее установленной и не новее [target]. У тестовой сборки и беты — только её
+  Future<List<(String, String)>> _changesUpTo(BuildInfo target) async {
+    if (!target.stable) return [(target.version, cleanNotes(target.notes))];
+    try {
+      final res = await http
+          .get(Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=40'), headers: _headers)
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode != 200) return [(target.version, cleanNotes(target.notes))];
+      final out = <(String, String)>[];
+      for (final r in (jsonDecode(res.body) as List).whereType<Map>()) {
+        if (r['prerelease'] == true) continue;
+        final v = '${r['tag_name'] ?? ''}'.replaceFirst(RegExp(r'^v'), '');
+        if (v.isEmpty || !isNewer(v, kAppVersion) || isNewer(v, target.version)) continue;
+        out.add((v, cleanNotes('${r['body'] ?? ''}')));
+      }
+      out.sort((a, b) => isNewer(a.$1, b.$1) ? -1 : 1);
+      return out.isEmpty ? [(target.version, cleanNotes(target.notes))] : out;
+    } catch (_) {
+      return [(target.version, cleanNotes(target.notes))];
+    }
+  }
+
+  /// Описание релиза без служебных строк: подписи соавторов, ссылки на сессии, «Merge…».
+  /// У «Слияние X в main: что нового» остаётся только «что нового»
+  static String cleanNotes(String notes) {
+    final skip = RegExp(r'^\s*(Co-Authored-By:|Claude-Session:|Signed-off-by:|Merge (branch|pull|remote))', caseSensitive: false);
+    final merge = RegExp(r'^\s*Слияние[^:]*:\s*');
+    final lines = [
+      for (final l in notes.split('\n'))
+        if (!skip.hasMatch(l)) l.replaceFirst(merge, '').trimRight(),
+    ];
+    return lines.join('\n').replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
+  }
+
   /// Пререлизы публичного репозитория: тестовые сборки веток и бета-версии
   Future<List<Map>> _fetchPrereleases() async {
     final res = await http
@@ -323,9 +360,12 @@ class Updater extends ChangeNotifier {
           '${target.beta ? ' (бета)' : target.stable ? '' : ' (${target.branch})'}, у меня $kAppVersion');
       if (!isNewer(target.version, kAppVersion)) {
         state = UpdateState.upToDate;
+        changes = const [];
         notifyListeners();
         return;
       }
+      changes = await _changesUpTo(target);
+      notifyListeners();
       final meta = await store.readJson('update.json');
       if (meta is Map && meta['version'] == target.version && File('${meta['path']}').existsSync()) {
         state = UpdateState.ready;

@@ -22,6 +22,20 @@ class TrayController with TrayListener, WindowListener {
 
   bool _ready = false;
   bool _closing = false;
+
+  /// Значок: стандартный из сборки или перекрашенный под акцентный цвет (полный путь к .ico)
+  String icon = 'assets/app_icon.ico';
+
+  /// Сменить значок в трее сразу (после смены акцента)
+  Future<void> setIcon(String path) async {
+    icon = path;
+    if (!_ready) return;
+    try {
+      await trayManager.setIcon(path);
+    } catch (e) {
+      AppLog.warn('Трей: значок не сменился', e);
+    }
+  }
   String _signature = '';
 
   TrayController({
@@ -35,7 +49,7 @@ class TrayController with TrayListener, WindowListener {
   Future<void> start() async {
     if (!Platform.isWindows) return;
     try {
-      await trayManager.setIcon('assets/app_icon.ico');
+      await trayManager.setIcon(icon);
       await trayManager.setToolTip('Cavey');
       trayManager.addListener(this);
       // Закрытие окна обрабатываем сами: прячем в трей или аккуратно выходим, сохранив всё нужное

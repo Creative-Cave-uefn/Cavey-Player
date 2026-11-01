@@ -38,7 +38,15 @@ class Album {
   final String title;
   final String artist;
   final List<Track> tracks;
-  Album(this.key, this.title, this.artist, this.tracks);
+
+  /// Все причастные исполнители: самые частые первыми
+  final List<String> artists;
+
+  /// Ключи «исполнитель + название», из которых склеен альбом (старые ссылки и обложки ведут сюда)
+  final Set<String> keys;
+  Album(this.key, this.title, this.artist, this.tracks, {List<String>? artists, Set<String>? keys})
+      : artists = artists ?? splitArtists(artist),
+        keys = keys ?? {key};
   Track get coverTrack => tracks.firstWhere((t) => t.hasCover, orElse: () => tracks.first);
   String get year => tracks.map((t) => t.year).firstWhere((y) => y.isNotEmpty, orElse: () => '');
 }
@@ -47,8 +55,9 @@ class Artist {
   final String key;
   final String name;
   final List<Track> tracks;
-  Artist(this.key, this.name, this.tracks);
-  int get albums => tracks.map((t) => t.albumKey).toSet().length;
+  final int? _albums;
+  Artist(this.key, this.name, this.tracks, {int? albums}) : _albums = albums;
+  int get albums => _albums ?? tracks.map((t) => t.albumKey).toSet().length;
   Track get coverTrack => tracks.firstWhere((t) => t.hasCover, orElse: () => tracks.first);
 }
 
@@ -1042,6 +1051,7 @@ class LibraryController extends ChangeNotifier {
     for (final t in all) {
       byAlbum.putIfAbsent(t.albumKey, () => []).add(t);
     }
+    final merged = mergeAlbumGroups(byAlbum);
     // Трек с соавторами («A, B», «A feat. B») попадает к каждому из них
     final byArtist = <String, List<Track>>{};
     final names = <String, String>{};
@@ -1052,18 +1062,25 @@ class LibraryController extends ChangeNotifier {
         byArtist.putIfAbsent(key, () => []).add(t);
       }
     }
-    _artists = [for (final e in byArtist.entries) Artist(e.key, names[e.key]!, e.value)]
-      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-    _artistByKey = {for (final a in _artists) a.key: a};
-    _albums = byAlbum.entries.map((e) {
-      final t = e.value.first;
-      final artists = e.value.map((x) => x.albumArtist.isNotEmpty ? x.albumArtist : x.artist).toSet();
-      return Album(e.key, t.displayAlbum, artists.length == 1 ? t.displayArtist : 'Разные исполнители', e.value);
-    }).toList()
+    _albums = [for (final keys in merged) buildAlbum(keys, byAlbum)]
       ..sort((a, b) => a.artist.toLowerCase().compareTo(b.artist.toLowerCase()) != 0
           ? a.artist.toLowerCase().compareTo(b.artist.toLowerCase())
           : a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    _albumByKey = {
+      for (final a in _albums)
+        for (final k in a.keys) k: a,
+    };
+    for (final a in _albums) {
+      _albumByKey[a.key] = a;
+    }
+    _artists = [
+      for (final e in byArtist.entries)
+        Artist(e.key, names[e.key]!, e.value, albums: {for (final t in e.value) _albumByKey[t.albumKey]?.key ?? t.albumKey}.length)
+    ]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    _artistByKey = {for (final a in _artists) a.key: a};
   }
+
+  Map<String, Album> _albumByKey = const {};
 
   static int _compare(Track a, Track b) {
     int c(String x, String y) => x.toLowerCase().compareTo(y.toLowerCase());
@@ -1088,11 +1105,10 @@ class LibraryController extends ChangeNotifier {
     return _albums;
   }
 
+  /// Альбом по ключу: и по новому (склеенному), и по старому «исполнитель + название»
   Album? album(String key) {
-    for (final a in albums) {
-      if (a.key == key) return a;
-    }
-    return null;
+    _rebuild();
+    return _albumByKey[key];
   }
 
   Album? albumOf(Track t) => album(t.albumKey);
@@ -1372,7 +1388,7 @@ class LibraryController extends ChangeNotifier {
     if (fields.isEmpty) return;
     final list = ids.toList();
     final meta = <String, Map<String, String>>{for (final id in list) id: fields};
-    if (fields.containsKey('a') || fields.containsKey('al')) {
+    if (fields.containsKey('a') || fields.containsKey('al') || fields.containsKey('aa')) {
       final picked = list.toSet();
       final byAlbum = <String, List<Track>>{};
       for (final id in list) {
@@ -1383,12 +1399,33 @@ class LibraryController extends ChangeNotifier {
         final cover = albumCover(oldKey);
         if (cover == null) return;
         if (!data.tracks.values.where((t) => t.albumKey == oldKey).every((t) => picked.contains(t.id))) return;
-        final newKeys = {for (final t in tracks) t.albumKeyWith(newArtist: fields['a'], newAlbum: fields['al'])};
+        final newKeys = {
+          for (final t in tracks) t.albumKeyWith(newArtist: fields['a'], newAlbum: fields['al'], newAlbumArtist: fields['aa'])
+        };
         if (newKeys.length != 1 || newKeys.first == oldKey || albumCover(newKeys.first) != null) return;
         meta['album:${newKeys.first}'] = {'cv': cover};
       });
     }
     setMeta(meta);
+  }
+
+  /// Правка альбома целиком (окно «Альбом»): название, год и исполнитель альбома — у всех его треков,
+  /// обложка — альбому. null — поле не меняется; cover == '' — вернуть обложку из файлов.
+  /// Исполнители отдельных треков не трогаются, иначе пропадут соавторы.
+  void editAlbum(Album a, {String? title, String? year, String? albumArtist, String? cover}) {
+    final ids = [for (final t in a.tracks) t.id];
+    if (ids.isEmpty) return;
+    final keep = albumCover(a.key);
+    final fields = <String, String>{
+      if (title != null) 'al': title,
+      if (year != null) 'y': year,
+      if (albumArtist != null) 'aa': albumArtist,
+    };
+    if (fields.isNotEmpty) editTracks(ids, fields);
+    final now = data.tracks[ids.first];
+    if (now == null) return;
+    final target = cover ?? keep;
+    if (target != null && (cover != null || fields.isNotEmpty)) setAlbumCover(now.albumKey, target);
   }
 
   // ---------- данные, которые хранятся в общих правках (edits) ----------
@@ -1406,7 +1443,7 @@ class LibraryController extends ChangeNotifier {
   }
 
   /// Своя обложка: у альбома она важнее, чем у его треков, а у трека — важнее обложки из файла
-  String? customCoverOf(Track t) => _metaValue('album:${t.albumKey}', 'cv') ?? t.customCover;
+  String? customCoverOf(Track t) => albumCover(t.albumKey) ?? t.customCover;
   // ---------- профиль: ник, аватарка, баннер (хранятся в edits['u:<почта>']) ----------
 
   String? profileNick(String email) => _metaValue('u:$email', 'nick');
@@ -1446,11 +1483,31 @@ class LibraryController extends ChangeNotifier {
 
   void setPlaylistPublic(String id, bool on) => setMeta({'pl:$id': {'pub': on ? '1' : ''}});
 
-  String? albumCover(String albumKey) => _metaValue('album:$albumKey', 'cv');
+  /// Своя обложка альбома. У склеенного альбома — первая найденная среди его частей, главная часть важнее
+  String? albumCover(String albumKey) {
+    final a = album(albumKey);
+    if (a == null) return _metaValue('album:$albumKey', 'cv');
+    for (final k in [a.key, ...a.keys]) {
+      final v = _metaValue('album:$k', 'cv');
+      if (v != null) return v;
+    }
+    return null;
+  }
   String? playlistCover(String id) => _metaValue('pl:$id', 'cv');
 
   /// [cover]: id картинки, пустая строка — вернуть обложку из файлов
-  void setAlbumCover(String albumKey, String cover) => setMeta({'album:$albumKey': {'cv': cover}});
+  void setAlbumCover(String albumKey, String cover) {
+    final a = album(albumKey);
+    if (a == null) {
+      setMeta({'album:$albumKey': {'cv': cover}});
+      return;
+    }
+    // Своя обложка ставится главной части, а со всех остальных снимается: иначе у склеенного альбома их две
+    setMeta({
+      for (final k in a.keys) 'album:$k': {'cv': ''},
+      'album:${a.key}': {'cv': cover},
+    });
+  }
   void setPlaylistCover(String id, String cover) => setMeta({'pl:$id': {'cv': cover}});
 
   /// Любимые исполнители: у каждого свой список
@@ -1460,6 +1517,56 @@ class LibraryController extends ChangeNotifier {
     final m = me;
     if (m == null) return;
     setMeta({'u:$m': {'fa:${artistKey.toLowerCase()}': isFavArtist(artistKey) ? '' : '1'}});
+  }
+
+  /// Любимые плейлисты (чужие — свои и так всегда в боковой панели) и альбомы. Хранятся, как и исполнители,
+  /// в общей записи человека: одинаковы на всех его компьютерах и видны друзьям в профиле
+  bool isFavPlaylist(String id) => me != null && _metaValue('u:$me', 'fp:$id') != null;
+
+  void toggleFavPlaylist(String id) {
+    final m = me;
+    if (m == null) return;
+    setMeta({'u:$m': {'fp:$id': isFavPlaylist(id) ? '' : '1'}});
+  }
+
+  /// У склеенного альбома отметка могла стоять на любой его части
+  bool isFavAlbum(Album a) => me != null && [a.key, ...a.keys].any((k) => _metaValue('u:$me', 'fl:${k.toLowerCase()}') != null);
+
+  void toggleFavAlbum(Album a) {
+    final m = me;
+    if (m == null) return;
+    if (isFavAlbum(a)) {
+      setMeta({'u:$m': {for (final k in {a.key, ...a.keys}) 'fl:${k.toLowerCase()}': ''}});
+    } else {
+      setMeta({'u:$m': {'fl:${a.key.toLowerCase()}': '1'}});
+    }
+  }
+
+  /// Что человек отметил сердечком: плейлисты, альбомы и исполнители (для боковой панели и профиля)
+  ({List<Playlist> playlists, List<Album> albums, List<Artist> artists}) favoritesOf(String email) {
+    final e = data.edits['u:$email'] ?? const <String, String>{};
+    final pl = <Playlist>[];
+    final al = <Album>[];
+    final ar = <Artist>[];
+    final seenAlbums = <String>{};
+    for (final entry in e.entries) {
+      if (entry.value.isEmpty) continue;
+      final k = entry.key;
+      if (k.startsWith('fp:')) {
+        final p = playlist(k.substring(3));
+        if (p != null && (p.by == email || isPlaylistPublic(p.id) || email == me)) pl.add(p);
+      } else if (k.startsWith('fl:')) {
+        final a = album(k.substring(3));
+        if (a != null && seenAlbums.add(a.key)) al.add(a);
+      } else if (k.startsWith('fa:')) {
+        final a = artist(k.substring(3));
+        if (a != null) ar.add(a);
+      }
+    }
+    pl.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    al.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    ar.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return (playlists: pl, albums: al, artists: ar);
   }
 
   // ---------- папка с загруженными обложками ----------
@@ -1657,6 +1764,27 @@ class LibraryController extends ChangeNotifier {
     return t;
   }
 
+  /// Replaces audio in place. The Drive file ID is stable so playlist entries,
+  /// likes, shared links and user metadata edits continue to refer to this track.
+  Future<void> replaceTrackAudio(Track original, File audio, {required String mime}) async {
+    if (data.tracks[original.id] == null) {
+      throw LibraryException('Трек исчез из библиотеки.');
+    }
+    final email = await accessFor(original.source);
+    final result = await drive.replaceFileMedia(email, original.id, audio, mime: mime);
+    final tags = parseTags(await _readHead(audio), audio.uri.pathSegments.last);
+    final json = original.toJson();
+    json['m'] = result.modifiedTime;
+    json['sz'] = result.size;
+    if (result.md5.isNotEmpty) json['md5'] = result.md5;
+    if (tags.pic != null) {
+      json['p'] = [tags.pic!.offset, tags.pic!.length, tags.pic!.mime];
+    } else {
+      json.remove('p'); // old embedded image offset would refer to wrong bytes
+    }
+    commit({'op': 'upsertTracks', 'tracks': {original.id: json}});
+  }
+
   /// Подпапка с таким именем внутри [parentId]; создаётся, если её нет
   Future<String> ensureSubfolder(String sourceId, String parentId, String name) async {
     final email = await accessFor(sourceId);
@@ -1711,4 +1839,99 @@ class _Found {
   final String folder;
   final String path;
   _Found(this.file, this.folder, this.path);
+}
+
+// ---------- склейка альбомов ----------
+
+String _normAlbumTitle(String s) => s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+
+Set<String> _albumNames(Track t) => {
+      for (final n in t.artists) n.toLowerCase(),
+      if (t.albumArtist.isNotEmpty) ...splitArtists(t.albumArtist).map((n) => n.toLowerCase()),
+    };
+
+/// Какие группы «исполнитель + название» — один альбом. Склеиваются группы с одним названием,
+/// если они лежат в одной папке на Диске или у них есть общий исполнитель.
+/// Треки без названия альбома в тегах (альбом — имя папки или «Без альбома») не склеиваются.
+List<List<String>> mergeAlbumGroups(Map<String, List<Track>> groups) {
+  final byTitle = <String, List<String>>{};
+  final out = <List<String>>[];
+  for (final e in groups.entries) {
+    final first = e.value.first;
+    if (e.value.every((t) => t.album.isEmpty)) {
+      out.add([e.key]);
+      continue;
+    }
+    byTitle.putIfAbsent(_normAlbumTitle(first.displayAlbum), () => []).add(e.key);
+  }
+  for (final keys in byTitle.values) {
+    if (keys.length == 1) {
+      out.add(keys);
+      continue;
+    }
+    final parent = {for (final k in keys) k: k};
+    String find(String k) {
+      while (parent[k] != k) {
+        k = parent[k] = parent[parent[k]!]!;
+      }
+      return k;
+    }
+
+    final folders = {for (final k in keys) k: {for (final t in groups[k]!) '${t.source}/${t.path}'}};
+    final names = {for (final k in keys) k: {for (final t in groups[k]!) ..._albumNames(t)}};
+    for (var i = 0; i < keys.length; i++) {
+      for (var j = i + 1; j < keys.length; j++) {
+        final a = keys[i], b = keys[j];
+        if (folders[a]!.any(folders[b]!.contains) || names[a]!.any(names[b]!.contains)) {
+          parent[find(a)] = find(b);
+        }
+      }
+    }
+    final sets = <String, List<String>>{};
+    for (final k in keys) {
+      sets.putIfAbsent(find(k), () => []).add(k);
+    }
+    out.addAll(sets.values);
+  }
+  return out;
+}
+
+/// Собирает альбом из склеенных групп: ключ — у самой большой части, исполнитель — самый частый
+Album buildAlbum(List<String> keys, Map<String, List<Track>> groups) {
+  final sorted = List.of(keys)..sort((a, b) => groups[b]!.length.compareTo(groups[a]!.length));
+  final tracks = [for (final k in sorted) ...groups[k]!];
+  if (sorted.length > 1) {
+    tracks.sort((a, b) {
+      final r = (a.no ?? 9999).compareTo(b.no ?? 9999);
+      return r != 0 ? r : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    });
+  }
+  String most(Map<String, int> m) => (m.entries.toList()..sort((a, b) => b.value.compareTo(a.value))).first.key;
+
+  final titles = <String, int>{};
+  final whole = <String, int>{}; // исполнитель альбома целиком, как в тегах
+  final single = <String, int>{}; // каждый исполнитель отдельно
+  final shown = <String, String>{};
+  for (final t in tracks) {
+    titles[t.displayAlbum] = (titles[t.displayAlbum] ?? 0) + 1;
+    final w = t.albumArtist.isNotEmpty ? t.albumArtist : t.displayArtist;
+    whole[w] = (whole[w] ?? 0) + 1;
+    for (final n in {...t.artists, if (t.albumArtist.isNotEmpty) ...splitArtists(t.albumArtist)}) {
+      final k = n.toLowerCase();
+      shown.putIfAbsent(k, () => n);
+      single[k] = (single[k] ?? 0) + 1;
+    }
+  }
+  final half = (tracks.length + 1) ~/ 2;
+  String artist;
+  final topWhole = most(whole);
+  if (whole[topWhole]! >= half) {
+    artist = topWhole;
+  } else if (single.isNotEmpty && single[most(single)]! >= half) {
+    artist = shown[most(single)]!;
+  } else {
+    artist = 'Разные исполнители';
+  }
+  final order = single.keys.toList()..sort((a, b) => single[b]!.compareTo(single[a]!));
+  return Album(sorted.first, most(titles), artist, tracks, artists: [for (final k in order) shown[k]!], keys: keys.toSet());
 }

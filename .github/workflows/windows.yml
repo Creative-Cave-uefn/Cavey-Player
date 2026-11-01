@@ -28,6 +28,9 @@ jobs:
       APP_VERSION: 0.2.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Вся история и метки: список изменений для релиза собирается от прошлой версии
+          fetch-depth: 0
 
       # Версия Flutter закреплена: в свежих версиях движок под Windows вылетает
       # (access violation в flutter_windows.dll, см. историю коммитов)
@@ -142,7 +145,8 @@ jobs:
             "--dart-define=DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}" `
             "--dart-define=SHARE_URL=${{ vars.SHARE_URL }}" `
             "--dart-define=GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID" `
-            "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET" 2>&1 | Out-String
+            "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET" `
+            2>&1 | Out-String
           $code = $LASTEXITCODE
           Write-Output $out
           if ($code -ne 0) {
@@ -153,6 +157,47 @@ jobs:
             }
             exit $code
           }
+
+      # The downloader is a separate private project. Only the CI runner receives
+      # its read token; no GitHub/Deezer/Soulseek secrets enter the Flutter build.
+      - name: Проверить доступ к отдельному модулю
+        shell: pwsh
+        env:
+          MODULE_READ_TOKEN: ${{ secrets.DOWNLOADER_READ_TOKEN }}
+        run: |
+          if (-not $env:MODULE_READ_TOKEN) {
+            Write-Output "::error::Добавьте Actions Secret DOWNLOADER_READ_TOKEN (read-only доступ к Cavey-Downloader). Без модуля скачивание не работает."
+            exit 1
+          }
+
+      - name: Получить исходники Cavey-Downloader
+        uses: actions/checkout@v5
+        with:
+          repository: Creative-Cave-uefn/Cavey-Downloader
+          ref: ${{ github.ref_name == 'feat/unified-links-youtube-reliability' && 'feat/unified-links-youtube-reliability' || 'main' }}
+          token: ${{ secrets.DOWNLOADER_READ_TOKEN }}
+          path: .cave-downloader-module
+          persist-credentials: false
+
+      - name: Собрать независимый Cavey-Downloader.exe
+        shell: pwsh
+        env:
+          CAVE_DEEZER_ARL_DEFAULT: ${{ secrets.CAVE_DEEZER_ARL }}
+          CAVE_SOULSEEK_USERNAME_DEFAULT: ${{ secrets.CAVE_SOULSEEK_USERNAME }}
+          CAVE_SOULSEEK_PASSWORD_DEFAULT: ${{ secrets.CAVE_SOULSEEK_PASSWORD }}
+        run: |
+          Push-Location .cave-downloader-module
+          try {
+            dart pub get
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            dart compile exe bin/cave_downloader.dart -o cave-downloader-windows-x64.exe `
+              "--define=APP_VERSION=2.0.${{ github.run_number }}" `
+              "--define=CAVE_DEEZER_ARL_DEFAULT=$env:CAVE_DEEZER_ARL_DEFAULT" `
+              "--define=CAVE_SOULSEEK_USERNAME_DEFAULT=$env:CAVE_SOULSEEK_USERNAME_DEFAULT" `
+              "--define=CAVE_SOULSEEK_PASSWORD_DEFAULT=$env:CAVE_SOULSEEK_PASSWORD_DEFAULT"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Copy-Item cave-downloader-windows-x64.exe ../build/windows/x64/runner/Release/ -Force
+          } finally { Pop-Location }
 
       - name: Установщик и портативная версия
         shell: pwsh
@@ -169,13 +214,25 @@ jobs:
           name: CavePlayer-Windows
           path: dist/*
 
+      # Что изменилось с прошлой версии: заголовки коммитов без слияний. Приложение показывает это под «Проверить обновления»
+      - name: Список изменений
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $prev = git describe --tags --abbrev=0 --match "v*" HEAD^ 2>$null
+          $range = if ($LASTEXITCODE -eq 0 -and $prev) { "$prev..HEAD" } else { "HEAD~20..HEAD" }
+          $subjects = @(git log --no-merges --format="%s" $range | Where-Object { $_ -and $_ -notmatch '^(Merge|Слияние)' } | Select-Object -Unique -First 40)
+          $text = ($subjects | ForEach-Object { "• $_" }) -join "`n"
+          if (-not $text) { $text = "Cavey $env:APP_VERSION" }
+          "RELEASE_NOTES<<EOF_NOTES`n$text`nEOF_NOTES" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       # Релиз в этом же репозитории: токен не нужен. Приложения видят его, если репозиторий публичный
       - name: Опубликовать релиз здесь
         if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          NOTES: ${{ github.event.head_commit.message }}
+          NOTES: ${{ env.RELEASE_NOTES || github.event.head_commit.message }}
         run: |
           $notes = if ($env:NOTES) { $env:NOTES } else { "Cavey $env:APP_VERSION" }
           gh release create "v$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
@@ -189,7 +246,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
-          NOTES: ${{ github.event.head_commit.message }}
+          NOTES: ${{ env.RELEASE_NOTES || github.event.head_commit.message }}
         run: |
           if (-not $env:GH_TOKEN) {
             Write-Output "::notice::Секрет RELEASES_TOKEN не задан, обновление не опубликовано"

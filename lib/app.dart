@@ -10,6 +10,7 @@ import 'core/preview.dart';
 import 'core/web_info.dart';
 import 'core/karaoke.dart';
 import 'core/wave.dart';
+import 'core/app_icon.dart';
 import 'core/audio_cache.dart';
 import 'core/automix.dart';
 import 'core/auth.dart';
@@ -21,6 +22,7 @@ import 'core/drive.dart';
 import 'core/library.dart';
 import 'core/lyric_sources.dart';
 import 'core/perf.dart';
+import 'core/log.dart';
 import 'core/lyrics.dart';
 import 'core/player.dart';
 import 'core/social.dart';
@@ -152,7 +154,7 @@ class AppServices {
       social.onUserAction();
       showInDiscord();
     };
-    final downloads = DownloadService(lib, Tools(store.sub('tools')), store.sub('downloads'));
+    final downloads = DownloadService(lib, store.sub('downloads'), cache: cache, covers: covers);
     late final AppServices app;
     final tray = TrayController(
       player: player,
@@ -183,6 +185,8 @@ class AppServices {
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
+    // Значок в цвете акцента: в трее и у окна — сразу при запуске
+    unawaited(app.refreshAppIcon());
     // Значки, оставшиеся от закрытых принудительно прошлых версий, Проводник выбрасывает, когда над ними «проведут курсор»
     Timer(const Duration(seconds: 2), sweepGhostTrayIcons);
     Timer(const Duration(seconds: 12), sweepGhostTrayIcons);
@@ -197,8 +201,54 @@ class AppServices {
     return app;
   }
 
-  /// Полный выход (из меню трея или по крестику, если трей выключен): сохраняем, что не сохранено, и закрываемся
-  Future<void> shutdown() async {
+  // ---------- значок в цвете акцента ----------
+
+  String _accentHex() => C.accentHex(C.accent);
+
+  /// Какой значок должен быть в файле программы: цвет и версия (после обновления файл новый, со стандартным значком)
+  String _wantedExeIcon() => '${_accentHex()}@$kAppVersion';
+
+  /// Значок файла программы ещё не в цвете акцента (сменили цвет или обновились)
+  bool get exeIconPending {
+    final applied = settings.viewOf('exeIcon', '');
+    final isDefault = C.accent.value == C.defaultAccent.value;
+    // Стандартный цвет и значок ни разу не меняли — менять нечего
+    if (applied.isEmpty && isDefault) return false;
+    return applied != _wantedExeIcon();
+  }
+
+  /// Значок в трее и у окна — в цвет акцента (или стандартный)
+  Future<void> refreshAppIcon() async {
+    try {
+      final isDefault = C.accent.value == C.defaultAccent.value;
+      final path = await AppIcon.prepare(store.dir, C.accent.value, isDefault: isDefault) ?? AppIcon.defaultIcon;
+      await tray.setIcon(path);
+      if (!isDefault || settings.viewOf('exeIcon', '').isNotEmpty) await AppIcon.applyToWindow(path);
+    } catch (e) {
+      AppLog.warn('Значок в цвете акцента не получился', e);
+    }
+  }
+
+  /// Записать значок в файл программы: Cavey закрывается, значок меняется, проводник перезапускается.
+  /// [relaunch] — открыть Cavey снова (кнопка в настройках); при обычном выходе — нет
+  Future<void> applyExeIcon({required bool relaunch}) async {
+    final isDefault = C.accent.value == C.defaultAccent.value;
+    final ico = await AppIcon.prepare(store.dir, C.accent.value, isDefault: isDefault) ?? AppIcon.bundledIco();
+    if (await AppIcon.patchExeAfterExit(ico, relaunch: relaunch)) {
+      settings.view['exeIcon'] = _wantedExeIcon();
+      await lib.saveSettings();
+    }
+    if (relaunch) await shutdown(patchIcon: false);
+  }
+
+  /// Полный выход (из меню трея или по крестику, если трей выключен): сохраняем, что не сохранено, и закрываемся.
+  /// Если значок файла программы ещё не в цвете акцента — он меняется сразу после выхода
+  Future<void> shutdown({bool patchIcon = true}) async {
+    if (patchIcon && exeIconPending) {
+      try {
+        await applyExeIcon(relaunch: false);
+      } catch (_) {}
+    }
     try {
       await player.flushSession();
       await wave.flush();

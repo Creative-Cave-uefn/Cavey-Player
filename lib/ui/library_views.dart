@@ -5,14 +5,17 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/library.dart';
+import '../core/deezer_art.dart';
 import '../core/models.dart';
 import '../core/tags.dart';
 import 'cover_picker.dart';
 import 'list_filter.dart';
 import 'shell.dart';
+import 'library_tabs.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
+import 'profile_view.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
 
@@ -86,7 +89,8 @@ class _ArtistsPageState extends State<ArtistsPage> {
             child: Padding(
               padding: EdgeInsets.fromLTRB(pad, 34, pad, 18),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Исполнители', style: display(36, weight: FontWeight.w700)),
+                if (!LibraryFrame.on(context))
+                  Text('Исполнители', style: display(36, weight: FontWeight.w700)),
                 if (all.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   Text(
@@ -167,9 +171,12 @@ Widget _artistsSliver(BuildContext context, AppServices app, List<Artist> items,
         count: items.length,
         builder: (context, i) {
           final a = items[i];
-          return InkWell(
-            borderRadius: BorderRadius.circular(12),
+          return TileInk(
             onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+            onPlay: () {
+              final app = Services.of(context);
+              app.player.playTracks(topTracksOf(app, a), 0);
+            },
             child: LayoutBuilder(
               builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
                 Stack(children: [
@@ -590,6 +597,98 @@ class UploadLine extends StatelessWidget {
   }
 }
 
+// Album artwork lookup is optional, non-destructive until Save is pressed.
+class _DeezerCoverLookup extends StatefulWidget {
+  final Track track;
+  final TextEditingController title;
+  final TextEditingController artist;
+  final TextEditingController album;
+  final CoverChoice choice;
+
+  const _DeezerCoverLookup({
+    required this.track,
+    required this.title,
+    required this.artist,
+    required this.album,
+    required this.choice,
+  });
+
+  @override
+  State<_DeezerCoverLookup> createState() => _DeezerCoverLookupState();
+}
+
+class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
+  bool searching = false;
+  String status = '';
+
+  @override
+  void initState() {
+    super.initState();
+    // Try Deezer automatically, but never replace a user's manual choice.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _lookup(automatic: true);
+    });
+  }
+
+  Future<void> _lookup({bool automatic = false}) async {
+    if (searching) return;
+    setState(() { searching = true; status = 'Проверяю Deezer…'; });
+    try {
+      final app = Services.of(context);
+      // Do not wait for a potentially slow Google Drive cover after the
+      // Deezer request: both fetches run concurrently.
+      final currentCoverFuture = app.covers.forTrack(widget.track, px: 0)
+          .timeout(const Duration(seconds: 6), onTimeout: () => null)
+          .catchError((Object _) => null);
+      final artwork = await DeezerArt.find(
+        artist: widget.artist.text.trim(),
+        title: widget.title.text.trim(),
+        album: widget.album.text.trim(),
+      );
+      if (!mounted) return;
+      if (artwork == null) {
+        setState(() => status = 'В Deezer не нашёл точного совпадения.');
+        return;
+      }
+      if (automatic && widget.choice.changed) return;
+      final currentBytes = widget.choice.picked?.bytes ?? await currentCoverFuture;
+      if (!mounted) return;
+      if (automatic && widget.choice.changed) return;
+      final current = DeezerArt.dimensions(currentBytes);
+      if (current != null && !artwork.betterThan(current.$1, current.$2)) {
+        setState(() => status =
+            'Текущая обложка не хуже: ${current.$1}×${current.$2}. Deezer: ${artwork.width}×${artwork.height}.');
+        return;
+      }
+      widget.choice.pick(PickedCover(artwork.bytes, 'jpg'));
+      setState(() => status =
+          'Deezer: ${artwork.width}×${artwork.height}. Новая обложка будет сохранена вместе с метаданными.');
+    } catch (_) {
+      if (mounted) setState(() => status = 'Deezer сейчас не ответил. Обложку можно выбрать вручную.');
+    } finally {
+      if (mounted) setState(() => searching = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 10),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      OutlinedButton.icon(
+        onPressed: searching ? null : () => _lookup(),
+        icon: searching
+            ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.auto_awesome_rounded, size: 18),
+        label: const Text('Найти обложку в Deezer'),
+      ),
+      if (status.isNotEmpty) ...[
+        const SizedBox(height: 6),
+        Text(status, style: const TextStyle(color: C.muted, fontSize: 12)),
+      ],
+    ]),
+  );
+}
+
 // ---------- правка тегов ----------
 
 Future<void> editTrackDialog(BuildContext context, Track t) async {
@@ -613,6 +712,7 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
               canReset: t.customCover != null,
               note: albumHasOwn ? 'У альбома своя обложка, она показывается поверх обложек его треков.' : null,
             ),
+            _DeezerCoverLookup(track: t, title: title, artist: artist, album: album, choice: choice),
             const SizedBox(height: 18),
             const Text('Название', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),

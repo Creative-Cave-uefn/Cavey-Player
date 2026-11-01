@@ -8,9 +8,11 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
+import '../core/social.dart';
 import 'ambient.dart';
 import 'company_view.dart';
 import 'shell.dart';
+import 'playlists_view.dart';
 import 'profile_edit.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
@@ -330,7 +332,10 @@ class SectionTitle extends StatelessWidget {
   final String text;
   final VoidCallback? onTap;
   final Widget? trailing;
-  const SectionTitle(this.text, {super.key, this.onTap, this.trailing});
+
+  /// Рядом с заголовком (например, «обновление»)
+  final Widget? badge;
+  const SectionTitle(this.text, {super.key, this.onTap, this.trailing, this.badge});
 
   @override
   Widget build(BuildContext context) {
@@ -342,6 +347,7 @@ class SectionTitle extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(children: [
         onTap == null ? title : InkWell(borderRadius: BorderRadius.circular(6), onTap: onTap, child: title),
+        if (badge != null) ...[const SizedBox(width: 12), badge!],
         const Spacer(),
         if (trailing != null) trailing!,
       ]),
@@ -443,7 +449,10 @@ class TileRow extends StatefulWidget {
 
   /// «›» у заголовка — открыть раздел целиком
   final VoidCallback? onMore;
-  const TileRow({super.key, required this.title, required this.tiles, this.tileWidth = 220, this.height = 270, this.onMore});
+
+  /// Идёт обновление: плитки затемнены и не нажимаются, рядом с заголовком значок «обновление»
+  final bool updating;
+  const TileRow({super.key, required this.title, required this.tiles, this.tileWidth = 220, this.height = 270, this.onMore, this.updating = false});
 
   @override
   State<TileRow> createState() => _TileRowState();
@@ -471,6 +480,7 @@ class _TileRowState extends State<TileRow> {
       SectionTitle(
         widget.title,
         onTap: widget.onMore,
+        badge: widget.updating ? const UpdatingBadge() : null,
         trailing: many
             ? Row(mainAxisSize: MainAxisSize.min, children: [
                 IconButton(onPressed: () => _scroll(-1), icon: const Icon(Icons.chevron_left_rounded), tooltip: 'Назад'),
@@ -478,7 +488,12 @@ class _TileRowState extends State<TileRow> {
               ])
             : null,
       ),
-      SizedBox(
+      AnimatedOpacity(
+        opacity: widget.updating ? 0.35 : 1,
+        duration: const Duration(milliseconds: 220),
+        child: IgnorePointer(
+          ignoring: widget.updating,
+          child: SizedBox(
         height: widget.height,
         child: ScrollConfiguration(
           behavior: ScrollConfiguration.of(context).copyWith(dragDevices: {PointerDeviceKind.touch, PointerDeviceKind.mouse}),
@@ -491,15 +506,57 @@ class _TileRowState extends State<TileRow> {
           ),
         ),
       ),
+        ),
+      ),
     ]);
   }
 }
 
+/// «Обновление» рядом с заголовком полки: вращающийся значок и подпись
+class UpdatingBadge extends StatefulWidget {
+  const UpdatingBadge({super.key});
+
+  @override
+  State<UpdatingBadge> createState() => _UpdatingBadgeState();
+}
+
+class _UpdatingBadgeState extends State<UpdatingBadge> with SingleTickerProviderStateMixin {
+  late final AnimationController _spin = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100))..repeat();
+
+  @override
+  void dispose() {
+    _spin.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      RotationTransition(turns: _spin, child: const Icon(Icons.sync_rounded, size: 16, color: C.muted)),
+      const SizedBox(width: 6),
+      const Text('обновление', style: TextStyle(color: C.muted, fontSize: 13)),
+    ]);
+  }
+}
+
+String _trackWhen(Track t) => t.added.isNotEmpty ? t.added : t.modified;
+
+/// Треки исполнителя в порядке «Топ-песен»: чаще слушали, потом чаще лайкали, потом новее
+List<Track> topTracksOf(AppServices app, Artist a) => List<Track>.of(a.tracks)
+  ..sort((x, y) {
+    final p = app.social.playsOf(y.id).compareTo(app.social.playsOf(x.id));
+    if (p != 0) return p;
+    final l = (app.lib.data.likes[y.id]?.length ?? 0).compareTo(app.lib.data.likes[x.id]?.length ?? 0);
+    if (l != 0) return l;
+    return _trackWhen(y).compareTo(_trackWhen(x));
+  });
+
 /// Плитка: квадратная обложка, название и подпись
-Widget _tile(BuildContext context, {required Widget cover, required String title, required String subtitle, required VoidCallback onTap}) {
-  return InkWell(
-    borderRadius: BorderRadius.circular(10),
+Widget _tile(BuildContext context,
+    {required Widget cover, required String title, required String subtitle, required VoidCallback onTap, VoidCallback? onPlay}) {
+  return TileInk(
     onTap: onTap,
+    onPlay: onPlay,
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       AspectRatio(aspectRatio: 1, child: cover),
       const SizedBox(height: 10),
@@ -516,6 +573,7 @@ Widget _albumTile(BuildContext context, Album a) => _tile(
       title: a.title,
       subtitle: a.year.isEmpty ? countTracks(a.tracks.length) : '${a.year} · ${countTracks(a.tracks.length)}',
       onTap: () => NavScope.of(context).go(Nav('album', a.key)),
+      onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
     );
 
 // ---------- страница исполнителя ----------
@@ -530,7 +588,7 @@ class ArtistProfilePage extends StatelessWidget {
   final int? webId;
   const ArtistProfilePage({super.key, required this.artistKey, required this.compact, this.webId});
 
-  static String _when(Track t) => t.added.isNotEmpty ? t.added : t.modified;
+  static String _when(Track t) => _trackWhen(t);
 
   /// Главный ли исполнитель трека (первый в списке, у альбома — исполнитель альбома)
   static bool _primary(Track t, String key) {
@@ -550,14 +608,7 @@ class ArtistProfilePage extends StatelessWidget {
           return const EmptyState(icon: Icons.mic_none_rounded, title: 'Исполнитель пропал', text: 'Его треки удалили из библиотеки.');
         }
         // Топ: чаще слушали, потом чаще лайкали, потом новее
-        final ranked = List<Track>.of(a.tracks)
-          ..sort((x, y) {
-            final p = app.social.playsOf(y.id).compareTo(app.social.playsOf(x.id));
-            if (p != 0) return p;
-            final l = (lib.data.likes[y.id]?.length ?? 0).compareTo(lib.data.likes[x.id]?.length ?? 0);
-            if (l != 0) return l;
-            return _when(y).compareTo(_when(x));
-          });
+        final ranked = topTracksOf(app, a);
 
         final own = <Album>[];
         final guest = <Album>[];
@@ -742,6 +793,7 @@ class UserProfilePage extends StatelessWidget {
         } else if (email == lib.me) {
           subtitle = 'Это ваша страница';
         }
+        final favs = lib.favoritesOf(email);
         final nothing = liked.isEmpty && uploads.isEmpty && lists.isEmpty;
         return ProfileLayout(
           compact: compact,
@@ -771,6 +823,10 @@ class UserProfilePage extends StatelessWidget {
                 },
           onInfo: () => _showInfo(context, app, name, liked.length, uploads.length, lists.length),
           sections: [
+            if (m != null && (m.timeTotals.isNotEmpty || m.totals.isNotEmpty || m.plays.isNotEmpty)) ...[
+              ListenStats(email: email),
+              const SizedBox(height: 36),
+            ],
             if (nothing)
               const Padding(
                 padding: EdgeInsets.only(top: 20),
@@ -812,6 +868,59 @@ class UserProfilePage extends StatelessWidget {
                       title: p.name,
                       subtitle: countTracks(p.items.length),
                       onTap: () => NavScope.of(context).go(Nav('playlist', p.id)),
+                      onPlay: () {
+                        final list = lib.playlistTracks(p.id);
+                        if (list.isNotEmpty) app.player.playTracks(list, 0);
+                      },
+                    ),
+                ],
+              ),
+            ],
+            // Что человек отметил сердечком: плейлисты друзей, альбомы и исполнители
+            if (favs.playlists.isNotEmpty || favs.albums.isNotEmpty || favs.artists.isNotEmpty) ...[
+              const SizedBox(height: 36),
+              TileRow(
+                title: 'Любимое',
+                tileWidth: compact ? 160 : 190,
+                height: compact ? 232 : 262,
+                tiles: [
+                  for (final a in favs.albums)
+                    _tile(
+                      context,
+                      cover: LayoutBuilder(builder: (context, box) => CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 10)),
+                      title: a.title,
+                      subtitle: 'Альбом · ${a.artist}',
+                      onTap: () => NavScope.of(context).go(Nav('album', a.key)),
+                      onPlay: () => app.player.playTracks(a.tracks, 0),
+                    ),
+                  for (final p in favs.playlists)
+                    _tile(
+                      context,
+                      cover: LayoutBuilder(builder: (context, box) => PlaylistCover(playlist: p, size: box.maxWidth, radius: 10)),
+                      title: p.name,
+                      subtitle: 'Плейлист · ${lib.firstNameOf(p.by)}',
+                      onTap: () => NavScope.of(context).go(Nav('playlist', p.id)),
+                      onPlay: () {
+                        final list = lib.playlistTracks(p.id);
+                        if (list.isNotEmpty) app.player.playTracks(list, 0);
+                      },
+                    ),
+                  for (final a in favs.artists)
+                    _tile(
+                      context,
+                      cover: LayoutBuilder(
+                        builder: (context, box) => ClipOval(
+                          child: ArtistPhoto(
+                            name: a.name,
+                            size: box.maxWidth,
+                            fallback: CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 0),
+                          ),
+                        ),
+                      ),
+                      title: a.name,
+                      subtitle: 'Исполнитель',
+                      onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+                      onPlay: () => app.player.playTracks(topTracksOf(app, a), 0),
                     ),
                 ],
               ),
@@ -875,5 +984,81 @@ class UserTracksPage extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+/// «Статистика» в профиле: сколько наслушано всего, за неделю и месяц, график за 30 дней и любимый исполнитель.
+/// Время примерное: прослушивания × длительность трека
+class ListenStats extends StatelessWidget {
+  final String email;
+  const ListenStats({super.key, required this.email});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final s = app.social;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final total = s.listened(email);
+    final week = s.listened(email, since: today.subtract(const Duration(days: 6)));
+    final month = s.listened(email, since: today.subtract(const Duration(days: 29)));
+    final days = s.listenedByDay(email);
+    final top = s.topArtist(email);
+    final peak = days.fold<int>(0, (a, d) => math.max(a, d.$2.inMinutes));
+    Widget tile(String label, String value) => Container(
+          constraints: const BoxConstraints(minWidth: 150),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          decoration: BoxDecoration(color: C.surface, border: Border.all(color: C.line), borderRadius: BorderRadius.circular(14)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+            Text(value, style: display(22, weight: FontWeight.w700)),
+            const SizedBox(height: 2),
+            Text(label, style: const TextStyle(color: C.muted, fontSize: 13)),
+          ]),
+        );
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const SectionTitle('Статистика'),
+      Wrap(spacing: 12, runSpacing: 12, children: [
+        tile('наслушано всего', formatListened(total)),
+        tile('за неделю', formatListened(week)),
+        tile('за месяц', formatListened(month)),
+        if (top != null)
+          InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => NavScope.of(context).go(Nav('artist', top.toLowerCase())),
+            child: tile('любимый исполнитель месяца', top),
+          ),
+      ]),
+      const SizedBox(height: 18),
+      // По дням за 30 дней: высота столбика — сколько минут слушали
+      SizedBox(
+        height: 90,
+        child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          for (final (day, d) in days)
+            Expanded(
+              child: Tooltip(
+                message: '${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}: ${formatListened(d)}',
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 1.5),
+                  child: Container(
+                    height: peak == 0 ? 3 : (3 + 84 * d.inMinutes / peak),
+                    decoration: BoxDecoration(
+                      color: d.inMinutes == 0 ? C.line : C.accent.withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ]),
+      ),
+      const SizedBox(height: 6),
+      const Row(children: [
+        Text('30 дней назад', style: TextStyle(color: C.faint, fontSize: 11)),
+        Spacer(),
+        Text('сегодня', style: TextStyle(color: C.faint, fontSize: 11)),
+      ]),
+      const SizedBox(height: 6),
+      const Text('Время примерное: прослушивания × длительность трека.', style: TextStyle(color: C.faint, fontSize: 11)),
+    ]);
   }
 }

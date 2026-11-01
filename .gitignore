@@ -7,3 +7,9 @@ dist/
 .idea/
 .vscode/
 *.iml
+
+# Local music-provider credentials (never commit)
+deezer_auth.ini
+sockseek.conf
+.env
+.env.*
