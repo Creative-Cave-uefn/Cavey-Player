@@ -230,6 +230,36 @@ Future<(String, List<TrackMeta>)?> deezerAlbum(String url) async {
   return ('$artist - ${a['title']}'.replaceAll(RegExp(r'^[ \-]+|[ \-]+$'), ''), metas);
 }
 
+/// Public Deezer playlist metadata used for per-track fallback in full mode.
+/// Tracks are paginated and capped to avoid unbounded network work.
+Future<PlaylistInfo?> deezerPlaylist(String url) async {
+  final m = RegExp(r'/playlist/(\d+)').firstMatch(url);
+  if (m == null) return null;
+  final id = m.group(1)!;
+  final p = jsonDecode(await fetchText('https://api.deezer.com/playlist/$id')) as Map;
+  if (p['error'] != null) return null;
+  final name = '${p['title'] ?? 'Deezer Playlist'}';
+  final picture = (p['picture_xl'] ?? p['picture_big']) as String?;
+  final entries = <Map>[];
+  var page = p['tracks'] as Map?;
+  for (var n = 0; n < 6 && page != null && entries.length < 500; n++) {
+    entries.addAll([for (final track in (page['data'] as List? ?? const []))
+      if (track is Map && track['title'] != null) track]);
+    final next = page['next'];
+    if (next is! String || next.isEmpty || entries.length >= 500) break;
+    final u = Uri.tryParse(next);
+    if (u == null || u.scheme != 'https' || u.host.toLowerCase() != 'api.deezer.com'
+        || !u.path.startsWith('/playlist/$id/tracks') || u.userInfo.isNotEmpty) break;
+    page = jsonDecode(await fetchText(next)) as Map?;
+  }
+  if (entries.isEmpty) return null;
+  final metas = [
+    for (var i = 0; i < entries.length && i < 500; i++)
+      _deezerMeta(entries[i], number: i + 1, total: entries.length > 500 ? 500 : entries.length),
+  ];
+  return PlaylistInfo(name, picture, metas, truncated: entries.length >= 500);
+}
+
 // ---------- Spotify ----------
 
 const _genericMarkers = ['spotify is all the music', 'listening is everything', 'web player', 'music for everyone'];
