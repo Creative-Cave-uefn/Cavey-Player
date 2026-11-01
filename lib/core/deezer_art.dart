@@ -75,40 +75,63 @@ class DeezerArt {
     required String artist,
     required String title,
     String album = '',
+    void Function(String)? onLog,
   }) {
+    final id = ++_searchId;
+    final timer = Stopwatch()..start();
+    void log(String message) =>
+        _trace('#$id [${timer.elapsedMilliseconds} мс] $message', onLog);
+    log('Начало: исполнитель="$artist", трек="$title", альбом="$album"');
     if (normalize(artist).isEmpty ||
         (normalize(title).isEmpty && normalize(album).isEmpty)) {
+      log('Пустые параметры: поиск отменён');
       return Future.value(null);
     }
     final key = '${normalize(artist)}|${normalize(title)}|${normalize(album)}';
     final cached = _cache[key];
     if (cached != null && DateTime.now().isBefore(cached.$1)) {
+      log('Кэш: ${cached.$2 == null ? 'ничего не найдено' : 'обложка найдена'}');
       return Future.value(cached.$2);
     }
-    return _inflight[key] ??= _search(artist, title, album).then((result) {
+    if (_inflight.containsKey(key)) log('Ожидаю предыдущий поиск того же трека');
+    return _inflight[key] ??= _search(artist, title, album, log).then((result) {
+      log(result == null
+          ? 'Результат: обложка не найдена'
+          : 'Результат: ${result.width}×${result.height}, ${result.bytes.length} байт');
       if (_cache.length >= 32) _cache.remove(_cache.keys.first);
       _cache[key] = (DateTime.now().add(Duration(minutes: result == null ? 1 : 30)), result);
       return result;
     }).whenComplete(() => _inflight.remove(key));
   }
 
-  static Future<DeezerArtwork?> _search(String artist, String title, String album) async {
+  static Future<DeezerArtwork?> _search(
+      String artist, String title, String album, void Function(String) log) async {
     // Race both metadata endpoints. An exact match from either can start the
     // image download immediately; do not wait for a slow unrelated endpoint.
     (String, String)? albumMatch(Map<String, dynamic>? data) {
-      for (final item in (data?['data'] as List? ?? const [])) {
+      final candidates = data?['data'] as List? ?? const [];
+      log('Альбомы: ${candidates.length} кандидатов');
+      for (final item in candidates) {
         if (item is! Map) continue;
         final who = item['artist'];
         if (who is! Map || !same('${who['name'] ?? ''}', artist) ||
             !same('${item['title'] ?? ''}', album)) continue;
-        return ('${item['cover_xl'] ?? item['cover_big'] ?? ''}',
-            '${item['title'] ?? album}');
+        final url = '${item['cover_xl'] ?? item['cover_big'] ?? ''}';
+        log('Альбом: точное совпадение "${item['title']}", URL ${url.isEmpty ? 'пустой' : 'получен'}');
+        return (url, '${item['title'] ?? album}');
+      }
+      if (candidates.isNotEmpty) {
+        final first = candidates.first;
+        log('Альбом: точного совпадения нет. Первый кандидат: '
+            '"${first is Map ? first['title'] : '?'}"');
       }
       return null;
     }
 
     (String, String)? trackMatch(Map<String, dynamic>? data) {
-      for (final item in (data?['data'] as List? ?? const [])) {
+      final candidates = data?['data'] as List? ?? const [];
+      log('Треки: ${candidates.length} кандидатов');
+      for (final item in candidates) {
         if (item is! Map) continue;
         final who = item['artist'];
         final release = item['album'];
@@ -116,19 +139,28 @@ class DeezerArt {
         if (!same('${who['name'] ?? ''}', artist) ||
             !same('${item['title_short'] ?? item['title'] ?? ''}', title)) continue;
         if (album.trim().isNotEmpty && !same('${release['title'] ?? ''}', album)) continue;
-        return ('${release['cover_xl'] ?? release['cover_big'] ?? ''}',
-            '${release['title'] ?? album}');
+        final url = '${release['cover_xl'] ?? release['cover_big'] ?? ''}';
+        log('Трек: точное совпадение "${item['title']}" в альбоме "${release['title']}", '
+            'URL ${url.isEmpty ? 'пустой' : 'получен'}');
+        return (url, '${release['title'] ?? album}');
+      }
+      if (candidates.isNotEmpty) {
+        final first = candidates.first;
+        final name = first is Map && first['artist'] is Map
+            ? first['artist']['name'] : '?';
+        final title = first is Map ? first['title'] : '?';
+        log('Трек: совпадение отклонено. Первый кандидат: "$name" — "$title"');
       }
       return null;
     }
 
     final lookups = <Future<(String, String)?>>[
       if (album.trim().isNotEmpty)
-        _get('/search/album', '$artist $album')
-            .then(albumMatch).catchError((Object _) => null),
+        _get('/search/album', '$artist $album', log)
+            .then(albumMatch),
       if (title.trim().isNotEmpty)
-        _get('/search', '$artist $title')
-            .then(trackMatch).catchError((Object _) => null),
+        _get('/search', '$artist $title', log)
+            .then(trackMatch),
     ];
     if (lookups.isEmpty) return null;
     final first = await Future.any(lookups);
@@ -138,7 +170,10 @@ class DeezerArt {
         ? <(String, String)>[first]
         : [for (final match in await Future.wait(lookups))
             if (match != null && match.$1.isNotEmpty) match];
-    if (matches.isEmpty) return null;
+    if (matches.isEmpty) {
+      log('Итог: точных совпадений с обложкой нет');
+      return null;
+    }
     final (url, matchedAlbum) = matches.first;
     final uri = Uri.tryParse(url);
     if (uri == null || uri.scheme != 'https' ||
