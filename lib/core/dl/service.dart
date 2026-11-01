@@ -293,6 +293,11 @@ class DownloadService extends ChangeNotifier {
           final response = await spotifyAlbum(input);
           albumName = response?.$1 ?? ''; album = response?.$2;
         }
+      } else if (domain == 'music.apple.com') {
+        if (input.contains('/album/')) {
+          final response = await appleAlbum(input);
+          albumName = response?.$1 ?? ''; album = response?.$2;
+        }
       } else if (domain.startsWith('music.yandex.')) {
         if (input.contains('/album/')) {
           final response = await yandexAlbum(input);
@@ -310,11 +315,12 @@ class DownloadService extends ChangeNotifier {
     try {
       if (domain == 'deezer.com' || domain.endsWith('.deezer.com')) meta = await deezerTrack(input);
       else if (domain == 'open.spotify.com' || input.startsWith('spotify:')) meta = await spotifyTrack(input, log);
+      else if (domain == 'music.apple.com') meta = await appleTrack(input);
       else if (domain.startsWith('music.yandex.')) meta = await yandexTrack(input);
       else if (uri?.hasScheme != true) meta = await deezerFind(input);
     } catch (_) {}
     if (meta == null && uri?.hasScheme == true && !input.startsWith('spotify:')) {
-      throw FormatException('Полный поиск: неизвестная ссылка. Поддерживаются Deezer, Spotify, Яндекс, YouTube и Bandcamp.');
+      throw FormatException('Полный поиск: неизвестная ссылка. Поддерживаются Deezer, Spotify, Apple Music, Яндекс, YouTube и Bandcamp.');
     }
     if (meta == null) {
       final (artist, title) = splitArtistTitle('', input);
@@ -412,6 +418,9 @@ class DownloadService extends ChangeNotifier {
     } else if (host == 'deezer.com' || host.endsWith('.deezer.com')) {
       if (input.contains('/album/')) return (await deezerAlbum(input))?.$2 ?? [];
       single = await deezerTrack(input);
+    } else if (host == 'music.apple.com') {
+      if (input.contains('/album/')) return (await appleAlbum(input))?.$2 ?? [];
+      single = await appleTrack(input);
     } else if (host.startsWith('music.yandex.')) {
       if (input.contains('/track/')) { single = await yandexTrack(input); }
       else if (input.contains('/album/')) { return (await yandexAlbum(input))?.$2 ?? []; }
@@ -498,6 +507,13 @@ class DownloadService extends ChangeNotifier {
 
   Future<bool> _route(DownloadJob job, YouTube yt, Directory temp, void Function(String) log) async {
     final q = job.input;
+    if (q.contains('music.apple.com')) {
+      if (q.contains('/album/')) {
+        final res = await appleAlbum(q);
+        return res != null && await _album(job, yt, temp, res.$1, res.$2, log);
+      }
+      return _single(job, yt, temp, await appleTrack(q), 'Apple Music', log);
+    }
     if (q.contains('music.yandex.')) {
       if (q.contains('/track/')) return _single(job, yt, temp, await yandexTrack(q), 'Яндекс Музыке', log);
       if (q.contains('/album/')) {
