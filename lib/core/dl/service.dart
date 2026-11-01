@@ -17,6 +17,7 @@ import 'tools.dart';
 import 'youtube.dart';
 import 'bandcamp.dart';
 import 'deezer.dart';
+import 'music_links.dart';
 import 'sockseek.dart';
 
 const albumWorkers = 3;
@@ -277,6 +278,14 @@ class DownloadService extends ChangeNotifier {
 
   Future<bool> _full(DownloadJob job, Directory temp, void Function(String) log) async {
     final input = job.input;
+    final link = MusicLink.parse(input);
+    if (!link.isSupported) {
+      throw FormatException('Ссылка не поддерживается. Используйте Spotify, Deezer, Apple Music, Яндекс, YouTube, Bandcamp, SoundCloud, Audiomack, Mixcloud или Internet Archive.');
+    }
+    if (link.isDirectAudio) {
+      await _ensureFullTools(log);
+      return _route(job, YouTube(tools, temp, log), temp, log);
+    }
     if (!await DeezerMusic.python(tools).exists()) {
       try { await DeezerMusic.install(tools, log); }
       catch (_) { log('Deezer: недоступен. Продолжаю поиск в других источниках.'); }
@@ -284,14 +293,6 @@ class DownloadService extends ChangeNotifier {
     if (!await Sockseek.executable(tools).exists()) {
       try { await Sockseek.install(tools, log); }
       catch (_) { log('Soulseek: недоступен. Продолжаю поиск в других источниках.'); }
-    }
-    if (Bandcamp.accepts(input)) {
-      await _ensureFullTools(log);
-      return _bandcamp(job, YouTube(tools, temp, log), temp, log);
-    }
-    if (Bandcamp.youtubeUrl(input)) {
-      await _ensureFullTools(log);
-      return _route(job, YouTube(tools, temp, log), temp, log);
     }
     final uri = Uri.tryParse(input);
     final domain = uri?.host.toLowerCase() ?? '';
@@ -532,6 +533,22 @@ class DownloadService extends ChangeNotifier {
 
   Future<bool> _route(DownloadJob job, YouTube yt, Directory temp, void Function(String) log) async {
     final q = job.input;
+    final link = MusicLink.parse(q);
+    if (!link.isSupported) {
+      log('Неизвестная или небезопасная ссылка: этот сайт не поддерживается.');
+      return false;
+    }
+    if (link.source == MusicSource.bandcamp) {
+      return _bandcamp(job, yt, temp, log);
+    }
+    if (link.isDirectAudio) {
+      if (link.isYouTubePlaylist) return _playlist(job, yt, temp, q, log);
+      job.title = q;
+      final entries = await yt.download('${temp.path}${Platform.pathSeparator}%(id)s.%(ext)s',
+          q, playlist: link.isCollection);
+      job.total = entries.isEmpty ? 1 : entries.length;
+      return _finishYoutube(job, yt, entries, folderId: job.target, path: job.path);
+    }
     if (q.contains('music.apple.com')) {
       if (q.contains('/album/')) {
         final res = await appleAlbum(q);
@@ -550,12 +567,13 @@ class DownloadService extends ChangeNotifier {
       return false;
     }
     if (q.contains('deezer.com/')) {
+      if (q.contains('/playlist/')) return _externalPlaylist(job, yt, temp, await deezerPlaylist(q), log);
       if (q.contains('/album/')) {
         final res = await deezerAlbum(q);
         return res != null && await _album(job, yt, temp, res.$1, res.$2, log);
       }
       if (q.contains('/track/')) return _single(job, yt, temp, await deezerTrack(q), 'Deezer', log);
-      log('Поддерживаются ссылки на трек и на альбом Deezer.');
+      log('Поддерживаются ссылки на трек, альбом и плейлист Deezer.');
       return false;
     }
     if (q.contains('open.spotify.com') || q.startsWith('spotify:')) {
@@ -570,18 +588,6 @@ class DownloadService extends ChangeNotifier {
         return _externalPlaylist(job, yt, temp, await spotifyPlaylist(q), log);
       }
       log('Поддерживаются ссылки на трек, альбом и плейлист Spotify.');
-      return false;
-    }
-    if (Bandcamp.youtubeUrl(q) && q.contains('/playlist') && q.contains('list=')) {
-      return _playlist(job, yt, temp, q, log);
-    }
-    if (Bandcamp.youtubeUrl(q)) {
-      job.total = 1;
-      final entries = await yt.download('${temp.path}${Platform.pathSeparator}%(id)s.%(ext)s', q);
-      return _finishYoutube(job, yt, entries, folderId: job.target, path: job.path);
-    }
-    if (Uri.tryParse(q)?.hasScheme == true) {
-      log('В режиме YouTube поддерживаются только ссылки YouTube, Spotify, Deezer и Яндекс Музыки. '           'SoundCloud и произвольные сайты отключены; для Bandcamp выберите режим Bandcamp.');
       return false;
     }
     return _search(job, yt, temp, q, log);
