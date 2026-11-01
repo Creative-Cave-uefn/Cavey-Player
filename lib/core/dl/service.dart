@@ -4,11 +4,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
 import '../image_tools.dart';
 import '../audio_cache.dart';
+import '../covers.dart';
 import '../library.dart';
 import '../models.dart';
 import '../log.dart';
@@ -74,12 +76,13 @@ class DownloadService extends ChangeNotifier {
   final Tools tools;
   final Directory work;
   final AudioCache? cache;
+  final CoverService? covers;
   final List<DownloadJob> jobs = [];
   bool _running = false;
   String toolsVersion = '';
   bool installing = false;
 
-  DownloadService(this.lib, this.tools, this.work, {this.cache});
+  DownloadService(this.lib, this.tools, this.work, {this.cache, this.covers});
 
   Future<void>? _fullToolsSetup;
   Future<void> _ensureFullTools(void Function(String) log) => _fullToolsSetup ??= () async {
@@ -369,10 +372,29 @@ class DownloadService extends ChangeNotifier {
     if (!await target.exists() || await target.length() < 1024) {
       throw Exception('FFmpeg не смог подготовить аудио в исходном формате: ${output.take(2).join(' ')}');
     }
+    // A replaced file may lose its original embedded picture. Preserve that
+    // artwork as a library cover override before the old bytes disappear.
+    Uint8List? embeddedArt;
+    if (original.pic != null && original.cover == null &&
+        lib.customCoverOf(original) == null) {
+      try {
+        embeddedArt = await covers?.forTrack(original, px: 0);
+        if (embeddedArt != null && embeddedArt.length > 8 * 1024 * 1024) embeddedArt = null;
+      } catch (_) { /* Missing art must never block audio replacement. */ }
+    }
     log('Аудиофайл подготовлен. Обновляю содержимое на Google Диске, сохраняя ID…');
     await lib.replaceTrackAudio(original, target,
         mime: (fileMeta['mimeType'] as String?) ?? 'application/octet-stream');
     await cache?.invalidate(original.id);
+    if (embeddedArt != null && embeddedArt.isNotEmpty) {
+      try {
+        final bytes = embeddedArt;
+        final ext = bytes.length > 3 && bytes[0] == 0x89 && bytes[1] == 0x50 ? 'png' : 'jpg';
+        final coverId = await lib.uploadCover(bytes, ext);
+        lib.setMeta({original.id: {'cv': coverId}});
+        await covers?.seed(coverId, bytes);
+      } catch (e) { log('Аудио заменено, но исходную обложку сохранить не удалось: $e'); }
+    }
     job.done++;
     log('Готово: трек перекачан; лайки, плейлисты и метаданные сохранены.');
     lib.messages.add('«${original.title}» перекачан без создания дубля');
