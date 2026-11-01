@@ -399,12 +399,17 @@ class DownloadService extends ChangeNotifier {
     final address = '127.0.0.1:${server.port}';
     final args = ['serve', '--connect', address, '--token', token];
     Socket? socket;
+    Future<int>? moduleExit;
+    // Keep consuming IPC messages even while Google Drive is uploading a file.
+    // Replies stay ordered, but socket reads never wait for an upload.
+    Future<void> replyQueue = Future<void>.value();
+    var socketAlive = true;
     final session = job == null ? null : _TransferSession(job);
     if (session != null) _activeTransfer = session;
     try {
       if (job?.cancelRequested == true) throw StateError('Загрузка отменена');
       if (Platform.isWindows) {
-        unawaited(WinProc.run(exe.path, args, (_) {},
+        moduleExit = WinProc.run(exe.path, args, (_) {},
           onStarted: (pid) {
             if (session == null) return;
             session.pid = pid;
@@ -412,8 +417,7 @@ class DownloadService extends ChangeNotifier {
           },
         ).then((code) {
           if (code != 0 && job?.cancelRequested != true) {
-            onLog?.call('Cavey-Downloader завершился с кодом $code. '
-                'Проверьте сбои Sockseek/Python перед отключением.');
+            onLog?.call('Cavey-Downloader завершился с кодом $code.');
           }
           return code;
         }).catchError((Object e) {
@@ -421,7 +425,7 @@ class DownloadService extends ChangeNotifier {
             onLog?.call('Ошибка запуска Cavey-Downloader: ${e.runtimeType}');
           }
           return -1;
-        }));
+        });
       } else {
         final p = await Process.start(exe.path, args);
         unawaited(p.stdout.drain<void>());
@@ -501,20 +505,58 @@ class DownloadService extends ChangeNotifier {
             installing = msg['on'] == true;
             _notify();
           case 'call':
-            final id = msg['id'];
-            try {
-              final value = await _hostCall(job, msg, onLog ?? (_) {});
-              socket.write('${jsonEncode({'t': 'reply', 'id': id, 'ok': true, 'value': value})}\n');
-            } catch (e) {
-              socket.write('${jsonEncode({'t': 'reply', 'id': id, 'ok': false, 'error': '$e'})}\n');
-            }
+            final call = msg;
+            // Do NOT await here. A Google Drive request may take many seconds,
+            // during which Deezer/Soulseek workers continue sending progress
+            // and IPC calls. Blocking reader.moveNext() can exhaust socket
+            // buffers and make both ends report connection resets.
+            replyQueue = replyQueue.then((_) async {
+              if (!socketAlive || job?.cancelRequested == true) return;
+              Map<String, Object?> reply;
+              try {
+                final value = await _hostCall(job, call, onLog ?? (_) {});
+                reply = {'t': 'reply', 'id': call['id'], 'ok': true, 'value': value};
+              } catch (e) {
+                reply = {'t': 'reply', 'id': call['id'], 'ok': false, 'error': '$e'};
+              }
+              if (!socketAlive || job?.cancelRequested == true) return;
+              // Sending a reply must not be inside _hostCall's catch block:
+              // if the socket breaks, we must not try to write a second reply.
+              try {
+                socket!.write('${jsonEncode(reply)}\n');
+                await socket.flush();
+              } on SocketException catch (e) {
+                onLog?.call('IPC: ответ на ${call['m']} не доставлен: $e');
+                socketAlive = false;
+                socket.destroy();
+              }
+            }).catchError((Object e, StackTrace stack) {
+              AppLog.error('Ошибка очереди IPC-ответов', e, stack);
+              socketAlive = false;
+              socket?.destroy();
+            });
           case 'end':
+            await replyQueue;
             if (msg['ok'] != true) throw StateError('${msg['error'] ?? 'Не удалось выполнить задание'}');
             return msg['value'] ?? true;
         }
       }
       throw StateError('Модуль отключился до завершения задания.');
+    } catch (e) {
+      if (job?.cancelRequested != true && moduleExit != null) {
+        // Distinguish a helper crash from a peer socket reset. WinProc can
+        // outlive the socket while its child processes still hold stdout.
+        try {
+          final code = await moduleExit.timeout(const Duration(seconds: 2));
+          onLog?.call('Диагностика: Cavey-Downloader exit code $code, IPC: ${e.runtimeType}');
+        } on TimeoutException {
+          onLog?.call('Диагностика: соединение оборвано, но процесс '
+              'Cavey-Downloader ещё выполняется (или ждёт дочерний процесс).');
+        }
+      }
+      rethrow;
     } finally {
+      socketAlive = false;
       if (session != null && identical(_activeTransfer, session)) {
         _activeTransfer = null;
       }
