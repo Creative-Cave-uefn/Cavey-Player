@@ -23,9 +23,16 @@ class Sockseek {
     final file = config(tools);
     if (await file.exists()) return;
     await file.parent.create(recursive: true);
+    // Optional local credential bootstrap. Never use values from build defines or Git.
+    String local(String name, String fallback) {
+      final value = Platform.environment[name]?.trim() ?? '';
+      return value.isNotEmpty && !value.contains('\\n') && !value.contains('\\r') ? value : fallback;
+    }
+    final username = local('CAVE_SOULSEEK_USERNAME', 'YOUR_SOULSEEK_USERNAME');
+    final password = local('CAVE_SOULSEEK_PASSWORD', 'YOUR_SOULSEEK_PASSWORD');
     await file.writeAsString('# Soulseek account, NOT Spotify. Saved locally in plain text.\n'
         '# Edit the two values, save this file, then return to Cavey.\n'
-        'username = YOUR_SOULSEEK_USERNAME\npassword = YOUR_SOULSEEK_PASSWORD\n');
+        'username = $username\npassword = $password\n');
   }
 
   static Future<void> install(Tools tools, void Function(String) log) async {
