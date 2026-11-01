@@ -1657,6 +1657,27 @@ class LibraryController extends ChangeNotifier {
     return t;
   }
 
+  /// Replaces audio in place. The Drive file ID is stable so playlist entries,
+  /// likes, shared links and user metadata edits continue to refer to this track.
+  Future<void> replaceTrackAudio(Track original, File audio, {required String mime}) async {
+    if (data.tracks[original.id] == null) {
+      throw LibraryException('Трек исчез из библиотеки.');
+    }
+    final email = await accessFor(original.source);
+    final result = await drive.replaceFileMedia(email, original.id, audio, mime: mime);
+    final tags = parseTags(await _readHead(audio), audio.uri.pathSegments.last);
+    final json = original.toJson();
+    json['m'] = result.modifiedTime;
+    json['sz'] = result.size;
+    if (result.md5.isNotEmpty) json['md5'] = result.md5;
+    if (tags.pic != null) {
+      json['p'] = [tags.pic!.offset, tags.pic!.length, tags.pic!.mime];
+    } else {
+      json.remove('p'); // old embedded image offset would refer to wrong bytes
+    }
+    commit({'op': 'upsertTracks', 'tracks': {original.id: json}});
+  }
+
   /// Подпапка с таким именем внутри [parentId]; создаётся, если её нет
   Future<String> ensureSubfolder(String sourceId, String parentId, String name) async {
     final email = await accessFor(sourceId);
