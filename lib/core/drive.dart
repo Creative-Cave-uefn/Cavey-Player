@@ -296,12 +296,48 @@ class DriveApi {
     return DriveFile.fromJson(jsonDecode(res.body) as Map);
   }
 
-  /// Replace the audio payload of an existing Drive file, keeping its ID,
-  /// playlist references, likes, permissions and filename unchanged.
-  /// The original stays intact if preparing the replacement fails.
-  Future<DriveFile> replaceFileMedia(String email, String id, File file, {required String mime}) async {
+  /// Resumable upload chunks must be divisible by 256 KiB (except the last).
+  static const int mediaChunkBytes = 1024 * 1024;
+  static const Duration mediaChunkTimeout = Duration(seconds: 90);
+
+  /// Convert the HTTP 308 Range acknowledgement into the next byte offset.
+  /// An absent Range means Google has not committed any bytes yet.
+  static int resumableOffset(String? range, int totalBytes) {
+    if (range == null) return 0;
+    final match = RegExp(r'^bytes=0-(\d+)$').firstMatch(range.trim());
+    if (match == null) throw DriveException(502, 'Google Drive вернул некорректный Range при загрузке');
+    final last = int.tryParse(match.group(1)!);
+    if (last == null || last < 0 || last >= totalBytes) {
+      throw DriveException(502, 'Google Drive подтвердил неверный размер загруженной части');
+    }
+    return last + 1;
+  }
+
+  /// A dedicated client allows a timed-out request to be cancelled without
+  /// affecting playback and other Google Drive operations.
+  Future<http.Response> _sendMediaChunk(http.Request req) async {
+    final client = http.Client();
+    try {
+      Future<http.Response> perform() async {
+        final stream = await client.send(req);
+        return await http.Response.fromStream(stream);
+      }
+      return await perform().timeout(mediaChunkTimeout);
+    } on TimeoutException {
+      throw DriveException(408, 'Google Drive не ответил на часть файла за 90 секунд');
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Replace audio without changing the file ID. Confirm each chunk with
+  /// Google Drive; after a lost response probe the session before retrying.
+  Future<DriveFile> replaceFileMedia(String email, String id, File file,
+      {required String mime, void Function(double progress)? onProgress,
+       void Function(String status)? onStatus}) async {
     final length = await file.length();
     if (length < 1024) throw DriveException(0, 'Файл для замены пустой');
+    onStatus?.call('Google Drive: создаю сессию замены');
     final start = await send(
       email, 'PATCH',
       upload('files/$id', {'uploadType': 'resumable', 'fields': DriveFile.fields}),
@@ -318,21 +354,116 @@ class DriveApi {
     if (uri.scheme != 'https' || uri.host != 'www.googleapis.com') {
       throw DriveException(500, 'Небезопасный адрес сессии Google Диска');
     }
-    final token = await accounts.token(email);
-    final req = http.StreamedRequest('PUT', uri)
-      ..headers['Authorization'] = 'Bearer $token'
-      ..headers['Content-Type'] = mime
-      ..contentLength = length;
-    final response = _http.send(req);
-    await for (final chunk in file.openRead()) {
-      req.sink.add(chunk);
+    onStatus?.call('Google Drive: передаю аудио по частям');
+    onProgress?.call(0);
+
+    var offset = 0;
+    var failures = 0;
+    final reader = await file.open();
+    try {
+      Future<http.Response> queryStatus() async {
+        final req = http.Request('PUT', uri)
+          ..followRedirects = false
+          ..headers['Content-Range'] = 'bytes */$length'
+          ..headers['Authorization'] = 'Bearer ${await accounts.token(email)}'
+          ..headers['Content-Type'] = mime;
+        return _sendMediaChunk(req);
+      }
+
+      /// Ask Google which bytes it already has before retrying a lost chunk.
+      Future<DriveFile?> recover() async {
+        failures++;
+        if (failures > 3) {
+          throw DriveException(408, 'Google Drive не отвечает: три попытки возобновления не удались');
+        }
+        onStatus?.call('Google Drive: соединение прервалось, восстанавливаю (${failures}/3)');
+        await Future<void>.delayed(Duration(seconds: failures));
+        try {
+          final status = await queryStatus();
+          if (status.statusCode == 200 || status.statusCode == 201) {
+            onProgress?.call(1);
+            return DriveFile.fromJson(jsonDecode(status.body) as Map);
+          }
+          if (status.statusCode == 308) {
+            final confirmed = resumableOffset(status.headers['range'], length);
+            if (confirmed > offset) failures = 0;
+            offset = confirmed;
+            onProgress?.call(offset / length);
+          } else if (status.statusCode == 404 || status.statusCode == 410) {
+            throw DriveException(status.statusCode, 'Сессия загрузки истекла; повторите замену');
+          } else if (status.statusCode == 401) {
+            await accounts.token(email, force: true);
+          }
+        } on DriveException catch (e) {
+          if (e.status == 404 || e.status == 410 || e.status == 502) rethrow;
+        } catch (_) {
+          // If the status probe also fails, retry after the next backoff.
+        }
+        return null;
+      }
+
+      while (offset < length) {
+        final end = min(offset + mediaChunkBytes, length);
+        await reader.setPosition(offset);
+        final chunk = await reader.read(end - offset);
+        if (chunk.length != end - offset) {
+          throw DriveException(0, 'Не удалось прочитать часть подготовленного аудиофайла');
+        }
+        final req = http.Request('PUT', uri)
+          ..followRedirects = false
+          ..headers['Authorization'] = 'Bearer ${await accounts.token(email)}'
+          ..headers['Content-Type'] = mime
+          ..headers['Content-Range'] = 'bytes $offset-${end - 1}/$length'
+          ..bodyBytes = chunk;
+        http.Response response;
+        try {
+          response = await _sendMediaChunk(req);
+        } catch (_) {
+          final finished = await recover();
+          if (finished != null) return finished;
+          continue;
+        }
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          onProgress?.call(1);
+          onStatus?.call('Google Drive: аудиофайл сохранён');
+          return DriveFile.fromJson(jsonDecode(response.body) as Map);
+        }
+        if (response.statusCode == 308) {
+          final confirmed = resumableOffset(response.headers['range'], length);
+          if (confirmed <= offset) {
+            final finished = await recover();
+            if (finished != null) return finished;
+            continue;
+          }
+          offset = confirmed;
+          failures = 0;
+          onProgress?.call(offset / length);
+          continue;
+        }
+        if (response.statusCode == 401) {
+          await accounts.token(email, force: true);
+        }
+        if (response.statusCode == 401 || response.statusCode == 408 ||
+            response.statusCode == 429 || response.statusCode >= 500) {
+          final finished = await recover();
+          if (finished != null) return finished;
+          continue;
+        }
+        throw DriveException(response.statusCode, _errorText(response));
+      }
+
+      // An HTTP 308 after the last chunk is unusual. Do not assume success.
+      final finalStatus = await queryStatus();
+      if (finalStatus.statusCode == 200 || finalStatus.statusCode == 201) {
+        onProgress?.call(1);
+        onStatus?.call('Google Drive: аудиофайл сохранён');
+        return DriveFile.fromJson(jsonDecode(finalStatus.body) as Map);
+      }
+      throw DriveException(finalStatus.statusCode,
+          'Google Drive не подтвердил завершение замены файла');
+    } finally {
+      await reader.close();
     }
-    await req.sink.close();
-    final res = await http.Response.fromStream(await response.timeout(const Duration(minutes: 4)));
-    if (res.statusCode != 200 && res.statusCode != 201) {
-      throw DriveException(res.statusCode, _errorText(res));
-    }
-    return DriveFile.fromJson(jsonDecode(res.body) as Map);
   }
 
   /// Удаляет файл с Диска безвозвратно (может только владелец). Для музыки не используется: там [trash]

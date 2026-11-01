@@ -242,16 +242,51 @@ class DownloadService extends ChangeNotifier {
         final f = await _jobFile(call['file']);
         Uint8List? oldArtwork;
         if (track.pic != null && track.cover == null && lib.customCoverOf(track) == null) {
-          try { oldArtwork = await covers?.forTrack(track, px: 0); }
-          catch (_) {}
+          log('Обложка: проверяю возможность сохранения исходной обложки');
+          try {
+            // Artwork is optional; a remote cover lookup must not block audio replacement.
+            if (covers != null) {
+              oldArtwork = await covers!.forTrack(track, px: 0)
+                  .timeout(const Duration(seconds: 20));
+            }
+          } catch (_) {
+            log('Обложка: исходное изображение недоступно, продолжаю замену');
+          }
           if (oldArtwork != null && oldArtwork.length > 8 * 1024 * 1024) oldArtwork = null;
         }
+        log('Google Drive: проверяю доступ к исходному файлу');
         final email = await lib.accessFor(track.source);
         final data = await lib.drive.getFile(email, id, fields: 'mimeType');
+        var lastPercent = -5;
         await lib.replaceTrackAudio(track, f,
-            mime: (data['mimeType'] as String?) ?? 'application/octet-stream');
+            mime: (data['mimeType'] as String?) ?? 'application/octet-stream',
+            onProgress: (progress) {
+              final percent = (progress * 100).floor().clamp(0, 100).toInt();
+              if (percent < lastPercent + 5 && percent != 100) return;
+              if (percent == lastPercent) return;
+              lastPercent = percent;
+              job.title = 'Google Drive: загрузка $percent%';
+              log(job.title);
+              _notify();
+            },
+            onStatus: (status) {
+              job.title = status;
+              log(status);
+              _notify();
+            });
+        job.title = 'Google Drive: обновляю аудиокеш';
+        log(job.title);
+        _notify();
         await cache?.invalidate(track.id);
+        if (oldArtwork != null && oldArtwork.isNotEmpty) {
+          job.title = 'Google Drive: сохраняю исходную обложку';
+          log(job.title);
+          _notify();
+        }
         await _preserveCover(track, oldArtwork, log);
+        job.title = 'Замена аудио завершена';
+        log(job.title);
+        _notify();
         lib.messages.add('«${track.title}» перекачан без создания дубля');
         return id;
       case 'playlist':
@@ -346,7 +381,10 @@ class DownloadService extends ChangeNotifier {
             onLog?.call('${msg['text'] ?? ''}');
           case 'progress':
             if (job != null) {
-              job.title = '${msg['title'] ?? job.title}';
+              // The downloader's old status must not overwrite Drive progress.
+              if (job.replaceTrackId == null || !job.title.startsWith('Google Drive:')) {
+                job.title = '${msg['title'] ?? job.title}';
+              }
               job.total = (msg['total'] as num?)?.toInt() ?? job.total;
               job.done = (msg['done'] as num?)?.toInt() ?? job.done;
               job.failed = (msg['failed'] as num?)?.toInt() ?? job.failed;

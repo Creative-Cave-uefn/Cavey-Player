@@ -1795,12 +1795,15 @@ class LibraryController extends ChangeNotifier {
 
   /// Replaces audio in place. The Drive file ID is stable so playlist entries,
   /// likes, shared links and user metadata edits continue to refer to this track.
-  Future<void> replaceTrackAudio(Track original, File audio, {required String mime}) async {
+  Future<void> replaceTrackAudio(Track original, File audio,
+      {required String mime, void Function(double)? onProgress,
+       void Function(String)? onStatus}) async {
     if (data.tracks[original.id] == null) {
       throw LibraryException('Трек исчез из библиотеки.');
     }
     final email = await accessFor(original.source);
-    final result = await drive.replaceFileMedia(email, original.id, audio, mime: mime);
+    final result = await drive.replaceFileMedia(email, original.id, audio,
+        mime: mime, onProgress: onProgress, onStatus: onStatus);
     final tags = parseTags(await _readHead(audio), audio.uri.pathSegments.last);
     final json = original.toJson();
     json['m'] = result.modifiedTime;
