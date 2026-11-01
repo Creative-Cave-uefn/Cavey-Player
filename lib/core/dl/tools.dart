@@ -27,7 +27,11 @@ class Tools {
 
   bool get ready => [ytdlp, ffmpeg, ffprobe, deno].every((f) => f.existsSync());
 
-  List<String> get jsArgs => deno.existsSync() ? ['--js-runtimes', 'deno:${deno.path}'] : const [];
+  // yt-dlp standalone exe needs EJS challenge scripts for YouTube. Deno obtains
+  // them on demand from npm; no private API keys or browser cookies required.
+  List<String> get jsArgs => deno.existsSync()
+      ? ['--js-runtimes', 'deno:${deno.path}', '--remote-components', 'ejs:npm']
+      : const [];
 
   Future<void> ensure(void Function(String) log) async {
     await dir.create(recursive: true);
