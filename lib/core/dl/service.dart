@@ -547,6 +547,11 @@ class DownloadService extends ChangeNotifier {
       final entries = await yt.download('${temp.path}${Platform.pathSeparator}%(id)s.%(ext)s',
           q, playlist: link.isCollection);
       job.total = entries.isEmpty ? 1 : entries.length;
+      if (entries.isEmpty) {
+        job.failed++;
+        log('На выбранной странице не найден доступный аудиопоток. Проверьте ссылку и ограничения сервиса.');
+        return false;
+      }
       return _finishYoutube(job, yt, entries, folderId: job.target, path: job.path);
     }
     if (q.contains('music.apple.com')) {
