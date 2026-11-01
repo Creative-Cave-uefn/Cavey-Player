@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import '../core/auth.dart';
-import '../core/store.dart';
 
 /// OAuth Client ID of type "Web application" in the same Google Cloud project.
 /// Android additionally requires a separate Android OAuth client with the right
