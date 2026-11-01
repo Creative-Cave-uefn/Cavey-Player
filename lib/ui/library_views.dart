@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -640,11 +641,13 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
       final currentCoverFuture = app.covers.forTrack(widget.track, px: 0)
           .timeout(const Duration(seconds: 2), onTimeout: () => null)
           .catchError((Object _) => null);
+      // A stalled catalog/CDN request must never leave the dialog spinning.
+      // The service has per-request deadlines; this is an additional UI guard.
       final artwork = await DeezerArt.find(
         artist: widget.artist.text.trim(),
         title: widget.title.text.trim(),
         album: widget.album.text.trim(),
-      );
+      ).timeout(const Duration(seconds: 14));
       if (!mounted) return;
       if (artwork == null) {
         setState(() => status = 'В Deezer не нашёл точного совпадения.');
@@ -663,6 +666,11 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
       widget.choice.pick(PickedCover(artwork.bytes, 'jpg'));
       setState(() => status =
           'Deezer: ${artwork.width}×${artwork.height}. Новая обложка будет сохранена вместе с метаданными.');
+    } on TimeoutException {
+      if (mounted) {
+        setState(() => status =
+            'Deezer не ответил за 14 секунд. Повторите поиск или выберите файл вручную.');
+      }
     } catch (_) {
       if (mounted) setState(() => status = 'Deezer сейчас не ответил. Обложку можно выбрать вручную.');
     } finally {
