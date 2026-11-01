@@ -61,11 +61,11 @@ class _DownloadPageState extends State<DownloadPage> {
           const SizedBox(height: 10),
           Text(
             switch (app.settings.downloadProvider) {
-              'full' => 'Полный поиск: Deezer → Soulseek → YouTube → Bandcamp. Для альбомов одновременно обрабатывается до трёх треков.',
+              'full' => 'Универсальные ссылки: Spotify, Deezer, Apple Music, Яндекс, YouTube, Bandcamp, SoundCloud, Audiomack, Mixcloud, Internet Archive. Каталоги: Deezer → Soulseek → YouTube → Bandcamp. До трёх треков одновременно.',
                'deezer' => 'Deezer: прямые ссылки на треки, альбомы и плейлисты или «Исполнитель - Название». Нужны локальный ARL и Python.',
                'sockseek' => 'Soulseek (Sockseek): «Исполнитель - Название» или ссылка Spotify, Deezer, Яндекс Музыки. Ищет файлы в P2P сети.',
               'bandcamp' => 'Bandcamp: вставьте прямую ссылку на трек или альбом (artist.bandcamp.com/track/... или /album/...). Скачивается доступный для прослушивания аудиопоток, а не оригинальный FLAC.',
-              _ => 'YouTube / YouTube Music: ссылка YouTube, Spotify, Deezer, Яндекс Музыки или «Исполнитель - Название». Аудио ищется на YouTube и загружается в библиотеку.',
+              _ => 'YouTube / YouTube Music: ссылки музыкальных каталогов используются для метаданных; доступное аудио со страниц YouTube, SoundCloud, Bandcamp, Audiomack, Mixcloud и Internet Archive загружается через yt-dlp.',
             },
             style: const TextStyle(color: C.muted, fontSize: 15, height: 1.5),
           ),
@@ -108,7 +108,7 @@ class _DownloadPageState extends State<DownloadPage> {
                 items: const [
                   DropdownMenuItem(value: 'youtube', child: Text('YouTube')),
                    DropdownMenuItem(value: 'deezer', child: Text('Deezer')),
-                   DropdownMenuItem(value: 'full', child: Text('Полный поиск (все источники)')),
+                   DropdownMenuItem(value: 'full', child: Text('Универсальный поиск и ссылки')),
                   DropdownMenuItem(value: 'sockseek', child: Text('Soulseek / Sockseek')),
                   DropdownMenuItem(value: 'bandcamp', child: Text('Bandcamp')),
                 ],
