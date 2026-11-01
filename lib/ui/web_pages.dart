@@ -743,12 +743,12 @@ class _WebSearchPageState extends State<WebSearchPage> {
     _lastQuery = q;
     final sequence = ++_searchSeq;
     _partial = null;
-    setState(() {
-      _future = q.isEmpty ? null : Services.of(context).web.search(q, onUpdate: (result) {
-        if (!mounted || sequence != _searchSeq) return;
-        setState(() => _partial = result);
-      });
+    // Cached results may notify synchronously; do not nest setState calls.
+    final future = q.isEmpty ? null : Services.of(context).web.search(q, onUpdate: (result) {
+      if (!mounted || sequence != _searchSeq) return;
+      setState(() => _partial = result);
     });
+    setState(() => _future = future);
   }
 
   @override
