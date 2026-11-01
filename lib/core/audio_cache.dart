@@ -115,9 +115,16 @@ class AudioCache extends ChangeNotifier {
     _failed.remove(id);
     if (!_active.contains(id)) {
       final f = fileFor(id);
-      if (await f.exists()) {
-        sizeBytes -= await f.length();
-        await f.delete();
+      try {
+        if (await f.exists()) {
+          final length = await f.length();
+          await f.delete();
+          sizeBytes -= length;
+        }
+      } catch (e) {
+        // Windows may lock a currently playing file. Remote replacement already
+        // succeeded; never turn that success into a failed IPC operation.
+        AppLog.warn('Аудиокэш: старый файл занят, удалю позже', e);
       }
       _have.remove(id);
     } else {
