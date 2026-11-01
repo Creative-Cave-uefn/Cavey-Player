@@ -2,7 +2,6 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import '../core/library.dart';
 import '../core/models.dart';
 import '../mobile_main.dart';
 
@@ -170,8 +169,10 @@ class _MobileShellState extends State<MobileShell> {
     try {
       await s.library.reload();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString())));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString())));
+      }
     }
   }
 
@@ -179,8 +180,10 @@ class _MobileShellState extends State<MobileShell> {
     try {
       await s.player.playTracks(tracks, index);
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ошибка воспроизведения: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка воспроизведения: $e')));
+      }
     }
   }
 
@@ -324,7 +327,7 @@ class _MobileShellState extends State<MobileShell> {
             return ListTile(
               leading: const Icon(Icons.queue_music),
               title: Text(p.name),
-              subtitle: Text(tracks.length.toString() + ' треков'),
+              subtitle: Text('${tracks.length} треков'),
               onTap: () => openTracks(p.name, tracks),
             );
           }),
@@ -433,8 +436,10 @@ class TrackPage extends StatelessWidget {
     body: TrackList(services: services, tracks: tracks, onPlay: (list, i) async {
       try { await services.player.playTracks(list, i); }
       catch (e) {
-        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString())));
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.toString())));
+        }
       }
     }),
     bottomNavigationBar: AnimatedBuilder(
@@ -500,8 +505,7 @@ class FullPlayer extends StatelessWidget {
 
   static String time(Duration d) {
     final seconds = d.inSeconds.clamp(0, 999999);
-    return (seconds ~/ 60).toString() + ':' +
-      (seconds % 60).toString().padLeft(2, '0');
+    return '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}';
   }
 
   @override
