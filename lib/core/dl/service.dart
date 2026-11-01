@@ -165,6 +165,13 @@ class DownloadService extends ChangeNotifier {
     AppLog.info('Загрузчик: ${job.input}');
     try {
       if (lib.settings.downloadProvider == 'deezer' || lib.settings.downloadProvider == 'full') {
+        if (lib.settings.downloadProvider == 'deezer' &&
+            !await DeezerMusic.python(tools).exists()) {
+          installing = true;
+          notifyListeners();
+          try { await DeezerMusic.install(tools, log); }
+          finally { installing = false; notifyListeners(); }
+        }
         final ok = lib.settings.downloadProvider == 'deezer'
             ? await _deezer(job, temp, log) : await _full(job, temp, log);
         job.state = ok ? JobState.done : JobState.failed;
@@ -175,6 +182,12 @@ class DownloadService extends ChangeNotifier {
         return;
       }
       if (lib.settings.downloadProvider == 'sockseek') {
+        if (!await Sockseek.executable(tools).exists()) {
+          installing = true;
+          notifyListeners();
+          try { await Sockseek.install(tools, log); }
+          finally { installing = false; notifyListeners(); }
+        }
         log('Загрузчик: Sockseek / Soulseek');
         final tracks = await _sockseekTracks(job.input);
         if (tracks.isEmpty) throw Exception('Не удалось получить метаданные. Укажите «Исполнитель - Название» или ссылку на трек/альбом.');
