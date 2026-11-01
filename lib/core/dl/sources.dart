@@ -494,3 +494,56 @@ Future<PlaylistInfo?> spotifyPlaylist(String url) async {
   }
   return PlaylistInfo(name, _entityCover(entity) ?? _findCover(entity), metas, truncated: raw.length >= spotifyPlaylistLimit);
 }
+
+// ---------- Apple Music (metadata only, via public iTunes Lookup API) ----------
+// No Apple audio stream or DRM bypass: audio is found in configured sources.
+
+TrackMeta _appleMeta(Map entry, {int? number, int? total}) {
+  final date = '${entry['releaseDate'] ?? ''}';
+  final art = '${entry['artworkUrl100'] ?? ''}';
+  return TrackMeta(
+    artist: '${entry['artistName'] ?? ''}',
+    artistTag: '${entry['artistName'] ?? ''}',
+    albumArtist: '${entry['collectionArtistName'] ?? entry['artistName'] ?? ''}',
+    title: '${entry['trackName'] ?? ''}',
+    album: '${entry['collectionName'] ?? ''}',
+    year: date.length >= 4 ? date.substring(0, 4) : '',
+    track: number != null && total != null ? '$number/$total' : '${entry['trackNumber'] ?? ''}',
+    duration: (entry['trackTimeMillis'] as num?)?.toDouble() == null
+        ? null : (entry['trackTimeMillis'] as num).toDouble() / 1000,
+    coverUrl: art.isEmpty ? null : art.replaceAll('100x100bb', '600x600bb'),
+  );
+}
+
+String? _appleId(String url, {bool album = false}) {
+  final u = Uri.tryParse(url);
+  if (u == null || u.host.toLowerCase() != 'music.apple.com' ||
+      !['https', 'http'].contains(u.scheme) || u.userInfo.isNotEmpty || u.hasPort) return null;
+  final i = u.queryParameters['i'];
+  if (!album && i != null && RegExp(r'^\d+$').hasMatch(i)) return i;
+  final type = album ? 'album' : 'song';
+  return RegExp('/$type/[^/]+/(\\d+)').firstMatch(u.path)?.group(1);
+}
+
+Future<TrackMeta?> appleTrack(String url) async {
+  final id = _appleId(url);
+  if (id == null) return null;
+  final json = jsonDecode(await fetchText('https://itunes.apple.com/lookup?id=$id&entity=song')) as Map;
+  final entries = (json['results'] as List? ?? const []).whereType<Map>();
+  for (final t in entries) {
+    if (t['wrapperType'] == 'track' && t['trackName'] != null) return _appleMeta(t);
+  }
+  return null;
+}
+
+Future<(String, List<TrackMeta>)?> appleAlbum(String url) async {
+  final id = _appleId(url, album: true);
+  if (id == null) return null;
+  final data = jsonDecode(await fetchText('https://itunes.apple.com/lookup?id=$id&entity=song&limit=200')) as Map;
+  final entries = (data['results'] as List? ?? const []).whereType<Map>().toList();
+  final tracks = entries.where((e) => e['wrapperType'] == 'track' && e['trackName'] != null).toList();
+  if (tracks.isEmpty) return null;
+  final metas = [for (var i = 0; i < tracks.length; i++) _appleMeta(tracks[i], number: i + 1, total: tracks.length)];
+  return ('${metas.first.artist} - ${metas.first.album}', metas);
+}
+
