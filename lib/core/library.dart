@@ -102,7 +102,10 @@ class LibraryController extends ChangeNotifier {
   /// Короткие сообщения для всплывающих уведомлений
   final StreamController<String> messages = StreamController<String>.broadcast();
 
-  LibraryController(this.store, this.settings, this.accounts, this.drive);
+  /// Mobile mode reads the shared index but leaves heavy Drive scans to desktop clients.
+  final bool mobileReadOnlyIndex;
+
+  LibraryController(this.store, this.settings, this.accounts, this.drive, {this.mobileReadOnlyIndex = false});
 
   bool get hasHub => settings.hubId != null && settings.libFileId != null;
   String? get me => accounts.primary?.email;
@@ -141,14 +144,18 @@ class LibraryController extends ChangeNotifier {
     _pollTimer?.cancel();
     _scanTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _poll());
-    _scanTimer = Timer.periodic(const Duration(minutes: 10), (_) => scanAll(quiet: true).then((_) => fillDurations()));
+    if (!mobileReadOnlyIndex) {
+      _scanTimer = Timer.periodic(const Duration(minutes: 10), (_) => scanAll(quiet: true).then((_) => fillDurations()));
+    }
     () async {
       try {
         await reload();
         await _ensureHubSource();
         if (_pending.isNotEmpty) _scheduleFlush();
-        await scanAll(quiet: true);
-        unawaited(fillDurations());
+        if (!mobileReadOnlyIndex) {
+          await scanAll(quiet: true);
+          unawaited(fillDurations());
+        }
       } catch (e) {
         _report(e);
       }
