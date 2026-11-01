@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'package:image/image.dart' as img;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cave_player/core/deezer_art.dart';
 
@@ -12,6 +14,23 @@ void main() {
       expect(high.betterThan(1600, 600), isFalse);
       expect(high.betterThan(1200, 1200), isFalse);
     });
+    test('decodes a Deezer cover without capturing caller UI callbacks', () async {
+      // A former Isolate.run closure captured the search logger and Flutter
+      // widget tree, causing an unsendable-object error for every valid image.
+      final bytes = Uint8List.fromList(
+        img.encodePng(img.Image(width: 96, height: 72)),
+      );
+      final local = DeezerArt.dimensions(bytes);
+      expect(local, (96, 72));
+      final background = await DeezerArt.dimensionsInBackground(bytes);
+      expect(background, (96, 72));
+    });
+
+    test('worker rejects corrupt images without throwing', () async {
+      final invalid = Uint8List.fromList([0, 1, 2, 3]);
+      expect(await DeezerArt.dimensionsInBackground(invalid), isNull);
+    });
+
     test('logs invalid search parameters without issuing network requests', () async {
       final messages = <String>[];
       final artwork = await DeezerArt.find(
