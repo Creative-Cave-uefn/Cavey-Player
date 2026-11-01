@@ -14,14 +14,38 @@ import 'theme.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
 
+/// Вкладки настроек: id для ссылок (Nav('accounts', id)) и подпись
+const settingsTabs = <(String, String)>[
+  ('main', 'Основное'),
+  ('playback', 'Воспроизведение'),
+  ('look', 'Внешний вид'),
+  ('account', 'Аккаунт'),
+  ('library', 'Библиотека'),
+  ('debug', 'Отладка'),
+];
+
 class AccountsPage extends StatefulWidget {
-  const AccountsPage({super.key});
+  /// С какой вкладки открыть; null — с той, что была открыта в прошлый раз
+  final String? tab;
+  const AccountsPage({super.key, this.tab});
   @override
   State<AccountsPage> createState() => _AccountsPageState();
 }
 
 class _AccountsPageState extends State<AccountsPage> {
   String? _error;
+  String? _tab;
+
+  String _current(AppServices app) {
+    final t = _tab ?? widget.tab ?? app.settings.viewOf('settings.tab', 'main');
+    return settingsTabs.any((x) => x.$1 == t) ? t : 'main';
+  }
+
+  void _open(AppServices app, String id) {
+    setState(() => _tab = id);
+    app.settings.view['settings.tab'] = id;
+    app.lib.viewChanged();
+  }
 
   Future<void> _signIn({String? hint}) async {
     final app = Services.of(context);
@@ -46,9 +70,9 @@ class _AccountsPageState extends State<AccountsPage> {
       builder: (context, _) {
         final accounts = app.accounts;
         final primary = accounts.primary?.email;
-        return ListView(padding: const EdgeInsets.fromLTRB(36, 34, 36, 40), children: [
-          Text('Настройки', style: display(36, weight: FontWeight.w700)),
-          const SizedBox(height: 28),
+        final tab = _current(app);
+        const gap = SizedBox(height: 44);
+        final accountsBlock = <Widget>[
           Text('Аккаунты', style: display(20)),
           const SizedBox(height: 10),
           const Text(
@@ -135,28 +159,10 @@ class _AccountsPageState extends State<AccountsPage> {
           ]),
           if (_error != null)
             Padding(padding: const EdgeInsets.only(top: 12), child: Text(_error!, style: const TextStyle(color: C.danger))),
-          const SizedBox(height: 44),
-          const LibrarySection(),
-          const SizedBox(height: 44),
-          const _UpdatesSection(),
-          const SizedBox(height: 44),
-          const _DiscordSection(),
-          const SizedBox(height: 44),
-          const _PlaybackSection(),
-          const SizedBox(height: 44),
-          const _AccentSection(),
-          const SizedBox(height: 44),
-          const _LookSection(),
-          const SizedBox(height: 44),
-          const _TraySection(),
-          const SizedBox(height: 36),
-          const _DownloaderSection(),
-          const SizedBox(height: 24),
-          const _KaraokeSection(),
-          const SizedBox(height: 44),
-          const _CacheSection(),
+        ];
+        final keyBlock = <Widget>[
           if (!app.keysBuiltIn) ...[
-            const SizedBox(height: 44),
+            gap,
             Text('Ключ приложения Google', style: display(20)),
             const SizedBox(height: 10),
             Text(
@@ -186,10 +192,105 @@ class _AccountsPageState extends State<AccountsPage> {
               ),
             ),
           ],
-          const SizedBox(height: 44),
-          const _DebugSection(),
+        ];
+        final List<Widget> page = switch (tab) {
+          'playback' => const [_PlaybackSection(), gap, _TraySection(), gap, _KaraokeSection()],
+          'look' => const [_AccentSection(), gap, _LookSection()],
+          'account' => [
+              ...accountsBlock,
+              gap,
+              const _DiscordSection(),
+              gap,
+              const LibrarySection(parts: {'invite'}),
+              ...keyBlock,
+            ],
+          'library' => const [
+              LibrarySection(parts: {'folders'}),
+              gap,
+              _CacheSection(),
+              gap,
+              _DownloaderSection(),
+              gap,
+              LibrarySection(parts: {'leave'}),
+            ],
+          'debug' => const [_DebugSection()],
+          _ => const [_UpdatesSection()],
+        };
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(36, 18, 36, 0),
+            child: Text('Настройки', style: display(36, weight: FontWeight.w700)),
+          ),
+          const SizedBox(height: 12),
+          // Вкладки в ряд сверху: у каждой своя страница без длинной прокрутки
+          SizedBox(
+            height: 38,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 36),
+              children: [
+                for (final (id, label) in settingsTabs)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: SettingsTab(
+                      label: label,
+                      selected: id == tab,
+                      danger: id == 'debug',
+                      badge: id == 'account' && accounts.accounts.any((a) => a.needsSignIn),
+                      onTap: () => _open(app, id),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView(
+              key: PageStorageKey('settings:$tab'),
+              padding: const EdgeInsets.fromLTRB(36, 28, 36, 40),
+              children: page,
+            ),
+          ),
         ]);
       },
+    );
+  }
+}
+
+/// Вкладка настроек: подсвечена выбранная; у «Отладки» — тревожный цвет, у «Аккаунта» — значок, если нужно войти снова
+class SettingsTab extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final bool danger;
+  final bool badge;
+  final VoidCallback onTap;
+  const SettingsTab({super.key, required this.label, required this.selected, required this.onTap, this.danger = false, this.badge = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? C.text : C.raised,
+      shape: StadiumBorder(side: BorderSide(color: selected ? C.text : C.line)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: selected ? null : onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: selected ? C.bg : (danger ? C.danger : C.text),
+                fontSize: 14,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              ),
+            ),
+            if (badge) ...[
+              const SizedBox(width: 6),
+              const Icon(Icons.error_rounded, size: 14, color: C.danger),
+            ],
+          ]),
+        ),
+      ),
     );
   }
 }
@@ -200,22 +301,15 @@ class _DebugSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Theme(
-      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
-        tilePadding: EdgeInsets.zero,
-        childrenPadding: const EdgeInsets.only(bottom: 20),
-        expandedCrossAxisAlignment: CrossAxisAlignment.start,
-        title: Text('Отладка (не лезь - убьёт)', style: display(20, color: C.muted)),
-        children: const [
-          _TestBuildsSection(),
-          SizedBox(height: 32),
-          LibraryDebug(),
-          SizedBox(height: 32),
-          _LogSection(),
-        ],
-      ),
-    );
+    return const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Не лезь — убьёт: здесь то, что обычно трогать не нужно.', style: TextStyle(color: C.danger, fontSize: 13)),
+      SizedBox(height: 22),
+      _TestBuildsSection(),
+      SizedBox(height: 32),
+      LibraryDebug(),
+      SizedBox(height: 32),
+      _LogSection(),
+    ]);
   }
 }
 
@@ -261,6 +355,26 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
           if (up.state == UpdateState.downloading) ...[
             const SizedBox(height: 10),
             SizedBox(width: 320, child: LinearProgressIndicator(value: up.progress)),
+          ],
+          // Нашлось обновление — что в нём нового (по всем версиям между вашей и новой)
+          if ((up.state == UpdateState.ready || up.state == UpdateState.downloading) && up.changes.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Container(
+              constraints: const BoxConstraints(maxWidth: 640, maxHeight: 320),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              decoration: BoxDecoration(color: C.surface, border: Border.all(color: C.line), borderRadius: BorderRadius.circular(12)),
+              child: SingleChildScrollView(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Что нового', style: display(16)),
+                  for (final (v, notes) in up.changes) ...[
+                    const SizedBox(height: 10),
+                    Text('Версия $v', style: TextStyle(color: C.accent, fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    SelectableText(notes.isEmpty ? 'Без описания' : notes, style: const TextStyle(color: C.muted, fontSize: 13, height: 1.45)),
+                  ],
+                ]),
+              ),
+            ),
           ],
           const SizedBox(height: 16),
           Wrap(spacing: 12, runSpacing: 10, children: [
@@ -588,7 +702,6 @@ class _KaraokeSection extends StatelessWidget {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           value: k.enabled,
-          activeColor: C.accent,
           title: const Text('Вычислять время каждого слова по звуку'),
           subtitle: const Text(
             'В кинотеатре текст заливается слово за словом точно в такт. Считает программа Whisper на этом компьютере, '
@@ -729,11 +842,21 @@ class _AccentSectionState extends State<_AccentSection> {
     C.setAccent(c ?? C.defaultAccent);
     rebuildEverything();
     await app.lib.saveSettings();
+    // Значок в трее и у окна — сразу в новом цвете
+    await app.refreshAppIcon();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _custom() async {
+    final c = await pickColorDialog(context, C.accent);
+    if (c != null) await _pick(c);
   }
 
   @override
   Widget build(BuildContext context) {
+    final app = Services.of(context);
     final current = C.accent.value;
+    final custom = !accentChoices.any((x) => x.$2.value == current) && current != C.defaultAccent.value;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
         Expanded(child: Text('Акцентный цвет', style: display(20))),
@@ -770,9 +893,129 @@ class _AccentSectionState extends State<_AccentSection> {
               ),
             ),
           ),
+        // Сбоку — любой цвет из палитры
+        Tooltip(
+          message: 'Свой цвет',
+          child: GestureDetector(
+            onTap: _custom,
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: const SweepGradient(colors: [
+                    Color(0xFFFF6B6B),
+                    Color(0xFFF2C14E),
+                    Color(0xFF8FDB6A),
+                    Color(0xFF4FD1C5),
+                    Color(0xFF6FA8FF),
+                    Color(0xFFB08CFF),
+                    Color(0xFFFF7FB2),
+                    Color(0xFFFF6B6B),
+                  ]),
+                  border: Border.all(color: custom ? C.text : C.line, width: custom ? 2.5 : 1),
+                ),
+                child: Icon(custom ? Icons.check_rounded : Icons.colorize_rounded, size: 18, color: Colors.white),
+              ),
+            ),
+          ),
+        ),
       ]),
+      const SizedBox(height: 18),
+      // Значок программы в цвете акцента: в трее и у окна он уже сменился, в самом файле — после перезапуска
+      if (app.exeIconPending)
+        Wrap(spacing: 12, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          FilledButton.tonalIcon(
+            onPressed: () => app.applyExeIcon(relaunch: true),
+            icon: const Icon(Icons.restart_alt_rounded, size: 18),
+            label: const Text('Обновить значок программы'),
+          ),
+          const Text(
+            'Cavey перезапустится, проводник Windows тоже: панель задач на секунду мигнёт, окна останутся открытыми.\n'
+            'Если не нажимать, значок обновится сам, когда вы закроете Cavey.',
+            style: TextStyle(color: C.faint, fontSize: 12, height: 1.4),
+          ),
+        ])
+      else
+        const Text('Значок программы — в трее, на панели задач и в проводнике — тоже в этом цвете.',
+            style: TextStyle(color: C.faint, fontSize: 12)),
     ]);
   }
+}
+
+/// Выбор любого цвета: оттенок, насыщенность, яркость и код цвета
+Future<Color?> pickColorDialog(BuildContext context, Color initial) {
+  var hsv = HSVColor.fromColor(initial);
+  final hex = TextEditingController(text: C.accentHex(initial));
+  return showGlassDialog<Color>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(builder: (ctx, set) {
+      final color = hsv.toColor();
+      Widget track(List<Color> colors, double value, ValueChanged<double> on, {double max = 1}) => SizedBox(
+            height: 32,
+            child: Stack(alignment: Alignment.center, children: [
+              Container(
+                height: 12,
+                margin: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(borderRadius: BorderRadius.circular(6), gradient: LinearGradient(colors: colors)),
+              ),
+              SliderTheme(
+                data: SliderTheme.of(ctx).copyWith(
+                  activeTrackColor: Colors.transparent,
+                  inactiveTrackColor: Colors.transparent,
+                  thumbColor: Colors.white,
+                  overlayShape: SliderComponentShape.noOverlay,
+                ),
+                child: Slider(value: value, max: max, onChanged: on),
+              ),
+            ]),
+          );
+      void setHsv(HSVColor v) => set(() {
+            hsv = v;
+            hex.text = C.accentHex(v.toColor());
+          });
+      return AlertDialog(
+        title: Text('Свой цвет', style: display(18)),
+        content: SizedBox(
+          width: 360,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Container(width: 56, height: 56, decoration: BoxDecoration(color: color, shape: BoxShape.circle, border: Border.all(color: C.line))),
+              const SizedBox(width: 16),
+              Expanded(
+                child: TextField(
+                  controller: hex,
+                  decoration: const InputDecoration(labelText: 'Код цвета', hintText: '#F2C14E'),
+                  onSubmitted: (v) {
+                    final c = C.parseAccent(v.trim().startsWith('#') ? v.trim() : '#${v.trim()}');
+                    if (c != null) set(() => hsv = HSVColor.fromColor(c));
+                  },
+                ),
+              ),
+            ]),
+            const SizedBox(height: 18),
+            const Text('Оттенок', style: TextStyle(color: C.muted, fontSize: 13)),
+            track([for (var h = 0; h <= 360; h += 60) HSVColor.fromAHSV(1, h.toDouble(), 1, 1).toColor()], hsv.hue,
+                (v) => setHsv(hsv.withHue(v)),
+                max: 360),
+            const Text('Насыщенность', style: TextStyle(color: C.muted, fontSize: 13)),
+            track([hsv.withSaturation(0).toColor(), hsv.withSaturation(1).toColor()], hsv.saturation, (v) => setHsv(hsv.withSaturation(v))),
+            const Text('Яркость', style: TextStyle(color: C.muted, fontSize: 13)),
+            track([hsv.withValue(0.25).toColor(), hsv.withValue(1).toColor()], hsv.value, (v) => setHsv(hsv.withValue(v))),
+            const SizedBox(height: 4),
+            if (hsv.value < 0.45)
+              const Text('Слишком тёмный цвет плохо видно на тёмном стекле.', style: TextStyle(color: C.faint, fontSize: 12)),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена', style: TextStyle(color: C.muted))),
+          FilledButton(onPressed: () => Navigator.pop(ctx, hsv.toColor()), child: const Text('Выбрать')),
+        ],
+      );
+    }),
+  );
 }
 
 class _LookSection extends StatefulWidget {
@@ -865,7 +1108,6 @@ class _TraySectionState extends State<_TraySection> {
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         value: app.settings.trayOnClose,
-        activeColor: C.accent,
         title: const Text('Сворачивать в трей при закрытии окна'),
         subtitle: const Text(
           'Музыка играет дальше, а Cavey остаётся значком у часов. Закрыть совсем можно пунктом «Выйти» в меню значка.',
@@ -883,7 +1125,6 @@ class _TraySectionState extends State<_TraySection> {
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         value: app.settings.globalMediaKeys,
-        activeColor: C.accent,
         title: const Text('Медиаклавиши, когда окно не активно'),
         subtitle: const Text(
           '⏮ ⏯ ⏭ на клавиатуре (в том числе Fn+F-клавиши ноутбука) работают, даже если Cavey свёрнут или спрятан в трей.',
@@ -921,7 +1162,6 @@ class _DiscordSectionState extends State<_DiscordSection> {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           value: app.settings.discord,
-          activeColor: C.accent,
           title: const Text('Показывать в Discord, что я слушаю'),
           subtitle: const Text('Друзья в Discord увидят название трека и исполнителя, пока музыка играет.',
               style: TextStyle(color: C.faint, fontSize: 13)),

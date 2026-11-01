@@ -235,10 +235,16 @@ class WebTrackGrid extends StatelessWidget {
 
 /// Плитка альбома или исполнителя: квадратная (круглая) картинка и подписи
 Widget webTile(BuildContext context,
-    {required String image, required String title, required String subtitle, required VoidCallback onTap, bool round = false, bool have = false}) {
-  return InkWell(
-    borderRadius: BorderRadius.circular(10),
+    {required String image,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+    VoidCallback? onPlay,
+    bool round = false,
+    bool have = false}) {
+  return TileInk(
     onTap: onTap,
+    onPlay: onPlay,
     child: Column(crossAxisAlignment: round ? CrossAxisAlignment.center : CrossAxisAlignment.start, children: [
       AspectRatio(
         aspectRatio: 1,
@@ -248,7 +254,7 @@ Widget webTile(BuildContext context,
             if (have)
               Positioned(
                 right: 8,
-                bottom: 8,
+                top: 8,
                 child: Tooltip(
                   message: 'Уже есть в библиотеке',
                   child: Container(
@@ -284,7 +290,19 @@ Widget albumTile(BuildContext context, WebAlbum a, {bool withArtist = false}) {
     subtitle: [if (withArtist) a.artist, a.typeLabel, if (a.year.isNotEmpty) a.year].join(' · '),
     have: app.web.inLibrary(a.artist.toLowerCase(), a),
     onTap: () => NavScope.of(context).go(Nav('webalbum', '${a.id}')),
+    onPlay: () => _playWebList(context, () => app.web.albumTracks(a.id)),
   );
+}
+
+/// Кнопка «Играть» на плитке из интернета: грузим треки и включаем первый (скачанные — целиком, остальные — отрывком)
+Future<void> _playWebList(BuildContext context, Future<List<WebTrack>> Function() load) async {
+  try {
+    final tracks = await load();
+    if (!context.mounted || tracks.isEmpty) return;
+    playWeb(context, tracks.first, tracks);
+  } catch (e) {
+    if (context.mounted) Services.of(context).lib.messages.add('Не получилось включить: $e');
+  }
 }
 
 Widget artistTile(BuildContext context, WebArtist a) => webTile(
@@ -294,6 +312,7 @@ Widget artistTile(BuildContext context, WebArtist a) => webTile(
       subtitle: '',
       round: true,
       onTap: () => NavScope.of(context).go(Nav('webartist', '${a.id}')),
+      onPlay: () => _playWebList(context, () => Services.of(context).web.top(a.id)),
     );
 
 /// Сетка плиток на всю ширину (раздел целиком)
@@ -677,14 +696,7 @@ class _WebAlbumPageState extends State<WebAlbumPage> {
             ),
           ]),
           const SizedBox(height: 26),
-          for (var i = 0; i < tracks.length; i++)
-            Container(
-              decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
-              child: Row(children: [
-                SizedBox(width: 32, child: Text('${i + 1}', style: const TextStyle(color: C.faint, fontSize: 13))),
-                Expanded(child: WebTrackLine(track: tracks[i], showCover: false, list: tracks)),
-              ]),
-            ),
+          ...webAlbumRows(tracks),
         ]);
       },
     );
@@ -772,6 +784,16 @@ class _WebSearchPageState extends State<WebSearchPage> {
               return const Padding(padding: EdgeInsets.only(top: 24), child: Text('Ничего не нашлось', style: TextStyle(color: C.muted)));
             }
             return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              // Сначала альбомы, потом исполнители, потом треки
+              if (r.albums.isNotEmpty) ...[
+                const SizedBox(height: 30),
+                TileRow(
+                  title: 'Альбомы',
+                  tileWidth: 190,
+                  height: 260,
+                  tiles: [for (final a in r.albums) albumTile(context, a, withArtist: true)],
+                ),
+              ],
               if (r.artists.isNotEmpty) ...[
                 const SizedBox(height: 30),
                 TileRow(title: 'Исполнители', tileWidth: 150, height: 190, tiles: [for (final a in r.artists) artistTile(context, a)]),
@@ -785,18 +807,42 @@ class _WebSearchPageState extends State<WebSearchPage> {
                     child: WebTrackLine(track: t, list: r.tracks),
                   ),
               ],
-              if (r.albums.isNotEmpty) ...[
-                const SizedBox(height: 30),
-                TileRow(
-                  title: 'Альбомы',
-                  tileWidth: 190,
-                  height: 260,
-                  tiles: [for (final a in r.albums) albumTile(context, a, withArtist: true)],
-                ),
-              ],
             ]);
           },
         ),
     ]);
   }
+}
+
+/// Строки треков альбома из интернета. У многодисковых изданий — разделы «Диск 1», «Диск 2»…
+/// и нумерация внутри диска
+List<Widget> webAlbumRows(List<WebTrack> tracks, {bool cover = false}) {
+  final discs = tracks.map((t) => t.disc).toSet();
+  final multi = discs.length > 1;
+  final out = <Widget>[];
+  var disc = -1;
+  var n = 0;
+  for (final t in tracks) {
+    if (multi && t.disc != disc) {
+      disc = t.disc;
+      n = 0;
+      out.add(Padding(
+        padding: EdgeInsets.only(top: out.isEmpty ? 0 : 22, bottom: 6),
+        child: Row(children: [
+          const Icon(Icons.album_outlined, size: 18, color: C.muted),
+          const SizedBox(width: 8),
+          Text('Диск $disc', style: display(16)),
+        ]),
+      ));
+    }
+    n++;
+    out.add(Container(
+      decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
+      child: Row(children: [
+        SizedBox(width: 32, child: Text('$n', style: const TextStyle(color: C.faint, fontSize: 13))),
+        Expanded(child: WebTrackLine(track: t, showCover: cover, list: tracks)),
+      ]),
+    ));
+  }
+  return out;
 }

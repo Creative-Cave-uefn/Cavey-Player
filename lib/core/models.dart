@@ -102,11 +102,12 @@ class Track {
       '${(albumArtist.isNotEmpty ? albumArtist : artist).toLowerCase()}\u0001${displayAlbum.toLowerCase()}';
 
   /// Ключ альбома, в который трек попадёт после правки исполнителя или альбома
-  String albumKeyWith({String? newArtist, String? newAlbum}) {
+  String albumKeyWith({String? newArtist, String? newAlbum, String? newAlbumArtist}) {
     final a = newArtist ?? artist;
     final al = newAlbum ?? album;
+    final aa = newAlbumArtist ?? albumArtist;
     final shown = al.isNotEmpty ? al : (path.isNotEmpty ? path.split('/').last : 'Без альбома');
-    return '${(albumArtist.isNotEmpty ? albumArtist : a).toLowerCase()}\u0001${shown.toLowerCase()}';
+    return '${(aa.isNotEmpty ? aa : a).toLowerCase()}\u0001${shown.toLowerCase()}';
   }
 
   bool get hasCover => pic != null || cover != null || customCover != null;
@@ -451,7 +452,7 @@ class LibraryData {
     final e = edits[id];
     if (t == null || e == null) return;
     final j = t.toJson();
-    for (final entry in {'t': 't', 'a': 'a', 'al': 'al'}.entries) {
+    for (final entry in {'t': 't', 'a': 'a', 'al': 'al', 'y': 'y', 'aa': 'aa'}.entries) {
       final v = e[entry.key];
       if (v == null) continue;
       if (v.isEmpty && entry.key != 't') {

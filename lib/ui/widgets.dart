@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -89,7 +90,12 @@ class CoverImage extends StatefulWidget {
 
   /// Не просить копию крупнее этого размера в пикселях (для размытых баннеров хватает 640)
   final int? maxPx;
-  const CoverImage({super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx});
+
+  /// Закрашивать всю площадь: под обложкой кладётся её же размытая копия, чтобы прозрачные поля
+  /// и неквадратные картинки не оставляли пустых полос (плеер)
+  final bool fill;
+  const CoverImage(
+      {super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx, this.fill = false});
 
   @override
   State<CoverImage> createState() => _CoverImageState();
@@ -206,13 +212,32 @@ class _CoverImageState extends State<CoverImage> {
         height: widget.height ?? widget.size,
         child: bytes == null
             ? placeholder
-            : Image.memory(
-                bytes,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-                cacheWidth: (widget.size * dpr).round(),
-                errorBuilder: (_, __, ___) => placeholder,
-              ),
+            : widget.fill
+                ? Stack(fit: StackFit.expand, children: [
+                    ImageFiltered(
+                      imageFilter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14, tileMode: ui.TileMode.clamp),
+                      child: Transform.scale(
+                        scale: 1.3,
+                        child: Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true, cacheWidth: 64, errorBuilder: (_, __, ___) => const SizedBox.shrink()),
+                      ),
+                    ),
+                    Image.memory(
+                      bytes,
+                      fit: BoxFit.cover,
+                      alignment: Alignment.center,
+                      filterQuality: FilterQuality.medium,
+                      gaplessPlayback: true,
+                      cacheWidth: (widget.size * dpr).round(),
+                      errorBuilder: (_, __, ___) => placeholder,
+                    ),
+                  ])
+                : Image.memory(
+                    bytes,
+                    fit: BoxFit.cover,
+                    gaplessPlayback: true,
+                    cacheWidth: (widget.size * dpr).round(),
+                    errorBuilder: (_, __, ___) => placeholder,
+                  ),
       ),
     );
   }
@@ -447,4 +472,82 @@ Future<bool> confirm(BuildContext context, {required String title, required Stri
     ),
   );
   return r ?? false;
+}
+
+
+/// Плитка-ссылка (альбом, плейлист, исполнитель): подсветка при наведении с отступом вокруг обложки и текста,
+/// справа внизу обложки по наведению появляется кнопка «Играть». Обложка — квадрат на всю ширину плитки сверху
+class TileInk extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onTap;
+  final GestureTapUpCallback? onSecondaryTapUp;
+
+  /// Если задано — по наведению появляется кнопка воспроизведения
+  final VoidCallback? onPlay;
+  final double radius;
+  const TileInk({super.key, required this.child, required this.onTap, this.onSecondaryTapUp, this.onPlay, this.radius = 12});
+
+  /// Отступ подсветки от обложки и текста
+  static const pad = 8.0;
+
+  @override
+  State<TileInk> createState() => _TileInkState();
+}
+
+class _TileInkState extends State<TileInk> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, box) {
+      final side = box.maxWidth.isFinite ? box.maxWidth - TileInk.pad * 2 : 0.0;
+      const button = 40.0;
+      final show = _hover && widget.onPlay != null;
+      return MouseRegion(
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: Stack(fit: StackFit.passthrough, children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(widget.radius),
+            onTap: widget.onTap,
+            onSecondaryTapUp: widget.onSecondaryTapUp,
+            child: Padding(padding: const EdgeInsets.all(TileInk.pad), child: widget.child),
+          ),
+          if (widget.onPlay != null && side > button * 2)
+            Positioned(
+              right: TileInk.pad + 8,
+              top: TileInk.pad + side - 8 - button,
+              child: IgnorePointer(
+                ignoring: !show,
+                child: AnimatedOpacity(
+                  opacity: show ? 1 : 0,
+                  duration: const Duration(milliseconds: 140),
+                  child: AnimatedSlide(
+                    offset: show ? Offset.zero : const Offset(0, 0.18),
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOutCubic,
+                    child: Tooltip(
+                      message: 'Играть',
+                      child: GestureDetector(
+                        onTap: widget.onPlay,
+                        child: Container(
+                          width: button,
+                          height: button,
+                          decoration: BoxDecoration(
+                            color: C.accent,
+                            shape: BoxShape.circle,
+                            boxShadow: const [BoxShadow(color: Color(0x55000000), blurRadius: 10, offset: Offset(0, 3))],
+                          ),
+                          child: Icon(Icons.play_arrow_rounded, color: C.accentInk, size: 26),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ]),
+      );
+    });
+  }
 }

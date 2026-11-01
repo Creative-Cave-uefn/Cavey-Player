@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/library.dart';
-import 'cover_picker.dart';
+import 'album_edit.dart';
 import 'list_filter.dart';
 import 'shell.dart';
+import 'library_tabs.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
@@ -73,7 +74,8 @@ class _AlbumsPageState extends State<AlbumsPage> {
         final header = Padding(
           padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(ep ? 'Синглы и EP' : 'Альбомы', style: display(36, weight: FontWeight.w700)),
+            if (!LibraryFrame.on(context))
+              Text(ep ? 'Синглы и EP' : 'Альбомы', style: display(36, weight: FontWeight.w700)),
             if (all.isNotEmpty) ...[
               const SizedBox(height: 10),
               Text(
@@ -129,10 +131,10 @@ class _AlbumsPageState extends State<AlbumsPage> {
                     count: albums.length,
                     builder: (context, i) {
                       final a = albums[i];
-                      return InkWell(
-                        borderRadius: BorderRadius.circular(10),
+                      return TileInk(
                         onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-                        // Правый клик: сменить обложку альбома
+                        onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
+                        // Правый клик: меню альбома
                         onSecondaryTapUp: (d) => showAlbumMenu(context, a, d.globalPosition),
                         child: LayoutBuilder(
                           builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -195,32 +197,16 @@ class _AlbumsPageState extends State<AlbumsPage> {
   }
 }
 
-/// Окно «Обложка альбома»: загруженная картинка показывается у всех треков альбома
-Future<void> changeAlbumCover(BuildContext context, Album a) async {
-  final lib = Services.of(context).lib;
-  final v = await coverDialog(
-    context,
-    title: 'Обложка альбома',
-    current: CoverImage(track: a.coverTrack, size: 120, radius: 0),
-    canReset: lib.albumCover(a.key) != null,
-    note: 'Её увидят все друзья, и она показывается у каждого трека этого альбома.',
-  );
-  if (v != null) lib.setAlbumCover(a.key, v);
-}
-
 /// Меню альбома по правому клику, в точке клика
 Future<void> showAlbumMenu(BuildContext context, Album a, Offset at) async {
-  final lib = Services.of(context).lib;
   final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
   final v = await showGlassMenu<String>(
     context: context,
     position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
     items: [
-      const PopupMenuItem(value: 'cover', child: Text('Изменить обложку…')),
-      if (lib.albumCover(a.key) != null) const PopupMenuItem(value: 'reset', child: Text('Вернуть обложку из файлов')),
+      const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
     ],
   );
   if (!context.mounted) return;
-  if (v == 'cover') await changeAlbumCover(context, a);
-  if (v == 'reset') lib.setAlbumCover(a.key, '');
+  if (v == 'edit') await editAlbumDialog(context, a);
 }

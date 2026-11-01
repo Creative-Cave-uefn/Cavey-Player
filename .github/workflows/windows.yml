@@ -28,6 +28,9 @@ jobs:
       APP_VERSION: 0.2.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Вся история и метки: список изменений для релиза собирается от прошлой версии
+          fetch-depth: 0
 
       # Версия Flutter закреплена: в свежих версиях движок под Windows вылетает
       # (access violation в flutter_windows.dll, см. историю коммитов)
@@ -211,13 +214,25 @@ jobs:
           name: CavePlayer-Windows
           path: dist/*
 
+      # Что изменилось с прошлой версии: заголовки коммитов без слияний. Приложение показывает это под «Проверить обновления»
+      - name: Список изменений
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $prev = git describe --tags --abbrev=0 --match "v*" HEAD^ 2>$null
+          $range = if ($LASTEXITCODE -eq 0 -and $prev) { "$prev..HEAD" } else { "HEAD~20..HEAD" }
+          $subjects = @(git log --no-merges --format="%s" $range | Where-Object { $_ -and $_ -notmatch '^(Merge|Слияние)' } | Select-Object -Unique -First 40)
+          $text = ($subjects | ForEach-Object { "• $_" }) -join "`n"
+          if (-not $text) { $text = "Cavey $env:APP_VERSION" }
+          "RELEASE_NOTES<<EOF_NOTES`n$text`nEOF_NOTES" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       # Релиз в этом же репозитории: токен не нужен. Приложения видят его, если репозиторий публичный
       - name: Опубликовать релиз здесь
         if: github.ref == 'refs/heads/main'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          NOTES: ${{ github.event.head_commit.message }}
+          NOTES: ${{ env.RELEASE_NOTES || github.event.head_commit.message }}
         run: |
           $notes = if ($env:NOTES) { $env:NOTES } else { "Cavey $env:APP_VERSION" }
           gh release create "v$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
@@ -231,7 +246,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
-          NOTES: ${{ github.event.head_commit.message }}
+          NOTES: ${{ env.RELEASE_NOTES || github.event.head_commit.message }}
         run: |
           if (-not $env:GH_TOKEN) {
             Write-Output "::notice::Секрет RELEASES_TOKEN не задан, обновление не опубликовано"

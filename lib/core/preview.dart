@@ -18,6 +18,7 @@ class PreviewPlayer extends ChangeNotifier {
   /// Какой отрывок играет (id трека Deezer)
   int? current;
   double progress = 0;
+  double _volume = -1;
 
   PreviewPlayer(this.main) {
     _subs.add(_p.stream.completed.listen((done) {
@@ -32,9 +33,18 @@ class PreviewPlayer extends ChangeNotifier {
         notifyListeners();
       }
     }));
-    // Включили что-то в основном плеере — отрывок замолкает
+    // Включили что-то в основном плеере — отрывок замолкает.
+    // Громкость отрывка всё время следует за ползунком и кнопкой звука плеера, а не только в момент запуска
     main.addListener(() {
-      if (current != null && main.playing) stop();
+      if (current == null) return;
+      if (main.playing) {
+        stop();
+        return;
+      }
+      if (main.volume != _volume) {
+        _volume = main.volume;
+        unawaited(_p.setVolume(_volume));
+      }
     });
   }
 
@@ -49,7 +59,8 @@ class PreviewPlayer extends ChangeNotifier {
     progress = 0;
     notifyListeners();
     try {
-      await _p.setVolume(main.volume);
+      _volume = main.volume;
+      await _p.setVolume(_volume);
       await _p.open(Media(t.preview));
     } catch (e) {
       AppLog.warn('Отрывок «${t.title}»', e);

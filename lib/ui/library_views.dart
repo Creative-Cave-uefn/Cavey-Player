@@ -11,9 +11,11 @@ import '../core/tags.dart';
 import 'cover_picker.dart';
 import 'list_filter.dart';
 import 'shell.dart';
+import 'library_tabs.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
+import 'profile_view.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
 
@@ -87,7 +89,8 @@ class _ArtistsPageState extends State<ArtistsPage> {
             child: Padding(
               padding: EdgeInsets.fromLTRB(pad, 34, pad, 18),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Исполнители', style: display(36, weight: FontWeight.w700)),
+                if (!LibraryFrame.on(context))
+                  Text('Исполнители', style: display(36, weight: FontWeight.w700)),
                 if (all.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   Text(
@@ -168,9 +171,12 @@ Widget _artistsSliver(BuildContext context, AppServices app, List<Artist> items,
         count: items.length,
         builder: (context, i) {
           final a = items[i];
-          return InkWell(
-            borderRadius: BorderRadius.circular(12),
+          return TileInk(
             onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+            onPlay: () {
+              final app = Services.of(context);
+              app.player.playTracks(topTracksOf(app, a), 0);
+            },
             child: LayoutBuilder(
               builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
                 Stack(children: [

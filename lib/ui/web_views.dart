@@ -489,9 +489,177 @@ class _NewReleasesPageState extends State<NewReleasesPage> {
               title: 'Новинок нет',
               text: 'У ваших исполнителей за последние месяцы ничего не вышло — или всё уже в библиотеке.',
             ),
-          for (final r in list) WebAlbumTile(album: r.album, artistKey: r.artistKey),
+          _ReleaseGrid(releases: list),
         ]);
       },
+    );
+  }
+}
+
+
+/// Сетка карточек новинок. Нажатие на карточку раскрывает под её рядом содержимое релиза: треки с отрывками и «Скачать»
+class _ReleaseGrid extends StatefulWidget {
+  final List<NewRelease> releases;
+  const _ReleaseGrid({required this.releases});
+
+  @override
+  State<_ReleaseGrid> createState() => _ReleaseGridState();
+}
+
+class _ReleaseGridState extends State<_ReleaseGrid> {
+  int? _open;
+  final _tracks = <int, Future<List<WebTrack>>>{};
+
+  Future<List<WebTrack>> _load(int id) => _tracks.putIfAbsent(id, () => Services.of(context).web.albumTracks(id));
+
+  @override
+  Widget build(BuildContext context) {
+    final list = widget.releases;
+    if (list.isEmpty) return const SizedBox.shrink();
+    return LayoutBuilder(builder: (context, box) {
+      const gap = 12.0;
+      final cols = (box.maxWidth / 196).floor().clamp(1, 8);
+      final w = (box.maxWidth - gap * (cols - 1)) / cols;
+      final rows = <Widget>[];
+      for (var start = 0; start < list.length; start += cols) {
+        final chunk = list.sublist(start, (start + cols).clamp(0, list.length));
+        rows.add(Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          for (var i = 0; i < chunk.length; i++) ...[
+            if (i > 0) const SizedBox(width: gap),
+            SizedBox(
+              width: w,
+              child: _ReleaseCard(
+                release: chunk[i],
+                selected: _open == chunk[i].album.id,
+                onTap: () => setState(() => _open = _open == chunk[i].album.id ? null : chunk[i].album.id),
+              ),
+            ),
+          ],
+        ]));
+        NewRelease? opened;
+        for (final r in chunk) {
+          if (r.album.id == _open) opened = r;
+        }
+        rows.add(AnimatedSize(
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: opened == null
+              ? const SizedBox(width: double.infinity)
+              : _ReleasePanel(
+                  key: ValueKey('panel${opened.album.id}'),
+                  release: opened,
+                  tracks: _load(opened.album.id),
+                  onClose: () => setState(() => _open = null),
+                ),
+        ));
+        rows.add(const SizedBox(height: 10));
+      }
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: rows);
+    });
+  }
+}
+
+class _ReleaseCard extends StatelessWidget {
+  final NewRelease release;
+  final bool selected;
+  final VoidCallback onTap;
+  const _ReleaseCard({required this.release, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final a = release.album;
+    final when = a.released;
+    final fresh = when != null && DateTime.now().difference(when).inDays <= 30;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: selected ? C.accent.withValues(alpha: 0.14) : null,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: TileInk(
+        onTap: onTap,
+        onPlay: () async {
+          try {
+            final tracks = await Services.of(context).web.albumTracks(a.id);
+            if (!context.mounted || tracks.isEmpty) return;
+            playWeb(context, tracks.first, tracks);
+          } catch (e) {
+            if (context.mounted) Services.of(context).lib.messages.add('Не получилось включить: $e');
+          }
+        },
+        child: LayoutBuilder(
+          builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Stack(children: [
+              netCover(a.cover, box.maxWidth, radius: 10),
+              if (fresh)
+                Positioned(
+                  left: 8,
+                  top: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(color: C.accent, borderRadius: BorderRadius.circular(6)),
+                    child: Text('новое', style: TextStyle(color: C.accentInk, fontSize: 11, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+            ]),
+            const SizedBox(height: 9),
+            Text(a.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+            const SizedBox(height: 2),
+            Text(a.artist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 2),
+            Text('${a.typeLabel}${a.date.isEmpty ? '' : ' · ${_WebAlbumTileState._date(a.date)}'}',
+                maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 12)),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// Раскрытое содержимое новинки под рядом карточек
+class _ReleasePanel extends StatelessWidget {
+  final NewRelease release;
+  final Future<List<WebTrack>> tracks;
+  final VoidCallback onClose;
+  const _ReleasePanel({super.key, required this.release, required this.tracks, required this.onClose});
+
+  @override
+  Widget build(BuildContext context) {
+    final a = release.album;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.fromLTRB(16, 12, 12, 10),
+      decoration: BoxDecoration(color: C.accent.withValues(alpha: 0.07), borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Expanded(
+            child: Text('${a.title} — ${a.artist}', maxLines: 1, overflow: TextOverflow.ellipsis, style: display(16)),
+          ),
+          TextButton.icon(
+            onPressed: a.link.isEmpty ? null : () => downloadToLibrary(context, a.link, a.title),
+            icon: const Icon(Icons.download_rounded, size: 18),
+            label: const Text('Скачать в библиотеку'),
+          ),
+          IconButton(tooltip: 'Свернуть', onPressed: onClose, icon: const Icon(Icons.expand_less_rounded)),
+        ]),
+        FutureBuilder<List<WebTrack>>(
+          future: tracks,
+          builder: (context, snap) {
+            if (snap.connectionState != ConnectionState.done) {
+              return const Padding(padding: EdgeInsets.all(12), child: LinearProgressIndicator());
+            }
+            if (snap.hasError) {
+              return Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text('Не получилось загрузить треки: ${snap.error}', style: const TextStyle(color: C.faint, fontSize: 13)),
+              );
+            }
+            final list = snap.data ?? const <WebTrack>[];
+            return Column(children: [for (var i = 0; i < list.length; i++) WebTrackRow(track: list[i], n: i + 1, list: list)]);
+          },
+        ),
+      ]),
     );
   }
 }
