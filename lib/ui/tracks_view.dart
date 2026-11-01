@@ -1219,6 +1219,7 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
     const PopupMenuItem(value: 'share', child: Text('Поделиться…')),
     const PopupMenuDivider(),
     if (canSelect) PopupMenuItem(value: 'select', child: Text(selected ? 'Снять выбор' : 'Выбрать')),
+    const PopupMenuItem(value: 'redownload', child: Text('Перекачать трек…')),
     const PopupMenuItem(value: 'edit', child: Text('Изменить метаданные…')),
     const PopupMenuItem(value: 'hide', child: Text('Скрыть из библиотеки')),
     const PopupMenuItem(value: 'delete', child: Text('Удалить с Диска…', style: TextStyle(color: C.danger))),
@@ -1259,6 +1260,24 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
       app.lib.removeFromPlaylist(playlistId!, track.id);
     case 'album':
       NavScope.of(context).go(Nav('album', track.albumKey));
+    case 'redownload':
+      final mine = track.by.isEmpty || track.by == app.lib.me;
+      if (!mine) {
+        app.lib.messages.add('Перекачивать можно только свои файлы.');
+        return;
+      }
+      final ok = await confirm(context,
+        title: 'Перекачать «${track.title}»?',
+        text: 'Cavey найдёт новую версию трека через выбранный источник и заменит аудио в том же файле Google Диска. '
+            'ID, ссылки, лайки, плейлисты и ручные метаданные сохранятся. Старую аудиозапись после успешной замены вернуть не получится.',
+        action: 'Перекачать',
+      );
+      if (ok && context.mounted) {
+        final job = app.downloads.enqueueReplacement(track);
+        app.lib.messages.add(job == null
+            ? 'Этот трек уже перекачивается или у него не указаны исполнитель и название.'
+            : 'Перекачивание «${track.title}» добавлено в очередь загрузок');
+      }
     case 'edit':
       await editTrackDialog(context, track);
     case 'delete':
