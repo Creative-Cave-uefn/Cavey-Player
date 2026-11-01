@@ -132,9 +132,6 @@ jobs:
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          CAVE_DEEZER_ARL_DEFAULT: ${{ secrets.CAVE_DEEZER_ARL }}
-          CAVE_SOULSEEK_USERNAME_DEFAULT: ${{ secrets.CAVE_SOULSEEK_USERNAME }}
-          CAVE_SOULSEEK_PASSWORD_DEFAULT: ${{ secrets.CAVE_SOULSEEK_PASSWORD }}
         run: |
           $out = flutter build windows --release `
             --build-name $env:APP_VERSION --build-number ${{ github.run_number }} `
@@ -146,9 +143,7 @@ jobs:
             "--dart-define=SHARE_URL=${{ vars.SHARE_URL }}" `
             "--dart-define=GOOGLE_CLIENT_ID=$env:GOOGLE_CLIENT_ID" `
             "--dart-define=GOOGLE_CLIENT_SECRET=$env:GOOGLE_CLIENT_SECRET" `
-            "--dart-define=CAVE_DEEZER_ARL_DEFAULT=$env:CAVE_DEEZER_ARL_DEFAULT" `
-            "--dart-define=CAVE_SOULSEEK_USERNAME_DEFAULT=$env:CAVE_SOULSEEK_USERNAME_DEFAULT" `
-            "--dart-define=CAVE_SOULSEEK_PASSWORD_DEFAULT=$env:CAVE_SOULSEEK_PASSWORD_DEFAULT" 2>&1 | Out-String
+            2>&1 | Out-String
           $code = $LASTEXITCODE
           Write-Output $out
           if ($code -ne 0) {
@@ -159,6 +154,47 @@ jobs:
             }
             exit $code
           }
+
+      # The downloader is a separate private project. Only the CI runner receives
+      # its read token; no GitHub/Deezer/Soulseek secrets enter the Flutter build.
+      - name: Проверить доступ к отдельному модулю
+        shell: pwsh
+        env:
+          MODULE_READ_TOKEN: ${{ secrets.DOWNLOADER_READ_TOKEN }}
+        run: |
+          if (-not $env:MODULE_READ_TOKEN) {
+            Write-Output "::error::Добавьте Actions Secret DOWNLOADER_READ_TOKEN (read-only доступ к Cavey-Downloader). Без модуля скачивание не работает."
+            exit 1
+          }
+
+      - name: Получить исходники Cavey-Downloader
+        uses: actions/checkout@v5
+        with:
+          repository: Creative-Cave-uefn/Cavey-Downloader
+          ref: ${{ github.ref_name == 'feat/unified-links-youtube-reliability' && 'feat/unified-links-youtube-reliability' || 'main' }}
+          token: ${{ secrets.DOWNLOADER_READ_TOKEN }}
+          path: .cave-downloader-module
+          persist-credentials: false
+
+      - name: Собрать независимый Cavey-Downloader.exe
+        shell: pwsh
+        env:
+          CAVE_DEEZER_ARL_DEFAULT: ${{ secrets.CAVE_DEEZER_ARL }}
+          CAVE_SOULSEEK_USERNAME_DEFAULT: ${{ secrets.CAVE_SOULSEEK_USERNAME }}
+          CAVE_SOULSEEK_PASSWORD_DEFAULT: ${{ secrets.CAVE_SOULSEEK_PASSWORD }}
+        run: |
+          Push-Location .cave-downloader-module
+          try {
+            dart pub get
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            dart compile exe bin/cave_downloader.dart -o cave-downloader-windows-x64.exe `
+              "--define=APP_VERSION=2.0.${{ github.run_number }}" `
+              "--define=CAVE_DEEZER_ARL_DEFAULT=$env:CAVE_DEEZER_ARL_DEFAULT" `
+              "--define=CAVE_SOULSEEK_USERNAME_DEFAULT=$env:CAVE_SOULSEEK_USERNAME_DEFAULT" `
+              "--define=CAVE_SOULSEEK_PASSWORD_DEFAULT=$env:CAVE_SOULSEEK_PASSWORD_DEFAULT"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Copy-Item cave-downloader-windows-x64.exe ../build/windows/x64/runner/Release/ -Force
+          } finally { Pop-Location }
 
       - name: Установщик и портативная версия
         shell: pwsh
