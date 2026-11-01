@@ -719,7 +719,9 @@ String _lastQuery = '';
 class _WebSearchPageState extends State<WebSearchPage> {
   final _input = TextEditingController(text: _lastQuery);
   Timer? _debounce;
-  Future<({List<WebTrack> tracks, List<WebAlbum> albums, List<WebArtist> artists})>? _future;
+  Future<WebSearchResults>? _future;
+  WebSearchResults? _partial;
+  int _searchSeq = 0;
 
   @override
   void initState() {
@@ -730,6 +732,7 @@ class _WebSearchPageState extends State<WebSearchPage> {
   @override
   void dispose() {
     _debounce?.cancel();
+    _searchSeq++; // stale requests must not update a disposed search page
     _input.dispose();
     super.dispose();
   }
@@ -738,7 +741,14 @@ class _WebSearchPageState extends State<WebSearchPage> {
     if (!mounted) return;
     final q = _input.text.trim();
     _lastQuery = q;
-    setState(() => _future = q.isEmpty ? null : Services.of(context).web.search(q));
+    final sequence = ++_searchSeq;
+    _partial = null;
+    setState(() {
+      _future = q.isEmpty ? null : Services.of(context).web.search(q, onUpdate: (result) {
+        if (!mounted || sequence != _searchSeq) return;
+        setState(() => _partial = result);
+      });
+    });
   }
 
   @override
@@ -757,7 +767,7 @@ class _WebSearchPageState extends State<WebSearchPage> {
           autofocus: true,
           onChanged: (_) {
             _debounce?.cancel();
-            _debounce = Timer(const Duration(milliseconds: 450), _run);
+            _debounce = Timer(const Duration(milliseconds: 250), _run);
           },
           onSubmitted: (_) => _run(),
           decoration: const InputDecoration(
@@ -767,24 +777,30 @@ class _WebSearchPageState extends State<WebSearchPage> {
         ),
       ),
       if (_future != null)
-        FutureBuilder<({List<WebTrack> tracks, List<WebAlbum> albums, List<WebArtist> artists})>(
+        FutureBuilder<WebSearchResults>(
           future: _future,
           builder: (context, snap) {
-            if (snap.connectionState != ConnectionState.done) {
+            final loading = snap.connectionState != ConnectionState.done;
+            final r = _partial ?? snap.data;
+            if (r == null && loading) {
               return const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator()));
             }
-            if (snap.hasError) {
+            if (r == null && snap.hasError) {
               return Padding(
                 padding: const EdgeInsets.only(top: 24),
                 child: Text('Не получилось найти: ${snap.error}', style: const TextStyle(color: C.muted)),
               );
             }
-            final r = snap.data!;
-            if (r.tracks.isEmpty && r.albums.isEmpty && r.artists.isEmpty) {
+            if (r == null || (r.tracks.isEmpty && r.albums.isEmpty && r.artists.isEmpty && !loading)) {
               return const Padding(padding: EdgeInsets.only(top: 24), child: Text('Ничего не нашлось', style: TextStyle(color: C.muted)));
             }
             return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              // Сначала альбомы, потом исполнители, потом треки
+              if (loading)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: LinearProgressIndicator(minHeight: 2),
+                ),
+              // Individual categories appear as soon as their results arrive.
               if (r.albums.isNotEmpty) ...[
                 const SizedBox(height: 30),
                 TileRow(
