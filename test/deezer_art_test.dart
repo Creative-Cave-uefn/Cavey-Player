@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:image/image.dart' as img;
@@ -7,6 +8,33 @@ import 'package:cave_player/core/deezer_art.dart';
 
 void main() {
   group('Deezer artwork selection', () {
+    test('successful lookup resolves immediately and deduplicates concurrent calls', () async {
+      // Regression: returning _inflight.remove(key) from whenComplete caused
+      // the Future to wait on itself, even after the cover had been cached.
+      final completion = Completer<DeezerArtwork?>();
+      final cover = DeezerArtwork(Uint8List.fromList([1, 2, 3]), 1000, 1000, 'LookupTestAlbum');
+      var requests = 0;
+      Future<DeezerArtwork?> loader() {
+        requests++;
+        return completion.future;
+      }
+      final first = DeezerArt.find(
+        artist: 'LookupTestArtist', title: 'LookupTestSong',
+        album: 'LookupTestAlbum', lookupForTest: loader);
+      final second = DeezerArt.find(
+        artist: 'LookupTestArtist', title: 'LookupTestSong',
+        album: 'LookupTestAlbum', lookupForTest: loader);
+      expect(requests, 1);
+      completion.complete(cover);
+      expect(await first.timeout(const Duration(seconds: 1)), same(cover));
+      expect(await second.timeout(const Duration(seconds: 1)), same(cover));
+      final cached = await DeezerArt.find(
+        artist: 'LookupTestArtist', title: 'LookupTestSong',
+        album: 'LookupTestAlbum', lookupForTest: () => throw StateError('cache not used'));
+      expect(cached, same(cover));
+      expect(requests, 1);
+    });
+
     test('compares pixels without discarding the larger cover', () {
       final high = DeezerArtwork(Uint8List(0), 1200, 1200, 'Album');
       expect(high.betterThan(640, 640), isTrue);

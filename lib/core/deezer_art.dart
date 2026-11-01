@@ -3,7 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart' show compute, visibleForTesting;
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 
@@ -109,6 +109,9 @@ class DeezerArt {
     required String title,
     String album = '',
     void Function(String)? onLog,
+    // Deterministic lookup injection for testing request deduplication and
+    // completion without depending on Deezer's public API.
+    @visibleForTesting Future<DeezerArtwork?> Function()? lookupForTest,
   }) {
     final id = ++_searchId;
     final timer = Stopwatch()..start();
@@ -127,14 +130,19 @@ class DeezerArt {
       return Future.value(cached.$2);
     }
     if (_inflight.containsKey(key)) log('Ожидаю предыдущий поиск того же трека');
-    return _inflight[key] ??= _search(artist, title, album, log).then((result) {
+    return _inflight[key] ??=
+        (lookupForTest?.call() ?? _search(artist, title, album, log)).then((result) {
       log(result == null
           ? 'Результат: обложка не найдена'
           : 'Результат: ${result.width}×${result.height}, ${result.bytes.length} байт');
       if (_cache.length >= 32) _cache.remove(_cache.keys.first);
       _cache[key] = (DateTime.now().add(Duration(minutes: result == null ? 1 : 30)), result);
       return result;
-    }).whenComplete(() => _inflight.remove(key));
+    }).whenComplete(() {
+      // Map.remove returns the in-flight Future. Returning it from whenComplete
+      // makes the Future wait for itself forever (the UI times out in 14 s).
+      _inflight.remove(key);
+    });
   }
 
   /// Retrieve editable tags independently of image downloading.

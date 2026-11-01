@@ -640,23 +640,14 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
   String coverStatus = '';
   String metadataStatus = '';
 
-  @override
-  void initState() {
-    super.initState();
-    // The existing automatic cover lookup remains independent of manual
-    // metadata filling. Never override a manually chosen cover.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _lookupCover(automatic: true);
-    });
-  }
-
   (String, String, String) get _fields => (
     widget.artist.text.trim(),
     widget.title.text.trim(),
     widget.album.text.trim(),
   );
 
-  Future<void> _lookupCover({bool automatic = false}) async {
+  // Search only after the user presses «Найти обложку в Deezer».
+  Future<void> _lookupCover() async {
     if (coverSearching) return;
     final query = _fields;
     setState(() {
@@ -677,11 +668,6 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
       }
       if (artwork == null) {
         setState(() => coverStatus = 'Обложка в Deezer не найдена.');
-        return;
-      }
-      if (automatic && widget.choice.changed) {
-        AppLog.info('Deezer cover: keeping manually selected image');
-        setState(() => coverStatus = '');
         return;
       }
       // Always use the found image even when its resolution is lower.
