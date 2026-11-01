@@ -49,6 +49,7 @@ class _TransferSession {
   Socket? socket;
   int? pid;
   bool killSent = false;
+  final Completer<void> cancelled = Completer<void>();
   _TransferSession(this.job);
 }
 
@@ -130,6 +131,7 @@ class DownloadService extends ChangeNotifier {
     } else {
       final session = _activeTransfer;
       if (session != null && identical(session.job, job)) {
+        if (!session.cancelled.isCompleted) session.cancelled.complete();
         session.socket?.destroy();
         unawaited(_killTransfer(session));
       }
@@ -186,7 +188,9 @@ class DownloadService extends ChangeNotifier {
                   job: job, onLog: (s) { job.add(s); _notify(); });
               break;
             } catch (e, stack) {
-              AppLog.error('Связь с Cavey-Downloader при загрузке', e, stack);
+              if (!job.cancelRequested) {
+                AppLog.error('Связь с Cavey-Downloader при загрузке', e, stack);
+              }
               if (job.cancelRequested || attempt > 0 || job.replaceTrackId != null ||
                   !retryableDisconnect(e)) rethrow;
               job.add('Локальное соединение с загрузчиком оборвалось. '
@@ -398,6 +402,7 @@ class DownloadService extends ChangeNotifier {
     final session = job == null ? null : _TransferSession(job);
     if (session != null) _activeTransfer = session;
     try {
+      if (job?.cancelRequested == true) throw StateError('Загрузка отменена');
       if (Platform.isWindows) {
         unawaited(WinProc.run(exe.path, args, (_) {},
           onStarted: (pid) {
@@ -415,7 +420,15 @@ class DownloadService extends ChangeNotifier {
         unawaited(p.stderr.drain<void>());
         unawaited(p.exitCode);
       }
-      socket = await server.first.timeout(const Duration(seconds: 40));
+      // Cancellation must unblock even if the helper process has not yet
+      // connected. Otherwise ServerSocket.first could wait for 40 seconds.
+      socket = session == null
+          ? await server.first.timeout(const Duration(seconds: 40))
+          : await Future.any<Socket?>([
+              server.first.timeout(const Duration(seconds: 40)),
+              session.cancelled.future.then<Socket?>((_) => null),
+            ]);
+      if (socket == null) throw StateError('Загрузка отменена');
       if (session != null) {
         session.socket = socket;
         if (session.job.cancelRequested) socket.destroy();
