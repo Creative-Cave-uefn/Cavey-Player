@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:isolate';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
@@ -662,13 +661,9 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
     setState(() { searching = true; status = 'Проверяю Deezer…'; });
     AppLog.info('Deezer UI: старт поиска обложки для трека "${widget.track.title}"');
     try {
-      final app = Services.of(context);
-      _record('Google Drive: проверяю текущую обложку параллельно с Deezer', lookup);
-      // Do not wait for a potentially slow Google Drive cover after the
-      // Deezer request: both fetches run concurrently.
-      final currentCoverFuture = app.covers.forTrack(widget.track, px: 0)
-          .timeout(const Duration(seconds: 2), onTimeout: () => null)
-          .catchError((Object _) => null);
+      // Deezer is now authoritative whenever an exact match is found.
+      // Do not fetch the old image from Drive or compare resolution.
+      _record('Поиск Deezer: заменяю обложку независимо от разрешения', lookup);
       // A stalled catalog/CDN request must never leave the dialog spinning.
       // The service has per-request deadlines; this is an additional UI guard.
       final artwork = await DeezerArt.find(
@@ -683,19 +678,12 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
         setState(() => status = 'Deezer не вернул подходящую обложку. Скопируйте журнал поиска.');
         return;
       }
-      if (automatic && widget.choice.changed) return;
-      final currentBytes = widget.choice.picked?.bytes ?? await currentCoverFuture;
-      if (!mounted) return;
-      if (automatic && widget.choice.changed) return;
-      final current = await Isolate.run(() => DeezerArt.dimensions(currentBytes))
-          .timeout(const Duration(seconds: 3), onTimeout: () => null);
-      _record('Google Drive: ${current == null ? 'размер исходной обложки неизвестен' : '${current.$1}×${current.$2}'}', lookup);
-      if (!mounted) return;
-      if (current != null && !artwork.betterThan(current.$1, current.$2)) {
-        setState(() => status =
-            'Текущая обложка не хуже: ${current.$1}×${current.$2}. Deezer: ${artwork.width}×${artwork.height}.');
+      if (automatic && widget.choice.changed) {
+        _record('Автоматическая замена пропущена: пользователь уже выбрал обложку вручную', lookup);
         return;
       }
+      _record('Подставляю найденную обложку Deezer ${artwork.width}×${artwork.height} '
+          'без сравнения с текущей', lookup);
       widget.choice.pick(PickedCover(artwork.bytes, 'jpg'));
       setState(() => status =
           'Deezer: ${artwork.width}×${artwork.height}. Новая обложка будет сохранена вместе с метаданными.');
