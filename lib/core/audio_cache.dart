@@ -23,6 +23,7 @@ class AudioCache extends ChangeNotifier {
   final List<String> _queue = [];
   final Set<String> _active = {};
   final Set<String> _failed = {};
+  final Set<String> _invalidateAfterDownload = {};
   int sizeBytes = 0;
   Timer? _pinTimer;
 
@@ -94,6 +95,11 @@ class AudioCache extends ChangeNotifier {
       final email = await lib.accessFor(t.source);
       final f = fileFor(id);
       await drive.downloadToFile(email, id, f);
+      if (_invalidateAfterDownload.remove(id)) {
+        // A replacement completed while the old bytes were being cached.
+        if (await f.exists()) await f.delete();
+        return;
+      }
       _have.add(id);
       sizeBytes += await f.length();
       await _evict();
@@ -115,8 +121,9 @@ class AudioCache extends ChangeNotifier {
       }
       _have.remove(id);
     } else {
-      // Download in progress: force refresh after it finishes.
-      _failed.add(id);
+      // Drop the in-flight old copy once it finishes.
+      _invalidateAfterDownload.add(id);
+      _have.remove(id);
     }
     notifyListeners();
   }
