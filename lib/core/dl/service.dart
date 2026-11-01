@@ -524,11 +524,11 @@ class DownloadService extends ChangeNotifier {
               // if the socket breaks, we must not try to write a second reply.
               try {
                 socket!.write('${jsonEncode(reply)}\n');
-                await socket.flush();
+                await socket!.flush();
               } on SocketException catch (e) {
                 onLog?.call('IPC: ответ на ${call['m']} не доставлен: $e');
                 socketAlive = false;
-                socket.destroy();
+                socket?.destroy();
               }
             }).catchError((Object e, StackTrace stack) {
               AppLog.error('Ошибка очереди IPC-ответов', e, stack);
@@ -547,7 +547,7 @@ class DownloadService extends ChangeNotifier {
         // Distinguish a helper crash from a peer socket reset. WinProc can
         // outlive the socket while its child processes still hold stdout.
         try {
-          final code = await moduleExit.timeout(const Duration(seconds: 2));
+          final code = await moduleExit!.timeout(const Duration(seconds: 2));
           onLog?.call('Диагностика: Cavey-Downloader exit code $code, IPC: ${e.runtimeType}');
         } on TimeoutException {
           onLog?.call('Диагностика: соединение оборвано, но процесс '
