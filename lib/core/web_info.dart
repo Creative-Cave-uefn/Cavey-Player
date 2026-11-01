@@ -119,6 +119,13 @@ class NewRelease {
   const NewRelease(this.artistKey, this.album);
 }
 
+/// Online search results can update before every Deezer endpoint finishes.
+typedef WebSearchResults = ({
+  List<WebTrack> tracks,
+  List<WebAlbum> albums,
+  List<WebArtist> artists,
+});
+
 class WebInfoService extends ChangeNotifier {
   final Directory dir;
   final LibraryController lib;
@@ -476,21 +483,77 @@ class WebInfoService extends ChangeNotifier {
     return (album, tracks);
   }
 
-  /// Поиск по Deezer: треки, альбомы и исполнители сразу
-  Future<({List<WebTrack> tracks, List<WebAlbum> albums, List<WebArtist> artists})> search(String query) async {
+  // Short-lived cache: returning to search does not fetch the same preview
+  // links, album covers and artist records again.
+  final Map<String, (DateTime, WebSearchResults)> _searchCache = {};
+  static const searchTimeout = Duration(seconds: 7);
+
+  /// Deliver tracks as soon as Deezer returns them. Album and artist requests
+  /// continue independently, but never block a track preview from appearing.
+  Future<WebSearchResults> search(String query, {void Function(WebSearchResults)? onUpdate}) async {
     final q = query.trim();
-    if (q.isEmpty) return (tracks: const <WebTrack>[], albums: const <WebAlbum>[], artists: const <WebArtist>[]);
-    final r = await Future.wait([
-      _deezer('/search/track', {'q': q, 'limit': '30'}),
-      _deezer('/search/album', {'q': q, 'limit': '16'}),
-      _deezer('/search/artist', {'q': q, 'limit': '12'}),
-    ]);
-    List<Map> data(Map j) => [for (final x in (j['data'] as List? ?? const [])) if (x is Map) x];
-    return (
-      tracks: [for (final x in data(r[0])) WebTrack.fromDeezer(x)],
-      albums: [for (final x in data(r[1])) WebAlbum.fromDeezer(x)],
-      artists: [for (final x in data(r[2])) WebArtist.fromDeezer(x)],
+    if (q.isEmpty) {
+      return (tracks: <WebTrack>[], albums: <WebAlbum>[], artists: <WebArtist>[]);
+    }
+    final key = q.toLowerCase();
+    final cached = _searchCache[key];
+    if (cached != null && DateTime.now().isBefore(cached.$1)) {
+      onUpdate?.call(cached.$2);
+      return cached.$2;
+    }
+
+    var tracks = <WebTrack>[];
+    var albums = <WebAlbum>[];
+    var artists = <WebArtist>[];
+    WebSearchResults current() => (tracks: tracks, albums: albums, artists: artists);
+    List<Map> data(Map j) => [
+      for (final x in (j['data'] as List? ?? const []))
+        if (x is Map) x,
+    ];
+    void publish() => onUpdate?.call(current());
+
+    Future<void> loadTracks() async {
+      try {
+        final j = await _deezer('/search/track', {'q': q, 'limit': '30'})
+            .timeout(searchTimeout);
+        tracks = [for (final x in data(j)) WebTrack.fromDeezer(x)];
+      } catch (e) {
+        AppLog.warn('Deezer: поиск аудиопревью', e);
+      }
+      publish();
+    }
+
+    Future<void> loadAlbums() async {
+      try {
+        final j = await _deezer('/search/album', {'q': q, 'limit': '16'})
+            .timeout(searchTimeout);
+        albums = [for (final x in data(j)) WebAlbum.fromDeezer(x)];
+      } catch (e) {
+        AppLog.warn('Deezer: поиск альбомов', e);
+      }
+      publish();
+    }
+
+    Future<void> loadArtists() async {
+      try {
+        final j = await _deezer('/search/artist', {'q': q, 'limit': '12'})
+            .timeout(searchTimeout);
+        artists = [for (final x in data(j)) WebArtist.fromDeezer(x)];
+      } catch (e) {
+        AppLog.warn('Deezer: поиск исполнителей', e);
+      }
+      publish();
+    }
+
+    await Future.wait([loadTracks(), loadAlbums(), loadArtists()]);
+    final result = current();
+    if (_searchCache.length >= 30) _searchCache.remove(_searchCache.keys.first);
+    _searchCache[key] = (
+      DateTime.now().add(Duration(seconds:
+          tracks.isEmpty && albums.isEmpty && artists.isEmpty ? 20 : 300)),
+      result,
     );
+    return result;
   }
 
   final Map<String, Future<WebAlbum?>> _findAlbum = {};

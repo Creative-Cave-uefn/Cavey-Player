@@ -638,7 +638,7 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
       // Do not wait for a potentially slow Google Drive cover after the
       // Deezer request: both fetches run concurrently.
       final currentCoverFuture = app.covers.forTrack(widget.track, px: 0)
-          .timeout(const Duration(seconds: 6), onTimeout: () => null)
+          .timeout(const Duration(seconds: 2), onTimeout: () => null)
           .catchError((Object _) => null);
       final artwork = await DeezerArt.find(
         artist: widget.artist.text.trim(),
