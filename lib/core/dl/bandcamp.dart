@@ -2,6 +2,7 @@
 // yt-dlp supports Bandcamp track and album extractors. This is a recording of
 // available audio streams, NOT a purchase or a lossless original download.
 import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 import 'tools.dart';
 
@@ -12,6 +13,26 @@ class BandcampInfo {
 }
 
 class Bandcamp {
+  /// Best-effort discovery of public Bandcamp track pages. Only validated links are used.
+  static Future<String?> findTrack(String artist, String title) async {
+    final query = [artist, title].where((s) => s.trim().isNotEmpty).join(' ');
+    if (query.isEmpty) return null;
+    try {
+      final url = Uri.https('bandcamp.com', '/search', {'q': query, 'item_type': 't'});
+      final response = await http.get(url, headers: {'User-Agent': 'Mozilla/5.0'})
+          .timeout(const Duration(seconds: 12));
+      if (response.statusCode != 200) return null;
+      // Bandcamp often renders track links in search results; do not follow arbitrary hosts.
+      final html = response.body.replaceAll('&amp;', '&');
+      final pattern = RegExp(r'https?://[a-zA-Z0-9._-]+\.bandcamp\.com/track/[a-zA-Z0-9._%/-]+');
+      final urls = <String>{for (final m in pattern.allMatches(html)) m.group(0)!};
+      for (final result in urls.take(6)) {
+        if (accepts(result)) return result;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   static Uri? supportedUri(String input) {
     final uri = Uri.tryParse(input.trim());
     if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https') ||
