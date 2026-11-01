@@ -51,7 +51,7 @@ class DeezerArt {
     // Some Dart errors (notably unsendable-isolate errors) contain the entire
     // widget tree. Avoid rendering or synchronously writing megabyte-sized
     // exception strings on Flutter's UI isolate.
-    final oneLine = message.replaceAll(RegExp(r'[\\r\\n]+'), ' ');
+    final oneLine = message.replaceAll(RegExp(r'[\r\n]+'), ' ');
     final concise = oneLine.length > 500
         ? '${oneLine.substring(0, 500)}…'
         : oneLine;
