@@ -4,7 +4,7 @@
 > yt-dlp, Deno, Bandcamp и поиск аудио находятся в отдельном `Cavey-Downloader.exe`.
 > Публичное получение **обложек** из Deezer по-прежнему выполняется в Player через `lib/core/deezer_art.dart`.
 > Устаревшие инструкции ниже, описывающие загрузчики как часть исходников Player, относятся к прежней архитектуре.
-> Плеер проверяет IPC protocol **2** и не использует встроенный ARL при сборке Flutter.
+> Плеер проверяет IPC protocol **3** и не использует встроенный ARL при сборке Flutter.
 >
 > **Упаковка приватного модуля:** репозиторий `Creative-Cave-uefn/Cavey-Player` должен иметь
 > Actions Secret `DOWNLOADER_READ_TOKEN` с правом Contents: Read к приватному

@@ -1144,11 +1144,37 @@ class LibraryController extends ChangeNotifier {
     return k == '|' ? '' : k;
   }
 
-  /// Группы похожих треков (одна и та же песня в нескольких копиях)
+  /// Отличаем одинаковые названия на разных альбомах: это могут быть разные записи.
+  static String recordingKey(Track track) {
+    final name = dupKey(track.artist, track.title);
+    return name.isEmpty ? '' : '$name|${_albumName(track.album)}';
+  }
+
+  static String _albumName(String album) =>
+      album.toLowerCase().trim().replaceAll(RegExp(r'\s+'), ' ');
+
+  /// Совпадения по названию недостаточно: альбом должен совпасть, если указан.
+  /// Длительность дополнительно защищает от разных аранжировок одного альбома.
+  static bool matchesRecording(Track candidate, {String album = '', double? duration}) {
+    final requestedAlbum = _albumName(album);
+    if (requestedAlbum.isNotEmpty && _albumName(candidate.album) != requestedAlbum) return false;
+    if (duration != null && duration > 0) {
+      final existingMs = candidate.durationMs;
+      if (existingMs == null || existingMs <= 0) {
+        // Без альбома и без длительности нельзя уверенно считать записи одинаковыми.
+        if (requestedAlbum.isEmpty) return false;
+      } else if ((existingMs - duration * 1000).abs() > 2500) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Группы копий в пределах одного альбома, не объединяя разные саундтреки.
   List<List<Track>> get duplicates {
     final groups = <String, List<Track>>{};
     for (final t in allTracks) {
-      final k = dupKey(t.artist, t.title);
+      final k = recordingKey(t);
       if (k.isEmpty) continue;
       groups.putIfAbsent(k, () => []).add(t);
     }
@@ -1159,7 +1185,7 @@ class LibraryController extends ChangeNotifier {
   /// Такая песня уже есть в библиотеке (видимая копия) — чтобы не качать и не загружать её снова
   /// Ищет не только точное совпадение: в названии может стоять исполнитель («Korn - Freak On a Leash»),
   /// исполнитель может быть записан иначе («KoЯn», «The Weeknd» и «Weeknd», «A feat. B»)
-  Track? existing(String artist, String title) {
+  Track? existing(String artist, String title, {String album = '', double? duration}) {
     final k = dupKey(artist, title);
     if (k.isEmpty) return null;
     if (_dupVersion != _version) {
@@ -1168,15 +1194,18 @@ class LibraryController extends ChangeNotifier {
       _titleIndex = {};
       for (final t in allTracks) {
         final tk = dupKey(t.artist, t.title);
-        if (tk.isNotEmpty) _dupIndex.putIfAbsent(tk, () => t);
+        if (tk.isNotEmpty) _dupIndex.putIfAbsent(tk, () => []).add(t);
         final tt = titleKey(t.artist, t.title);
         if (tt.isNotEmpty) _titleIndex.putIfAbsent(tt, () => []).add(t);
       }
     }
-    final exact = _dupIndex[k];
-    if (exact != null) return exact;
-    for (final c in _titleIndex[titleKey(artist, title)] ?? const <Track>[]) {
-      if (artistsMatch(artist, c.artist)) return c;
+    // Не останавливаемся на первом совпавшем названии: оно может быть из другого альбома.
+    for (final candidate in _dupIndex[k] ?? const <Track>[]) {
+      if (matchesRecording(candidate, album: album, duration: duration)) return candidate;
+    }
+    for (final candidate in _titleIndex[titleKey(artist, title)] ?? const <Track>[]) {
+      if (artistsMatch(artist, candidate.artist) &&
+          matchesRecording(candidate, album: album, duration: duration)) return candidate;
     }
     return null;
   }
@@ -1214,7 +1243,7 @@ class LibraryController extends ChangeNotifier {
   }
 
   Map<String, List<Track>> _titleIndex = {};
-  Map<String, Track> _dupIndex = {};
+  Map<String, List<Track>> _dupIndex = {};
   int _dupVersion = -1;
 
   /// Какую копию оставить: самый большой файл (обычно лучшее качество), при равенстве — более раннюю
@@ -1699,7 +1728,7 @@ class LibraryController extends ChangeNotifier {
         try {
           // Такая песня уже есть — не загружаем вторую копию
           final tags = parseTags(await _readHead(file), name);
-          final same = existing(tags.artist, tags.title);
+          final same = existing(tags.artist, tags.title, album: tags.album);
           if (same != null) {
             upload.skipped++;
             AppLog.info('Уже есть в библиотеке, не загружаю: $name');

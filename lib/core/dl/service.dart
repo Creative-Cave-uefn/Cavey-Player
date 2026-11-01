@@ -14,7 +14,7 @@ import '../library.dart';
 import '../models.dart';
 import 'winproc.dart';
 
-const kDownloaderProtocol = 2;
+const kDownloaderProtocol = 3;
 enum JobState { queued, running, done, failed }
 
 class DownloadJob {
@@ -219,7 +219,9 @@ class DownloadService extends ChangeNotifier {
     if (job == null) throw const FormatException('Для этого запроса нужно задание');
     switch (method) {
       case 'existing':
-        final t = lib.existing('${call['artist'] ?? ''}', '${call['title'] ?? ''}');
+        final t = lib.existing('${call['artist'] ?? ''}', '${call['title'] ?? ''}',
+            album: '${call['album'] ?? ''}',
+            duration: (call['duration'] as num?)?.toDouble());
         return t == null ? null : {'id': t.id, 'artist': t.artist, 'title': t.title};
       case 'folder':
         return lib.ensureSubfolder(job.sourceId, job.target, '${call['name'] ?? ''}');

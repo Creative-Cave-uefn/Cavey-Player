@@ -191,7 +191,7 @@ jobs:
             dart pub get
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             dart compile exe bin/cave_downloader.dart -o cave-downloader-windows-x64.exe `
-              "--define=APP_VERSION=2.0.${{ github.run_number }}" `
+              "--define=APP_VERSION=3.0.${{ github.run_number }}" `
               "--define=CAVE_DEEZER_ARL_DEFAULT=$env:CAVE_DEEZER_ARL_DEFAULT" `
               "--define=CAVE_SOULSEEK_USERNAME_DEFAULT=$env:CAVE_SOULSEEK_USERNAME_DEFAULT" `
               "--define=CAVE_SOULSEEK_PASSWORD_DEFAULT=$env:CAVE_SOULSEEK_PASSWORD_DEFAULT"
