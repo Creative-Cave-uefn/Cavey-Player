@@ -3,7 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/models.dart';
 import '../core/store.dart';
+import 'glass_popup.dart';
 import 'theme.dart';
 
 
@@ -17,7 +19,38 @@ String sortKey(String s) {
   return cut.isEmpty ? f : cut;
 }
 
-/// Строка «поиск + сортировка А–Я / Я–А» над списками исполнителей и альбомов
+/// Способ сортировки списка альбомов или исполнителей: по названию, по дате первой загрузки, по числу песен
+class ListSort {
+  final String mode; // 'name' | 'first' | 'count'
+  final bool desc;
+  const ListSort(this.mode, this.desc);
+
+  /// Выбор запоминается для каждого списка отдельно: settings.view['sort.<ключ>'] = «режим|1 или 0»
+  static ListSort read(Settings s, String key, {bool legacyDesc = false}) {
+    final raw = s.view['sort.$key'];
+    if (raw == null) return ListSort('name', legacyDesc);
+    final i = raw.lastIndexOf('|');
+    final mode = i < 0 ? raw : raw.substring(0, i);
+    return ListSort(const ['name', 'first', 'count'].contains(mode) ? mode : 'name', i >= 0 && raw.substring(i + 1) == '1');
+  }
+
+  void write(Settings s, String key) => s.view['sort.$key'] = '$mode|${desc ? 1 : 0}';
+
+  /// Какое направление выбирать у режима при первом переходе на него: новые и самые большие сверху, имена по алфавиту
+  static bool defaultDesc(String mode) => mode != 'name';
+}
+
+/// Самая ранняя дата появления файла на Диске среди треков (ISO-строка; пусто, если дат нет)
+String firstUpload(Iterable<Track> tracks) {
+  var best = '';
+  for (final t in tracks) {
+    final s = t.added.isNotEmpty ? t.added : t.modified;
+    if (s.isNotEmpty && (best.isEmpty || s.compareTo(best) < 0)) best = s;
+  }
+  return best;
+}
+
+/// Строка «поиск + сортировка» над списками исполнителей и альбомов
 class SearchSortBar extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
@@ -25,6 +58,10 @@ class SearchSortBar extends StatelessWidget {
   final bool desc;
   final ValueChanged<String> onChanged;
   final VoidCallback onToggleSort;
+
+  /// Режим сортировки ('name', 'first', 'count') и его смена; без [onMode] только А–Я / Я–А
+  final String mode;
+  final ValueChanged<String>? onMode;
 
   /// Справа от кнопки сортировки (например, выбор вида)
   final Widget? trailing;
@@ -36,6 +73,8 @@ class SearchSortBar extends StatelessWidget {
     required this.desc,
     required this.onChanged,
     required this.onToggleSort,
+    this.mode = 'name',
+    this.onMode,
     this.trailing,
   });
 
@@ -66,12 +105,36 @@ class SearchSortBar extends StatelessWidget {
         ),
       ),
       const SizedBox(width: 12),
+      if (onMode != null)
+        GlassMenuButton<String>(
+          tooltip: 'Сортировка',
+          icon: const Icon(Icons.sort_rounded, size: 20),
+          onSelected: onMode!,
+          itemBuilder: (_) => [
+            for (final (id, label) in const [('name', 'По названию'), ('first', 'По дате первой загрузки'), ('count', 'По числу песен')])
+              PopupMenuItem(
+                value: id,
+                child: Row(children: [
+                  SizedBox(width: 22, child: mode == id ? Icon(Icons.check_rounded, size: 16, color: C.accent) : null),
+                  Text(label),
+                ]),
+              ),
+          ],
+        ),
       Tooltip(
-        message: desc ? 'Сейчас Я–А, нажмите для А–Я' : 'Сейчас А–Я, нажмите для Я–А',
+        message: switch (mode) {
+          'first' => desc ? 'Сначала новые, нажмите — сначала старые' : 'Сначала старые, нажмите — сначала новые',
+          'count' => desc ? 'Сначала где больше песен, нажмите — где меньше' : 'Сначала где меньше песен, нажмите — где больше',
+          _ => desc ? 'Сейчас Я–А, нажмите для А–Я' : 'Сейчас А–Я, нажмите для Я–А',
+        },
         child: OutlinedButton.icon(
           onPressed: onToggleSort,
           icon: Icon(desc ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded, size: 16),
-          label: Text(desc ? 'Я–А' : 'А–Я'),
+          label: Text(switch (mode) {
+            'first' => desc ? 'Новые' : 'Старые',
+            'count' => desc ? 'Больше' : 'Меньше',
+            _ => desc ? 'Я–А' : 'А–Я',
+          }),
         ),
       ),
       if (trailing != null) ...[const SizedBox(width: 16), trailing!],

@@ -55,7 +55,10 @@ class _AlbumsPageState extends State<AlbumsPage> {
         final ep = widget.kind == 'ep';
         final all = ep ? app.lib.albums.where(isShortRelease).toList() : app.lib.albums;
         final q = foldText(_query.trim());
-        final desc = app.settings.albumsDesc;
+        final sortId = ep ? 'eps' : 'albums';
+        final ls = ListSort.read(app.settings, sortId, legacyDesc: app.settings.albumsDesc);
+        final desc = ls.desc;
+        final firstAt = ls.mode == 'first' ? {for (final a in all) a.key: firstUpload(a.tracks)} : const <String, String>{};
         final albums = q.isEmpty
             ? List<Album>.of(all)
             : all.where((a) => foldText(a.title).contains(q) || foldText(a.artist).contains(q)).toList();
@@ -63,9 +66,17 @@ class _AlbumsPageState extends State<AlbumsPage> {
           final ua = a.title == 'Без альбома';
           final ub = b.title == 'Без альбома';
           if (ua != ub) return ua ? 1 : -1; // «без альбома» всегда внизу
-          final r = sortKey(a.title).compareTo(sortKey(b.title));
+          final byName = sortKey(a.title).compareTo(sortKey(b.title));
+          final r = switch (ls.mode) {
+            'first' => (firstAt[a.key] ?? '').compareTo(firstAt[b.key] ?? ''),
+            'count' => a.tracks.length.compareTo(b.tracks.length),
+            _ => byName,
+          };
           if (r != 0) return desc ? -r : r;
-          return sortKey(a.artist).compareTo(sortKey(b.artist));
+          // Равные по выбранному признаку всегда по алфавиту и по ключу: порядок не плавает
+          if (byName != 0) return byName;
+          final byArtist = sortKey(a.artist).compareTo(sortKey(b.artist));
+          return byArtist != 0 ? byArtist : a.key.compareTo(b.key);
         }
 
         albums.sort(cmp);
@@ -90,9 +101,16 @@ class _AlbumsPageState extends State<AlbumsPage> {
                 focusNode: _focus,
                 hint: 'Найти альбом или исполнителя',
                 desc: desc,
+                mode: ls.mode,
+                onMode: (m) {
+                  if (m == ls.mode) return;
+                  ListSort(m, ListSort.defaultDesc(m)).write(app.settings, sortId);
+                  app.lib.saveSettings();
+                  setState(() {});
+                },
                 onChanged: (v) => setState(() => _query = v),
                 onToggleSort: () {
-                  app.settings.albumsDesc = !desc;
+                  ListSort(ls.mode, !desc).write(app.settings, sortId);
                   app.lib.saveSettings();
                   setState(() {});
                 },

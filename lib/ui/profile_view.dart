@@ -260,18 +260,21 @@ class _Banner extends StatelessWidget {
               }(),
           ];
       final steps = [for (var i = 0; i <= 12; i++) i / 12];
-      return Padding(
+      // Свой слой: баннер не перерисовывается заново от прокрутки страницы, и нижний край не мерцает
+      return RepaintBoundary(
+       child: Padding(
         padding: const EdgeInsets.fromLTRB(margin, 4, margin, 0),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(28),
           child: ShaderMask(
-            // снизу: плавно в прозрачность с середины
+            // снизу: плавно в прозрачность с середины; к 96 % высоты баннер уже полностью прозрачен,
+            // чтобы у самого края не оставалась тонкая линия
             blendMode: BlendMode.dstIn,
             shaderCallback: (r) => LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: [Colors.white, Colors.white, ...fade(12, reverse: true)],
-              stops: [0.0, 0.45, for (final s in steps) 0.45 + s * 0.55],
+              colors: [Colors.white, Colors.white, ...fade(12, reverse: true), const Color(0x00FFFFFF)],
+              stops: [0.0, 0.45, for (final s in steps) 0.45 + s * 0.51, 1.0],
             ).createShader(r),
             child: ShaderMask(
               // по бокам: мягко растворяется у левого и правого края
@@ -280,7 +283,9 @@ class _Banner extends StatelessWidget {
                 colors: [...fade(12), ...fade(12, reverse: true)],
                 stops: [for (final s in steps) s * 0.12, for (final s in steps) 0.88 + s * 0.12],
               ).createShader(r),
-              child: SizedBox(
+              // ClipRect: размытие рисует и за краем своего прямоугольника, это и давало линию на нижней границе
+              child: ClipRect(
+               child: SizedBox(
                 width: w,
                 height: h,
                 child: Stack(fit: StackFit.expand, children: [
@@ -292,10 +297,12 @@ class _Banner extends StatelessWidget {
                   ),
                   ColoredBox(color: Colors.black.withValues(alpha: 0.4)),
                 ]),
+               ),
               ),
             ),
           ),
         ),
+       ),
       );
     });
   }
@@ -450,7 +457,7 @@ class TileRow extends StatefulWidget {
   /// «›» у заголовка — открыть раздел целиком
   final VoidCallback? onMore;
 
-  /// Идёт обновление: плитки затемнены и не нажимаются, рядом с заголовком значок «обновление»
+  /// Идёт обновление: плитки слегка затемнены (но нажимаются), рядом с заголовком значок «обновление»
   final bool updating;
   const TileRow({super.key, required this.title, required this.tiles, this.tileWidth = 220, this.height = 270, this.onMore, this.updating = false});
 
@@ -489,23 +496,20 @@ class _TileRowState extends State<TileRow> {
             : null,
       ),
       AnimatedOpacity(
-        opacity: widget.updating ? 0.35 : 1,
+        opacity: widget.updating ? 0.75 : 1,
         duration: const Duration(milliseconds: 220),
-        child: IgnorePointer(
-          ignoring: widget.updating,
-          child: SizedBox(
-        height: widget.height,
-        child: ScrollConfiguration(
-          behavior: ScrollConfiguration.of(context).copyWith(dragDevices: {PointerDeviceKind.touch, PointerDeviceKind.mouse}),
-          child: ListView.separated(
-            controller: _ctl,
-            scrollDirection: Axis.horizontal,
-            itemCount: widget.tiles.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 20),
-            itemBuilder: (_, i) => SizedBox(width: widget.tileWidth, child: widget.tiles[i]),
+        child: SizedBox(
+          height: widget.height,
+          child: ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context).copyWith(dragDevices: {PointerDeviceKind.touch, PointerDeviceKind.mouse}),
+            child: ListView.separated(
+              controller: _ctl,
+              scrollDirection: Axis.horizontal,
+              itemCount: widget.tiles.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 20),
+              itemBuilder: (_, i) => SizedBox(width: widget.tileWidth, child: widget.tiles[i]),
+            ),
           ),
-        ),
-      ),
         ),
       ),
     ]);
@@ -988,7 +992,7 @@ class UserTracksPage extends StatelessWidget {
 }
 
 /// «Статистика» в профиле: сколько наслушано всего, за неделю и месяц, график за 30 дней и любимый исполнитель.
-/// Время примерное: прослушивания × длительность трека
+/// Время считается по тому, сколько трек реально прослушан
 class ListenStats extends StatelessWidget {
   final String email;
   const ListenStats({super.key, required this.email});
@@ -1005,60 +1009,86 @@ class ListenStats extends StatelessWidget {
     final days = s.listenedByDay(email);
     final top = s.topArtist(email);
     final peak = days.fold<int>(0, (a, d) => math.max(a, d.$2.inMinutes));
-    Widget tile(String label, String value) => Container(
-          constraints: const BoxConstraints(minWidth: 150),
+    Widget tile(String label, String value, {double? width}) => Container(
+          width: width,
+          constraints: width == null ? const BoxConstraints(minWidth: 150) : null,
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
           decoration: BoxDecoration(color: C.surface, border: Border.all(color: C.line), borderRadius: BorderRadius.circular(14)),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-            Text(value, style: display(22, weight: FontWeight.w700)),
+            Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: display(22, weight: FontWeight.w700)),
             const SizedBox(height: 2),
-            Text(label, style: const TextStyle(color: C.muted, fontSize: 13)),
+            Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
           ]),
         );
+
+    Widget tiles({double? width}) => Wrap(spacing: 12, runSpacing: 12, children: [
+          tile('наслушано всего', formatListened(total), width: width),
+          tile('за неделю', formatListened(week), width: width),
+          tile('за месяц', formatListened(month), width: width),
+          if (top != null)
+            InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => NavScope.of(context).go(Nav('artist', top.toLowerCase())),
+              child: tile('любимый исполнитель месяца', top, width: width),
+            ),
+        ]);
+
+    // По дням за 30 дней: высота столбика — сколько минут слушали
+    Widget chart(double height) => SizedBox(
+          height: height,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Expanded(
+              child: LayoutBuilder(builder: (context, box) {
+                final room = math.max(0.0, box.maxHeight - 3);
+                return Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                  for (final (day, d) in days)
+                    Expanded(
+                      child: Tooltip(
+                        message: '${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}: ${formatListened(d)}',
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 1.5),
+                          child: Container(
+                            height: peak == 0 ? 3 : (3 + room * d.inMinutes / peak),
+                            decoration: BoxDecoration(
+                              color: d.inMinutes == 0 ? C.line : C.accent.withValues(alpha: 0.85),
+                              borderRadius: BorderRadius.circular(3),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ]);
+              }),
+            ),
+            const SizedBox(height: 6),
+            const Row(children: [
+              Text('30 дней назад', style: TextStyle(color: C.faint, fontSize: 11)),
+              Spacer(),
+              Text('сегодня', style: TextStyle(color: C.faint, fontSize: 11)),
+            ]),
+          ]),
+        );
+
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const SectionTitle('Статистика'),
-      Wrap(spacing: 12, runSpacing: 12, children: [
-        tile('наслушано всего', formatListened(total)),
-        tile('за неделю', formatListened(week)),
-        tile('за месяц', formatListened(month)),
-        if (top != null)
-          InkWell(
-            borderRadius: BorderRadius.circular(14),
-            onTap: () => NavScope.of(context).go(Nav('artist', top.toLowerCase())),
-            child: tile('любимый исполнитель месяца', top),
-          ),
-      ]),
-      const SizedBox(height: 18),
-      // По дням за 30 дней: высота столбика — сколько минут слушали
-      SizedBox(
-        height: 90,
-        child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-          for (final (day, d) in days)
-            Expanded(
-              child: Tooltip(
-                message: '${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}: ${formatListened(d)}',
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 1.5),
-                  child: Container(
-                    height: peak == 0 ? 3 : (3 + 84 * d.inMinutes / peak),
-                    decoration: BoxDecoration(
-                      color: d.inMinutes == 0 ? C.line : C.accent.withValues(alpha: 0.85),
-                      borderRadius: BorderRadius.circular(3),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-        ]),
-      ),
-      const SizedBox(height: 6),
-      const Row(children: [
-        Text('30 дней назад', style: TextStyle(color: C.faint, fontSize: 11)),
-        Spacer(),
-        Text('сегодня', style: TextStyle(color: C.faint, fontSize: 11)),
-      ]),
-      const SizedBox(height: 6),
-      const Text('Время примерное: прослушивания × длительность трека.', style: TextStyle(color: C.faint, fontSize: 11)),
+      LayoutBuilder(builder: (context, box) {
+        // Широкое окно: плашки в два ряда, график правее них и такой же высоты. Узкое: график под плашками
+        const tileW = 190.0;
+        const tilesW = tileW * 2 + 12;
+        const rowsH = 2 * 72.0 + 12;
+        if (box.maxWidth >= tilesW + 20 + 280) {
+          return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            SizedBox(width: tilesW, child: tiles(width: tileW)),
+            const SizedBox(width: 20),
+            Expanded(child: chart(rowsH)),
+          ]);
+        }
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          tiles(),
+          const SizedBox(height: 18),
+          chart(96),
+        ]);
+      }),
     ]);
   }
 }

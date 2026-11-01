@@ -35,6 +35,7 @@ import 'glass_popup.dart';
 import 'library_home.dart';
 import 'library_tabs.dart';
 import 'collection_page.dart';
+import 'album_edit.dart';
 import 'queue_panel.dart';
 
 class Nav {
@@ -657,7 +658,9 @@ class _SidebarHostState extends State<_SidebarHost> with SingleTickerProviderSta
 
   /// 0 — полная панель, 1 — узкая. Время и кривая те же, что у ширины панели в окне, поэтому всё едет вместе
   late final AnimationController _ctl = AnimationController(vsync: this, duration: const Duration(milliseconds: 320));
-  late final Animation<double> _t = CurvedAnimation(parent: _ctl, curve: Curves.easeOutCubic);
+  // Разворачивание — зеркало сворачивания по положению, но с тем же разгоном и торможением: у обратного хода кривая перевёрнута,
+  // иначе контроллер проигрывал бы easeOutCubic задом наперёд (медленный старт, резкий конец)
+  late final Animation<double> _t = CurvedAnimation(parent: _ctl, curve: Curves.easeOutCubic, reverseCurve: Curves.easeOutCubic.flipped);
   bool _started = false;
 
   @override
@@ -747,7 +750,12 @@ class _SlideSwap extends StatelessWidget {
   final double t;
   final Widget full;
   final Widget mini;
-  const _SlideSwap({required this.t, required this.full, required this.mini});
+
+  /// Высоты видов, если они известны: тогда блок плавно растёт или сжимается вместе с переходом,
+  /// а то, что ниже, едет следом, а не прыгает в конце
+  final double? fullH;
+  final double? miniH;
+  const _SlideSwap({required this.t, required this.full, required this.mini, this.fullH, this.miniH});
 
   static const fullW = 240.0;
   static const miniW = 72.0;
@@ -757,7 +765,7 @@ class _SlideSwap extends StatelessWidget {
     // Align снимает жёсткую ширину родителя (панель растягивает детей на 240), иначе узкий вид растягивался бы до полной ширины
     if (t <= 0) return Align(alignment: Alignment.topLeft, child: SizedBox(width: fullW, child: full));
     if (t >= 1) return Align(alignment: Alignment.topLeft, child: SizedBox(width: miniW, child: mini));
-    return Stack(clipBehavior: Clip.none, children: [
+    final stack = Stack(clipBehavior: Clip.none, children: [
       Opacity(
         opacity: (1 - t * 1.25).clamp(0.0, 1.0),
         child: Transform.translate(offset: Offset(t * 90, 0), child: SizedBox(width: fullW, child: full)),
@@ -772,6 +780,9 @@ class _SlideSwap extends StatelessWidget {
         ),
       ),
     ]);
+    final a = fullH, b = miniH;
+    if (a == null || b == null) return stack;
+    return SizedBox(height: a + (b - a) * t, child: stack);
   }
 }
 
@@ -861,6 +872,8 @@ class _Sidebar extends StatelessWidget {
             const SizedBox(height: 18),
             _SlideSwap(
               t: v,
+              fullH: _PlaylistsHeader.fullH,
+              miniH: _PlaylistsHeader.miniH,
               full: _PlaylistsHeader(compact: false, selected: cur.same(const Nav('collection')), mode: mode),
               mini: _PlaylistsHeader(compact: true, selected: cur.same(const Nav('collection')), mode: mode),
             ),
@@ -937,11 +950,15 @@ class _PlaylistsHeader extends StatelessWidget {
   final String mode;
   const _PlaylistsHeader({required this.compact, required this.selected, required this.mode});
 
+  /// Высоты обоих видов заданы жёстко: переход между ними растёт плавно, и «+» в узком виде выезжает вместе с обложками
+  static const fullH = 52.0;
+  static const miniH = 96.0;
+
   @override
   Widget build(BuildContext context) {
     final nav = NavScope.of(context);
     if (compact) {
-      return Column(children: [
+      return SizedBox(height: miniH, child: Column(children: [
         IconButton(
           tooltip: 'Коллекция',
           icon: Icon(Icons.queue_music_rounded, color: selected ? C.accent : C.muted),
@@ -952,9 +969,9 @@ class _PlaylistsHeader extends StatelessWidget {
           icon: const Icon(Icons.playlist_add_rounded),
           onPressed: () => newPlaylistFlow(context),
         ),
-      ]);
+      ]));
     }
-    return Padding(
+    return SizedBox(height: fullH, child: Padding(
       padding: const EdgeInsets.fromLTRB(10, 0, 4, 4),
       child: Row(children: [
         Expanded(
@@ -986,7 +1003,7 @@ class _PlaylistsHeader extends StatelessWidget {
           onPressed: () => newPlaylistFlow(context),
         ),
       ]),
-    );
+    ));
   }
 }
 
@@ -1115,13 +1132,18 @@ class _SideEntry {
   final Widget Function(double size) cover;
   final bool round;
   final String? owner; // для цветной точки автора плейлиста
-  const _SideEntry(this.label, this.target, this.cover, {this.round = false, this.owner});
 
-  factory _SideEntry.playlist(Playlist p) =>
-      _SideEntry(p.name, Nav('playlist', p.id), (size) => PlaylistCover(playlist: p, size: size, radius: 5), owner: p.by);
+  /// Что за пункт: для меню по правому клику
+  final Playlist? playlist;
+  final Album? album;
+  final Artist? artist;
+  const _SideEntry(this.label, this.target, this.cover, {this.round = false, this.owner, this.playlist, this.album, this.artist});
+
+  factory _SideEntry.playlist(Playlist p) => _SideEntry(p.name, Nav('playlist', p.id),
+      (size) => PlaylistCover(playlist: p, size: size, radius: 5), owner: p.by, playlist: p);
 
   factory _SideEntry.album(Album a) =>
-      _SideEntry(a.title, Nav('album', a.key), (size) => CoverImage(track: a.coverTrack, size: size, radius: 5));
+      _SideEntry(a.title, Nav('album', a.key), (size) => CoverImage(track: a.coverTrack, size: size, radius: 5), album: a);
 
   factory _SideEntry.artist(Artist a) => _SideEntry(
         a.name,
@@ -1130,7 +1152,62 @@ class _SideEntry {
           child: ArtistPhoto(name: a.name, size: size, fallback: CoverImage(track: a.coverTrack, size: size, radius: 0)),
         ),
         round: true,
+        artist: a,
       );
+}
+
+/// Правый клик по плейлисту, альбому или исполнителю в боковой панели: слушать, вперемешку, правка, приватность
+Future<void> _showSideMenu(BuildContext context, _SideEntry e, Offset at) async {
+  final app = Services.of(context);
+  final lib = app.lib;
+  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+  final p = e.playlist;
+  final mine = p != null && (p.by == lib.me || p.by.isEmpty);
+  final v = await showGlassMenu<String>(
+    context: context,
+    position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
+    items: [
+      const PopupMenuItem(value: 'play', child: Text('Слушать')),
+      const PopupMenuItem(value: 'shuffle', child: Text('Вперемешку')),
+      if (p != null || e.album != null) const PopupMenuDivider(),
+      if (p != null || e.album != null) const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
+      if (mine)
+        lib.isPlaylistPublic(p.id)
+            ? const PopupMenuItem(value: 'private', child: Text('Сделать приватным'))
+            : const PopupMenuItem(value: 'public', child: Text('Сделать открытым')),
+    ],
+  );
+  if (v == null || !context.mounted) return;
+  List<Track> tracks() {
+    if (p != null) return lib.playlistTracks(p.id);
+    if (e.album != null) return e.album!.tracks;
+    final a = e.artist!;
+    return topTracksOf(app, a);
+  }
+
+  switch (v) {
+    case 'play':
+    case 'shuffle':
+      final list = tracks();
+      if (list.isEmpty) {
+        lib.messages.add('Здесь пока нет треков');
+        return;
+      }
+      final shuffle = v == 'shuffle';
+      if (app.player.shuffle != shuffle) app.player.toggleShuffle();
+      app.player.playTracks(list, shuffle ? DateTime.now().microsecond % list.length : 0);
+    case 'edit':
+      if (p != null) {
+        final t = lib.playlistTracks(p.id);
+        await editPlaylistDialog(context, p, coverTrack: t.isEmpty ? null : t.firstWhere((x) => x.hasCover, orElse: () => t.first));
+      } else {
+        await editAlbumDialog(context, e.album!);
+      }
+    case 'public':
+    case 'private':
+      lib.setPlaylistPublic(p!.id, v == 'public');
+      lib.messages.add(v == 'public' ? 'Плейлист «${p.name}» теперь видят все друзья' : 'Плейлист «${p.name}» виден только вам');
+  }
 }
 
 /// Строка «Коллекции»: миниатюра и название
@@ -1146,6 +1223,7 @@ class _SideRow extends StatelessWidget {
     final color = selected ? C.text : C.muted;
     final body = InkWell(
       onTap: onTap,
+      onSecondaryTapUp: (d) => _showSideMenu(context, entry, d.globalPosition),
       borderRadius: BorderRadius.circular(8),
       child: Container(
         height: 46,
@@ -1201,6 +1279,7 @@ class _SideTiles extends StatelessWidget {
                 child: InkWell(
                   borderRadius: BorderRadius.circular(8),
                   onTap: () => nav.go(e.target),
+                  onSecondaryTapUp: (d) => _showSideMenu(context, e, d.globalPosition),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     DecoratedBox(
                       position: DecorationPosition.foreground,
@@ -1229,7 +1308,8 @@ class _SideTiles extends StatelessWidget {
   }
 }
 
-/// Готовое обновление: жёлтая плашка внизу боковой панели
+/// Вышла новая версия: маленькая плашка внизу боковой панели, по нажатию открывает настройки с кнопками «Скачать» и «Установить».
+/// Сама ничего не скачивает и не перезапускает
 class _UpdateLine extends StatelessWidget {
   final bool compact;
   const _UpdateLine({required this.compact});
@@ -1237,31 +1317,41 @@ class _UpdateLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final up = Services.of(context).updater;
+    final nav = NavScope.of(context);
     return ListenableBuilder(
       listenable: up,
       builder: (context, _) {
-        if (up.state == UpdateState.downloading && !compact) {
-          return Padding(
-            padding: const EdgeInsets.fromLTRB(22, 10, 16, 0),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Скачиваю версию ${up.latest ?? ''}', style: const TextStyle(fontSize: 12, color: C.faint)),
-              const SizedBox(height: 6),
-              LinearProgressIndicator(value: up.progress),
-            ]),
-          );
-        }
-        if (up.state != UpdateState.ready) return const SizedBox.shrink();
-        final button = FilledButton(
-          style: FilledButton.styleFrom(
-            padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 14, vertical: 10),
-            textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+        final has = up.state == UpdateState.available || up.state == UpdateState.downloading || up.state == UpdateState.ready;
+        if (!has) return const SizedBox.shrink();
+        final label = up.state == UpdateState.ready ? 'Готово к установке: ${up.latest}' : 'Доступна версия ${up.latest}';
+        final chip = InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: () => nav.go(const Nav('accounts', 'main')),
+          child: Container(
+            padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: C.accent.withValues(alpha: 0.16),
+              border: Border.all(color: C.accent.withValues(alpha: 0.5)),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: compact
+                ? Icon(Icons.system_update_alt_rounded, size: 18, color: C.accent)
+                : Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.system_update_alt_rounded, size: 15, color: C.accent),
+                    const SizedBox(width: 8),
+                    Flexible(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: C.accent, fontSize: 12.5, fontWeight: FontWeight.w600))),
+                  ]),
           ),
-          onPressed: up.installNow,
-          child: compact ? const Icon(Icons.system_update_alt_rounded, size: 18) : Text('Обновить до ${up.latest}'),
         );
         return Padding(
           padding: EdgeInsets.fromLTRB(compact ? 10 : 16, 12, compact ? 10 : 16, 0),
-          child: Tooltip(message: 'Перезапустить Cavey с новой версией', child: button),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Tooltip(message: label, child: Align(alignment: compact ? Alignment.center : Alignment.centerLeft, child: chip)),
+            if (up.state == UpdateState.downloading && !compact) ...[
+              const SizedBox(height: 8),
+              LinearProgressIndicator(value: up.progress),
+            ],
+          ]),
         );
       },
     );

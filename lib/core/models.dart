@@ -59,6 +59,9 @@ class Track {
   final String album;
   final String albumArtist;
   final int? no;
+
+  /// Номер диска из тегов (TPOS / DISCNUMBER); null — не указан, то есть один диск
+  final int? disc;
   final String year;
   final PicRef? pic; // обложка внутри файла
   final String? cover; // cover.jpg рядом с файлом
@@ -82,6 +85,7 @@ class Track {
     required this.album,
     required this.albumArtist,
     required this.no,
+    this.disc,
     required this.year,
     required this.pic,
     required this.cover,
@@ -119,6 +123,7 @@ class Track {
         if (album.isNotEmpty) 'al': album,
         if (albumArtist.isNotEmpty) 'aa': albumArtist,
         if (no != null) 'n': no,
+        if (disc != null) 'dn': disc,
         if (year.isNotEmpty) 'y': year,
         if (pic != null) 'p': [pic!.offset, pic!.length, pic!.mime],
         if (cover != null) 'c': cover,
@@ -142,6 +147,7 @@ class Track {
       album: (j['al'] as String?) ?? '',
       albumArtist: (j['aa'] as String?) ?? '',
       no: (j['n'] as num?)?.toInt(),
+      disc: (j['dn'] as num?)?.toInt(),
       year: (j['y'] as String?) ?? '',
       pic: pic,
       cover: j['c'] as String?,
@@ -178,6 +184,9 @@ class LibraryData {
   final Map<String, Track> tracks = {};
   final List<Playlist> playlists = [];
   final Map<String, Set<String>> likes = {}; // trackId → кто лайкнул
+
+  /// Когда поставлен лайк: «trackId|почта» → мс. Есть только у лайков, поставленных с версии 0.2.250; у старых даты нет
+  final Map<String, int> likeTimes = {};
   final Map<String, String> members = {}; // email → имя
   final Map<String, Map<String, String>> edits = {}; // ручные правки тегов
   final Set<String> hidden = {}; // скрытые треки (например, дубликаты)
@@ -213,6 +222,7 @@ class LibraryData {
         'tracks': tracks.map((k, v) => MapEntry(k, v.toJson())),
         'playlists': playlists.map((p) => p.toJson()).toList(),
         'likes': likes.map((k, v) => MapEntry(k, v.toList())),
+        if (likeTimes.isNotEmpty) 'lt': likeTimes,
         'members': members,
         'edits': edits,
         'hidden': hidden.toList(),
@@ -241,6 +251,12 @@ class LibraryData {
     if (l is Map) {
       l.forEach((k, v) {
         if (v is List && v.isNotEmpty) d.likes['$k'] = {for (final e in v) '$e'};
+      });
+    }
+    final lt = j['lt'];
+    if (lt is Map) {
+      lt.forEach((k, v) {
+        if (v is num) d.likeTimes['$k'] = v.toInt();
       });
     }
     final m = j['members'];
@@ -438,8 +454,11 @@ class LibraryData {
           final set = likes.putIfAbsent(id, () => <String>{});
           if (op['on'] == true) {
             set.add(who);
+            final ts = op['ts'];
+            if (ts is num) likeTimes['$id|$who'] = ts.toInt();
           } else {
             set.remove(who);
+            likeTimes.remove('$id|$who');
           }
           if (set.isEmpty) likes.remove(id);
         }

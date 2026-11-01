@@ -150,7 +150,7 @@ Future<PlaylistInfo?> yandexPlaylist(String url) async {
 // ---------- Deezer ----------
 // Открытый API без ключа: трек и альбом целиком, с номерами, годом и обложкой
 
-TrackMeta _deezerMeta(Map t, {Map? album, int? number, int? total, int discs = 1}) {
+TrackMeta _deezerMeta(Map t, {Map? album, int? number, int? total, int discs = 1, bool alwaysDisc = false}) {
   final alb = album ?? (t['album'] as Map?) ?? const {};
   final contributors = [for (final c in (t['contributors'] as List? ?? const [])) if (c is Map) '${c['name']}'];
   final main = '${(t['artist'] as Map?)?['name'] ?? ''}';
@@ -164,7 +164,9 @@ TrackMeta _deezerMeta(Map t, {Map? album, int? number, int? total, int discs = 1
     album: '${alb['title'] ?? ''}',
     year: date.length >= 4 ? date.substring(0, 4) : '',
     track: n != null && total != null ? '$n/$total' : (n?.toString() ?? ''),
-    disc: discs > 1 && t['disk_number'] is num ? '${(t['disk_number'] as num).toInt()}/$discs' : '',
+    disc: (discs > 1 || alwaysDisc) && t['disk_number'] is num
+        ? (discs > 1 ? '${(t['disk_number'] as num).toInt()}/$discs' : '${(t['disk_number'] as num).toInt()}')
+        : '',
     duration: (t['duration'] as num?)?.toDouble(),
     coverUrl: (alb['cover_xl'] ?? alb['cover_big']) as String?,
   );
@@ -175,7 +177,8 @@ Future<TrackMeta?> deezerTrack(String url) async {
   if (m == null) return null;
   final t = jsonDecode(await fetchText('https://api.deezer.com/track/${m.group(1)}')) as Map;
   if (t['error'] != null) return null;
-  return _deezerMeta(t);
+  // Один трек из альбома: номер и диск пишем всегда, чтобы после докачки он встал на своё место
+  return _deezerMeta(t, alwaysDisc: true);
 }
 
 /// Версии, которые не нужны, если о них не просили

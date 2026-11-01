@@ -18,6 +18,7 @@ class TrackTags {
   String album;
   String albumArtist;
   int? track;
+  int? disc;
   String year;
   PicRef? pic;
 
@@ -27,6 +28,7 @@ class TrackTags {
     this.album = '',
     this.albumArtist = '',
     this.track,
+    this.disc,
     this.year = '',
     this.pic,
   });
@@ -138,7 +140,7 @@ class _Raw {
 const _id3Map = {
   'TIT2': 'title', 'TT2': 'title', 'TPE1': 'artist', 'TP1': 'artist',
   'TALB': 'album', 'TAL': 'album', 'TPE2': 'albumArtist', 'TP2': 'albumArtist',
-  'TRCK': 'track', 'TRK': 'track', 'TYER': 'year', 'TDRC': 'year', 'TYE': 'year',
+  'TRCK': 'track', 'TRK': 'track', 'TPOS': 'disc', 'TPA': 'disc', 'TYER': 'year', 'TDRC': 'year', 'TYE': 'year',
 };
 
 final _frameId = RegExp(r'^[A-Z0-9]+$');
@@ -195,7 +197,7 @@ int _parseId3(Uint8List b, _Raw r) {
 
 const _vorbisMap = {
   'TITLE': 'title', 'ARTIST': 'artist', 'ALBUM': 'album', 'ALBUMARTIST': 'albumArtist',
-  'TRACKNUMBER': 'track', 'DATE': 'year',
+  'TRACKNUMBER': 'track', 'DISCNUMBER': 'disc', 'DATE': 'year',
 };
 
 void _parseVorbisComments(Uint8List b, int o, _Raw r) {
@@ -310,6 +312,7 @@ void _parseMp4(Uint8List b, _Raw r) {
         r.set(key, utf8.decode(b.sublist(vo, vo + vl), allowMalformed: true).trim());
       }
       if (type == 'trkn' && vo + 4 <= b.length) r.set('track', '${(b[vo + 2] << 8) | b[vo + 3]}');
+      if (type == 'disk' && vo + 4 <= b.length) r.set('disc', '${(b[vo + 2] << 8) | b[vo + 3]}');
       if (type == 'covr' && vl > 0 && vo < b.length) {
         r.pic = PicRef(vo, vl, b[vo] == 0x89 ? 'image/png' : 'image/jpeg');
       }
@@ -360,6 +363,7 @@ TrackTags parseTags(Uint8List b, String fileName) {
     album: f['album'] ?? '',
     albumArtist: f['albumArtist'] ?? '',
     track: trackNum ?? fb.track,
+    disc: int.tryParse(RegExp(r'^\d+').stringMatch(f['disc'] ?? '') ?? ''),
     year: year.length > 4 ? year.substring(0, 4) : year,
     pic: (r.pic != null && r.pic!.length > 0) ? r.pic : null,
   );

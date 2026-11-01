@@ -1,3 +1,5 @@
+import 'dart:math' show Random;
+
 import 'package:flutter/material.dart';
 
 import '../app.dart';
@@ -37,6 +39,10 @@ class LibraryHomePage extends StatefulWidget {
 
 class _LibraryHomePageState extends State<LibraryHomePage> {
   _Shelves? _frozen;
+
+  /// Список треков, по которому посчитаны полки: пока он тот же, полки не пересчитываются
+  /// (ни от статусов друзей, ни от прослушиваний, которые приходят каждые несколько секунд)
+  Object? _basis;
 
   @override
   Widget build(BuildContext context) {
@@ -79,14 +85,33 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
               });
             }
           }
-          final heavy = [for (final k in (plays.keys.toList()..sort((a, b) => plays[b]!.compareTo(plays[a]!)))) if (byKey[k] case final a?) a]
+          // Равные по числу прослушиваний идут по ключу: порядок не меняется от перерисовки к перерисовке
+          int byPlays(String a, String b) {
+            final r = plays[b]!.compareTo(plays[a]!);
+            return r != 0 ? r : a.compareTo(b);
+          }
+
+          final heavy = [for (final k in (plays.keys.toList()..sort(byPlays))) if (byKey[k] case final a?) a]
               .take(18)
               .toList();
-          final topArtists = List<Artist>.of(artists)..sort((a, b) => b.tracks.length.compareTo(a.tracks.length));
-          return _Shelves(recentAlbums, heavy, topArtists, short.length >= 3 ? (List<Album>.of(short)..shuffle()).take(18).toList() : const []);
+          final topArtists = List<Artist>.of(artists)
+            ..sort((a, b) {
+              final r = b.tracks.length.compareTo(a.tracks.length);
+              return r != 0 ? r : a.key.compareTo(b.key);
+            });
+          // «Синглы и EP» перемешаны, но одинаково в течение суток: не мелькают при каждой перерисовке
+          final now = DateTime.now();
+          final seed = now.year * 1000 + now.difference(DateTime(now.year)).inDays;
+          return _Shelves(recentAlbums, heavy, topArtists,
+              short.length >= 3 ? (List<Album>.of(short)..shuffle(Random(seed))).take(18).toList() : const []);
         }
 
-        final shelves = updating ? _frozen! : (_frozen = compute());
+        // Считаем при первом показе и когда сменилась сама библиотека (после проверки диска)
+        if (_frozen == null || (!updating && !identical(_basis, tracks))) {
+          _frozen = compute();
+          _basis = tracks;
+        }
+        final shelves = _frozen!;
         final recentAlbums = shelves.recent;
         final heavy = shelves.heavy;
         final topArtists = shelves.artists;

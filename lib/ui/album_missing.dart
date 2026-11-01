@@ -1,22 +1,23 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/album_match.dart';
 import '../core/library.dart';
+import '../core/models.dart';
 import '../core/web_info.dart';
 import 'theme.dart';
 import 'web_pages.dart';
 import 'web_views.dart';
 import 'widgets.dart';
 
-/// Какие треки альбома из интернета ещё не скачаны: сравнение по названию трека
-/// (без скобок вроде «(Remastered)» и feat.), а также по всей библиотеке — вдруг трек лежит в другом альбоме
-List<WebTrack> missingAlbumTracks(AppServices app, Album album, List<WebTrack> web) {
-  final have = {for (final t in album.tracks) WebInfoService.trackTitleKey(t.title)};
-  return [
-    for (final w in web)
-      if (!have.contains(WebInfoService.trackTitleKey(w.title)) && !app.web.trackInLibrary(w)) w
-  ];
-}
+/// Какие треки альбома из интернета ещё не скачаны. Трек из интернета считается скачанным, если в альбоме есть:
+/// 1) трек с тем же названием (без скобок вроде «(Remastered)» и feat.);
+/// 2) иначе трек с тем же номером на том же диске и длительностью в пределах 3 секунд — так находятся песни,
+///    записанные в тегах иначе (японское название у вас, английское в Deezer);
+/// 3) иначе ещё не сопоставленный трек с такой же длительностью (в пределах 2 секунд).
+/// Каждый ваш трек засчитывается не больше одного раза. Остальное ищется по всей библиотеке — вдруг трек лежит в другом альбоме
+List<WebTrack> missingAlbumTracks(AppServices app, Album album, List<WebTrack> web) =>
+    missingByMatch(album.tracks, web, inLibrary: app.web.trackInLibrary);
 
 /// Панель «Можно докачать» под списком треков альбома: альбом ищется в Deezer, и всё,
 /// чего нет в библиотеке, можно послушать отрывком и скачать

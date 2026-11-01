@@ -1,14 +1,14 @@
-// Автообновление: раз в несколько часов смотрим последний релиз в публичном
-// репозитории, в фоне скачиваем установщик и ставим его тихо — по кнопке
-// или сами при следующем запуске.
+// Обновления: раз в несколько часов смотрим последний релиз в публичном репозитории и сообщаем,
+// что вышла новая версия. Скачивает и ставит её человек сам, по кнопкам: Cavey ничего не качает
+// и не перезапускается без команды.
 //
 // Тестовые сборки: каждая ветка, кроме main, собирается в пререлиз
 // «test-<ветка>-v<версия>». Обычные версии их не видят; в настройках можно
 // поставить любую. Тестовая сборка дальше обновляется сборками своей ветки,
 // а когда ветку удалят — возвращается к обычным версиям.
 //
-// Бета-версии: ветка beta публикует пререлизы «beta-v<версия>». Кто включил
-// «Получать бета-версии», получает самую свежую из обычной и бета-версии.
+// Бета-версии: ветка beta публикует пререлизы «beta-v<версия>». Переключателя «Получать бета-версии» больше нет;
+// стоящая бета-сборка может вернуться на обычную версию кнопкой в настройках.
 
 import 'dart:async';
 import 'dart:convert';
@@ -22,7 +22,8 @@ import '../config.dart';
 import 'log.dart';
 import 'store.dart';
 
-enum UpdateState { idle, checking, downloading, ready, upToDate, error }
+/// available — вышла новая версия, но ещё не скачана; ready — скачана и ждёт установки
+enum UpdateState { idle, checking, available, downloading, ready, upToDate, error }
 
 /// Одна сборка из релизов: обычная версия или тестовая сборка ветки
 class BuildInfo {
@@ -89,8 +90,8 @@ class Updater extends ChangeNotifier {
   static final _testTag = RegExp(r'^test-(.+)-v(\d+(?:\.\d+)*)$');
   static final _betaTag = RegExp(r'^beta-v(\d+(?:\.\d+)*)$');
 
-  /// Получать бета-версии (настройка «Получать бета-версии»)
-  bool beta = false;
+  /// Бета-версии сами не приходят (переключатель убран)
+  bool get beta => false;
 
   /// Последняя бета-версия, если проверяли
   String? latestBeta;
@@ -98,11 +99,8 @@ class Updater extends ChangeNotifier {
   /// Сейчас стоит бета-сборка
   bool get isBeta => kBuildBeta;
 
-  Future<void> setBeta(bool on) async {
-    beta = on;
-    notifyListeners();
-    if (on) await check();
-  }
+  /// Найденная новая сборка: что скачать по кнопке «Скачать»
+  BuildInfo? found;
   static Map<String, String> get _headers =>
       {'Accept': 'application/vnd.github+json', 'User-Agent': 'CavePlayer/${kAppVersion.isEmpty ? 'dev' : kAppVersion}'};
 
@@ -138,15 +136,10 @@ class Updater extends ChangeNotifier {
     if (meta is! Map) return false;
     final version = meta['version'] as String?;
     final path = meta['path'] as String?;
-    if (version == null || path == null || !isNewer(version, kAppVersion)) {
-      await _forget(path);
-      return false;
-    }
-    // Одна попытка: если установщик не справился, не зацикливаемся на перезапусках
-    if (meta['attempted'] == true || !File(path).existsSync()) return false;
-    await store.writeJson('update.json', {...meta, 'attempted': true});
-    await _launch(path);
-    return true;
+    // Скачанное и не установленное само не ставится: человек нажмёт «Установить» в настройках.
+    // Здесь только убираем устаревшее: если версия уже стоит или новее, установщик не нужен
+    if (version == null || path == null || !isNewer(version, kAppVersion)) await _forget(path);
+    return false;
   }
 
   void start() {
@@ -332,7 +325,7 @@ class Updater extends ChangeNotifier {
     try {
       BuildInfo? target;
       List<Map>? pre;
-      if (isTestBuild || beta) {
+      if (isTestBuild) {
         pre = await _fetchPrereleases();
         testBuilds = _testBuildsFrom(pre);
         latestBeta = _latestBetaFrom(pre)?.version;
@@ -344,10 +337,7 @@ class Updater extends ChangeNotifier {
         if (target == null) AppLog.info('Обновления: тестовых сборок ветки $channel больше нет, слежу за обычными версиями');
       }
       if (target == null) {
-        // Обычная версия, а с галочкой «бета» — самая свежая из обычной и беты
         target = await _latestStable();
-        final b = pre == null || !beta ? null : _latestBetaFrom(pre);
-        if (b != null && (target == null || isNewer(b.version, target.version))) target = b;
       }
       lastCheck = DateTime.now();
       if (target == null) {
@@ -361,23 +351,36 @@ class Updater extends ChangeNotifier {
       if (!isNewer(target.version, kAppVersion)) {
         state = UpdateState.upToDate;
         changes = const [];
+        found = null;
         notifyListeners();
         return;
       }
+      found = target;
       changes = await _changesUpTo(target);
-      notifyListeners();
+      // Скачано раньше (например, до закрытия программы) — сразу можно ставить; иначе только сообщаем о новой версии
       final meta = await store.readJson('update.json');
-      if (meta is Map && meta['version'] == target.version && File('${meta['path']}').existsSync()) {
-        state = UpdateState.ready;
-        notifyListeners();
-        return;
-      }
+      state = meta is Map && meta['version'] == target.version && File('${meta['path']}').existsSync()
+          ? UpdateState.ready
+          : UpdateState.available;
+    } catch (e) {
+      state = UpdateState.error;
+      error = 'Не получилось проверить обновления: $e';
+    }
+    notifyListeners();
+  }
+
+  /// Кнопка «Скачать»: качает найденную версию, дальше её можно установить
+  Future<void> download() async {
+    final target = found;
+    if (target == null || state == UpdateState.downloading) return;
+    try {
+      error = null;
       final path = await _download(target.url, target.version, target.size, target.sha256);
       await store.writeJson('update.json', {'version': target.version, 'path': path});
       state = UpdateState.ready;
     } catch (e) {
       state = UpdateState.error;
-      error = 'Не получилось проверить обновления: $e';
+      error = 'Не получилось скачать версию ${target.version}: $e';
     }
     notifyListeners();
   }

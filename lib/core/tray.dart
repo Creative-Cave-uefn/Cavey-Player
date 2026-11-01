@@ -29,13 +29,25 @@ class TrayController with TrayListener, WindowListener {
   /// Сменить значок в трее сразу (после смены акцента)
   Future<void> setIcon(String path) async {
     icon = path;
+    // Трей ещё запускается: start() сам поставит актуальный значок, когда будет готов
     if (!_ready) return;
+    await _applyIcon();
+  }
+
+  /// Какой значок реально стоит в трее сейчас (чтобы не пропустить смену, пришедшую во время запуска)
+  String _applied = '';
+
+  Future<void> _applyIcon() async {
+    final path = icon;
     try {
       await trayManager.setIcon(path);
+      _applied = path;
+      AppLog.info('Трей: значок $path');
     } catch (e) {
-      AppLog.warn('Трей: значок не сменился', e);
+      AppLog.warn('Трей: значок не сменился ($path)', e);
     }
   }
+
   String _signature = '';
 
   TrayController({
@@ -49,7 +61,7 @@ class TrayController with TrayListener, WindowListener {
   Future<void> start() async {
     if (!Platform.isWindows) return;
     try {
-      await trayManager.setIcon(icon);
+      await _applyIcon();
       await trayManager.setToolTip('Cavey');
       trayManager.addListener(this);
       // Закрытие окна обрабатываем сами: прячем в трей или аккуратно выходим, сохранив всё нужное
@@ -57,6 +69,8 @@ class TrayController with TrayListener, WindowListener {
       windowManager.addListener(this);
       player.addListener(_refresh);
       _ready = true;
+      // Цвет акцента мог подгрузиться, пока трей запускался (значок готовится параллельно со стартом)
+      if (_applied != icon) await _applyIcon();
       await _refresh();
     } catch (e) {
       AppLog.warn('Трей не запустился, крестик закроет приложение как обычно', e);
