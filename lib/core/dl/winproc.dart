@@ -95,13 +95,16 @@ String quoteArg(String a) {
 
 class WinProc {
   /// Запускает программу и отдаёт её вывод (stdout и stderr вместе) построчно
-  static Future<int> run(String exe, List<String> args, void Function(String line) onLine) async {
+  static Future<int> run(String exe, List<String> args, void Function(String line) onLine,
+      {void Function(int pid)? onStarted}) async {
     final port = ReceivePort();
     final bytes = StreamController<List<int>>();
     final exit = Completer<int>();
     port.listen((msg) {
       if (msg is Uint8List) {
         bytes.add(msg);
+      } else if (msg is List && msg.length == 2 && msg.first == 'started') {
+        onStarted?.call(msg[1] as int);
       } else if (msg is List && msg.isNotEmpty && msg.first == 'exit') {
         exit.complete(msg[1] as int);
         bytes.close();
@@ -216,6 +219,9 @@ void _worker(List<Object?> msg) {
       port.send(['exit', -1]);
       return;
     }
+    // Report the exact process so a cancelled download can stop its entire
+    // subprocess tree (including Python/yt-dlp/Soulseek) via taskkill /T.
+    port.send(['started', pi.ref.dwProcessId]);
 
     final buf = arena<Uint8>(65536);
     final got = arena<Uint32>();
