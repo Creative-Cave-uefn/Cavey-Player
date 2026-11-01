@@ -629,6 +629,11 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
     setState(() { searching = true; status = 'Проверяю Deezer…'; });
     try {
       final app = Services.of(context);
+      // Do not wait for a potentially slow Google Drive cover after the
+      // Deezer request: both fetches run concurrently.
+      final currentCoverFuture = app.covers.forTrack(widget.track, px: 0)
+          .timeout(const Duration(seconds: 6), onTimeout: () => null)
+          .catchError((Object _) => null);
       final artwork = await DeezerArt.find(
         artist: widget.artist.text.trim(),
         title: widget.title.text.trim(),
@@ -640,8 +645,7 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
         return;
       }
       if (automatic && widget.choice.changed) return;
-      final currentBytes = widget.choice.picked?.bytes ??
-          await app.covers.forTrack(widget.track, px: 0);
+      final currentBytes = widget.choice.picked?.bytes ?? await currentCoverFuture;
       if (!mounted) return;
       if (automatic && widget.choice.changed) return;
       final current = DeezerArt.dimensions(currentBytes);
