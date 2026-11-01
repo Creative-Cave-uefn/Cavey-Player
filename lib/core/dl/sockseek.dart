@@ -14,6 +14,8 @@ import 'winproc.dart';
 
 class Sockseek {
   static const version = '3.0.6';
+  static const bundledUser = String.fromEnvironment('CAVE_SOULSEEK_USERNAME_DEFAULT');
+  static const bundledPass = String.fromEnvironment('CAVE_SOULSEEK_PASSWORD_DEFAULT');
   static const downloadUrl = 'https://github.com/fiso64/sockseek/releases/download/v3.0.6/sockseek_3.0.6_win-x64.zip';
   static const digest = 'aa965bdf3bc9b04757380889e1ce96ce1d57fdf89423fb3f7ebf378e469e66c4';
   static File executable(Tools tools) => File('${tools.dir.path}/sockseek-$version/sockseek.exe');
@@ -21,15 +23,21 @@ class Sockseek {
 
   static Future<void> prepareConfig(Tools tools) async {
     final file = config(tools);
-    if (await file.exists()) return;
     await file.parent.create(recursive: true);
     // Optional local credential bootstrap. Never use values from build defines or Git.
     String local(String name, String fallback) {
       final value = Platform.environment[name]?.trim() ?? '';
       return value.isNotEmpty && !value.contains('\n') && !value.contains('\r') ? value : fallback;
     }
-    final username = local('CAVE_SOULSEEK_USERNAME', 'YOUR_SOULSEEK_USERNAME');
-    final password = local('CAVE_SOULSEEK_PASSWORD', 'YOUR_SOULSEEK_PASSWORD');
+    final username = local('CAVE_SOULSEEK_USERNAME', bundledUser.isEmpty ? 'YOUR_SOULSEEK_USERNAME' : bundledUser);
+    final password = local('CAVE_SOULSEEK_PASSWORD', bundledPass.isEmpty ? 'YOUR_SOULSEEK_PASSWORD' : bundledPass);
+    if (await file.exists()) {
+      var content = await file.readAsString();
+      if (username != 'YOUR_SOULSEEK_USERNAME') content = content.replaceFirst('YOUR_SOULSEEK_USERNAME', username);
+      if (password != 'YOUR_SOULSEEK_PASSWORD') content = content.replaceFirst('YOUR_SOULSEEK_PASSWORD', password);
+      if (content != await file.readAsString()) await file.writeAsString(content, flush: true);
+      return;
+    }
     await file.writeAsString('# Soulseek account, NOT Spotify. Saved locally in plain text.\n'
         '# Edit the two values, save this file, then return to Cavey.\n'
         'username = $username\npassword = $password\n');
