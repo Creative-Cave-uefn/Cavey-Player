@@ -89,7 +89,6 @@ class AppServices {
         ..clientId = kGoogleClientId
         ..clientSecret = kGoogleClientSecret;
     }
-    updater.beta = settings.betaUpdates;
     final accounts = AccountManager(store, settings);
     await accounts.load();
     final drive = DriveApi(accounts);
@@ -186,7 +185,7 @@ class AppServices {
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
     // Значок в цвете акцента: в трее и у окна — сразу при запуске
-    unawaited(app.refreshAppIcon());
+    unawaited(app.collectIconResult().then((_) => app.refreshAppIcon()));
     // Значки, оставшиеся от закрытых принудительно прошлых версий, Проводник выбрасывает, когда над ними «проведут курсор»
     Timer(const Duration(seconds: 2), sweepGhostTrayIcons);
     Timer(const Duration(seconds: 12), sweepGhostTrayIcons);
@@ -217,13 +216,43 @@ class AppServices {
     return applied != _wantedExeIcon();
   }
 
+  /// Сколько раз подряд замена значка в файле программы не удалась (после двух неудач сама на выходе не запускается)
+  int get exeIconFails => int.tryParse(settings.viewOf('exeIconFails', '0')) ?? 0;
+
+  String get _iconResultPath => '${store.dir.path}${Platform.pathSeparator}icon-result.txt';
+
+  /// Итог прошлой замены значка файла: скрипт кладёт его, когда приложение уже закрыто.
+  /// Значок считаем сменённым только если замена действительно прошла
+  Future<void> collectIconResult() async {
+    final r = await AppIcon.takeResult(_iconResultPath);
+    if (r == null) return;
+    if (r.$1) {
+      settings.view['exeIcon'] = r.$2;
+      settings.view.remove('exeIconFails');
+      AppLog.info('Значок файла программы заменён (${r.$2})');
+    } else {
+      settings.view['exeIconFails'] = '${exeIconFails + 1}';
+      AppLog.warn('Значок файла программы не заменился', r.$2);
+    }
+    await lib.saveSettings();
+  }
+
   /// Значок в трее и у окна — в цвет акцента (или стандартный)
   Future<void> refreshAppIcon() async {
     try {
       final isDefault = C.accent.value == C.defaultAccent.value;
       final path = await AppIcon.prepare(store.dir, C.accent.value, isDefault: isDefault) ?? AppIcon.defaultIcon;
+      AppLog.info('Значок акцента: $path');
       await tray.setIcon(path);
-      if (!isDefault || settings.viewOf('exeIcon', '').isNotEmpty) await AppIcon.applyToWindow(path);
+      final changed = !isDefault || settings.viewOf('exeIcon', '').isNotEmpty;
+      if (changed) await AppIcon.applyToWindow(path);
+      // Ярлыки (панель задач, «Пуск», рабочий стол) получают значок сразу, без перезапуска
+      // (повторно — только после смены цвета или обновления: установщик пересоздаёт ярлыки со стандартным значком)
+      final lnkWant = '${isDefault ? '' : path}@$kAppVersion';
+      if (changed && settings.viewOf('lnkIcon', '') != lnkWant) {
+        settings.view['lnkIcon'] = lnkWant;
+        unawaited(AppIcon.refreshShortcuts(isDefault ? null : path).then((_) => lib.saveSettings()));
+      }
     } catch (e) {
       AppLog.warn('Значок в цвете акцента не получился', e);
     }
@@ -234,17 +263,19 @@ class AppServices {
   Future<void> applyExeIcon({required bool relaunch}) async {
     final isDefault = C.accent.value == C.defaultAccent.value;
     final ico = await AppIcon.prepare(store.dir, C.accent.value, isDefault: isDefault) ?? AppIcon.bundledIco();
-    if (await AppIcon.patchExeAfterExit(ico, relaunch: relaunch)) {
-      settings.view['exeIcon'] = _wantedExeIcon();
-      await lib.saveSettings();
+    // Метку «значок сменён» ставит collectIconResult после запуска, когда скрипт сообщит, что получилось
+    final started = await AppIcon.patchExeAfterExit(ico, relaunch: relaunch, token: _wantedExeIcon(), resultFile: _iconResultPath);
+    if (relaunch && started) {
+      await shutdown(patchIcon: false);
+    } else if (relaunch) {
+      AppLog.warn('Значок файла программы: замена не запустилась, перезапуск отменён');
     }
-    if (relaunch) await shutdown(patchIcon: false);
   }
 
   /// Полный выход (из меню трея или по крестику, если трей выключен): сохраняем, что не сохранено, и закрываемся.
   /// Если значок файла программы ещё не в цвете акцента — он меняется сразу после выхода
   Future<void> shutdown({bool patchIcon = true}) async {
-    if (patchIcon && exeIconPending) {
+    if (patchIcon && exeIconPending && exeIconFails < 2) {
       try {
         await applyExeIcon(relaunch: false);
       } catch (_) {}

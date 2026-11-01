@@ -812,6 +812,19 @@ class LibraryController extends ChangeNotifier {
     }
 
     final existing = {for (final t in data.tracks.values) if (t.source == s.id) t.id: t};
+    // Номер диска появился в 0.2.250: один раз перечитываем теги у треков из альбомов, где номера повторяются
+    // (там могло быть два диска), остальные не трогаем
+    final discKey = 'disc.scan:${s.id}';
+    final recheck = <String>{};
+    if (settings.viewOf(discKey, '') != '1') {
+      final counts = <String, int>{};
+      for (final t in existing.values) {
+        if (t.no != null) counts['${t.albumKey}#${t.no}'] = (counts['${t.albumKey}#${t.no}'] ?? 0) + 1;
+      }
+      for (final t in existing.values) {
+        if (t.disc == null && t.no != null && (counts['${t.albumKey}#${t.no}'] ?? 0) > 1) recheck.add(t.id);
+      }
+    }
     final seen = <String>{};
     final toParse = <_Found>[];
     final upserts = <String, dynamic>{};
@@ -824,7 +837,7 @@ class LibraryController extends ChangeNotifier {
       }
       final old = existing[f.file.id];
       final cover = covers[f.folder];
-      if (old == null || old.modified != f.file.modifiedTime) {
+      if (old == null || old.modified != f.file.modifiedTime || recheck.contains(old.id)) {
         toParse.add(f);
       } else if (old.cover != cover || (old.md5.isEmpty && f.file.md5.isNotEmpty)) {
         // обложка поменялась или у старой записи ещё нет md5 — обновляем без чтения тегов
@@ -865,6 +878,7 @@ class LibraryController extends ChangeNotifier {
         album: tags.album,
         albumArtist: tags.albumArtist,
         no: tags.track,
+        disc: tags.disc,
         year: tags.year,
         pic: tags.pic,
         cover: covers[f.folder],
@@ -884,6 +898,10 @@ class LibraryController extends ChangeNotifier {
       }
     });
     if (batch.isNotEmpty) commit({'op': 'upsertTracks', 'tracks': batch});
+    if (settings.viewOf(discKey, '') != '1') {
+      settings.view[discKey] = '1';
+      unawaited(saveSettings());
+    }
 
     // Свои новые файлы, загруженные мимо приложения, тоже попадают в ленту
     final mine = toParse.where((f) => existing[f.file.id] == null && f.file.ownerEmail == me).length;
@@ -953,7 +971,7 @@ class LibraryController extends ChangeNotifier {
     final m = me;
     if (m == null) return;
     final on = !isLiked(trackId);
-    commit({'op': 'like', 'id': trackId, 'email': m, 'on': on});
+    commit({'op': 'like', 'id': trackId, 'email': m, 'on': on, 'ts': DateTime.now().millisecondsSinceEpoch});
     if (on) onEvent?.call({'k': 'like', 'track': trackId});
   }
 
@@ -961,8 +979,9 @@ class LibraryController extends ChangeNotifier {
   void setLikes(Iterable<String> trackIds, bool on) {
     final m = me;
     if (m == null) return;
+    final ts = DateTime.now().millisecondsSinceEpoch;
     for (final id in trackIds) {
-      if (isLiked(id) != on) commit({'op': 'like', 'id': id, 'email': m, 'on': on});
+      if (isLiked(id) != on) commit({'op': 'like', 'id': id, 'email': m, 'on': on, 'ts': ts});
     }
   }
 
@@ -1062,7 +1081,7 @@ class LibraryController extends ChangeNotifier {
         byArtist.putIfAbsent(key, () => []).add(t);
       }
     }
-    _albums = [for (final keys in merged) buildAlbum(keys, byAlbum)]
+    _albums = [for (final keys in merged) _withOwnOrder(buildAlbum(keys, byAlbum))]
       ..sort((a, b) => a.artist.toLowerCase().compareTo(b.artist.toLowerCase()) != 0
           ? a.artist.toLowerCase().compareTo(b.artist.toLowerCase())
           : a.title.toLowerCase().compareTo(b.title.toLowerCase()));
@@ -1082,6 +1101,42 @@ class LibraryController extends ChangeNotifier {
 
   Map<String, Album> _albumByKey = const {};
 
+  /// Свой порядок треков альбома (перетаскиванием): список id в edits['ao:<ключ>']['o']. Новые треки встают в конец
+  Album _withOwnOrder(Album a) {
+    final raw = data.edits['ao:${a.key}']?['o'];
+    if (raw == null || raw.isEmpty) return a;
+    final order = {for (final (i, id) in raw.split(',').indexed) id: i};
+    final base = {for (final (i, t) in a.tracks.indexed) t.id: i};
+    a.tracks.sort((x, y) {
+      final ox = order[x.id] ?? (1 << 20) + base[x.id]!;
+      final oy = order[y.id] ?? (1 << 20) + base[y.id]!;
+      return ox.compareTo(oy);
+    });
+    return a;
+  }
+
+  bool hasAlbumOrder(String albumKey) {
+    final a = album(albumKey);
+    return a != null && (data.edits['ao:${a.key}']?['o'] ?? '').isNotEmpty;
+  }
+
+  /// Перетащили трек альбома: он теперь стоит после [afterId] (null — в самом начале). Порядок общий для всех друзей
+  void moveAlbumTrack(String albumKey, String trackId, String? afterId) {
+    final a = album(albumKey);
+    if (a == null) return;
+    final ids = [for (final t in a.tracks) t.id]..remove(trackId);
+    final at = afterId == null ? 0 : ids.indexOf(afterId) + 1;
+    ids.insert(at < 0 ? ids.length : at, trackId);
+    setMeta({'ao:${a.key}': {'o': ids.join(',')}});
+  }
+
+  /// Вернуть порядок по номерам
+  void resetAlbumOrder(String albumKey) {
+    final a = album(albumKey);
+    if (a == null) return;
+    setMeta({'ao:${a.key}': {'o': ''}});
+  }
+
   static int _compare(Track a, Track b) {
     int c(String x, String y) => x.toLowerCase().compareTo(y.toLowerCase());
     final aa = a.albumArtist.isNotEmpty ? a.albumArtist : a.artist;
@@ -1090,9 +1145,12 @@ class LibraryController extends ChangeNotifier {
     if (r != 0) return r;
     r = c(a.displayAlbum, b.displayAlbum);
     if (r != 0) return r;
+    r = discOf(a).compareTo(discOf(b));
+    if (r != 0) return r;
     r = (a.no ?? 9999).compareTo(b.no ?? 9999);
     if (r != 0) return r;
-    return c(a.title, b.title);
+    r = c(a.title, b.title);
+    return r != 0 ? r : a.id.compareTo(b.id);
   }
 
   List<Track> get allTracks {
@@ -1115,6 +1173,15 @@ class LibraryController extends ChangeNotifier {
 
   List<Track> get liked => allTracks.where((t) => isLiked(t.id)).toList();
 
+  /// Когда трек понравился мне: момент лайка, а у старых лайков без даты — дата появления файла на Диске
+  int likedAtOf(Track t) {
+    final m = me;
+    final at = m == null ? null : data.likeTimes['${t.id}|$m'];
+    if (at != null) return at;
+    final s = t.added.isNotEmpty ? t.added : t.modified;
+    return DateTime.tryParse(s)?.millisecondsSinceEpoch ?? 0;
+  }
+
   /// Исполнители по алфавиту
   List<Artist> get artists {
     _rebuild();
@@ -1132,7 +1199,10 @@ class LibraryController extends ChangeNotifier {
   List<Track> get recent {
     final list = List.of(allTracks);
     String when(Track t) => t.added.isNotEmpty ? t.added : t.modified;
-    list.sort((a, b) => when(b).compareTo(when(a)));
+    list.sort((a, b) {
+      final r = when(b).compareTo(when(a));
+      return r != 0 ? r : a.id.compareTo(b.id);
+    });
     return list.length > 300 ? list.sublist(0, 300) : list;
   }
 
@@ -1779,6 +1849,7 @@ class LibraryController extends ChangeNotifier {
       album: tags.album,
       albumArtist: tags.albumArtist,
       no: tags.track,
+      disc: tags.disc,
       year: tags.year,
       pic: tags.pic,
       cover: null,
@@ -1882,6 +1953,9 @@ Set<String> _albumNames(Track t) => {
       if (t.albumArtist.isNotEmpty) ...splitArtists(t.albumArtist).map((n) => n.toLowerCase()),
     };
 
+/// Диск трека; если в тегах не указан, считаем первым
+int discOf(Track t) => (t.disc ?? 1) < 1 ? 1 : (t.disc ?? 1);
+
 /// Какие группы «исполнитель + название» — один альбом. Склеиваются группы с одним названием,
 /// если они лежат в одной папке на Диске или у них есть общий исполнитель.
 /// Треки без названия альбома в тегах (альбом — имя папки или «Без альбома») не склеиваются.
@@ -1933,9 +2007,14 @@ Album buildAlbum(List<String> keys, Map<String, List<Track>> groups) {
   final sorted = List.of(keys)..sort((a, b) => groups[b]!.length.compareTo(groups[a]!.length));
   final tracks = [for (final k in sorted) ...groups[k]!];
   if (sorted.length > 1) {
+    // Склеенные части снова по порядку альбома: диск, номер, название
     tracks.sort((a, b) {
-      final r = (a.no ?? 9999).compareTo(b.no ?? 9999);
-      return r != 0 ? r : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      var r = discOf(a).compareTo(discOf(b));
+      if (r != 0) return r;
+      r = (a.no ?? 9999).compareTo(b.no ?? 9999);
+      if (r != 0) return r;
+      r = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      return r != 0 ? r : a.id.compareTo(b.id);
     });
   }
   String most(Map<String, int> m) => (m.entries.toList()..sort((a, b) => b.value.compareTo(a.value))).first.key;
