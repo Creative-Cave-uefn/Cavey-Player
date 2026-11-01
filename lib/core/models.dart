@@ -288,6 +288,22 @@ class LibraryData {
           sources.removeWhere((s) => s.id == id);
           tracks.removeWhere((_, t) => t.source == id);
         }
+      // Drive IDs are unchanged by a folder move, so playlist/like links remain.
+      // Reapplying the same move operation is a no-op.
+      case 'relocateSourceTracks':
+        {
+          final from = op['from'] as String;
+          final to = op['to'] as String;
+          (op['paths'] as Map).forEach((id, path) {
+            final key = '$id';
+            final old = tracks[key];
+            if (old == null || old.source != from) return;
+            tracks[key] = Track.fromJson(key, {
+              ...old.toJson(), 's': to, 'path': '$path',
+            });
+            _overlay(key);
+          });
+        }
       case 'upsertTracks':
         (op['tracks'] as Map).forEach((k, v) {
           if (deleted.containsKey('$k')) return; // уже удалён — не возвращаем

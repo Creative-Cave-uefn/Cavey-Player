@@ -467,6 +467,24 @@ class DriveApi {
   }
 
   /// Удаляет файл с Диска безвозвратно (может только владелец). Для музыки не используется: там [trash]
+
+  /// Move an existing Drive item between folders, keeping its file ID.
+  Future<void> moveToFolder(String email, String fileId,
+      {required String fromParent, required String toParent}) async {
+    if (fileId == fromParent || fileId == toParent || fromParent == toParent) {
+      throw ArgumentError('Неверная папка для перемещения');
+    }
+    final info = await getFile(email, fileId, fields: 'id,parents');
+    final parents = (info['parents'] as List? ?? const []).map((p) => '$p').toSet();
+    if (parents.contains(toParent) && !parents.contains(fromParent)) return;
+    if (!parents.contains(fromParent)) {
+      throw DriveException(409, 'Файл уже находится в другой папке');
+    }
+    await send(email, 'PATCH', api('files/$fileId', {
+      'addParents': toParent, 'removeParents': fromParent, 'fields': 'id,parents',
+    }));
+  }
+
   Future<void> deleteFile(String email, String id) async {
     await send(email, 'DELETE', api('files/$id'));
   }

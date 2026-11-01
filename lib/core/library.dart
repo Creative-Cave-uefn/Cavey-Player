@@ -78,6 +78,13 @@ class ScanStatus {
   int total = 0;
 }
 
+class FolderMergeStatus {
+  bool running = false;
+  int done = 0;
+  int movedTracks = 0;
+  String current = '';
+}
+
 class LibraryController extends ChangeNotifier {
   final AppStore store;
   final Settings settings;
@@ -98,6 +105,7 @@ class LibraryController extends ChangeNotifier {
   Timer? _scanTimer;
   String? syncError;
   final ScanStatus scan = ScanStatus();
+  final FolderMergeStatus folderMerge = FolderMergeStatus();
 
   /// Короткие сообщения для всплывающих уведомлений
   final StreamController<String> messages = StreamController<String>.broadcast();
@@ -580,7 +588,7 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> _poll() async {
-    if (!hasHub || _flushing || _pending.isNotEmpty) return;
+    if (!hasHub || _flushing || _pending.isNotEmpty || folderMerge.running) return;
     try {
       final meta = await _withHub((e) => drive.getFile(e, settings.libFileId!, fields: 'id,modifiedTime'));
       if (meta['modifiedTime'] != _libModified) await reload();
@@ -747,6 +755,139 @@ class LibraryController extends ChangeNotifier {
     unawaited(_runScan([src]));
   }
 
+
+  // ---------- merge one music folder into another ----------
+
+  /// Move actual Drive items, preserving their IDs. Merge same-named
+  /// subfolders recursively; leave both files when their names collide.
+  /// The original folder is trashed only after an empty-folder check and
+  /// successful shared-index commit. A failed transfer can be retried.
+  Future<void> mergeSourceInto(String sourceId, String targetId) async {
+    if (!hasHub) throw LibraryException('Библиотека не подключена');
+    if (sourceId == targetId || sourceId == settings.hubId) {
+      throw LibraryException('Нельзя сливать папку с собой или убирать основную библиотеку');
+    }
+    if (!data.sources.any((s) => s.id == sourceId) ||
+        !data.sources.any((s) => s.id == targetId)) {
+      throw LibraryException('Обе папки должны быть подключены к библиотеке');
+    }
+    if (folderMerge.running || scan.running) {
+      throw LibraryException('Дождитесь окончания сканирования или другого слияния');
+    }
+    await flushNow();
+    if (hasUnsavedChanges) {
+      throw LibraryException('Сначала дождитесь сохранения изменений в library.json');
+    }
+    final email = await accessFor(sourceId, recheck: true);
+    final src = await drive.getFile(email, sourceId, fields: 'id,mimeType');
+    final dst = await drive.getFile(email, targetId, fields: 'id,mimeType');
+    if (src['mimeType'] != 'application/vnd.google-apps.folder' ||
+        dst['mimeType'] != 'application/vnd.google-apps.folder') {
+      throw LibraryException('Нужно выбрать две папки');
+    }
+    var ancestor = targetId;
+    for (var i = 0; i < 40; i++) {
+      if (ancestor == sourceId) {
+        throw LibraryException('Папка назначения находится внутри исходной');
+      }
+      final info = await drive.getFile(email, ancestor, fields: 'id,parents');
+      final parents = info['parents'];
+      if (parents is! List || parents.isEmpty) break;
+      ancestor = '${parents.first}';
+    }
+
+    folderMerge
+      ..running = true
+      ..done = 0
+      ..movedTracks = 0
+      ..current = 'Начинаю перенос';
+    _changed();
+
+    Future<void> relocate(Map<String, String> paths) async {
+      if (paths.isEmpty) return;
+      commit({
+        'op': 'relocateSourceTracks',
+        'from': sourceId,
+        'to': targetId,
+        'paths': paths,
+      });
+      folderMerge.movedTracks += paths.length;
+      await store.writeJson('pending_ops.json', _pending);
+    }
+
+    Future<void> mergeDirectory(String from, String to, String path, int depth) async {
+      if (depth > 20) throw LibraryException('Вложенность папок слишком глубокая');
+      final items = await drive.listChildren(email, from);
+      final targets = await drive.listChildren(email, to);
+      for (final item in items) {
+        folderMerge.current = item.name;
+        _changed();
+        if (item.isFolder) {
+          final childPath = path.isEmpty ? item.name : '$path/${item.name}';
+          final match = targets.where((f) => f.isFolder && f.name == item.name).toList();
+          if (match.length == 1) {
+            await mergeDirectory(item.id, match.single.id, childPath, depth + 1);
+            if ((await drive.listChildren(email, item.id)).isEmpty) {
+              await drive.trash(email, item.id);
+            }
+          } else {
+            await drive.moveToFolder(email, item.id, fromParent: from, toParent: to);
+            final moved = <String, String>{};
+            for (final track in data.tracks.values) {
+              if (track.source == sourceId &&
+                  (track.path == childPath || track.path.startsWith('$childPath/'))) {
+                moved[track.id] = track.path;
+              }
+            }
+            await relocate(moved);
+            folderMerge.done++;
+          }
+        } else {
+          await drive.moveToFolder(email, item.id, fromParent: from, toParent: to);
+          final track = data.tracks[item.id];
+          if (track != null && track.source == sourceId) {
+            await relocate({item.id: path});
+          }
+          folderMerge.done++;
+        }
+        _changed();
+      }
+    }
+
+    try {
+      await mergeDirectory(sourceId, targetId, '', 0);
+      if ((await drive.listChildren(email, sourceId)).isNotEmpty) {
+        throw LibraryException('В исходной папке остались файлы, повторите слияние');
+      }
+      if (data.tracks.values.any((t) => t.source == sourceId)) {
+        throw LibraryException('Некоторые записи всё ещё относятся к исходной папке. '
+            'Чтобы не потерять их, папка оставлена');
+      }
+      await flushNow();
+      if (hasUnsavedChanges) {
+        throw LibraryException('Перемещение ещё не сохранено в общей библиотеке');
+      }
+      commit({'op': 'removeSource', 'id': sourceId});
+      await flushNow();
+      if (hasUnsavedChanges) {
+        throw LibraryException('Не удалось сохранить исключение исходной папки');
+      }
+      // Trash empty root only; no audio or cover file is deleted.
+      await drive.trash(email, sourceId);
+      settings.sourceAccess.remove(sourceId);
+      await saveSettings();
+      messages.add('Слияние выполнено. Треки, лайки и плейлисты сохранены');
+    } catch (e) {
+      messages.add('Слияние приостановлено: $e. У перенесённых файлов ID не менялись');
+      rethrow;
+    } finally {
+      folderMerge
+        ..running = false
+        ..current = '';
+      _changed();
+    }
+  }
+
   void removeSource(String id) => commit({'op': 'removeSource', 'id': id});
 
   Future<void> scanAll({bool quiet = false}) => _runScan(List.of(data.sources), quiet: quiet);
@@ -765,7 +906,7 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> _runScan(List<Source> sources, {bool quiet = false, bool forcePrune = false}) async {
-    if (scan.running || accounts.accounts.isEmpty) return;
+    if (scan.running || folderMerge.running || accounts.accounts.isEmpty) return;
     scan
       ..running = true
       ..done = 0
