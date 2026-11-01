@@ -25,6 +25,15 @@ jobs:
         run: bash tool/setup_android.sh
       - name: Analyze mobile code
         run: flutter analyze lib/mobile_main.dart lib/mobile
+      - name: Validate Google OAuth configuration
+        env:
+          GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
+        run: |
+          if [ -z "$GOOGLE_WEB_CLIENT_ID" ]; then
+            echo '::error::Missing Actions secret GOOGLE_WEB_CLIENT_ID. Create it in Settings > Secrets and variables > Actions.'
+            exit 1
+          fi
+          echo 'Google Web Client ID is configured for this APK build.'
       - name: Build Android debug APK
         env:
           GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
