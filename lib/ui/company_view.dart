@@ -7,6 +7,7 @@ import '../core/notices.dart';
 import '../core/social.dart';
 import 'shell.dart';
 import 'profile_view.dart';
+import 'tracks_view.dart' show Links, LinkPart, trackLinks, TrackMenu, showTrackMenu;
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -196,6 +197,8 @@ class _ChartRow extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: () => app.player.playTracks([for (final e in all) e.track], rank - 1),
+      // Правый клик — то же меню, что под «…»
+      onSecondaryTapUp: (d) => showTrackMenu(context, t, null, d.globalPosition),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
         child: Row(children: [
@@ -207,17 +210,34 @@ class _ChartRow extends StatelessWidget {
           const SizedBox(width: 14),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w500)),
+              // Название ведёт в альбом, исполнитель — на его страницу; клик по пустому месту строки включает чарт
+              Links(
+                parts: [LinkPart(t.title, () => NavScope.of(context).go(Nav('album', t.albumKey)))],
+                style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14),
+              ),
               const SizedBox(height: 2),
-              Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+              Links(parts: trackLinks(context, t), style: const TextStyle(color: C.muted, fontSize: 13)),
             ]),
           ),
+          // Кто слушал: маленькие аватарки внахлёст
           Tooltip(
             message: 'Слушали: ${entry.listeners.map(app.lib.firstNameOf).join(', ')}',
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              for (final e in entry.listeners.take(4))
-                Padding(padding: const EdgeInsets.only(left: 3), child: FriendDot(e)),
-            ]),
+            child: SizedBox(
+              width: 20 + (entry.listeners.take(4).length - 1).clamp(0, 3) * 12.0,
+              height: 22,
+              child: Stack(children: [
+                for (final (i, e) in entry.listeners.take(4).indexed)
+                  Positioned(
+                    left: i * 12.0,
+                    top: 0,
+                    child: Container(
+                      padding: const EdgeInsets.all(1),
+                      decoration: BoxDecoration(color: C.bg, shape: BoxShape.circle),
+                      child: Avatar(email: e, name: app.lib.nameOf(e), size: 20),
+                    ),
+                  ),
+              ]),
+            ),
           ),
           const SizedBox(width: 14),
           SizedBox(
@@ -225,6 +245,7 @@ class _ChartRow extends StatelessWidget {
             child: Text('${entry.plays} ${plural(entry.plays, 'прослушивание', 'прослушивания', 'прослушиваний')}',
                 textAlign: TextAlign.right, style: const TextStyle(color: C.faint, fontSize: 12)),
           ),
+          TrackMenu(track: t),
         ]),
       ),
     );

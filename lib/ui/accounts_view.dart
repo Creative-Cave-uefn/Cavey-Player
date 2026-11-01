@@ -10,6 +10,7 @@ import '../core/log.dart';
 import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
+import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave;
 import 'theme.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
@@ -195,7 +196,7 @@ class _AccountsPageState extends State<AccountsPage> {
         ];
         final List<Widget> page = switch (tab) {
           'playback' => const [_PlaybackSection(), gap, _TraySection(), gap, _KaraokeSection()],
-          'look' => const [_AccentSection(), gap, _LookSection()],
+          'look' => const [_AccentSection(), gap, _SeekEdgeSection(), gap, _LookSection()],
           'account' => [
               ...accountsBlock,
               gap,
@@ -330,12 +331,14 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
         final busy = up.state == UpdateState.checking || up.state == UpdateState.downloading;
         final status = switch (up.state) {
           UpdateState.checking => 'Проверяю…',
+          UpdateState.available => 'Вышла новая версия ${up.latest}',
           UpdateState.downloading => 'Скачиваю версию ${up.latest} (${(up.progress * 100).round()}%)',
           UpdateState.ready => 'Версия ${up.latest} скачана и готова к установке',
           UpdateState.upToDate => up.isTestBuild ? 'У вас последняя сборка этой ветки' : 'У вас последняя версия',
           UpdateState.error => up.error ?? 'Не получилось проверить',
-          UpdateState.idle => 'Обновления проверяются сами раз в 4 часа',
+          UpdateState.idle => 'Cavey сам проверяет, не вышла ли новая версия, раз в 4 часа. Скачивать и устанавливать её вы решаете сами.',
         };
+        final hasNew = up.state == UpdateState.available || up.state == UpdateState.downloading || up.state == UpdateState.ready;
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('Обновления', style: display(20)),
           const SizedBox(height: 10),
@@ -348,16 +351,25 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
             style: TextStyle(color: up.isTestBuild || up.isBeta ? C.accent : C.muted, fontSize: 15),
           ),
           const SizedBox(height: 6),
-          Text(
-            last == null ? status : '$status. Проверено в ${TimeOfDay.fromDateTime(last).format(context)}.',
-            style: TextStyle(color: up.state == UpdateState.error ? C.danger : C.faint, fontSize: 13, height: 1.45),
-          ),
+          if (hasNew)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 2),
+              child: Text(
+                up.state == UpdateState.ready ? 'Версия ${up.latest} скачана и готова к установке' : 'Вышла новая версия ${up.latest}',
+                style: display(18, color: C.accent),
+              ),
+            )
+          else
+            Text(
+              last == null ? status : '$status. Проверено в ${TimeOfDay.fromDateTime(last).format(context)}.',
+              style: TextStyle(color: up.state == UpdateState.error ? C.danger : C.faint, fontSize: 13, height: 1.45),
+            ),
           if (up.state == UpdateState.downloading) ...[
             const SizedBox(height: 10),
             SizedBox(width: 320, child: LinearProgressIndicator(value: up.progress)),
           ],
           // Нашлось обновление — что в нём нового (по всем версиям между вашей и новой)
-          if ((up.state == UpdateState.ready || up.state == UpdateState.downloading) && up.changes.isNotEmpty) ...[
+          if (hasNew && up.changes.isNotEmpty) ...[
             const SizedBox(height: 16),
             Container(
               constraints: const BoxConstraints(maxWidth: 640, maxHeight: 320),
@@ -378,11 +390,17 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
           ],
           const SizedBox(height: 16),
           Wrap(spacing: 12, runSpacing: 10, children: [
+            if (up.state == UpdateState.available)
+              FilledButton.icon(
+                onPressed: up.download,
+                icon: const Icon(Icons.download_rounded, size: 18),
+                label: const Text('Скачать'),
+              ),
             if (up.state == UpdateState.ready)
               FilledButton.icon(
                 onPressed: up.installNow,
                 icon: const Icon(Icons.system_update_alt_rounded, size: 18),
-                label: const Text('Перезапустить и обновить'),
+                label: const Text('Установить и перезапустить'),
               ),
             OutlinedButton.icon(
               onPressed: busy ? null : up.check,
@@ -390,7 +408,7 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
               label: const Text('Проверить обновления'),
             ),
             // С тестовой сборки или с беты, когда галочку сняли, — можно вернуться сразу
-            if (up.isTestBuild || (up.isBeta && !up.beta))
+            if (up.isTestBuild || up.isBeta)
               OutlinedButton.icon(
                 onPressed: busy || !up.enabled
                     ? null
@@ -407,30 +425,6 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
                 label: const Text('Вернуться на обычную версию'),
               ),
           ]),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: 560,
-            child: SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: up.beta,
-              onChanged: !up.enabled
-                  ? null
-                  : (v) async {
-                      final app = Services.of(context);
-                      app.settings.betaUpdates = v;
-                      await app.lib.saveSettings();
-                      await up.setBeta(v);
-                    },
-              title: const Text('Получать бета-версии'),
-              subtitle: Text(
-                up.beta
-                    ? 'Новые функции приходят раньше, но могут работать с ошибками.'
-                        '${up.latestBeta == null ? '' : ' Последняя бета: ${up.latestBeta}.'}'
-                    : 'Новые функции раньше всех. Бета ставится так же сама, как обычные обновления.',
-                style: const TextStyle(color: C.faint, fontSize: 13, height: 1.4),
-              ),
-            ),
-          ),
         ]);
       },
     );
@@ -924,7 +918,8 @@ class _AccentSectionState extends State<_AccentSection> {
         ),
       ]),
       const SizedBox(height: 18),
-      // Значок программы в цвете акцента: в трее и у окна он уже сменился, в самом файле — после перезапуска
+      // Значок программы в цвете акцента: в трее, у окна и у ярлыков он меняется сразу,
+      // в самом файле программы (проводник, панель задач у закреплённого) — после перезапуска
       if (app.exeIconPending)
         Wrap(spacing: 12, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
           FilledButton.tonalIcon(
@@ -932,10 +927,12 @@ class _AccentSectionState extends State<_AccentSection> {
             icon: const Icon(Icons.restart_alt_rounded, size: 18),
             label: const Text('Обновить значок программы'),
           ),
-          const Text(
-            'Cavey перезапустится, проводник Windows тоже: панель задач на секунду мигнёт, окна останутся открытыми.\n'
-            'Если не нажимать, значок обновится сам, когда вы закроете Cavey.',
-            style: TextStyle(color: C.faint, fontSize: 12, height: 1.4),
+          Text(
+            'Значок в трее и у окна уже в новом цвете. Значок файла программы (проводник, панель задач) сменится после '
+            'этой кнопки: Cavey перезапустится, проводник Windows тоже, панель задач на секунду мигнёт.\n'
+            '${app.exeIconFails > 0 ? 'Прошлая попытка не удалась, подробности в файле %TEMP%\\cavey-icon.log. ' : ''}'
+            'Если не нажимать, значок обновится сам, когда вы закроете Cavey через меню трея.',
+            style: const TextStyle(color: C.faint, fontSize: 12, height: 1.4),
           ),
         ])
       else
@@ -1016,6 +1013,58 @@ Future<Color?> pickColorDialog(BuildContext context, Color initial) {
       );
     }),
   );
+}
+
+/// Какой край у осветления прослушанной части в плеере: прямая линия или бегущая волна
+class _SeekEdgeSection extends StatefulWidget {
+  const _SeekEdgeSection();
+  @override
+  State<_SeekEdgeSection> createState() => _SeekEdgeSectionState();
+}
+
+class _SeekEdgeSectionState extends State<_SeekEdgeSection> {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final wave = app.settings.viewOf('seek.edge', 'straight') == 'wave';
+    Widget option(String id, String label, bool isWave) {
+      final on = wave == isWave;
+      return GestureDetector(
+        onTap: () {
+          setState(() => app.settings.view['seek.edge'] = id);
+          seekEdgeWave.value = isWave;
+          app.lib.saveSettings();
+        },
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: on ? C.accent : C.line, width: on ? 2 : 1),
+            ),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              SeekEdgeSample(wave: isWave),
+              const SizedBox(height: 8),
+              Text(label, style: TextStyle(color: on ? C.accent : C.muted, fontWeight: FontWeight.w600)),
+            ]),
+          ),
+        ),
+      );
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Край прослушанного', style: display(20)),
+      const SizedBox(height: 6),
+      const Text('Граница светлой части нижней панели, которая идёт слева направо за песней.',
+          style: TextStyle(color: C.faint, fontSize: 13)),
+      const SizedBox(height: 14),
+      Wrap(spacing: 14, runSpacing: 14, children: [
+        option('straight', 'Прямая', false),
+        option('wave', 'Волна', true),
+      ]),
+    ]);
+  }
 }
 
 class _LookSection extends StatefulWidget {
