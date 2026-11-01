@@ -177,15 +177,38 @@ class DeezerArt {
     final (url, matchedAlbum) = matches.first;
     final uri = Uri.tryParse(url);
     if (uri == null || uri.scheme != 'https' ||
-        !(uri.host == 'dzcdn.net' || uri.host.endsWith('.dzcdn.net'))) return null;
+        !(uri.host == 'dzcdn.net' || uri.host.endsWith('.dzcdn.net'))) {
+      log('CDN: невалидный адрес обложки (требуется HTTPS *.dzcdn.net)');
+      return null;
+    }
+    log('CDN: скачиваю обложку с ${uri.host}');
+    final timer = Stopwatch()..start();
     try {
       final response = await _client.get(uri).timeout(const Duration(seconds: 7));
-      if (response.statusCode != 200 || response.bodyBytes.length > 8 * 1024 * 1024 ||
-          response.bodyBytes.length < 1000) return null;
-      final decoded = img.decodeImage(response.bodyBytes);
-      if (decoded == null || decoded.width < 100 || decoded.height < 100) return null;
-      return DeezerArtwork(response.bodyBytes, decoded.width, decoded.height, matchedAlbum);
-    } on TimeoutException {
+      log('CDN: HTTP ${response.statusCode}, ${response.bodyBytes.length} байт, '
+          '${timer.elapsedMilliseconds} мс');
+      if (response.statusCode != 200) {
+        log('CDN: статус ответа не 200');
+        return null;
+      }
+      if (response.bodyBytes.length > 8 * 1024 * 1024 ||
+          response.bodyBytes.length < 1000) {
+        log('CDN: отклонено из-за размера изображения');
+        return null;
+      }
+      // Decoding 1200px+ images on the main isolate can freeze the UI.
+      final bytes = response.bodyBytes;
+      final size = await Isolate.run(() => dimensions(bytes))
+          .timeout(const Duration(seconds: 5));
+      if (size == null || size.$1 < 100 || size.$2 < 100) {
+        log('CDN: картинка не распознана или слишком маленькая');
+        return null;
+      }
+      log('CDN: изображение ${size.$1}×${size.$2} распознано за '
+          '${timer.elapsedMilliseconds} мс');
+      return DeezerArtwork(bytes, size.$1, size.$2, matchedAlbum);
+    } catch (e) {
+      log('CDN: ошибка ${e.runtimeType} после ${timer.elapsedMilliseconds} мс ($e)');
       return null;
     }
   }
