@@ -22,6 +22,19 @@ import 'log.dart';
   }
 }
 
+/// Metadata returned by the public Deezer track catalog (no login/ARL).
+/// Only the three fields editable in Cavey's track editor are returned.
+class DeezerTrackMetadata {
+  final String title;
+  final String artist;
+  final String album;
+  const DeezerTrackMetadata({
+    required this.title,
+    required this.artist,
+    required this.album,
+  });
+}
+
 class DeezerArtwork {
   final Uint8List bytes;
   final int width;
@@ -122,6 +135,62 @@ class DeezerArt {
       _cache[key] = (DateTime.now().add(Duration(minutes: result == null ? 1 : 30)), result);
       return result;
     }).whenComplete(() => _inflight.remove(key));
+  }
+
+  /// Retrieve editable tags independently of image downloading.
+  /// The user must explicitly press "Заполнить из Deezer"; nothing is saved
+  /// until the parent editor's Save button is pressed.
+  static Future<DeezerTrackMetadata?> findMetadata({
+    required String artist,
+    required String title,
+    String album = '',
+  }) async {
+    if (normalize(artist).isEmpty || normalize(title).isEmpty) {
+      AppLog.info('Deezer metadata: missing title or artist');
+      return null;
+    }
+    final response = await _get('/search/track', '$artist $title', null);
+    final result = metadataFromSearch(
+        response, artist: artist, title: title, album: album);
+    if (result == null) {
+      AppLog.info('Deezer metadata: no exact artist/title match');
+    } else {
+      AppLog.info('Deezer metadata: found title="${result.title}", '
+          'artist="${result.artist}", album="${result.album}"');
+    }
+    return result;
+  }
+
+  /// Exact normalized artist/title match, with an optional album hint to
+  /// select a specific release. Never silently use an unrelated search hit.
+  static DeezerTrackMetadata? metadataFromSearch(
+    Map<String, dynamic>? response, {
+    required String artist,
+    required String title,
+    String album = '',
+  }) {
+    final rows = response?['data'];
+    if (rows is! List) return null;
+    DeezerTrackMetadata? first;
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final a = row['artist'];
+      final release = row['album'];
+      if (a is! Map || release is! Map) continue;
+      final candidateArtist = '${a['name'] ?? ''}'.trim();
+      final short = '${row['title_short'] ?? row['title'] ?? ''}'.trim();
+      if (!same(artist, candidateArtist) || !same(title, short)) continue;
+      final full = '${row['title'] ?? short}'.trim();
+      final candidateAlbum = '${release['title'] ?? ''}'.trim();
+      final match = DeezerTrackMetadata(
+        title: full.isEmpty ? short : full,
+        artist: candidateArtist,
+        album: candidateAlbum,
+      );
+      if (album.isNotEmpty && same(album, candidateAlbum)) return match;
+      first ??= match;
+    }
+    return first;
   }
 
   static Future<DeezerArtwork?> _search(
