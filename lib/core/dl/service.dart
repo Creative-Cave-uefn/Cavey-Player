@@ -16,7 +16,7 @@ import '../models.dart';
 import 'winproc.dart';
 
 const kDownloaderProtocol = 3;
-enum JobState { queued, running, done, failed }
+enum JobState { queued, running, done, failed, cancelled }
 
 class DownloadJob {
   final String input, sourceId, folderName;
@@ -26,6 +26,7 @@ class DownloadJob {
   final void Function(Track)? onTrack;
   String title;
   JobState state = JobState.queued;
+  bool cancelRequested = false;
   int total = 0, done = 0, failed = 0, skipped = 0;
   final List<String> log = [];
   final List<String> failedNames = [];
@@ -42,6 +43,15 @@ class DownloadJob {
   }
 }
 
+/// One active transfer owns its socket and the launched downloader process.
+class _TransferSession {
+  final DownloadJob job;
+  Socket? socket;
+  int? pid;
+  bool killSent = false;
+  _TransferSession(this.job);
+}
+
 class DownloadService extends ChangeNotifier {
   final LibraryController lib;
   final Directory work;
@@ -52,6 +62,7 @@ class DownloadService extends ChangeNotifier {
   bool installing = false;
   String toolsVersion = '';
   Timer? _notifyTimer;
+  _TransferSession? _activeTransfer;
 
   DownloadService(this.lib, this.work, {this.cache, this.covers});
 
@@ -107,8 +118,45 @@ class DownloadService extends ChangeNotifier {
     return job;
   }
 
+  /// Stop a queued or active job without deleting already uploaded tracks.
+  /// Cancellation applies to this job only, not the global download queue.
+  void cancel(DownloadJob job) {
+    if (job.state != JobState.queued && job.state != JobState.running) return;
+    if (job.cancelRequested) return;
+    job.cancelRequested = true;
+    job.add('Отмена запрошена. Уже загруженные треки останутся в библиотеке.');
+    if (job.state == JobState.queued) {
+      job.state = JobState.cancelled;
+    } else {
+      final session = _activeTransfer;
+      if (session != null && identical(session.job, job)) {
+        session.socket?.destroy();
+        unawaited(_killTransfer(session));
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<void> _killTransfer(_TransferSession session) async {
+    final pid = session.pid;
+    if (pid == null || session.killSent) return;
+    session.killSent = true;
+    try {
+      // /T stops child processes launched by the module as well. A bare
+      // socket close would leave Python and Soulseek running in the background.
+      final result = await Process.run('taskkill', ['/PID', '$pid', '/T', '/F']);
+      if (result.exitCode != 0) {
+        AppLog.warn('Не удалось завершить дерево процессов загрузчика (PID $pid)',
+            result.stderr.toString().trim());
+      }
+    } catch (e) {
+      AppLog.warn('Не удалось остановить загрузчик (PID $pid)', e);
+    }
+  }
+
   void clearFinished() {
-    jobs.removeWhere((j) => j.state == JobState.done || j.state == JobState.failed);
+    jobs.removeWhere((j) => j.state == JobState.done ||
+        j.state == JobState.failed || j.state == JobState.cancelled);
     notifyListeners();
   }
 
@@ -133,12 +181,13 @@ class DownloadService extends ChangeNotifier {
           Object? value;
           for (var attempt = 0; attempt < 2; attempt++) {
             try {
+              if (job.cancelRequested) throw StateError('Загрузка отменена');
               value = await _callModule(job.replaceTrackId == null ? 'download' : 'replace',
                   job: job, onLog: (s) { job.add(s); _notify(); });
               break;
             } catch (e, stack) {
               AppLog.error('Связь с Cavey-Downloader при загрузке', e, stack);
-              if (attempt > 0 || job.replaceTrackId != null ||
+              if (job.cancelRequested || attempt > 0 || job.replaceTrackId != null ||
                   !retryableDisconnect(e)) rethrow;
               job.add('Локальное соединение с загрузчиком оборвалось. '
                   'Перезапускаю задание один раз; уже добавленные песни будут пропущены.');
@@ -146,14 +195,15 @@ class DownloadService extends ChangeNotifier {
               await Future<void>.delayed(const Duration(milliseconds: 700));
             }
           }
-          job.state = value == true ? JobState.done : JobState.failed;
+          job.state = job.cancelRequested ? JobState.cancelled :
+              (value == true ? JobState.done : JobState.failed);
           if (job.state == JobState.done && job.done > 0 && !job.quiet && job.replaceTrackId == null) {
             lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
             lib.messages.add('Скачано и добавлено в библиотеку: ${job.done}');
           }
         } catch (e) {
-          job.state = JobState.failed;
-          job.add('Ошибка: $e');
+          job.state = job.cancelRequested ? JobState.cancelled : JobState.failed;
+          if (!job.cancelRequested) job.add('Ошибка: $e');
         }
         notifyListeners();
       }
@@ -345,9 +395,17 @@ class DownloadService extends ChangeNotifier {
     final address = '127.0.0.1:${server.port}';
     final args = ['serve', '--connect', address, '--token', token];
     Socket? socket;
+    final session = job == null ? null : _TransferSession(job);
+    if (session != null) _activeTransfer = session;
     try {
       if (Platform.isWindows) {
-        unawaited(WinProc.run(exe.path, args, (_) {}).catchError((Object e) {
+        unawaited(WinProc.run(exe.path, args, (_) {},
+          onStarted: (pid) {
+            if (session == null) return;
+            session.pid = pid;
+            if (session.job.cancelRequested) unawaited(_killTransfer(session));
+          },
+        ).catchError((Object e) {
           onLog?.call('Модуль завершился с ошибкой: $e');
           return -1;
         }));
@@ -358,6 +416,10 @@ class DownloadService extends ChangeNotifier {
         unawaited(p.exitCode);
       }
       socket = await server.first.timeout(const Duration(seconds: 40));
+      if (session != null) {
+        session.socket = socket;
+        if (session.job.cancelRequested) socket.destroy();
+      }
       final reader = StreamIterator<String>(
         socket.cast<List<int>>().transform(utf8.decoder).transform(const LineSplitter()));
       if (!await reader.moveNext().timeout(const Duration(seconds: 20))) {
@@ -432,6 +494,9 @@ class DownloadService extends ChangeNotifier {
       }
       throw StateError('Модуль отключился до завершения задания.');
     } finally {
+      if (session != null && identical(_activeTransfer, session)) {
+        _activeTransfer = null;
+      }
       socket?.destroy();
       await server.close();
       installing = false;
