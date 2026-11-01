@@ -280,7 +280,11 @@ class DownloadService extends ChangeNotifier {
     PlaylistInfo? playlist;
     try {
       if (domain == 'deezer.com' || domain.endsWith('.deezer.com')) {
-        if (input.contains('/playlist/')) return _deezer(job, temp, log);
+        if (input.contains('/playlist/')) {
+          playlist = await deezerPlaylist(input);
+          albumName = playlist?.name ?? '';
+          album = playlist?.metas;
+        }
         if (input.contains('/album/')) {
           final response = await deezerAlbum(input);
           albumName = response?.$1 ?? ''; album = response?.$2;
@@ -416,6 +420,7 @@ class DownloadService extends ChangeNotifier {
       if (input.contains('/playlist/') || input.startsWith('spotify:playlist:')) return (await spotifyPlaylist(input))?.metas ?? [];
       single = await spotifyTrack(input, (_) {});
     } else if (host == 'deezer.com' || host.endsWith('.deezer.com')) {
+      if (input.contains('/playlist/')) return (await deezerPlaylist(input))?.metas ?? [];
       if (input.contains('/album/')) return (await deezerAlbum(input))?.$2 ?? [];
       single = await deezerTrack(input);
     } else if (host == 'music.apple.com') {
