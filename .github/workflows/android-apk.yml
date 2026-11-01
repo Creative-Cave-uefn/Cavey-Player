@@ -31,13 +31,19 @@ jobs:
         run: |
           flutter build apk --debug --target lib/mobile_main.dart \
             --dart-define=GOOGLE_WEB_CLIENT_ID="$GOOGLE_WEB_CLIENT_ID"
-      - name: Show APK signing fingerprint
-        run: |
-          keytool -list -v -alias androiddebugkey \
-            -keystore "$HOME/.android/debug.keystore" \
-            -storepass android -keypass android | grep -E "SHA1:|SHA256:"
       - uses: actions/upload-artifact@v4
         with:
           name: cavey-android-mvp
           path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
           retention-days: 7
+      - name: Show APK signing fingerprint
+        continue-on-error: true
+        run: |
+          APK="build/app/outputs/flutter-apk/app-debug.apk"
+          TOOL="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          if [ -n "$TOOL" ]; then
+            "$TOOL" verify --print-certs "$APK" | grep -E "SHA-1|SHA-256" || true
+          else
+            echo "apksigner unavailable; APK has already been uploaded"
+          fi
