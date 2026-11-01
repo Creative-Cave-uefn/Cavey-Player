@@ -1,13 +1,26 @@
 // Public Deezer catalog cover lookup; no ARL or account is needed for artwork.
 import 'dart:async';
 import 'dart:convert';
-import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 
 import 'log.dart';
+
+// Top-level isolate entry point: only image bytes are sent to the worker.
+// An inline Isolate.run closure here accidentally captured the UI logger,
+// Flutter's Element tree and a non-sendable CaveBinding, rejecting valid covers.
+(int, int)? _decodeCoverDimensions(Uint8List bytes) {
+  try {
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) return null;
+    return (decoded.width, decoded.height);
+  } catch (_) {
+    return null;
+  }
+}
 
 class DeezerArtwork {
   final Uint8List bytes;
@@ -198,7 +211,7 @@ class DeezerArt {
       }
       // Decoding 1200px+ images on the main isolate can freeze the UI.
       final bytes = response.bodyBytes;
-      final size = await Isolate.run(() => dimensions(bytes))
+      final size = await dimensionsInBackground(bytes)
           .timeout(const Duration(seconds: 5));
       if (size == null || size.$1 < 100 || size.$2 < 100) {
         log('CDN: картинка не распознана или слишком маленькая');
@@ -213,14 +226,12 @@ class DeezerArt {
     }
   }
 
-  static (int, int)? dimensions(Uint8List? bytes) {
-    if (bytes == null || bytes.isEmpty) return null;
-    try {
-      final data = img.decodeImage(bytes);
-      if (data == null) return null;
-      return (data.width, data.height);
-    } catch (_) {
-      return null;
-    }
-  }
+  // Unlike Isolate.run(() => dimensions(bytes)), compute transfers a
+  // top-level function and a single sendable Uint8List, not a closure that
+  // may capture UI state from the lookup's logging callback.
+  static Future<(int, int)?> dimensionsInBackground(Uint8List bytes) =>
+      compute(_decodeCoverDimensions, bytes);
+
+  static (int, int)? dimensions(Uint8List? bytes) =>
+      bytes == null || bytes.isEmpty ? null : _decodeCoverDimensions(bytes);
 }
