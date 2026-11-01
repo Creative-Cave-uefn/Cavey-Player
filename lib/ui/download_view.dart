@@ -182,7 +182,7 @@ class _DownloadPageState extends State<DownloadPage> {
           if (dl.jobs.isNotEmpty)
             Row(children: [
               Expanded(child: Text('Задания', style: display(20))),
-              if (dl.jobs.any((j) => j.state == JobState.done || j.state == JobState.failed))
+              if (dl.jobs.any((j) => j.state == JobState.done || j.state == JobState.failed || j.state == JobState.cancelled))
                 TextButton(onPressed: dl.clearFinished, child: const Text('Убрать завершённые')),
             ]),
           const SizedBox(height: 10),
@@ -201,9 +201,11 @@ class _JobCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final (label, color) = switch (job.state) {
       JobState.queued => ('В очереди', C.faint),
-      JobState.running => (job.total > 1 ? 'Скачиваю ${job.done + job.failed} из ${job.total}' : 'Скачиваю…', C.accent),
+      JobState.running => (job.cancelRequested ? 'Останавливаю загрузку…' :
+          (job.total > 1 ? 'Скачиваю ${job.done + job.failed} из ${job.total}' : 'Скачиваю…'), C.accent),
       JobState.done => (job.failed > 0 ? 'Готово, не скачалось: ${job.failed}' : 'Готово', const Color(0xFF7CD3B8)),
       JobState.failed => ('Не получилось', C.danger),
+      JobState.cancelled => ('Отменено: скачано ${job.done}, уже было ${job.skipped}', C.faint),
     };
     final progress = job.total > 1 ? (job.done + job.failed) / job.total : null;
     return Container(
@@ -215,7 +217,17 @@ class _JobCard extends StatelessWidget {
           initiallyExpanded: job.state == JobState.running,
           tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
           childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-          title: Text(job.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+          title: Row(children: [
+            Expanded(child: Text(job.title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w600))),
+            if ((job.state == JobState.queued || job.state == JobState.running) &&
+                !job.cancelRequested)
+              IconButton(
+                tooltip: job.state == JobState.queued ? 'Отменить задание в очереди' : 'Остановить загрузку',
+                icon: const Icon(Icons.cancel_outlined, color: C.danger, size: 20),
+                onPressed: () => Services.of(context).downloads.cancel(job),
+              ),
+          ]),
           subtitle: Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
