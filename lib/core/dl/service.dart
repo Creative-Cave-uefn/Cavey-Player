@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../image_tools.dart';
+import '../audio_cache.dart';
 import '../library.dart';
 import '../models.dart';
 import '../log.dart';
@@ -37,8 +38,11 @@ class DownloadJob {
   final List<String> log = [];
   final List<String> failedNames = [];
   DownloadJob(this.input, this.sourceId, this.folderName,
-      {this.folderId, this.path = '', this.quiet = false, this.onTrack, this.makePlaylist = true})
+      {this.folderId, this.path = '', this.quiet = false, this.onTrack, this.makePlaylist = true, this.replaceTrackId})
       : title = input;
+
+  /// Existing Drive file to replace without changing its ID or playlist references.
+  final String? replaceTrackId;
 
   /// Своя папка для одиночных треков (например, «Моя волна»); иначе — корень источника
   final String? folderId;
@@ -69,12 +73,13 @@ class DownloadService extends ChangeNotifier {
   final LibraryController lib;
   final Tools tools;
   final Directory work;
+  final AudioCache? cache;
   final List<DownloadJob> jobs = [];
   bool _running = false;
   String toolsVersion = '';
   bool installing = false;
 
-  DownloadService(this.lib, this.tools, this.work);
+  DownloadService(this.lib, this.tools, this.work, {this.cache});
 
   Future<void>? _fullToolsSetup;
   Future<void> _ensureFullTools(void Function(String) log) => _fullToolsSetup ??= () async {
@@ -133,6 +138,20 @@ class DownloadService extends ChangeNotifier {
     return job;
   }
 
+  /// Queue a replacement without deleting the existing audio prematurely.
+  DownloadJob? enqueueReplacement(Track track) {
+    if (track.title.trim().isEmpty || track.artist.trim().isEmpty) return null;
+    if (jobs.any((j) => j.replaceTrackId == track.id &&
+        (j.state == JobState.running || j.state == JobState.queued))) return null;
+    final source = lib.data.sources.where((s) => s.id == track.source).firstOrNull;
+    final job = DownloadJob('${track.artist} - ${track.title}', track.source,
+        source?.name ?? 'Cave Player', replaceTrackId: track.id, path: track.path);
+    jobs.insert(0, job);
+    notifyListeners();
+    unawaited(_pump());
+    return job;
+  }
+
   void clearFinished() {
     jobs.removeWhere((j) => j.state == JobState.done || j.state == JobState.failed);
     notifyListeners();
@@ -165,6 +184,11 @@ class DownloadService extends ChangeNotifier {
     await temp.create(recursive: true);
     AppLog.info('Загрузчик: ${job.input}');
     try {
+      if (job.replaceTrackId != null) {
+        final ok = await _redownload(job, temp, log);
+        job.state = ok ? JobState.done : JobState.failed;
+        return;
+      }
       if (lib.settings.downloadProvider == 'deezer' || lib.settings.downloadProvider == 'full') {
         if (lib.settings.downloadProvider == 'deezer' &&
             !await DeezerMusic.python(tools).exists()) {
@@ -247,6 +271,110 @@ class DownloadService extends ChangeNotifier {
       } catch (_) {}
       notifyListeners();
     }
+  }
+
+  // ---------- Explicit in-place re-download ----------
+
+  Future<bool> _redownload(DownloadJob job, Directory temp, void Function(String) log) async {
+    final original = lib.data.tracks[job.replaceTrackId];
+    if (original == null) throw Exception('Исходный трек больше не найден.');
+    job.total = 1;
+    job.title = 'Перекачать: ${original.artist} — ${original.title}';
+    final meta = TrackMeta(
+      artist: original.artist, artistTag: original.artist,
+      title: original.title, album: original.album,
+      albumArtist: original.albumArtist,
+      year: original.year, track: original.no?.toString() ?? '',
+      duration: original.durationMs == null ? null : original.durationMs! / 1000,
+    );
+    final source = lib.settings.downloadProvider;
+    final providers = source == 'full'
+        ? const ['deezer', 'sockseek', 'youtube', 'bandcamp']
+        : [source];
+    File? downloaded;
+    for (final provider in providers) {
+      if (downloaded != null) break;
+      try {
+        if (provider == 'deezer') {
+          if (!await DeezerMusic.python(tools).exists()) await DeezerMusic.install(tools, log);
+          final out = await DeezerMusic.download(tools, meta.label,
+              Directory('${temp.path}/deezer'), log);
+          if (out.tracks.isNotEmpty) downloaded = out.tracks.first.file;
+        } else if (provider == 'sockseek') {
+          if (!await Sockseek.executable(tools).exists()) await Sockseek.install(tools, log);
+          final out = await Sockseek.download(tools, [meta], Directory('${temp.path}/soulseek'), log);
+          if (out.isNotEmpty) downloaded = out.first;
+        } else if (provider == 'youtube') {
+          await _ensureFullTools(log);
+          final yt = YouTube(tools, temp, log);
+          for (final candidate in (await yt.ranked(meta)).take(maxDownloadTries)) {
+            log('Перекачиваю с ${candidate.site}: ${candidate.title}');
+            final out = await yt.download('${temp.path}/%(id)s.%(ext)s', candidate.url);
+            if (out.isNotEmpty) {
+              downloaded = File(out.first.path);
+              break;
+            }
+          }
+        } else if (provider == 'bandcamp') {
+          await _ensureFullTools(log);
+          final url = await Bandcamp.findTrack(meta.artist, meta.title);
+          if (url != null) {
+            final out = await YouTube(tools, temp, log)
+                .download('${temp.path}/%(id)s.%(ext)s', url);
+            if (out.isNotEmpty) downloaded = File(out.first.path);
+          }
+        }
+      } catch (e) {
+        log('$provider: $e. ${providers.length > 1 ? 'Пробую следующий источник.' : 'Перекачивание не удалось.'}');
+      }
+    }
+    if (downloaded == null || !await downloaded.exists()) {
+      throw Exception('Ни один выбранный источник не отдал аудиофайл.');
+    }
+
+    final email = await lib.accessFor(original.source);
+    final fileMeta = await lib.drive.getFile(email, original.id, fields: 'name,mimeType');
+    final name = '${fileMeta['name'] ?? ''}'.toLowerCase();
+    final dot = name.lastIndexOf('.');
+    final ext = dot < 0 ? '' : name.substring(dot);
+    const encoders = <String, List<String>>{
+      '.mp3': ['-c:a', 'libmp3lame', '-q:a', '2'],
+      '.flac': ['-c:a', 'flac'],
+      '.m4a': ['-c:a', 'aac', '-b:a', '256k'],
+      '.aac': ['-c:a', 'aac', '-b:a', '256k'],
+      '.ogg': ['-c:a', 'libvorbis', '-q:a', '5'],
+      '.opus': ['-c:a', 'libopus', '-b:a', '192k'],
+      '.wav': ['-c:a', 'pcm_s16le'],
+      '.webm': ['-c:a', 'libopus', '-b:a', '192k'],
+    };
+    final encoding = encoders[ext];
+    if (encoding == null) throw Exception('Формат $ext не поддерживается для безопасной замены.');
+    await _ensureFullTools(log);
+    final target = File('${temp.path}/replacement$ext');
+    final args = <String>[
+      '-y', '-loglevel', 'error',
+      '-i', downloaded.path, '-map', '0:a:0', '-vn',
+      ...encoding,
+      '-metadata', 'title=${original.title}',
+      '-metadata', 'artist=${original.artist}',
+      if (original.album.isNotEmpty) ...['-metadata', 'album=${original.album}'],
+      if (original.albumArtist.isNotEmpty) ...['-metadata', 'album_artist=${original.albumArtist}'],
+      if (original.year.isNotEmpty) ...['-metadata', 'date=${original.year}'],
+      if (original.no != null) ...['-metadata', 'track=${original.no}'],
+      target.path,
+    ];
+    final output = await Tools.run(tools.ffmpeg.path, args);
+    if (!await target.exists() || await target.length() < 1024) {
+      throw Exception('FFmpeg не смог подготовить аудио в исходном формате: ${output.take(2).join(' ')}');
+    }
+    log('Аудиофайл подготовлен. Обновляю содержимое на Google Диске, сохраняя ID…');
+    await lib.replaceTrackAudio(original, target,
+        mime: (fileMeta['mimeType'] as String?) ?? 'application/octet-stream');
+    await cache?.invalidate(original.id);
+    job.done++;
+    log('Готово: трек перекачан; лайки, плейлисты и метаданные сохранены.');
+    lib.messages.add('«${original.title}» перекачан без создания дубля');
+    return true;
   }
 
   // ---------- Deezer and prioritized full-source search ----------
