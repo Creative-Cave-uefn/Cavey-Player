@@ -1,13 +1,39 @@
 // Public Deezer catalog cover lookup; no ARL or account is needed for artwork.
 import 'dart:async';
 import 'dart:convert';
-import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 
 import 'log.dart';
+
+// Top-level isolate entry point: only image bytes are sent to the worker.
+// An inline Isolate.run closure here accidentally captured the UI logger,
+// Flutter's Element tree and a non-sendable CaveBinding, rejecting valid covers.
+(int, int)? _decodeCoverDimensions(Uint8List bytes) {
+  try {
+    final decoded = img.decodeImage(bytes);
+    if (decoded == null) return null;
+    return (decoded.width, decoded.height);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Metadata returned by the public Deezer track catalog (no login/ARL).
+/// Only the three fields editable in Cavey's track editor are returned.
+class DeezerTrackMetadata {
+  final String title;
+  final String artist;
+  final String album;
+  const DeezerTrackMetadata({
+    required this.title,
+    required this.artist,
+    required this.album,
+  });
+}
 
 class DeezerArtwork {
   final Uint8List bytes;
@@ -35,8 +61,15 @@ class DeezerArt {
   static int _searchId = 0;
 
   static void _trace(String message, void Function(String)? onLog) {
-    AppLog.info('DeezerArt: $message');
-    onLog?.call(message);
+    // Some Dart errors (notably unsendable-isolate errors) contain the entire
+    // widget tree. Avoid rendering or synchronously writing megabyte-sized
+    // exception strings on Flutter's UI isolate.
+    final oneLine = message.replaceAll(RegExp(r'[\r\n]+'), ' ');
+    final concise = oneLine.length > 500
+        ? '${oneLine.substring(0, 500)}…'
+        : oneLine;
+    AppLog.info('DeezerArt: $concise');
+    onLog?.call(concise);
   }
 
   static Future<Map<String, dynamic>?> _get(
@@ -102,6 +135,62 @@ class DeezerArt {
       _cache[key] = (DateTime.now().add(Duration(minutes: result == null ? 1 : 30)), result);
       return result;
     }).whenComplete(() => _inflight.remove(key));
+  }
+
+  /// Retrieve editable tags independently of image downloading.
+  /// The user must explicitly press "Заполнить из Deezer"; nothing is saved
+  /// until the parent editor's Save button is pressed.
+  static Future<DeezerTrackMetadata?> findMetadata({
+    required String artist,
+    required String title,
+    String album = '',
+  }) async {
+    if (normalize(artist).isEmpty || normalize(title).isEmpty) {
+      AppLog.info('Deezer metadata: missing title or artist');
+      return null;
+    }
+    final response = await _get('/search/track', '$artist $title', null);
+    final result = metadataFromSearch(
+        response, artist: artist, title: title, album: album);
+    if (result == null) {
+      AppLog.info('Deezer metadata: no exact artist/title match');
+    } else {
+      AppLog.info('Deezer metadata: found title="${result.title}", '
+          'artist="${result.artist}", album="${result.album}"');
+    }
+    return result;
+  }
+
+  /// Exact normalized artist/title match, with an optional album hint to
+  /// select a specific release. Never silently use an unrelated search hit.
+  static DeezerTrackMetadata? metadataFromSearch(
+    Map<String, dynamic>? response, {
+    required String artist,
+    required String title,
+    String album = '',
+  }) {
+    final rows = response?['data'];
+    if (rows is! List) return null;
+    DeezerTrackMetadata? first;
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final a = row['artist'];
+      final release = row['album'];
+      if (a is! Map || release is! Map) continue;
+      final candidateArtist = '${a['name'] ?? ''}'.trim();
+      final short = '${row['title_short'] ?? row['title'] ?? ''}'.trim();
+      if (!same(artist, candidateArtist) || !same(title, short)) continue;
+      final full = '${row['title'] ?? short}'.trim();
+      final candidateAlbum = '${release['title'] ?? ''}'.trim();
+      final match = DeezerTrackMetadata(
+        title: full.isEmpty ? short : full,
+        artist: candidateArtist,
+        album: candidateAlbum,
+      );
+      if (album.isNotEmpty && same(album, candidateAlbum)) return match;
+      first ??= match;
+    }
+    return first;
   }
 
   static Future<DeezerArtwork?> _search(
@@ -198,7 +287,7 @@ class DeezerArt {
       }
       // Decoding 1200px+ images on the main isolate can freeze the UI.
       final bytes = response.bodyBytes;
-      final size = await Isolate.run(() => dimensions(bytes))
+      final size = await dimensionsInBackground(bytes)
           .timeout(const Duration(seconds: 5));
       if (size == null || size.$1 < 100 || size.$2 < 100) {
         log('CDN: картинка не распознана или слишком маленькая');
@@ -213,14 +302,12 @@ class DeezerArt {
     }
   }
 
-  static (int, int)? dimensions(Uint8List? bytes) {
-    if (bytes == null || bytes.isEmpty) return null;
-    try {
-      final data = img.decodeImage(bytes);
-      if (data == null) return null;
-      return (data.width, data.height);
-    } catch (_) {
-      return null;
-    }
-  }
+  // Unlike Isolate.run(() => dimensions(bytes)), compute transfers a
+  // top-level function and a single sendable Uint8List, not a closure that
+  // may capture UI state from the lookup's logging callback.
+  static Future<(int, int)?> dimensionsInBackground(Uint8List bytes) =>
+      compute(_decodeCoverDimensions, bytes);
+
+  static (int, int)? dimensions(Uint8List? bytes) =>
+      bytes == null || bytes.isEmpty ? null : _decodeCoverDimensions(bytes);
 }

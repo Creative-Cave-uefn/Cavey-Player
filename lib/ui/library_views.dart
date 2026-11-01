@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/library.dart';
@@ -621,86 +620,113 @@ class _DeezerCoverLookup extends StatefulWidget {
 }
 
 class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
-  bool searching = false;
-  String status = '';
-  final List<String> _diagnostics = [];
-  int _lookupNumber = 0;
-
-  void _record(String message, int lookupNumber) {
-    if (!mounted || lookupNumber != _lookupNumber) return;
-    if (_diagnostics.length >= 80) _diagnostics.removeAt(0);
-    final line = '${DateTime.now().toIso8601String()} $message';
-    _diagnostics.add(line);
-    if (searching) setState(() => status = message);
-  }
-
-  Future<void> _copyDiagnostics() async {
-    final header = 'Cavey · Диагностика поиска обложки Deezer\n'
-        'Общий лог: ${AppLog.file?.path ?? 'недоступен'}\n';
-    await Clipboard.setData(ClipboardData(text:
-        '$header${_diagnostics.join('\n')}'));
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Журнал поиска Deezer скопирован')));
-    }
-  }
+  bool coverSearching = false;
+  bool metadataSearching = false;
+  String coverStatus = '';
+  String metadataStatus = '';
 
   @override
   void initState() {
     super.initState();
-    // Try Deezer automatically, but never replace a user's manual choice.
+    // The existing automatic cover lookup remains independent of manual
+    // metadata filling. Never override a manually chosen cover.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _lookup(automatic: true);
+      if (mounted) _lookupCover(automatic: true);
     });
   }
 
-  Future<void> _lookup({bool automatic = false}) async {
-    if (searching) return;
-    final lookup = ++_lookupNumber;
-    _diagnostics.clear();
-    setState(() { searching = true; status = 'Проверяю Deezer…'; });
-    AppLog.info('Deezer UI: старт поиска обложки для трека "${widget.track.title}"');
+  (String, String, String) get _fields => (
+    widget.artist.text.trim(),
+    widget.title.text.trim(),
+    widget.album.text.trim(),
+  );
+
+  Future<void> _lookupCover({bool automatic = false}) async {
+    if (coverSearching) return;
+    final query = _fields;
+    setState(() {
+      coverSearching = true;
+      coverStatus = 'Ищу обложку в Deezer…';
+    });
     try {
-      // Deezer is now authoritative whenever an exact match is found.
-      // Do not fetch the old image from Drive or compare resolution.
-      _record('Поиск Deezer: заменяю обложку независимо от разрешения', lookup);
-      // A stalled catalog/CDN request must never leave the dialog spinning.
-      // The service has per-request deadlines; this is an additional UI guard.
       final artwork = await DeezerArt.find(
-        artist: widget.artist.text.trim(),
-        title: widget.title.text.trim(),
-        album: widget.album.text.trim(),
-        onLog: (line) => _record(line, lookup),
+        artist: query.$1,
+        title: query.$2,
+        album: query.$3,
       ).timeout(const Duration(seconds: 14));
       if (!mounted) return;
+      if (query != _fields) {
+        AppLog.info('Deezer cover: metadata changed during lookup; skipping stale cover');
+        setState(() => coverStatus = '');
+        return;
+      }
       if (artwork == null) {
-        _record('Итог: обложка не найдена; см. запросы и причины выше', lookup);
-        setState(() => status = 'Deezer не вернул подходящую обложку. Скопируйте журнал поиска.');
+        setState(() => coverStatus = 'Обложка в Deezer не найдена.');
         return;
       }
       if (automatic && widget.choice.changed) {
-        _record('Автоматическая замена пропущена: пользователь уже выбрал обложку вручную', lookup);
+        AppLog.info('Deezer cover: keeping manually selected image');
+        setState(() => coverStatus = '');
         return;
       }
-      _record('Подставляю найденную обложку Deezer ${artwork.width}×${artwork.height} '
-          'без сравнения с текущей', lookup);
+      // Always use the found image even when its resolution is lower.
       widget.choice.pick(PickedCover(artwork.bytes, 'jpg'));
-      setState(() => status =
-          'Deezer: ${artwork.width}×${artwork.height}. Новая обложка будет сохранена вместе с метаданными.');
+      setState(() => coverStatus = 'Обложка Deezer подставлена.');
     } on TimeoutException {
-      _record('Итог: превышен общий лимит 14 секунд', lookup);
-      AppLog.warn('Deezer UI: общий таймаут 14 секунд');
+      AppLog.warn('Deezer cover: lookup exceeded 14 seconds');
       if (mounted) {
-        setState(() => status =
-            'Deezer не ответил за 14 секунд. Скопируйте журнал поиска.');
+        setState(() => coverStatus = 'Deezer не ответил. Попробуйте ещё раз.');
       }
     } catch (e, stack) {
-      _record('Итог: ошибка ${e.runtimeType}: $e', lookup);
-      AppLog.error('Deezer UI: ошибка поиска обложки', e, stack);
-      if (mounted) setState(() => status = 'Ошибка Deezer. Скопируйте журнал поиска.');
+      AppLog.error('Deezer cover: lookup failed', e, stack);
+      if (mounted) {
+        setState(() => coverStatus = 'Не удалось загрузить обложку.');
+      }
     } finally {
-      AppLog.info('Deezer UI: поиск завершён, записей диагностики ${_diagnostics.length}');
-      if (mounted) setState(() => searching = false);
+      if (mounted) setState(() => coverSearching = false);
+    }
+  }
+
+  Future<void> _fillMetadata() async {
+    if (metadataSearching) return;
+    final query = _fields;
+    setState(() {
+      metadataSearching = true;
+      metadataStatus = 'Ищу данные трека…';
+    });
+    try {
+      final metadata = await DeezerArt.findMetadata(
+        artist: query.$1,
+        title: query.$2,
+        album: query.$3,
+      ).timeout(const Duration(seconds: 8));
+      if (!mounted) return;
+      if (query != _fields) {
+        setState(() => metadataStatus =
+            'Поля изменились во время поиска. Повторите запрос.');
+        return;
+      }
+      if (metadata == null) {
+        setState(() => metadataStatus =
+            'Трек с таким названием и исполнителем не найден в Deezer.');
+        return;
+      }
+      widget.title.text = metadata.title;
+      widget.artist.text = metadata.artist;
+      if (metadata.album.isNotEmpty) widget.album.text = metadata.album;
+      setState(() => metadataStatus = 'Название, исполнитель и альбом заполнены.');
+    } on TimeoutException {
+      AppLog.warn('Deezer metadata: lookup exceeded 8 seconds');
+      if (mounted) {
+        setState(() => metadataStatus = 'Deezer не ответил. Попробуйте ещё раз.');
+      }
+    } catch (e, stack) {
+      AppLog.error('Deezer metadata: lookup failed', e, stack);
+      if (mounted) {
+        setState(() => metadataStatus = 'Не удалось получить данные трека.');
+      }
+    } finally {
+      if (mounted) setState(() => metadataSearching = false);
     }
   }
 
@@ -708,26 +734,34 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.only(top: 10),
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      OutlinedButton.icon(
-        onPressed: searching ? null : () => _lookup(),
-        icon: searching
-            ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
-            : const Icon(Icons.auto_awesome_rounded, size: 18),
-        label: const Text('Найти обложку в Deezer'),
-      ),
-      if (status.isNotEmpty) ...[
-        const SizedBox(height: 6),
-        Text(status, style: const TextStyle(color: C.muted, fontSize: 12)),
-      ],
-      if (_diagnostics.isNotEmpty)
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            onPressed: _copyDiagnostics,
-            icon: const Icon(Icons.copy_rounded, size: 15),
-            label: const Text('Скопировать журнал поиска Deezer'),
-          ),
+      Wrap(spacing: 8, runSpacing: 6, children: [
+        OutlinedButton.icon(
+          onPressed: coverSearching ? null : () => _lookupCover(),
+          icon: coverSearching
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.image_search_rounded, size: 18),
+          label: const Text('Найти обложку в Deezer'),
         ),
+        OutlinedButton.icon(
+          onPressed: metadataSearching ? null : _fillMetadata,
+          icon: metadataSearching
+              ? const SizedBox.square(
+                  dimension: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.auto_fix_high_rounded, size: 18),
+          label: const Text('Заполнить из Deezer'),
+        ),
+      ]),
+      if (coverStatus.isNotEmpty) ...[
+        const SizedBox(height: 6),
+        Text(coverStatus, style: const TextStyle(color: C.muted, fontSize: 12)),
+      ],
+      if (metadataStatus.isNotEmpty) ...[
+        const SizedBox(height: 4),
+        Text(metadataStatus, style: const TextStyle(color: C.muted, fontSize: 12)),
+      ],
     ]),
   );
 }
