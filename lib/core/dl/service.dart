@@ -410,8 +410,16 @@ class DownloadService extends ChangeNotifier {
             session.pid = pid;
             if (session.job.cancelRequested) unawaited(_killTransfer(session));
           },
-        ).catchError((Object e) {
-          onLog?.call('Модуль завершился с ошибкой: $e');
+        ).then((code) {
+          if (code != 0 && job?.cancelRequested != true) {
+            onLog?.call('Cavey-Downloader завершился с кодом $code. '
+                'Проверьте сбои Sockseek/Python перед отключением.');
+          }
+          return code;
+        }).catchError((Object e) {
+          if (job?.cancelRequested != true) {
+            onLog?.call('Ошибка запуска Cavey-Downloader: ${e.runtimeType}');
+          }
           return -1;
         }));
       } else {
