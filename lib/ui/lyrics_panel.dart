@@ -214,7 +214,9 @@ class _LyricsBodyState extends State<LyricsBody> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ctx = _keys[idx].currentContext;
       if (ctx != null) {
-        Scrollable.ensureVisible(ctx, alignment: 0.35, duration: const Duration(milliseconds: 350), curve: Curves.easeOutCubic);
+        // Кинотеатр: первая строка стоит по центру по высоте, дальше текст держит строку на трети высоты, как раньше
+        Scrollable.ensureVisible(ctx,
+            alignment: widget.big && idx == 0 ? 0.5 : 0.35, duration: const Duration(milliseconds: 350), curve: Curves.easeOutCubic);
       }
     });
   }
@@ -365,8 +367,9 @@ class _LyricsBodyState extends State<LyricsBody> {
 
     return NotificationListener<UserScrollNotification>(
       onNotification: _onScroll,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(14, 4, 14, 200),
+      child: LayoutBuilder(builder: (context, box) => SingleChildScrollView(
+        // В кинотеатре сверху пустое место: до первой строки текст не прижат к верхнему краю, а начинается с середины
+        padding: EdgeInsets.fromLTRB(14, widget.big && box.maxHeight.isFinite ? math.max(4.0, box.maxHeight * 0.5 - 31) : 4, 14, 200),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           for (var i = 0; i < ly.lines.length; i++) ...[
             _focus(
@@ -401,7 +404,7 @@ class _LyricsBodyState extends State<LyricsBody> {
           ],
           Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: _again()),
         ]),
-      ),
+      )),
     );
   }
 }

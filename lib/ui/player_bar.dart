@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -135,8 +136,10 @@ class PlayerBar extends StatelessWidget {
                 ),
                 const SizedBox(width: 2),
                 Expanded(
-                  // Текст можно выделить зажатой левой кнопкой и скопировать; обычный клик по ссылке работает как раньше
-                  child: SelectionArea(
+                  // Правый клик по названию и исполнителю — полное меню трека (без «Выбрать»); обычный клик по ссылке работает как раньше
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onSecondaryTapUp: (d) => showTrackMenu(context, t, null, d.globalPosition),
                     child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
                       // Название ведёт в альбом, как и обложка
                       Links(
@@ -273,38 +276,160 @@ class _SeekGesturesState extends State<_SeekGestures> {
   }
 }
 
+/// Какой край у осветления прослушанной части: false — прямая линия, true — бегущая волна.
+/// Меняется в «Настройки → Внешний вид»
+final seekEdgeWave = ValueNotifier<bool>(false);
+
 /// Осветление капсулы по прослушанной части: слева направо до текущего места
-class _Wash extends StatelessWidget {
+class _Wash extends StatefulWidget {
   final PlayerController player;
   const _Wash({required this.player});
 
   @override
+  State<_Wash> createState() => _WashState();
+}
+
+class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
+  // Волна медленно течёт по вертикали; один оборот — две секунды
+  late final AnimationController _flow = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
+  bool _init = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.player.addListener(_sync);
+    seekEdgeWave.addListener(_sync);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_init) {
+      _init = true;
+      seekEdgeWave.value = Services.of(context).settings.viewOf('seek.edge', 'straight') == 'wave';
+      _sync();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.player.removeListener(_sync);
+    seekEdgeWave.removeListener(_sync);
+    _flow.dispose();
+    super.dispose();
+  }
+
+  /// Тикер крутится, только пока волна включена и музыка играет: на паузе волна замирает и ничего не тратит
+  void _sync() {
+    final run = seekEdgeWave.value && widget.player.playing;
+    if (run && !_flow.isAnimating) {
+      _flow.repeat();
+    } else if (!run && _flow.isAnimating) {
+      _flow.stop();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final player = widget.player;
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
       return ListenableBuilder(
-        listenable: Listenable.merge([player.position, _seekPreview]),
+        listenable: Listenable.merge([player.position, _seekPreview, seekEdgeWave]),
         builder: (context, _) {
           final total = player.duration.inMilliseconds.toDouble();
           final at = (_seekPreview.value ?? player.position.value).inMilliseconds.toDouble();
           final f = total <= 0 ? 0.0 : (at / total).clamp(0.0, 1.0);
           // Полоса перемотки идёт по прямому участку грани, а осветление — от самого края капсулы
           final x = f <= 0 ? 0.0 : (f >= 1 ? w : _capInset + f * (w - 2 * _capInset));
-          return Align(
-            alignment: Alignment.centerLeft,
-            child: SizedBox(
-              width: x,
-              height: double.infinity,
-              child: const DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(colors: [Color(0x0AFFFFFF), Color(0x1AFFFFFF)]),
-                ),
-              ),
+          return RepaintBoundary(
+            child: CustomPaint(
+              size: Size(w, box.maxHeight),
+              painter: _WashPainter(x: x, wave: seekEdgeWave.value, flow: _flow),
             ),
           );
         },
       );
     });
+  }
+}
+
+/// Рисует осветление до [x]; правая граница — прямая или синусоида, бегущая вдоль неё
+class _WashPainter extends CustomPainter {
+  final double x;
+  final bool wave;
+  final Animation<double> flow;
+  _WashPainter({required this.x, required this.wave, required this.flow}) : super(repaint: flow);
+
+  static const amplitude = 3.0;
+  static const period = 18.0;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (x <= 0) return;
+    final rect = Rect.fromLTWH(0, 0, x, size.height);
+    final paint = Paint()
+      ..shader = const LinearGradient(colors: [Color(0x0AFFFFFF), Color(0x1AFFFFFF)]).createShader(rect);
+    // Дошли до конца трека — края уже не видно
+    if (!wave || x >= size.width - 0.5) {
+      canvas.drawRect(rect, paint);
+      return;
+    }
+    final phase = flow.value * 2 * math.pi;
+    final path = Path()..moveTo(0, 0);
+    for (var y = 0.0; y <= size.height + 1; y += 1.5) {
+      path.lineTo(x + amplitude * math.sin(y / period * 2 * math.pi - phase), y);
+    }
+    path
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(_WashPainter old) => old.x != x || old.wave != wave;
+}
+
+/// Маленький пример края для «Настроек»: полоска осветления с прямой или волнистой границей
+class SeekEdgeSample extends StatefulWidget {
+  final bool wave;
+  const SeekEdgeSample({super.key, required this.wave});
+
+  @override
+  State<SeekEdgeSample> createState() => _SeekEdgeSampleState();
+}
+
+class _SeekEdgeSampleState extends State<SeekEdgeSample> with SingleTickerProviderStateMixin {
+  late final AnimationController _flow = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.wave) _flow.repeat();
+  }
+
+  @override
+  void didUpdateWidget(SeekEdgeSample old) {
+    super.didUpdateWidget(old);
+    if (widget.wave && !_flow.isAnimating) _flow.repeat();
+    if (!widget.wave) _flow.stop();
+  }
+
+  @override
+  void dispose() {
+    _flow.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 120,
+      height: 40,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(20), border: Border.all(color: C.line)),
+      child: CustomPaint(painter: _WashPainter(x: 62, wave: widget.wave, flow: _flow)),
+    );
   }
 }
 
@@ -390,24 +515,32 @@ class _TopSeekState extends State<_TopSeek> {
                 final on = (_hoverX != null || _drag != null) && p.current != null;
                 final hx = _hoverX;
                 final hoverMs = hx == null || total <= 0 ? null : (hx / w).clamp(0.0, 1.0) * total;
-                // Метка под курсором не наезжает на крайние
-                final showMark = hx != null && hoverMs != null && hx > 64 && hx < w - 64;
+                // Точка — текущее место в треке; облачко с временем едет вместе с ней
+                final dotX = f * w;
+                // Метка под курсором: если она налезает на облачко точки, виден только тот, что под курсором
+                final showMark = hx != null && hoverMs != null && (hx - dotX).abs() > 8;
+                final overlaps = showMark && (hx - dotX).abs() < 56;
+                final nearEnd = dotX > w - 54 || (showMark && hx > w - 54);
                 return Stack(clipBehavior: Clip.none, children: [
                   Positioned(
                     left: 0,
                     right: 0,
                     top: 1,
-                    height: 3,
+                    height: 4,
                     child: AnimatedOpacity(
                       opacity: on ? 1 : 0,
                       duration: const Duration(milliseconds: 120),
-                      child: Stack(children: [
-                        const Positioned.fill(child: ColoredBox(color: Color(0x33FFFFFF))),
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          child: FractionallySizedBox(widthFactor: f, heightFactor: 1, child: const ColoredBox(color: Color(0xE6FFFFFF))),
-                        ),
-                      ]),
+                      // Скруглённые концы: радиус — половина толщины
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: Stack(children: [
+                          const Positioned.fill(child: ColoredBox(color: Color(0x33FFFFFF))),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: FractionallySizedBox(widthFactor: f, heightFactor: 1, child: const ColoredBox(color: Color(0xE6FFFFFF))),
+                          ),
+                        ]),
+                      ),
                     ),
                   ),
                   if (on && hx != null)
@@ -416,23 +549,33 @@ class _TopSeekState extends State<_TopSeek> {
                       top: 0,
                       width: 2,
                       height: 14,
-                      child: const ColoredBox(color: Colors.white),
+                      child: DecoratedBox(decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(1))),
                     ),
                   if (on) ...[
                     Positioned(
-                      left: 0,
-                      top: -26,
-                      child: IgnorePointer(child: _label(formatDuration(Duration(milliseconds: value.round())))),
+                      left: dotX - 5,
+                      top: -3,
+                      width: 10,
+                      height: 10,
+                      child: const IgnorePointer(child: DecoratedBox(decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle))),
                     ),
-                    Positioned(
-                      right: 0,
-                      top: -26,
-                      child: IgnorePointer(child: _label(formatDuration(p.duration))),
-                    ),
+                    if (!overlaps)
+                      Positioned(
+                        left: dotX - 30,
+                        top: -30,
+                        width: 60,
+                        child: IgnorePointer(child: Center(child: _label(formatDuration(Duration(milliseconds: value.round()))))),
+                      ),
+                    if (!nearEnd)
+                      Positioned(
+                        right: 0,
+                        top: -30,
+                        child: IgnorePointer(child: _label(formatDuration(p.duration))),
+                      ),
                     if (showMark)
                       Positioned(
-                        left: hx! - 30,
-                        top: -26,
+                        left: hx - 30,
+                        top: -30,
                         width: 60,
                         child: IgnorePointer(child: Center(child: _label(formatDuration(Duration(milliseconds: hoverMs!.round()))))),
                       ),

@@ -65,14 +65,22 @@ class _ArtistsPageState extends State<ArtistsPage> {
       builder: (context, _) {
         final all = app.lib.artists;
         final q = foldText(_query.trim());
-        final desc = app.settings.artistsDesc;
+        final ls = ListSort.read(app.settings, 'artists', legacyDesc: app.settings.artistsDesc);
+        final desc = ls.desc;
+        final firstAt = ls.mode == 'first' ? {for (final a in all) a.key: firstUpload(a.tracks)} : const <String, String>{};
         final list = q.isEmpty ? List<Artist>.of(all) : all.where((a) => foldText(a.name).contains(q)).toList();
         int cmp(Artist a, Artist b) {
           final ua = a.name == 'Неизвестный исполнитель';
           final ub = b.name == 'Неизвестный исполнитель';
           if (ua != ub) return ua ? 1 : -1; // «неизвестный» всегда внизу
-          final r = sortKey(a.name).compareTo(sortKey(b.name));
-          return desc ? -r : r;
+          final byName = sortKey(a.name).compareTo(sortKey(b.name));
+          final r = switch (ls.mode) {
+            'first' => (firstAt[a.key] ?? '').compareTo(firstAt[b.key] ?? ''),
+            'count' => a.tracks.length.compareTo(b.tracks.length),
+            _ => byName,
+          };
+          if (r != 0) return desc ? -r : r;
+          return byName != 0 ? byName : a.key.compareTo(b.key);
         }
 
         list.sort(cmp);
@@ -107,9 +115,16 @@ class _ArtistsPageState extends State<ArtistsPage> {
                     focusNode: _focus,
                     hint: 'Найти исполнителя',
                     desc: desc,
+                    mode: ls.mode,
+                    onMode: (m) {
+                      if (m == ls.mode) return;
+                      ListSort(m, ListSort.defaultDesc(m)).write(app.settings, 'artists');
+                      app.lib.saveSettings();
+                      setState(() {});
+                    },
                     onChanged: (v) => setState(() => _query = v),
                     onToggleSort: () {
-                      app.settings.artistsDesc = !desc;
+                      ListSort(ls.mode, !desc).write(app.settings, 'artists');
                       app.lib.saveSettings();
                       setState(() {});
                     },
