@@ -854,8 +854,43 @@ class LibraryController extends ChangeNotifier {
       }
     }
 
+    // Reconcile moves that completed in Google Drive just before a timeout,
+    // crash or process exit (before the index operation could be persisted).
+    // Follow actual parent links and rebuild the relative destination path.
+    Future<String?> movedPath(String fileId) async {
+      final file = await drive.getFile(email, fileId, fields: 'id,parents');
+      final parents = file['parents'];
+      if (parents is! List || parents.isEmpty) return null;
+      var parent = '${parents.first}';
+      final segments = <String>[];
+      for (var depth = 0; depth < 40; depth++) {
+        if (parent == targetId) return segments.reversed.join('/');
+        if (parent == sourceId) return null;
+        final folder = await drive.getFile(email, parent, fields: 'id,name,parents');
+        final links = folder['parents'];
+        if (links is! List || links.isEmpty) return null;
+        segments.add('${folder['name'] ?? ''}');
+        parent = '${links.first}';
+      }
+      return null;
+    }
+
     try {
       await mergeDirectory(sourceId, targetId, '', 0);
+      final unresolved = data.tracks.values
+          .where((t) => t.source == sourceId).toList();
+      final recovered = <String, String>{};
+      for (final t in unresolved) {
+        folderMerge.current = 'Восстанавливаю связи: ${t.title}';
+        _changed();
+        try {
+          final path = await movedPath(t.id);
+          if (path != null) recovered[t.id] = path;
+        } on DriveException catch (e) {
+          if (!e.notFound && !e.forbidden) rethrow;
+        }
+      }
+      await relocate(recovered);
       if ((await drive.listChildren(email, sourceId)).isNotEmpty) {
         throw LibraryException('В исходной папке остались файлы, повторите слияние');
       }
