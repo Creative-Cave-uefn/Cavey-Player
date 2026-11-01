@@ -260,8 +260,9 @@ class DownloadService extends ChangeNotifier {
         final path = call['file'];
         final f = await _jobFile(path, image: true);
         final bytes = await f.readAsBytes();
-        final id = await lib.uploadCover(bytes, 'jpg');
-        final playlistId = '${call['playlistId'] ?? ''}';
+        final png = bytes.length > 3 && bytes[0] == 0x89 && bytes[1] == 0x50;
+        final id = await lib.uploadCover(bytes, png ? 'png' : 'jpg');
+        final playlistId = '${call['id'] ?? ''}';
         if (playlistId.isEmpty) throw const FormatException('Не указан плейлист.');
         lib.setPlaylistCover(playlistId, id);
         await covers?.seed(id, bytes);
