@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:isolate';
 import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/library.dart';
 import '../core/deezer_art.dart';
+import '../core/log.dart';
 import '../core/models.dart';
 import '../core/tags.dart';
 import 'cover_picker.dart';
@@ -621,6 +624,27 @@ class _DeezerCoverLookup extends StatefulWidget {
 class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
   bool searching = false;
   String status = '';
+  final List<String> _diagnostics = [];
+  int _lookupNumber = 0;
+
+  void _record(String message, int lookupNumber) {
+    if (!mounted || lookupNumber != _lookupNumber) return;
+    if (_diagnostics.length >= 80) _diagnostics.removeAt(0);
+    final line = '${DateTime.now().toIso8601String()} $message';
+    _diagnostics.add(line);
+    if (searching) setState(() => status = message);
+  }
+
+  Future<void> _copyDiagnostics() async {
+    final header = 'Cavey · Диагностика поиска обложки Deezer\n'
+        'Общий лог: ${AppLog.file?.path ?? 'недоступен'}\n';
+    await Clipboard.setData(ClipboardData(text:
+        '$header${_diagnostics.join('\n')}'));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Журнал поиска Deezer скопирован')));
+    }
+  }
 
   @override
   void initState() {
@@ -633,9 +657,13 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
 
   Future<void> _lookup({bool automatic = false}) async {
     if (searching) return;
+    final lookup = ++_lookupNumber;
+    _diagnostics.clear();
     setState(() { searching = true; status = 'Проверяю Deezer…'; });
+    AppLog.info('Deezer UI: старт поиска обложки для трека "${widget.track.title}"');
     try {
       final app = Services.of(context);
+      _record('Google Drive: проверяю текущую обложку параллельно с Deezer', lookup);
       // Do not wait for a potentially slow Google Drive cover after the
       // Deezer request: both fetches run concurrently.
       final currentCoverFuture = app.covers.forTrack(widget.track, px: 0)
@@ -647,17 +675,22 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
         artist: widget.artist.text.trim(),
         title: widget.title.text.trim(),
         album: widget.album.text.trim(),
+        onLog: (line) => _record(line, lookup),
       ).timeout(const Duration(seconds: 14));
       if (!mounted) return;
       if (artwork == null) {
-        setState(() => status = 'В Deezer не нашёл точного совпадения.');
+        _record('Итог: обложка не найдена; см. запросы и причины выше', lookup);
+        setState(() => status = 'Deezer не вернул подходящую обложку. Скопируйте журнал поиска.');
         return;
       }
       if (automatic && widget.choice.changed) return;
       final currentBytes = widget.choice.picked?.bytes ?? await currentCoverFuture;
       if (!mounted) return;
       if (automatic && widget.choice.changed) return;
-      final current = DeezerArt.dimensions(currentBytes);
+      final current = await Isolate.run(() => DeezerArt.dimensions(currentBytes))
+          .timeout(const Duration(seconds: 3), onTimeout: () => null);
+      _record('Google Drive: ${current == null ? 'размер исходной обложки неизвестен' : '${current.$1}×${current.$2}'}', lookup);
+      if (!mounted) return;
       if (current != null && !artwork.betterThan(current.$1, current.$2)) {
         setState(() => status =
             'Текущая обложка не хуже: ${current.$1}×${current.$2}. Deezer: ${artwork.width}×${artwork.height}.');
@@ -667,13 +700,18 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
       setState(() => status =
           'Deezer: ${artwork.width}×${artwork.height}. Новая обложка будет сохранена вместе с метаданными.');
     } on TimeoutException {
+      _record('Итог: превышен общий лимит 14 секунд', lookup);
+      AppLog.warn('Deezer UI: общий таймаут 14 секунд');
       if (mounted) {
         setState(() => status =
-            'Deezer не ответил за 14 секунд. Повторите поиск или выберите файл вручную.');
+            'Deezer не ответил за 14 секунд. Скопируйте журнал поиска.');
       }
-    } catch (_) {
-      if (mounted) setState(() => status = 'Deezer сейчас не ответил. Обложку можно выбрать вручную.');
+    } catch (e, stack) {
+      _record('Итог: ошибка ${e.runtimeType}: $e', lookup);
+      AppLog.error('Deezer UI: ошибка поиска обложки', e, stack);
+      if (mounted) setState(() => status = 'Ошибка Deezer. Скопируйте журнал поиска.');
     } finally {
+      AppLog.info('Deezer UI: поиск завершён, записей диагностики ${_diagnostics.length}');
       if (mounted) setState(() => searching = false);
     }
   }
@@ -693,6 +731,15 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
         const SizedBox(height: 6),
         Text(status, style: const TextStyle(color: C.muted, fontSize: 12)),
       ],
+      if (_diagnostics.isNotEmpty)
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: _copyDiagnostics,
+            icon: const Icon(Icons.copy_rounded, size: 15),
+            label: const Text('Скопировать журнал поиска Deezer'),
+          ),
+        ),
     ]),
   );
 }
