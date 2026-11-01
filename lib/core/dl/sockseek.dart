@@ -24,7 +24,7 @@ class Sockseek {
   static Future<void> prepareConfig(Tools tools) async {
     final file = config(tools);
     await file.parent.create(recursive: true);
-    // Optional local credential bootstrap. Never use values from build defines or Git.
+    // Bootstrap local credentials from environment or optional build defaults.
     String local(String name, String fallback) {
       final value = Platform.environment[name]?.trim() ?? '';
       return value.isNotEmpty && !value.contains('\n') && !value.contains('\r') ? value : fallback;
