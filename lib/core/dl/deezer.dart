@@ -52,7 +52,7 @@ class DeezerMusic {
       // Only update old placeholder configs, preserving custom credentials.
       if (arl == arlPlaceholder) return;
       final old = await f.readAsString();
-      final match = RegExp(r'(?m)^\s*arl\s*=\s*(.*?)\s*$').firstMatch(old);
+      final match = RegExp(r'^[ \t]*arl[ \t]*=[ \t]*([^\r\n]*)', multiLine: true).firstMatch(old);
       if (match != null &&
           (match.group(1)!.trim().isEmpty || match.group(1)!.trim() == arlPlaceholder)) {
         await f.writeAsString(
