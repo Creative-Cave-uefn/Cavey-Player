@@ -1,10 +1,13 @@
 // Public Deezer catalog cover lookup; no ARL or account is needed for artwork.
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
+
+import 'log.dart';
 
 class DeezerArtwork {
   final Uint8List bytes;
@@ -29,14 +32,43 @@ class DeezerArt {
   static final http.Client _client = http.Client();
   static final Map<String, (DateTime, DeezerArtwork?)> _cache = {};
   static final Map<String, Future<DeezerArtwork?>> _inflight = {};
+  static int _searchId = 0;
 
-  static Future<Map<String, dynamic>?> _get(String path, String query) async {
-    final uri = Uri.https('api.deezer.com', path, {'q': query, 'limit': '20'});
-    final response = await _client.get(uri).timeout(const Duration(seconds: 5));
-    if (response.statusCode != 200 || response.bodyBytes.length > 500000) return null;
-    final body = jsonDecode(utf8.decode(response.bodyBytes));
-    if (body is! Map || body['error'] != null) return null;
-    return body.cast<String, dynamic>();
+  static void _trace(String message, void Function(String)? onLog) {
+    AppLog.info('DeezerArt: $message');
+    onLog?.call(message);
+  }
+
+  static Future<Map<String, dynamic>?> _get(
+      String path, String query, void Function(String)? onLog) async {
+    final timer = Stopwatch()..start();
+    _trace('API $path: запрос="$query", начало', onLog);
+    try {
+      final uri = Uri.https('api.deezer.com', path, {'q': query, 'limit': '20'});
+      final response = await _client.get(uri).timeout(const Duration(seconds: 5));
+      _trace('API $path: HTTP ${response.statusCode}, ${response.bodyBytes.length} байт, '
+          '${timer.elapsedMilliseconds} мс', onLog);
+      if (response.statusCode != 200 || response.bodyBytes.length > 500000) {
+        _trace('API $path: ответ отклонён (HTTP или размер)', onLog);
+        return null;
+      }
+      final body = jsonDecode(utf8.decode(response.bodyBytes));
+      if (body is! Map) {
+        _trace('API $path: получен неожиданный JSON', onLog);
+        return null;
+      }
+      if (body['error'] != null) {
+        final e = body['error'];
+        _trace('API $path: ошибка Deezer код=${e is Map ? e['code'] : '?'} '
+            'сообщение=${e is Map ? e['message'] : e}', onLog);
+        return null;
+      }
+      _trace('API $path: записей ${body['data'] is List ? (body['data'] as List).length : 0}', onLog);
+      return body.cast<String, dynamic>();
+    } catch (e) {
+      _trace('API $path: ${e.runtimeType} после ${timer.elapsedMilliseconds} мс ($e)', onLog);
+      return null;
+    }
   }
 
   static Future<DeezerArtwork?> find({
