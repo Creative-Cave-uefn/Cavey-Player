@@ -518,9 +518,15 @@ class FullPlayer extends StatelessWidget {
             child: IconButton(onPressed: () => Navigator.pop(context),
               icon: const Icon(Icons.keyboard_arrow_down, size: 32))),
           const Spacer(),
-          LayoutBuilder(builder: (context, constraints) => Center(
-            child: TrackCover(services: services, track: t,
-              size: constraints.maxWidth.clamp(0.0, 340.0).toDouble())))),
+          LayoutBuilder(
+            builder: (context, constraints) => Center(
+              child: TrackCover(
+                services: services,
+                track: t,
+                size: constraints.maxWidth.clamp(0.0, 340.0).toDouble(),
+              ),
+            ),
+          ),
           const Spacer(),
           Row(children: [
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
