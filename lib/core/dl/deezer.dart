@@ -105,7 +105,11 @@ class DeezerMusic {
     if (await runProcess(exe.path,['-m','pip','install','--no-input','--disable-pip-version-check','deezer-downloader==$version'],log) != 0) {
       throw Exception('pip не смог установить deezer-downloader.');
     }
-    log('Укажите ARL своей сессии в локальном deezer_auth.ini.');
+    if (_initialArl() == arlPlaceholder) {
+      log('Deezer установлен. Для авторизации заполните локальный deezer_auth.ini.');
+    } else {
+      log('Deezer установлен. Конфигурация авторизации готова.');
+    }
   }
   static Future<DeezerResult> download(Tools t,String query,Directory output,void Function(String) log) async {
     if (!accepts(query)) throw FormatException('Deezer: укажите «Исполнитель - Название» или ссылку Deezer.');
