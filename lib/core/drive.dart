@@ -296,6 +296,45 @@ class DriveApi {
     return DriveFile.fromJson(jsonDecode(res.body) as Map);
   }
 
+  /// Replace the audio payload of an existing Drive file, keeping its ID,
+  /// playlist references, likes, permissions and filename unchanged.
+  /// The original stays intact if preparing the replacement fails.
+  Future<DriveFile> replaceFileMedia(String email, String id, File file, {required String mime}) async {
+    final length = await file.length();
+    if (length < 1024) throw DriveException(0, 'Файл для замены пустой');
+    final start = await send(
+      email, 'PATCH',
+      upload('files/$id', {'uploadType': 'resumable', 'fields': DriveFile.fields}),
+      headers: {
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Type': mime,
+        'X-Upload-Content-Length': '$length',
+      },
+      body: utf8.encode('{}'),
+    );
+    final location = start.headers['location'];
+    if (location == null) throw DriveException(500, 'Диск не создал сессию замены');
+    final uri = Uri.parse(location);
+    if (uri.scheme != 'https' || uri.host != 'www.googleapis.com') {
+      throw DriveException(500, 'Небезопасный адрес сессии Google Диска');
+    }
+    final token = await accounts.token(email);
+    final req = http.StreamedRequest('PUT', uri)
+      ..headers['Authorization'] = 'Bearer $token'
+      ..headers['Content-Type'] = mime
+      ..contentLength = length;
+    final response = _http.send(req);
+    await for (final chunk in file.openRead()) {
+      req.sink.add(chunk);
+    }
+    await req.sink.close();
+    final res = await http.Response.fromStream(await response.timeout(const Duration(minutes: 4)));
+    if (res.statusCode != 200 && res.statusCode != 201) {
+      throw DriveException(res.statusCode, _errorText(res));
+    }
+    return DriveFile.fromJson(jsonDecode(res.body) as Map);
+  }
+
   /// Удаляет файл с Диска безвозвратно (может только владелец). Для музыки не используется: там [trash]
   Future<void> deleteFile(String email, String id) async {
     await send(email, 'DELETE', api('files/$id'));
