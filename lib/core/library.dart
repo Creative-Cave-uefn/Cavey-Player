@@ -778,12 +778,68 @@ class LibraryController extends ChangeNotifier {
     if (hasUnsavedChanges) {
       throw LibraryException('Сначала дождитесь сохранения изменений в library.json');
     }
-    final email = await accessFor(sourceId, recheck: true);
-    final src = await drive.getFile(email, sourceId, fields: 'id,mimeType');
-    final dst = await drive.getFile(email, targetId, fields: 'id,mimeType');
-    if (src['mimeType'] != 'application/vnd.google-apps.folder' ||
-        dst['mimeType'] != 'application/vnd.google-apps.folder') {
-      throw LibraryException('Нужно выбрать две папки');
+    // Select an account that can CHANGE both folders; accessFor() checks
+    // only readability and may pick a friend/viewer instead of the owner.
+    final eligible = <String>[];
+    final failures = <String>[];
+    for (final account in accounts.accounts) {
+      final accountEmail = account.email;
+      try {
+        const fields = 'id,name,mimeType,parents,capabilities(canListChildren,'
+            'canRemoveChildren,canAddChildren,canTrash)';
+        final sourceInfo = await drive.getFile(accountEmail, sourceId, fields: fields);
+        final targetInfo = await drive.getFile(accountEmail, targetId, fields: fields);
+        if (sourceInfo['mimeType'] != 'application/vnd.google-apps.folder' ||
+            targetInfo['mimeType'] != 'application/vnd.google-apps.folder') {
+          throw LibraryException('Нужно выбрать две папки Google Drive');
+        }
+        final problem = DriveApi.folderMergePermissionProblem(sourceInfo, targetInfo);
+        if (problem != null) {
+          failures.add('$accountEmail: $problem');
+        } else {
+          eligible.add(accountEmail);
+        }
+      } on DriveException catch (e) {
+        if (e.notFound || e.forbidden) {
+          failures.add('$accountEmail: нет доступа к одной из папок');
+        } else {
+          rethrow;
+        }
+      }
+    }
+    if (eligible.isEmpty) {
+      throw LibraryException('Нет подключённого Google-аккаунта с правом '
+          'переместить содержимое из одной папки в другую и убрать пустую '
+          'исходную папку. ${failures.join('; ')}. '
+          'Подключите аккаунт владельца обеих папок или выдайте ему '
+          'необходимые права редактора. Никакие файлы не перемещены.');
+    }
+    // Prefer the account that owns/opens the hub, but only if it passed
+    // Drive's capability checks for both ends.
+    final preferred = settings.sourceAccess[sourceId];
+    if (preferred != null && eligible.contains(preferred)) {
+      eligible.remove(preferred);
+      eligible.insert(0, preferred);
+    }
+    final email = eligible.first;
+
+    /// A source folder may contain files owned by a different account.
+    /// Retry on other eligible credentials if this one has only read access
+    /// to a specific item. Never fall back to copying or replacing file IDs.
+    Future<void> moveItem(String fileId, String from, String to, String name) async {
+      final errors = <String>[];
+      for (final candidate in eligible) {
+        try {
+          await drive.moveToFolder(candidate, fileId, fromParent: from, toParent: to);
+          return;
+        } on DriveException catch (e) {
+          if (!e.forbidden && !e.notFound) rethrow;
+          errors.add('$candidate: ${e.message}');
+        }
+      }
+      throw LibraryException('Google Drive запрещает перенос «$name». '
+          'Проверены аккаунты: ${errors.join('; ')}. '
+          'Файл остался на месте; операция остановлена.');
     }
     var ancestor = targetId;
     for (var i = 0; i < 40; i++) {
@@ -828,10 +884,27 @@ class LibraryController extends ChangeNotifier {
           if (match.length == 1) {
             await mergeDirectory(item.id, match.single.id, childPath, depth + 1);
             if ((await drive.listChildren(email, item.id)).isEmpty) {
-              await drive.trash(email, item.id);
+              // A successful merge must never fail because the first
+              // readable account cannot trash a now-empty old directory.
+              DriveException? denied;
+              var trashed = false;
+              for (final candidate in eligible) {
+                try {
+                  await drive.trash(candidate, item.id);
+                  trashed = true;
+                  break;
+                } on DriveException catch (e) {
+                  if (!e.forbidden && !e.notFound) rethrow;
+                  denied = e;
+                }
+              }
+              if (!trashed) {
+                throw LibraryException('Не удалось убрать пустую папку '
+                    '«${item.name}»: $denied. Проверьте права владельца.');
+              }
             }
           } else {
-            await drive.moveToFolder(email, item.id, fromParent: from, toParent: to);
+            await moveItem(item.id, from, to, item.name);
             final moved = <String, String>{};
             for (final track in data.tracks.values) {
               if (track.source == sourceId &&
@@ -843,7 +916,7 @@ class LibraryController extends ChangeNotifier {
             folderMerge.done++;
           }
         } else {
-          await drive.moveToFolder(email, item.id, fromParent: from, toParent: to);
+          await moveItem(item.id, from, to, item.name);
           final track = data.tracks[item.id];
           if (track != null && track.source == sourceId) {
             await relocate({item.id: path});
@@ -908,7 +981,23 @@ class LibraryController extends ChangeNotifier {
         throw LibraryException('Не удалось сохранить исключение исходной папки');
       }
       // Trash empty root only; no audio or cover file is deleted.
-      await drive.trash(email, sourceId);
+      DriveException? lastAccessError;
+      var removedSource = false;
+      for (final candidate in eligible) {
+        try {
+          await drive.trash(candidate, sourceId);
+          removedSource = true;
+          break;
+        } on DriveException catch (e) {
+          if (!e.forbidden && !e.notFound) rethrow;
+          lastAccessError = e;
+        }
+      }
+      if (!removedSource) {
+        throw LibraryException('Файлы перенесены, но пустая папка '
+            'не отправилась в корзину: $lastAccessError. '
+            'Данные библиотеки уже сохранены.');
+      }
       settings.sourceAccess.remove(sourceId);
       await saveSettings();
       messages.add('Слияние выполнено. Треки, лайки и плейлисты сохранены');

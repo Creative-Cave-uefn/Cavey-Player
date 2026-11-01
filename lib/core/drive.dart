@@ -468,21 +468,56 @@ class DriveApi {
 
   /// Удаляет файл с Диска безвозвратно (может только владелец). Для музыки не используется: там [trash]
 
-  /// Move an existing Drive item between folders, keeping its file ID.
+  /// Only one OAuth credential with permission on BOTH folder endpoints may
+  /// reparent Drive items. A readable/shared folder does not imply move rights.
+  /// Used before any potentially destructive merge action.
+  static String? folderMergePermissionProblem(Map source, Map target) {
+    final src = source['capabilities'] as Map? ?? const {};
+    final dst = target['capabilities'] as Map? ?? const {};
+    if (src['canListChildren'] != true) return 'нельзя просмотреть содержимое исходной папки';
+    if (src['canRemoveChildren'] != true) return 'нельзя перемещать файлы из исходной папки';
+    if (src['canTrash'] != true) return 'нельзя отправить пустую исходную папку в корзину';
+    if (dst['canListChildren'] != true) return 'нельзя просмотреть содержимое целевой папки';
+    if (dst['canAddChildren'] != true) return 'нельзя добавлять файлы в целевую папку';
+    return null;
+  }
+
+  /// Move an existing Drive item between folders without copying bytes.
+  /// Google Drive file IDs (and linked playlist/like IDs) remain unchanged.
   Future<void> moveToFolder(String email, String fileId,
       {required String fromParent, required String toParent}) async {
     if (fileId == fromParent || fileId == toParent || fromParent == toParent) {
       throw ArgumentError('Неверная папка для перемещения');
     }
-    final info = await getFile(email, fileId, fields: 'id,parents');
+    final info = await getFile(email, fileId,
+        fields: 'id,name,parents,capabilities(canMoveItemWithinDrive,canMoveItemOutOfDrive)');
     final parents = (info['parents'] as List? ?? const []).map((p) => '$p').toSet();
     if (parents.contains(toParent) && !parents.contains(fromParent)) return;
     if (!parents.contains(fromParent)) {
       throw DriveException(409, 'Файл уже находится в другой папке');
     }
-    await send(email, 'PATCH', api('files/$fileId', {
-      'addParents': toParent, 'removeParents': fromParent, 'fields': 'id,parents',
-    }));
+    final name = '${info['name'] ?? fileId}';
+    final caps = info['capabilities'] as Map? ?? const {};
+    if (caps['canMoveItemWithinDrive'] == false &&
+        caps['canMoveItemOutOfDrive'] != true) {
+      throw DriveException(403, 'Аккаунт $email не может переместить «$name»: '
+          'Google Drive запрещает смену родительской папки для этого файла. '
+          'Проверьте владельца файла и права на обе папки.');
+    }
+    try {
+      await send(email, 'PATCH', api('files/$fileId', {
+        'addParents': toParent,
+        'removeParents': fromParent,
+        'fields': 'id,parents',
+      }));
+    } on DriveException catch (e) {
+      if (e.forbidden) {
+        throw DriveException(403, 'Google запретил переместить «$name» '
+            'через $email: ${e.message}. Проверьте права владельца и '
+            'возможность перемещения в папку назначения.');
+      }
+      rethrow;
+    }
   }
 
   Future<void> deleteFile(String email, String id) async {
