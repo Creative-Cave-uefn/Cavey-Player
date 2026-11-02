@@ -93,7 +93,7 @@ void main() {
     final changes = await DriveApi(_Accounts(), client: client)
         .changesSince('test@example.com', 'before');
     expect(changes.unknown, isTrue);
-    expect(changes.affects({}, {'musicRoot'}), isTrue);
+    expect(changes.affects(<String>{}, {'musicRoot'}), isTrue);
     client.close();
   });
 
