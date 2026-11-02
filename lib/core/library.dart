@@ -1878,9 +1878,26 @@ class LibraryController extends ChangeNotifier {
     return _coversFolderId = id;
   }
 
-  /// Кладёт картинку в общую папку обложек и возвращает её id. Одинаковые картинки не дублируются
-  Future<String> uploadCover(Uint8List bytes, String ext) async {
-    final name = '${sha1.convert(bytes)}.$ext';
+  /// A batch (e.g. a Deezer album) usually reuses the same cover dozens of
+  /// times. One Drive upload/lookup per image per library is enough.
+  final Map<String, Future<String>> _coverInflight = {};
+  final Map<String, String> _coverKnown = {};
+
+  /// Upload a unique cover at most once for the currently selected hub.
+  Future<String> uploadCover(Uint8List bytes, String ext) {
+    final digest = '${sha1.convert(bytes)}';
+    final key = '${settings.hubId}:$digest.$ext';
+    final known = _coverKnown[key];
+    if (known != null) return Future.value(known);
+    return _coverInflight[key] ??=
+        _uploadCoverUnique(bytes, '$digest.$ext').then((id) {
+          if (_coverKnown.length >= 200) _coverKnown.remove(_coverKnown.keys.first);
+          _coverKnown[key] = id;
+          return id;
+        }).whenComplete(() => _coverInflight.remove(key));
+  }
+
+  Future<String> _uploadCoverUnique(Uint8List bytes, String name) async {
     final folder = await coversFolder();
     final tmp = File('${Directory.systemTemp.path}${Platform.pathSeparator}cave-$name');
     await tmp.writeAsBytes(bytes, flush: true);
