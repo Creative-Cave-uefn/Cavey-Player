@@ -84,11 +84,13 @@ class CoverService extends ChangeNotifier {
   final Set<String> _discarded = {};
   // Диск и сеть Google Drive: 4 загрузки сразу. Каталог Deezer (поиск обложки трекам без неё)
   // идёт в своей очереди и не занимает слоты Drive.
-  final LoadGate _driveGate = LoadGate(4);
-  final LoadGate _deezerGate = LoadGate(2);
+  late final LoadGate _driveGate = LoadGate(driveSlots);
+  late final LoadGate _deezerGate = LoadGate(deezerSlots);
+  final int driveSlots;
+  final int deezerSlots;
   bool _notifyQueued = false;
 
-  CoverService(this.drive, this.lib, this.dir);
+  CoverService(this.drive, this.lib, this.dir, {this.driveSlots = 4, this.deezerSlots = 2});
 
   static String _key(Track t) => t.cover ?? 'p_${t.id}';
 
@@ -462,6 +464,14 @@ class CoverService extends ChangeNotifier {
       _notifyQueued = false;
       notifyListeners();
     });
+  }
+
+  /// Заранее качает маленькие обложки (например, следующие треки очереди), пока человек их не видит
+  void prefetch(Iterable<Track> tracks, {int px = 480}) {
+    for (final t in tracks) {
+      if (!wants(t) || peek(t, px: px) != null) continue;
+      forTrack(t, px: px).then((_) {}, onError: (_) {});
+    }
   }
 
   /// Подгружает с диска уменьшенные копии для первых треков, чтобы список открылся уже с картинками

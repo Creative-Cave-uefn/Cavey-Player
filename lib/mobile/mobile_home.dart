@@ -1003,6 +1003,8 @@ class _TrackCoverState extends State<TrackCover> {
     final px = widget.fullscreen ? 1000 : (widget.size * dpr).round();
     final g = ++gen;
     bytes = svc.peek(t, px: px);
+    // На весь экран оригинал грузится дольше: пока он идёт, показываем уже готовую копию поменьше
+    if (bytes == null && widget.fullscreen) bytes = svc.peek(t, px: 640) ?? svc.peek(t, px: 160);
     if ((bytes == null || widget.fullscreen) && svc.wants(t)) {
       svc.forTrack(t, px: px, fullscreen: widget.fullscreen).then((b) {
         if (mounted && g == gen && b != null) setState(() => bytes = b);
@@ -1361,7 +1363,10 @@ void showPlayer(BuildContext context, MobileServices services) {
     opaque: true,
     transitionDuration: const Duration(milliseconds: 320),
     reverseTransitionDuration: const Duration(milliseconds: 260),
-    pageBuilder: (_, __, ___) => FullPlayer(services: services),
+    pageBuilder: (_, __, ___) => ColoredBox(
+      color: C.bg,
+      child: Backdrop(services: services, child: FullPlayer(services: services)),
+    ),
     transitionsBuilder: (_, anim, __, child) => SlideTransition(
       position: Tween(begin: const Offset(0, 1), end: Offset.zero).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
       child: child,

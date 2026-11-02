@@ -84,11 +84,26 @@ class MobileServices {
     final library = LibraryController(store, settings, accounts, drive,
         mobileReadOnlyIndex: true);
     await library.start();
-    final covers = CoverService(drive, library, store.sub('covers'));
+    final covers = CoverService(drive, library, store.sub('covers'), driveSlots: 8, deezerSlots: 4);
+    // Картинки из кэша на диске — сразу, до первого экрана
+    unawaited(covers.warm(library.allTracks, limit: 300));
     final cache = AudioCache(store.sub('audio'), drive, library, settings);
     await cache.init();
     final player = PlayerController(library, accounts, settings, cache);
     player.restoreSession();
+    // Обложки следующих треков очереди качаем заранее, чтобы они уже были, когда дойдёт очередь
+    var lastPrefetch = '';
+    player.addListener(() {
+      final c = player.current;
+      if (c == null || c.id == lastPrefetch) return;
+      lastPrefetch = c.id;
+      final from = player.index + 1;
+      final next = <Track>[
+        for (final id in player.queue.skip(from).take(5))
+          if (library.data.tracks[id] != null) library.data.tracks[id]!,
+      ];
+      covers.prefetch(next);
+    });
     final updater = MobileUpdater()..start();
 
     // Тексты: сначала ищем рядом с треком на Диске и внутри файла, потом в интернете (как на ПК)
