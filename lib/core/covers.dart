@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'deezer_art.dart';
@@ -116,10 +118,6 @@ class CoverService extends ChangeNotifier {
   };
 
   Uint8List? _peekKey(String key, int px) {
-    if (bucketFor(px) == 0) {
-      final better = _upgraded[key];
-      if (better != null) return better;
-    }
     for (final bucket in previewBucketPriority(px)) {
       final cached = _touch(_mk(key, bucket));
       if (cached != null) return cached;
@@ -137,15 +135,23 @@ class CoverService extends ChangeNotifier {
     final cover = lib.customCoverOf(t);
     final key = cover == null ? _key(t) : 'cv_$cover';
     final bucket = bucketFor(px);
-    if (bucket == 0 && cover == null) {
-      if (_upgraded.containsKey(key)) return true;
-      if (upgrade && canFindInDeezer(t) && !_fullDone(key)) return false;
+    if (bucket == 0) {
+      final fk = _fullKey(t);
+      if (_upgraded.containsKey(fk)) return true;
+      if (upgrade && canFindInDeezer(t) && !_fullDone(fk)) return false;
     }
     return _mem[_mk(key, bucket)] != null;
   }
 
-  bool _fullDone(String key) {
-    final at = _fullChecked[key];
+  /// The fullscreen upgrade belongs to the cover *and* to what the track is called: once the
+  /// tags are corrected (e.g. filled in from Deezer), an earlier "nothing better found"
+  /// or a match for the old names no longer applies.
+  String _fullKey(Track t) => '${keyOf(t)}|${t.artist}|${t.albumArtist}|${t.album}|${t.title}';
+
+  String _hqName(String fk) => 'hq-${sha1.convert(utf8.encode(fk)).toString().substring(0, 24)}';
+
+  bool _fullDone(String fk) {
+    final at = _fullChecked[fk];
     return at != null && DateTime.now().difference(at) < const Duration(minutes: 10);
   }
 
@@ -165,6 +171,10 @@ class CoverService extends ChangeNotifier {
   }
 
   Uint8List? peek(Track t, {int px = 0}) {
+    if (bucketFor(px) == 0) {
+      final better = _upgraded[_fullKey(t)];
+      if (better != null) return better;
+    }
     final c = lib.customCoverOf(t);
     if (c != null) return peekFile(c, px: px);
     return (t.hasCover || canFindInDeezer(t)) ? _peekKey(_key(t), px) : null;
@@ -223,67 +233,72 @@ class CoverService extends ChangeNotifier {
     }
   }
 
-  /// Resolve a high-resolution image when the source file itself contains
-  /// only a small embedded cover. The existing picture is still shown while
-  /// a verified Deezer match is retrieved.
+  /// Resolve a high-resolution image when the cover we have (embedded in the file or the
+  /// one saved next to it on Drive, e.g. by the downloader) is small. The existing picture
+  /// is still shown while a verified Deezer match is retrieved.
   Future<Uint8List?> forFullscreen(Track t) {
-    if (lib.customCoverOf(t) != null) return forTrack(t, px: 0);
-    final key = _key(t);
-    final ready = _upgraded[key];
+    final fk = _fullKey(t);
+    final ready = _upgraded[fk];
     if (ready != null) return Future.value(ready);
-    return _fullInflight[key] ??=
-        _upgrade(t, key).whenComplete(() => _fullInflight.remove(key));
+    return _fullInflight[fk] ??= _upgrade(t, fk).whenComplete(() => _fullInflight.remove(fk));
   }
 
-  void _setUpgraded(String key, Uint8List bytes) {
-    _upgraded.remove(key);
-    _upgraded[key] = bytes;
+  void _setUpgraded(String fk, Uint8List bytes) {
+    _upgraded.remove(fk);
+    _upgraded[fk] = bytes;
     while (_upgraded.length > 12) {
       _upgraded.remove(_upgraded.keys.first);
     }
-    _fullChecked[key] = DateTime.now();
+    _fullChecked[fk] = DateTime.now();
     _signal();
   }
 
-  Future<Uint8List?> _upgrade(Track t, String key) async {
+  Future<Uint8List?> _upgrade(Track t, String fk) async {
+    final custom = lib.customCoverOf(t) != null;
     final original = await forTrack(t, px: 0);
     if (!canFindInDeezer(t)) {
-      _fullChecked[key] = DateTime.now();
+      _fullChecked[fk] = DateTime.now();
       return original;
     }
     // Found in an earlier session: show it at once, no network.
-    final saved = _file('$key@hq');
+    final saved = _file(_hqName(fk));
     try {
       if (await saved.exists()) {
         final b = await saved.readAsBytes();
         if (looksComplete(b)) {
-          _setUpgraded(key, b);
+          _setUpgraded(fk, b);
           return b;
         }
         await saved.delete();
       }
     } catch (_) {}
     if (original == null || original.isEmpty) return original;
-    // No embedded cover at all: forTrack already fetched it from Deezer.
-    if (!t.hasCover) {
-      _fullChecked[key] = DateTime.now();
+    // No cover of our own at all: forTrack already fetched it from Deezer.
+    if (!custom && !t.hasCover) {
+      _fullChecked[fk] = DateTime.now();
       return original;
     }
     try {
       final dims = await DeezerArt.dimensionsInBackground(original)
           .timeout(const Duration(seconds: 4));
       if (dims != null && dims.$1 >= 900 && dims.$2 >= 900) {
-        _fullChecked[key] = DateTime.now();
+        _fullChecked[fk] = DateTime.now();
         return original;
       }
       final artwork = await _findDeezer(t);
-      _fullChecked[key] = DateTime.now();
+      _fullChecked[fk] = DateTime.now();
       if (artwork == null || (dims != null && !artwork.betterThan(dims.$1, dims.$2))) {
         return original;
       }
-      _setUpgraded(key, artwork.bytes);
+      // A cover someone picked by hand can differ from the catalog one: swap in the larger
+      // picture only when it shows the same artwork
+      if (custom && !await sameArtwork(original, artwork.bytes)) {
+        AppLog.info('Fullscreen artwork: своя обложка отличается от каталожной, оставляю её');
+        return original;
+      }
+      _setUpgraded(fk, artwork.bytes);
       unawaited(_writeAtomic(saved, artwork.bytes));
-      _saveFoundCover(t, artwork.bytes);
+      if (!custom) _saveFoundCover(t, artwork.bytes);
       return artwork.bytes;
     } catch (e) {
       AppLog.info('Fullscreen artwork: не получилось улучшить разрешение: $e');
