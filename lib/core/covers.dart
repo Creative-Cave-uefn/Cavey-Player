@@ -42,7 +42,9 @@ class CoverService extends ChangeNotifier {
   // Cached files that failed to decode are dropped once per session.
   final Set<String> _discarded = {};
   int _active = 0;
-  final List<Completer<void>> _waiting = [];
+  final List<({String key, Completer<void> done})> _waiting = [];
+  // Covers the person is looking at right now: they jump the queue of background loads
+  final Set<String> _urgent = {};
   bool _notifyQueued = false;
 
   CoverService(this.drive, this.lib, this.dir);
@@ -236,7 +238,15 @@ class CoverService extends ChangeNotifier {
   /// Resolve a high-resolution image when the cover we have (embedded in the file or the
   /// one saved next to it on Drive, e.g. by the downloader) is small. The existing picture
   /// is still shown while a verified Deezer match is retrieved.
+  /// The cover for the fullscreen view as it is (no search for a larger one): shown at once,
+  /// before the slower [forFullscreen] has looked for a better picture. Jumps the load queue.
+  Future<Uint8List?> fullscreenOriginal(Track t) {
+    _prioritize(keyOf(t));
+    return forTrack(t, px: 0);
+  }
+
   Future<Uint8List?> forFullscreen(Track t) {
+    _prioritize(keyOf(t));
     final fk = _fullKey(t);
     final ready = _upgraded[fk];
     if (ready != null) return Future.value(ready);
@@ -471,8 +481,10 @@ class CoverService extends ChangeNotifier {
   // Two thumbnails of the same cover can be requested simultaneously.
   // Share a single original Drive download across all thumbnail sizes.
   Future<Uint8List?> _original(String key, Future<Uint8List?> Function() fetch) =>
-      _originalInflight[key] ??=
-          _loadOriginal(key, fetch).whenComplete(() => _originalInflight.remove(key));
+      _originalInflight[key] ??= _loadOriginal(key, fetch).whenComplete(() {
+        _originalInflight.remove(key);
+        _urgent.remove(key);
+      });
 
   Future<Uint8List?> _loadOriginal(String key, Future<Uint8List?> Function() fetch) async {
     final file = _file(key);
@@ -487,7 +499,7 @@ class CoverService extends ChangeNotifier {
         AppLog.info('Обложка: повреждённый файл кэша удалён, повторяю загрузку');
       } catch (_) {}
     }
-    await _acquire();
+    await _acquire(key);
     try {
       final b = await fetch();
       if (b == null) return null;
@@ -538,21 +550,29 @@ class CoverService extends ChangeNotifier {
     _signal();
   }
 
-  Future<void> _acquire() async {
-    if (_active < 4) {
+  Future<void> _acquire(String key) async {
+    // An urgent load never waits behind the background ones, even when all slots are busy
+    if (_active < 4 || _urgent.contains(key)) {
       _active++;
       return;
     }
     final c = Completer<void>();
-    _waiting.add(c);
+    _waiting.add((key: key, done: c));
     await c.future;
   }
 
+  /// Marks a picture as wanted right now: a load already waiting for a slot moves to the front
+  void _prioritize(String key) {
+    _urgent.add(key);
+    final i = _waiting.indexWhere((w) => w.key == key);
+    if (i > 0) _waiting.insert(0, _waiting.removeAt(i));
+  }
+
   void _release() {
-    if (_waiting.isNotEmpty) {
-      _waiting.removeAt(0).complete();
-    } else {
+    if (_active > 4 || _waiting.isEmpty) {
       _active--;
+    } else {
+      _waiting.removeAt(0).done.complete();
     }
   }
 }

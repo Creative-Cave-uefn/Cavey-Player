@@ -220,18 +220,26 @@ class _CoverImageState extends State<CoverImage> {
     final px = _wantPx;
     _loadingKey = key;
     _loadingBucket = _px;
-    final f = id != null
+    void apply(Uint8List? b, String from) {
+      if (!mounted || gen != _gen || key != _key || b == null || identical(b, _bytes)) return;
+      if (widget.originalQuality && t != null) svc.trace(t, b, from);
+      setState(() => _bytes = b);
+    }
+
+    final first = id != null
         ? svc.forFile(id, px: px)
         : (t == null
             ? Future<Uint8List?>.value(null)
-            : (widget.originalQuality
-                ? svc.forFullscreen(t)
-                : svc.forTrack(t, px: px)));
-    f.then((b) {
-      if (!mounted || gen != _gen || key != _key || b == null || identical(b, _bytes)) return;
-      if (widget.originalQuality && t != null) svc.trace(t, b, 'загружено для полного экрана');
-      setState(() => _bytes = b);
-    }).whenComplete(() {
+            : (widget.originalQuality ? svc.fullscreenOriginal(t) : svc.forTrack(t, px: px)));
+    var chain = first.then((b) => apply(b, widget.originalQuality ? 'оригинал для полного экрана' : 'загружено'));
+    // Fullscreen shows the original as soon as it is loaded and swaps in a larger
+    // picture afterwards, instead of waiting for the whole search to finish
+    if (widget.originalQuality && id == null && t != null) {
+      chain = chain
+          .then((_) => svc.forFullscreen(t))
+          .then((b) => apply(b, 'улучшенная версия'));
+    }
+    chain.catchError((Object _) {}).whenComplete(() {
       if (gen == _gen) {
         _loadingKey = null;
         _loadingBucket = null;

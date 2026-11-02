@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:cave_player/core/covers.dart';
+import 'package:cave_player/core/deezer_art.dart';
 import 'package:cave_player/core/image_tools.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -79,6 +80,23 @@ void main() {
 
     test('unreadable data is never the same', () async {
       expect(await sameArtwork(Uint8List.fromList([1, 2, 3]), _art(500)), isFalse);
+    });
+  });
+
+  group('sameArtist', () {
+    test('the catalog artist may be one of several in the tag', () {
+      const tag = 'Twenty One Pilots, Arcane, League Of Legends';
+      expect(DeezerArt.sameArtist('Twenty One Pilots', tag), isTrue);
+      expect(DeezerArt.sameArtist('Arcane', tag), isTrue);
+      expect(DeezerArt.sameArtist('Simon', 'Simon & Garfunkel'), isTrue);
+      expect(DeezerArt.sameArtist('Artist', 'Artist feat. Someone'), isTrue);
+    });
+
+    test('exact names still match and unrelated ones do not', () {
+      expect(DeezerArt.sameArtist('Twenty One Pilots', 'twenty one pilots'), isTrue);
+      expect(DeezerArt.sameArtist('Pilots', 'Twenty One Pilots'), isFalse);
+      expect(DeezerArt.sameArtist('Ambassadors', 'X Ambassadors'), isFalse);
+      expect(DeezerArt.sameArtist('', 'A, B'), isFalse);
     });
   });
 }

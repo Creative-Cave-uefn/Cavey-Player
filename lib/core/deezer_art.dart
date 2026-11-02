@@ -54,6 +54,17 @@ class DeezerArt {
   static bool same(String a, String b) =>
       normalize(a).isNotEmpty && normalize(a) == normalize(b);
 
+  /// Catalog artist against the tag: the tag often lists several artists
+  /// ("A, B & C"), the catalog names one of them (or none)
+  static bool sameArtist(String catalog, String tag) {
+    if (same(catalog, tag)) return true;
+    final c = normalize(catalog);
+    if (c.isEmpty) return false;
+    final parts = tag.split(RegExp(r'\s*(?:,|;|&|/|\bfeat\.?(?=\s)|\bft\.?(?=\s)|\bfeaturing\b)\s*',
+        caseSensitive: false));
+    return parts.length > 1 && parts.any((p) => normalize(p) == c);
+  }
+
   // Reuse HTTP connections and avoid looking up the same album on every edit.
   static final http.Client _client = http.Client();
   static final Map<String, (DateTime, DeezerArtwork?)> _cache = {};
@@ -211,7 +222,7 @@ class DeezerArt {
       for (final item in candidates) {
         if (item is! Map) continue;
         final who = item['artist'];
-        if (who is! Map || !same('${who['name'] ?? ''}', artist) ||
+        if (who is! Map || !sameArtist('${who['name'] ?? ''}', artist) ||
             !same('${item['title'] ?? ''}', album)) continue;
         final url = '${item['cover_xl'] ?? item['cover_big'] ?? ''}';
         log('Альбом: точное совпадение "${item['title']}", URL ${url.isEmpty ? 'пустой' : 'получен'}');
@@ -233,7 +244,7 @@ class DeezerArt {
         final who = item['artist'];
         final release = item['album'];
         if (who is! Map || release is! Map) continue;
-        if (!same('${who['name'] ?? ''}', artist) ||
+        if (!sameArtist('${who['name'] ?? ''}', artist) ||
             !same('${item['title_short'] ?? item['title'] ?? ''}', title)) continue;
         if (album.trim().isNotEmpty && !same('${release['title'] ?? ''}', album)) continue;
         final url = '${release['cover_xl'] ?? release['cover_big'] ?? ''}';
