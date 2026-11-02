@@ -54,14 +54,27 @@ class CoverService extends ChangeNotifier {
     return bytes;
   }
 
+  /// A larger view can immediately show an existing small thumbnail while
+  /// the high-resolution image is being loaded in the background.
   Uint8List? _peekKey(String key, int px) {
     final b = bucketFor(px);
     final exact = _touch(_mk(key, b));
     if (exact != null) return exact;
     if (b == 160) return _touch(_mk(key, 640)) ?? _touch(key);
-    if (b == 640) return _touch(key);
-    return null;
+    if (b == 640) return _touch(key) ?? _touch(_mk(key, 160));
+    return _touch(_mk(key, 640)) ?? _touch(_mk(key, 160));
   }
+
+  /// Distinguish a placeholder-quality thumbnail from the requested size,
+  /// so a cinema/fullscreen view continues upgrading it to the original.
+  bool hasExact(Track t, {int px = 0}) {
+    final cover = lib.customCoverOf(t);
+    final key = cover == null ? _key(t) : 'cv_$cover';
+    return _mem[_mk(key, bucketFor(px))] != null;
+  }
+
+  bool hasExactFile(String fileId, {int px = 0}) =>
+      _mem[_mk('cv_$fileId', bucketFor(px))] != null;
 
   void _remember(String key, Uint8List? bytes) {
     final previous = _mem.remove(key);
@@ -119,8 +132,8 @@ class CoverService extends ChangeNotifier {
     final bucket = bucketFor(px);
     final mk = _mk(key, bucket);
     if (_mem.containsKey(mk)) return Future.value(_touch(mk));
-    final fallback = _peekKey(key, px);
-    if (fallback != null) return Future.value(fallback);
+    // A lower-resolution cached thumbnail is only a visual fallback: do not
+    // return it as the final result and accidentally suppress the full-size load.
     final until = _retryAt[key];
     if (until != null && DateTime.now().isBefore(until)) return Future.value(null);
     return _inflight[mk] ??= _resolve(key, mk, bucket, fetch).whenComplete(() => _inflight.remove(mk));
