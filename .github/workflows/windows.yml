@@ -139,6 +139,16 @@ jobs:
 
       - run: flutter pub get
 
+      # Experimental incremental MSVC build cache, rotated on each successful run.
+      - name: Восстановить кэш нативной сборки
+        id: native-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/windows/x64
+          key: cave-windows-native-v1-${{ runner.os }}-flutter3274-${{ hashFiles('pubspec.yaml', 'pubspec.lock', 'windows/**') }}-${{ github.run_id }}
+          restore-keys: |
+            cave-windows-native-v1-${{ runner.os }}-flutter3274-${{ hashFiles('pubspec.yaml', 'pubspec.lock', 'windows/**') }}-
+
       # Канал сборки: пусто для main, имя ветки для тестовых. Плеер по нему понимает,
       # за какой веткой следить при автообновлении
       - name: Канал сборки
@@ -188,6 +198,12 @@ jobs:
             exit $code
           }
 
+      - name: Сохранить кэш нативной сборки
+        uses: actions/cache/save@v4
+        with:
+          path: build/windows/x64
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+
       # The downloader is a separate private project. Only the CI runner receives
       # its read token; no GitHub/Deezer/Soulseek secrets enter the Flutter build.
       - name: Проверить доступ к отдельному модулю
@@ -209,7 +225,45 @@ jobs:
           path: .cave-downloader-module
           persist-credentials: false
 
+      # Pull a successful same-commit artifact when the existing token permits
+      # read-only Actions access; otherwise compile from the checked-out sources.
+      - name: Найти готовый Cavey-Downloader.exe
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.DOWNLOADER_READ_TOKEN }}
+        run: |
+          $repo = 'Creative-Cave-uefn/Cavey-Downloader'
+          $source = '.cave-downloader-module'
+          $sha = (git -C $source rev-parse HEAD).Trim()
+          $runsText = gh run list --repo $repo --workflow build.yml --commit $sha --limit 20 --json databaseId,conclusion 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output '::notice::Артефакты Downloader недоступны; компилирую локально.'
+            exit 0
+          }
+          $runs = @($runsText | ConvertFrom-Json)
+          foreach ($run in $runs) {
+            if ($run.conclusion -ne 'success') { continue }
+            $target = Join-Path $source 'prebuilt'
+            New-Item -ItemType Directory -Force $target | Out-Null
+            gh run download $run.databaseId --repo $repo --name cave-downloader-windows --dir $target 2>$null
+            if ($LASTEXITCODE -ne 0) { continue }
+            $exe = Join-Path $target 'cave-downloader-windows-x64.exe'
+            $sum = "$exe.sha256"
+            if (-not (Test-Path $exe) -or -not (Test-Path $sum)) { continue }
+            $expected = ((Get-Content $sum -Raw).Trim() -split '\s+')[0].ToLower()
+            $actual = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $expected) {
+              Write-Output '::warning::Контрольная сумма Downloader не совпала; пересобираю.'
+              continue
+            }
+            Copy-Item $exe build/windows/x64/runner/Release/ -Force
+            "CAVE_DOWNLOADER_PREBUILT=true" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Output "Downloader: готовый exe из успешного run $($run.databaseId) для commit $sha"
+            break
+          }
+
       - name: Собрать независимый Cavey-Downloader.exe
+        if: env.CAVE_DOWNLOADER_PREBUILT != 'true'
         shell: pwsh
         env:
           CAVE_DEEZER_ARL_DEFAULT: ${{ secrets.CAVE_DEEZER_ARL }}
@@ -233,7 +287,22 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/CavePlayer-portable.zip
+          # Keep the same ZIP structure, but use faster compression when available.
+          $sevenZip = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
+          if (-not $sevenZip) {
+            $candidate = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+            if (Test-Path $candidate) { $sevenZip = $candidate }
+          }
+          if ($sevenZip) {
+            $zip = Join-Path (Resolve-Path .).Path 'dist/CavePlayer-portable.zip'
+            Push-Location build/windows/x64/runner/Release
+            try {
+              & $sevenZip a -tzip -mx=1 $zip '*' | Out-Host
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            } finally { Pop-Location }
+          } else {
+            Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/CavePlayer-portable.zip
+          }
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
           & $iscc "/DMyVersion=$env:APP_VERSION" installer/cave_player.iss
