@@ -1,8 +1,23 @@
 import 'package:cave_player/core/covers.dart';
+import 'package:cave_player/core/models.dart';
 import 'package:cave_player/ui/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('New albums without embedded art are eligible for Deezer recovery', () {
+    Track track({String artist = 'Slipknot', String title = 'Before I Forget',
+        String album = 'Vol. 3: (The Subliminal Verses)'}) => Track(
+      id: 'new-file', source: 'drive-folder',
+      title: title, artist: artist, album: album, albumArtist: '',
+      no: null, year: '', pic: null, cover: null, modified: '',
+      size: 123, by: '', path: '',
+    );
+    expect(track().hasCover, isFalse);
+    expect(CoverService.canFindInDeezer(track()), isTrue);
+    expect(CoverService.canFindInDeezer(track(
+      artist: '', title: '', album: '')), isFalse);
+  });
+
   test('Cinema requests original artwork even in a 360px-wide panel', () {
     expect(CoverImage.requestedPhysicalPixels(
       size: 360, devicePixelRatio: 1.0, originalQuality: true), 0);
