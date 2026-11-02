@@ -405,6 +405,9 @@ class DownloadService extends ChangeNotifier {
     // Keep consuming IPC messages even while Google Drive is uploading a file.
     // Replies stay ordered, but socket reads never wait for an upload.
     Future<void> replyQueue = Future<void>.value();
+    // Two independent lanes keep the IPC reader free while files upload.
+    final uploadLanes = <Future<void>>[Future<void>.value(), Future<void>.value()];
+    var nextUploadLane = 0;
     var socketAlive = true;
     final session = job == null ? null : _TransferSession(job);
     if (session != null) _activeTransfer = session;
@@ -485,6 +488,32 @@ class DownloadService extends ChangeNotifier {
         });
       }
       socket.write('${jsonEncode(request)}\n');
+      Future<void> replyToCall(Map call) async {
+        if (!socketAlive || job?.cancelRequested == true) return;
+        Map<String, Object?> reply;
+        try {
+          final value = await _hostCall(job, call, onLog ?? (_) {});
+          reply = {'t': 'reply', 'id': call['id'], 'ok': true, 'value': value};
+        } catch (e) {
+          reply = {'t': 'reply', 'id': call['id'], 'ok': false, 'error': '$e'};
+        }
+        if (!socketAlive || job?.cancelRequested == true) return;
+        try {
+          socket!.write('${jsonEncode(reply)}\n');
+          await socket!.flush();
+        } on SocketException catch (e) {
+          onLog?.call('IPC: ответ на ${call['m']} не доставлен: $e');
+          socketAlive = false;
+          socket?.destroy();
+        }
+      }
+
+      void transportFailed(Object e, StackTrace stack) {
+        AppLog.error('Ошибка очереди IPC-ответов', e, stack);
+        socketAlive = false;
+        socket?.destroy();
+      }
+
       while (await reader.moveNext()) {
         final msg = jsonDecode(reader.current);
         if (msg is! Map) continue;
@@ -508,37 +537,19 @@ class DownloadService extends ChangeNotifier {
             _notify();
           case 'call':
             final call = msg;
-            // Do NOT await here. A Google Drive request may take many seconds,
-            // during which Deezer/Soulseek workers continue sending progress
-            // and IPC calls. Blocking reader.moveNext() can exhaust socket
-            // buffers and make both ends report connection resets.
-            replyQueue = replyQueue.then((_) async {
-              if (!socketAlive || job?.cancelRequested == true) return;
-              Map<String, Object?> reply;
-              try {
-                final value = await _hostCall(job, call, onLog ?? (_) {});
-                reply = {'t': 'reply', 'id': call['id'], 'ok': true, 'value': value};
-              } catch (e) {
-                reply = {'t': 'reply', 'id': call['id'], 'ok': false, 'error': '$e'};
-              }
-              if (!socketAlive || job?.cancelRequested == true) return;
-              // Sending a reply must not be inside _hostCall's catch block:
-              // if the socket breaks, we must not try to write a second reply.
-              try {
-                socket!.write('${jsonEncode(reply)}\n');
-                await socket!.flush();
-              } on SocketException catch (e) {
-                onLog?.call('IPC: ответ на ${call['m']} не доставлен: $e');
-                socketAlive = false;
-                socket?.destroy();
-              }
-            }).catchError((Object e, StackTrace stack) {
-              AppLog.error('Ошибка очереди IPC-ответов', e, stack);
-              socketAlive = false;
-              socket?.destroy();
-            });
+            if (call['m'] == 'upload') {
+              // Caller matches out-of-order responses by id.
+              final slot = nextUploadLane++ % uploadLanes.length;
+              uploadLanes[slot] = uploadLanes[slot]
+                  .then((_) => replyToCall(call))
+                  .catchError((Object e, StackTrace stack) => transportFailed(e, stack));
+            } else {
+              replyQueue = replyQueue
+                  .then((_) => replyToCall(call))
+                  .catchError((Object e, StackTrace stack) => transportFailed(e, stack));
+            }
           case 'end':
-            await replyQueue;
+            await Future.wait([replyQueue, ...uploadLanes]);
             if (msg['ok'] != true) throw StateError('${msg['error'] ?? 'Не удалось выполнить задание'}');
             return msg['value'] ?? true;
         }
