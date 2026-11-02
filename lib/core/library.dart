@@ -104,8 +104,8 @@ class LibraryController extends ChangeNotifier {
   Future<void> _saveRecentOps() => store.writeJson('recent_ops.json', {
     'hub': settings.hubId,
     'ops': [
-      for (final (op, when) in _recentOps)
-        {'op': op, 'at': when.toIso8601String()},
+      for (final (op, recordedAt) in _recentOps)
+        {'op': op, 'at': recordedAt.toIso8601String()},
     ],
   });
 
