@@ -110,10 +110,12 @@ class LibraryController extends ChangeNotifier {
   });
 
   void _pruneRecentOps() {
-    final cutoff = DateTime.now().subtract(const Duration(hours: 24));
+    // Recover overlapping edits promptly, but do not replay an old edit over
+    // a different user's deliberate change hours later.
+    final cutoff = DateTime.now().subtract(const Duration(minutes: 10));
     _recentOps.removeWhere((item) => item.$2.isBefore(cutoff));
-    if (_recentOps.length > 1200) {
-      _recentOps.removeRange(0, _recentOps.length - 1200);
+    if (_recentOps.length > 300) {
+      _recentOps.removeRange(0, _recentOps.length - 300);
     }
   }
   int _flushGen = 0;
