@@ -462,7 +462,7 @@ class DownloadService extends ChangeNotifier {
         throw StateError('Требуется Cavey-Downloader с протоколом $kDownloaderProtocol.');
       }
       final request = <String, Object?>{
-        't': 'job', 'kind': kind,
+        't': 'job', 'kind': kind, 'endAck': true,
         'tools': _toolsDir.absolute.path,
         'work': work.absolute.path,
         if (job != null) ...{
@@ -549,7 +549,17 @@ class DownloadService extends ChangeNotifier {
                   .catchError((Object e, StackTrace stack) => transportFailed(e, stack));
             }
           case 'end':
+            // The module may call exit() immediately after returning from
+            // serve(). Confirm receiving the final message before it exits.
             await Future.wait([replyQueue, ...uploadLanes]);
+            try {
+              socket!.write('${jsonEncode({'t': 'end-ack'})}\n');
+              await socket!.flush();
+            } on SocketException catch (e) {
+              // Old downloaders do not wait for an acknowledgement. Receiving
+              // their end event still means that the job completed.
+              AppLog.warn('IPC: подтверждение итога не доставлено', e);
+            }
             if (msg['ok'] != true) throw StateError('${msg['error'] ?? 'Не удалось выполнить задание'}');
             return msg['value'] ?? true;
         }
