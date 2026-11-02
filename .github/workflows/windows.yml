@@ -174,7 +174,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: Creative-Cave-uefn/Cavey-Downloader
-          ref: ${{ github.ref_name == 'feat/unified-links-youtube-reliability' && 'feat/unified-links-youtube-reliability' || 'main' }}
+          ref: ${{ github.ref_name == 'perf/reliability-batch-20261102' && 'perf/reliability-batch-20261102' || github.ref_name == 'feat/unified-links-youtube-reliability' && 'feat/unified-links-youtube-reliability' || 'main' }}
           token: ${{ secrets.DOWNLOADER_READ_TOKEN }}
           path: .cave-downloader-module
           persist-credentials: false

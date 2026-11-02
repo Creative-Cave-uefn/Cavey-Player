@@ -1059,6 +1059,7 @@ class LibraryController extends ChangeNotifier {
   // ---------- представления ----------
 
   int _version = 0;
+  int get revision => _version;
   int _cachedVersion = -1;
   List<Track> _all = const [];
   List<Album> _albums = const [];

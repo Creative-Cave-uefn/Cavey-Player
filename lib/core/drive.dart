@@ -297,7 +297,7 @@ class DriveApi {
   }
 
   /// Resumable upload chunks must be divisible by 256 KiB (except the last).
-  static const int mediaChunkBytes = 1024 * 1024;
+  static const int mediaChunkBytes = 4 * 1024 * 1024; // reduce HTTP round-trips for replacement uploads
   static const Duration mediaChunkTimeout = Duration(seconds: 90);
 
   /// Convert the HTTP 308 Range acknowledgement into the next byte offset.
