@@ -108,6 +108,8 @@ class _CoverImageState extends State<CoverImage> {
   int _gen = 0;
   bool _wants = false;
   CoverService? _svc;
+  String? _loadingKey;
+  int? _loadingBucket;
 
   @override
   void didChangeDependencies() {
@@ -151,11 +153,9 @@ class _CoverImageState extends State<CoverImage> {
     final bucket = CoverService.bucketFor(px);
     final wantsNow = id != null || (t != null && svc.wants(t));
     if (key == _key && bucket == _px) {
-      // Тот же трек, но у него появилась обложка (досканировали, нашли cover.jpg) — сразу просим её,
-      // а не ждём, пока виджет пересоздадут сменой вкладки
       final became = wantsNow && !_wants;
       _wants = wantsNow;
-      if (became && _bytes == null) _request();
+      if (became) _request();
       return;
     }
     final sameKey = key == _key;
@@ -164,7 +164,9 @@ class _CoverImageState extends State<CoverImage> {
     _wants = wantsNow;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
     if (!sameKey || peek != null) _bytes = peek;
-    if (peek == null && _wants) _request();
+    final exact = id != null ? svc.hasExactFile(id, px: px)
+        : (t != null && svc.hasExact(t, px: px));
+    if (_wants && !exact) _request();
   }
 
   void _request() {
@@ -173,18 +175,27 @@ class _CoverImageState extends State<CoverImage> {
     final t = widget.track;
     final id = widget.fileId;
     final key = _key;
+    if (_loadingKey == key && _loadingBucket == _px) return;
     final gen = ++_gen;
     final px = _wantPx;
+    _loadingKey = key;
+    _loadingBucket = _px;
     final f = id != null ? svc.forFile(id, px: px) : (t == null ? Future<Uint8List?>.value(null) : svc.forTrack(t, px: px));
     f.then((b) {
       if (!mounted || gen != _gen || key != _key || b == null || identical(b, _bytes)) return;
       setState(() => _bytes = b);
+    }).whenComplete(() {
+      if (gen == _gen) {
+        _loadingKey = null;
+        _loadingBucket = null;
+      }
     });
   }
 
-  /// Сервис что-то догрузил или пришло время повторить: если у нас картинки ещё нет, пробуем снова
+  /// On a fullscreen transition, an existing 160/640-pixel thumbnail is
+  /// displayed immediately and then upgraded without waiting for a new tab.
   void _onReady() {
-    if (!mounted || _bytes != null || _key == null) return;
+    if (!mounted || _key == null) return;
     final t = widget.track;
     final id = widget.fileId;
     final svc = _svc!;
@@ -192,11 +203,12 @@ class _CoverImageState extends State<CoverImage> {
     if (!_wants) return;
     final px = _wantPx;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
-    if (peek != null) {
+    if (peek != null && !identical(peek, _bytes)) {
       setState(() => _bytes = peek);
-    } else {
-      _request();
     }
+    final exact = id != null ? svc.hasExactFile(id, px: px) :
+        (t != null && svc.hasExact(t, px: px));
+    if (!exact) _request();
   }
 
   @override
@@ -227,7 +239,7 @@ class _CoverImageState extends State<CoverImage> {
                       alignment: Alignment.center,
                       filterQuality: FilterQuality.medium,
                       gaplessPlayback: true,
-                      cacheWidth: (widget.size * dpr).round(),
+                      cacheWidth: math.min(1600, (widget.size * dpr).round()),
                       errorBuilder: (_, __, ___) => placeholder,
                     ),
                   ])
