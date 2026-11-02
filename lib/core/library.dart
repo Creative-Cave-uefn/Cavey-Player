@@ -612,24 +612,23 @@ class LibraryController extends ChangeNotifier {
         }
         // A local flush completed during the read: do not replace its result.
         if (_flushing || gen != _flushGen) return;
-        for (final op in _pending) {
-          latest.apply(op);
-        }
-        // A peer could have published an old snapshot after our successful
-        // PATCH. Bring our missing recent changes back, in their original
-        // order, without replaying operations already present in the JSON.
+        // Replay lost committed edits BEFORE current unsaved edits. Newer
+        // local changes must win when both modify the same field.
         _pruneRecentOps();
-        var recovered = 0;
+        final restored = <Map<String, dynamic>>[];
         for (final (op, _) in _recentOps) {
           final id = op['oid'];
           if (id is! String || latest.appliedOps.containsKey(id) ||
               _pending.any((p) => p['oid'] == id)) continue;
           latest.apply(op);
-          _pending.add(op);
-          recovered++;
+          restored.add(op);
         }
-        if (recovered > 0) {
-          AppLog.info('Синхронизация: восстановлено локальных операций: $recovered');
+        for (final op in _pending) {
+          latest.apply(op);
+        }
+        if (restored.isNotEmpty) {
+          _pending.insertAll(0, restored);
+          AppLog.info('Синхронизация: восстановлено локальных операций: ${restored.length}');
           unawaited(store.writeJson('pending_ops.json', _pending));
           _scheduleFlush();
         }
