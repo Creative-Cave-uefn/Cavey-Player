@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'core/audio_cache.dart';
 import 'core/drive.dart';
 import 'core/library.dart';
+import 'core/models.dart';
 import 'core/log.dart';
 import 'core/player.dart';
 import 'core/store.dart';
