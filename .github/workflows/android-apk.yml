@@ -38,6 +38,15 @@ jobs:
           flutter-version: 3.27.4
           cache: true
 
+      - name: Подготовить проект Android
+        run: bash tool/setup_android.sh
+
+      - name: Проверка кода
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib/mobile_main.dart lib/mobile
+
+      - name: Тесты
+        run: flutter test test/cover_cache_test.dart test/fullscreen_cover_test.dart
+
       - name: Проверить секреты
         env:
           GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
@@ -67,15 +76,6 @@ jobs:
             echo "CAVEY_KEY_PASSWORD=${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
             echo "CAVEY_KEY_ALIAS=${ANDROID_KEY_ALIAS:-cavey}"
           } >> "$GITHUB_ENV"
-
-      - name: Подготовить проект Android
-        run: bash tool/setup_android.sh
-
-      - name: Проверка кода
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib/mobile_main.dart lib/mobile
-
-      - name: Тесты
-        run: flutter test test/cover_cache_test.dart test/fullscreen_cover_test.dart
 
       - name: Собрать подписанный APK
         env:
