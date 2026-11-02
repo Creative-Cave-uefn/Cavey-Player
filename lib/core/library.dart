@@ -1734,8 +1734,9 @@ class LibraryController extends ChangeNotifier {
     return (v == null || v.isEmpty) ? null : v;
   }
 
-  /// Своя обложка: у альбома она важнее, чем у его треков, а у трека — важнее обложки из файла
-  String? customCoverOf(Track t) => albumCover(t.albumKey) ?? t.customCover;
+  /// Explicit per-track artwork must win over album-wide artwork; the
+  /// latter remains the fallback for tracks without an individual override.
+  String? customCoverOf(Track t) => t.customCover ?? albumCover(t.albumKey);
   // ---------- профиль: ник, аватарка, баннер (хранятся в edits['u:<почта>']) ----------
 
   String? profileNick(String email) => _metaValue('u:$email', 'nick');
