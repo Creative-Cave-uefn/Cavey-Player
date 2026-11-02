@@ -123,4 +123,33 @@ void main() {
     await proxy.close();
     await drive.close(force: true);
   });
+  test('новая версия файла сбрасывает прогретый хвост при том же ID и размере', () async {
+    final first = Uint8List.fromList(List<int>.filled(1024 * 1024, 7));
+    final second = Uint8List.fromList(List<int>.filled(1024 * 1024, 19));
+    var current = first;
+    final drive = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    drive.listen((req) async {
+      final m = RegExp(r'bytes=(\d+)-(\d*)').firstMatch(req.headers.value('range') ?? '');
+      final start = m == null ? 0 : int.parse(m.group(1)!);
+      final end = m == null || m.group(2)!.isEmpty ? current.length - 1 : int.parse(m.group(2)!);
+      req.response.statusCode = m == null ? 200 : 206;
+      req.response.headers.contentLength = end - start + 1;
+      req.response.add(Uint8List.sublistView(current, start, end + 1));
+      await req.response.close();
+    });
+    final proxy = StreamProxy(urlFor: (id) => Uri.parse('http://127.0.0.1:${drive.port}/$id'));
+    try {
+      final old = await proxy.register('same', size: first.length, version: 'v1', token: () async => 't');
+      final (_, tail1, _) = await get(old, 'bytes=${first.length - 32}-');
+      expect(tail1, everyElement(7));
+      current = second;
+      final updated = await proxy.register('same', size: second.length, version: 'v2', token: () async => 't');
+      final (_, tail2, _) = await get(updated, 'bytes=${second.length - 32}-');
+      expect(tail2, everyElement(19));
+    } finally {
+      await proxy.close();
+      await drive.close(force: true);
+    }
+  });
+
 }

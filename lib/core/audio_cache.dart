@@ -123,7 +123,7 @@ class AudioCache extends ChangeNotifier {
       // После временного сбоя сети пробуем снова без перезапуска приложения.
       // После 6 попыток ждём явного воспроизведения или изменения библиотеки.
       if (failures < 6) {
-        final seconds = (5 * (1 << (failures - 1))).clamp(5, 160);
+        final seconds = (5 * (1 << (failures - 1))).clamp(5, 160).toInt();
         _retryAt[id] = DateTime.now().add(Duration(seconds: seconds));
         _scheduleRetry();
       }
