@@ -58,6 +58,7 @@ class DownloadService extends ChangeNotifier {
   final Directory work;
   final AudioCache? cache;
   final CoverService? covers;
+  final void Function(String id)? onAudioReplaced;
   final List<DownloadJob> jobs = [];
   bool _running = false;
   bool installing = false;
@@ -65,7 +66,7 @@ class DownloadService extends ChangeNotifier {
   Timer? _notifyTimer;
   _TransferSession? _activeTransfer;
 
-  DownloadService(this.lib, this.work, {this.cache, this.covers});
+  DownloadService(this.lib, this.work, {this.cache, this.covers, this.onAudioReplaced});
 
   Directory get _toolsDir => Directory('${work.parent.path}${Platform.pathSeparator}tools');
   bool get busy => _running || installing;
@@ -309,6 +310,63 @@ class DownloadService extends ChangeNotifier {
             folderId: target, path: '${call['path'] ?? job.path}');
         job.onTrack?.call(t);
         return t.id;
+      case 'enrich':
+        final id = '${call['trackId'] ?? ''}';
+        final track = lib.data.tracks[id];
+        if (track == null || track.source != job.sourceId) {
+          throw const FormatException('Метаданные разрешены только для нового трека этого задания.');
+        }
+        final m = call['meta'];
+        if (m is! Map) throw const FormatException('Некорректные метаданные.');
+        String field(String name) {
+          final value = '${m[name] ?? ''}'.trim();
+          return value.length <= 300 ? value : value.substring(0, 300);
+        }
+        String? validNumber(String key) {
+          final part = field(key).split('/').first.trim();
+          final parsed = int.tryParse(part);
+          return parsed != null && parsed > 0 && parsed < 1000 ? '$parsed' : null;
+        }
+        final edit = <String, String>{
+          if (field('title').isNotEmpty) 't': field('title'),
+          if (field('artist').isNotEmpty) 'a': field('artist'),
+          if (field('album').isNotEmpty) 'al': field('album'),
+          if (field('albumArtist').isNotEmpty) 'aa': field('albumArtist'),
+          if (field('year').isNotEmpty) 'y': field('year'),
+          if (validNumber('track') case final n?) 'n': n,
+          if (validNumber('disc') case final d?) 'dn': d,
+          if (m['duration'] is num && (m['duration'] as num) > 0)
+            'd': '${((m['duration'] as num) * 1000).round()}',
+        };
+        // Persist metadata even if the image cannot be retrieved or uploaded.
+        if (edit.isNotEmpty) lib.setMeta({id: edit});
+        final imagePath = call['coverFile'];
+        if (imagePath is String && imagePath.isNotEmpty) {
+          try {
+            log('Deezer обложка: файл получен от загрузчика, проверяю формат.');
+            final image = await _jobFile(imagePath, image: true);
+            final bytes = await image.readAsBytes();
+            final png = bytes.length >= 8 && bytes[0] == 0x89 &&
+                bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47;
+            final jpeg = bytes.length >= 3 && bytes[0] == 0xFF &&
+                bytes[1] == 0xD8 && bytes[2] == 0xFF;
+            if ((png || jpeg) && bytes.length <= 5 * 1024 * 1024) {
+              log('Deezer обложка: изображение проверено, сохраняю в Google Drive.');
+              final coverId = await lib.uploadCover(bytes, png ? 'png' : 'jpg');
+              log('Deezer обложка: файл успешно сохранён в Google Drive.');
+              lib.setMeta({id: {'cv': coverId}});
+              log('Deezer обложка: привязка к треку добавлена в библиотеку.');
+              await covers?.seed(coverId, bytes);
+            } else {
+              log('Deezer: получена неподдерживаемая обложка, оставляю исходную.');
+            }
+          } catch (e) {
+            log('Deezer обложка: не удалось сохранить на Drive или связать с треком: $e. Аудио и другие метаданные сохранены.');
+          }
+        } else {
+          log('Deezer обложка: загрузчик не передал изображение. Google Drive нечего сохранять.');
+        }
+        return true;
       case 'replace':
         final id = '${call['trackId'] ?? ''}';
         if (id.isEmpty || id != job.replaceTrackId) {
@@ -355,6 +413,7 @@ class DownloadService extends ChangeNotifier {
         log(job.title);
         _notify();
         await cache?.invalidate(track.id);
+        onAudioReplaced?.call(track.id);
         if (oldArtwork != null && oldArtwork.isNotEmpty) {
           job.title = 'Google Drive: сохраняю исходную обложку';
           log(job.title);
@@ -403,13 +462,22 @@ class DownloadService extends ChangeNotifier {
     // Keep consuming IPC messages even while Google Drive is uploading a file.
     // Replies stay ordered, but socket reads never wait for an upload.
     Future<void> replyQueue = Future<void>.value();
+    // Two independent lanes keep the IPC reader free while files upload.
+    final uploadLanes = <Future<void>>[Future<void>.value(), Future<void>.value()];
+    var nextUploadLane = 0;
     var socketAlive = true;
+    var receivedEnd = false;
     final session = job == null ? null : _TransferSession(job);
     if (session != null) _activeTransfer = session;
     try {
       if (job?.cancelRequested == true) throw StateError('Загрузка отменена');
       if (Platform.isWindows) {
-        moduleExit = WinProc.run(exe.path, args, (_) {},
+        moduleExit = WinProc.run(exe.path, args, (line) {
+          // Surface only the downloader's explicit IPC/operation diagnostics.
+          // These errors used to disappear because all process output was ignored.
+          final message = line.trim();
+          if (message.startsWith('Cavey-Downloader:')) onLog?.call(message);
+        },
           onStarted: (pid) {
             if (session == null) return;
             session.pid = pid;
@@ -457,7 +525,7 @@ class DownloadService extends ChangeNotifier {
         throw StateError('Требуется Cavey-Downloader с протоколом $kDownloaderProtocol.');
       }
       final request = <String, Object?>{
-        't': 'job', 'kind': kind,
+        't': 'job', 'kind': kind, 'endAck': true,
         'tools': _toolsDir.absolute.path,
         'work': work.absolute.path,
         if (job != null) ...{
@@ -483,6 +551,32 @@ class DownloadService extends ChangeNotifier {
         });
       }
       socket.write('${jsonEncode(request)}\n');
+      Future<void> replyToCall(Map call) async {
+        if (!socketAlive || job?.cancelRequested == true) return;
+        Map<String, Object?> reply;
+        try {
+          final value = await _hostCall(job, call, onLog ?? (_) {});
+          reply = {'t': 'reply', 'id': call['id'], 'ok': true, 'value': value};
+        } catch (e) {
+          reply = {'t': 'reply', 'id': call['id'], 'ok': false, 'error': '$e'};
+        }
+        if (!socketAlive || job?.cancelRequested == true) return;
+        try {
+          socket!.write('${jsonEncode(reply)}\n');
+          await socket!.flush();
+        } on SocketException catch (e) {
+          onLog?.call('IPC: ответ на ${call['m']} не доставлен: $e');
+          socketAlive = false;
+          socket?.destroy();
+        }
+      }
+
+      void transportFailed(Object e, StackTrace stack) {
+        AppLog.error('Ошибка очереди IPC-ответов', e, stack);
+        socketAlive = false;
+        socket?.destroy();
+      }
+
       while (await reader.moveNext()) {
         final msg = jsonDecode(reader.current);
         if (msg is! Map) continue;
@@ -506,43 +600,37 @@ class DownloadService extends ChangeNotifier {
             _notify();
           case 'call':
             final call = msg;
-            // Do NOT await here. A Google Drive request may take many seconds,
-            // during which Deezer/Soulseek workers continue sending progress
-            // and IPC calls. Blocking reader.moveNext() can exhaust socket
-            // buffers and make both ends report connection resets.
-            replyQueue = replyQueue.then((_) async {
-              if (!socketAlive || job?.cancelRequested == true) return;
-              Map<String, Object?> reply;
-              try {
-                final value = await _hostCall(job, call, onLog ?? (_) {});
-                reply = {'t': 'reply', 'id': call['id'], 'ok': true, 'value': value};
-              } catch (e) {
-                reply = {'t': 'reply', 'id': call['id'], 'ok': false, 'error': '$e'};
-              }
-              if (!socketAlive || job?.cancelRequested == true) return;
-              // Sending a reply must not be inside _hostCall's catch block:
-              // if the socket breaks, we must not try to write a second reply.
-              try {
-                socket!.write('${jsonEncode(reply)}\n');
-                await socket!.flush();
-              } on SocketException catch (e) {
-                onLog?.call('IPC: ответ на ${call['m']} не доставлен: $e');
-                socketAlive = false;
-                socket?.destroy();
-              }
-            }).catchError((Object e, StackTrace stack) {
-              AppLog.error('Ошибка очереди IPC-ответов', e, stack);
-              socketAlive = false;
-              socket?.destroy();
-            });
+            if (call['m'] == 'upload') {
+              // Caller matches out-of-order responses by id.
+              final slot = nextUploadLane++ % uploadLanes.length;
+              uploadLanes[slot] = uploadLanes[slot]
+                  .then((_) => replyToCall(call))
+                  .catchError((Object e, StackTrace stack) => transportFailed(e, stack));
+            } else {
+              replyQueue = replyQueue
+                  .then((_) => replyToCall(call))
+                  .catchError((Object e, StackTrace stack) => transportFailed(e, stack));
+            }
           case 'end':
-            await replyQueue;
+            receivedEnd = true;
+            // The module may call exit() immediately after returning from
+            // serve(). Confirm receiving the final message before it exits.
+            await Future.wait([replyQueue, ...uploadLanes]);
+            try {
+              socket!.write('${jsonEncode({'t': 'end-ack'})}\n');
+              await socket!.flush();
+            } on SocketException catch (e) {
+              // Old downloaders do not wait for an acknowledgement. Receiving
+              // their end event still means that the job completed.
+              AppLog.warn('IPC: подтверждение итога не доставлено', e);
+            }
             if (msg['ok'] != true) throw StateError('${msg['error'] ?? 'Не удалось выполнить задание'}');
             return msg['value'] ?? true;
         }
       }
       throw StateError('Модуль отключился до завершения задания.');
     } catch (e) {
+      var processUnfinished = false;
       if (job?.cancelRequested != true && moduleExit != null) {
         // Distinguish a helper crash from a peer socket reset. WinProc can
         // outlive the socket while its child processes still hold stdout.
@@ -550,9 +638,18 @@ class DownloadService extends ChangeNotifier {
           final code = await moduleExit!.timeout(const Duration(seconds: 2));
           onLog?.call('Диагностика: Cavey-Downloader exit code $code, IPC: ${e.runtimeType}');
         } on TimeoutException {
+          processUnfinished = true;
           onLog?.call('Диагностика: соединение оборвано, но процесс '
               'Cavey-Downloader ещё выполняется (или ждёт дочерний процесс).');
         }
+      }
+      // On a transport failure, stop orphaned Python/Soulseek children before
+      // the job is restarted; otherwise two old and new pipelines compete.
+      // Normal end/error messages are not process transport failures.
+      if (!receivedEnd && processUnfinished && session != null &&
+          job?.cancelRequested != true) {
+        onLog?.call('IPC: завершаю оставшиеся подпроцессы перед повторной попыткой.');
+        await _killTransfer(session);
       }
       rethrow;
     } finally {

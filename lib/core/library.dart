@@ -90,8 +90,37 @@ class LibraryController extends ChangeNotifier {
   /// Недавно сохранённые правки полей (setMeta). Если другой клиент в то же время переписал library.json
   /// со старой копией, наша правка (например, ник) пропадёт; здесь мы это замечаем и сохраняем её заново
   final List<(Map<String, dynamic>, DateTime)> _recentMeta = [];
+
+  /// Locally durable reconciliation ledger: if a stale peer overwrites a
+  /// recently saved operation, requeue it on the next reload. Shared snapshots
+  /// carry bounded appliedOps IDs so normal reloads do not replay anything.
+  final List<(Map<String, dynamic>, DateTime)> _recentOps = [];
+
+  void _clearRecentOps() {
+    _recentOps.clear();
+    unawaited(store.writeJson('recent_ops.json', {'hub': settings.hubId, 'ops': []}));
+  }
+
+  Future<void> _saveRecentOps() => store.writeJson('recent_ops.json', {
+    'hub': settings.hubId,
+    'ops': [
+      for (final (op, recordedAt) in _recentOps)
+        {'op': op, 'at': recordedAt.toIso8601String()},
+    ],
+  });
+
+  void _pruneRecentOps() {
+    // Recover overlapping edits promptly, but do not replay an old edit over
+    // a different user's deliberate change hours later.
+    final cutoff = DateTime.now().subtract(const Duration(minutes: 10));
+    _recentOps.removeWhere((item) => item.$2.isBefore(cutoff));
+    if (_recentOps.length > 300) {
+      _recentOps.removeRange(0, _recentOps.length - 300);
+    }
+  }
   int _flushGen = 0;
   String? _libModified;
+  String? _libVersion;
   bool _flushing = false;
   Timer? _flushTimer;
   Timer? _pollTimer;
@@ -123,6 +152,20 @@ class LibraryController extends ChangeNotifier {
     if (cached is Map && cached['hub'] == settings.hubId) {
       data = LibraryData.fromJson(cached['data']);
       _libModified = cached['modified'] as String?;
+      _libVersion = cached['version'] as String?;
+    }
+    final recent = await store.readJson('recent_ops.json');
+    if (recent is Map && recent['hub'] == settings.hubId) {
+      for (final item in (recent['ops'] as List? ?? const [])) {
+        if (item is! Map || item['op'] is! Map) continue;
+        final raw = item['op'] as Map;
+        final id = raw['oid'];
+        final date = DateTime.tryParse('${item['at'] ?? ''}');
+        if (id is String && id.isNotEmpty && date != null) {
+          _recentOps.add((Map<String, dynamic>.from(raw), date));
+        }
+      }
+      _pruneRecentOps();
     }
     final pend = await store.readJson('pending_ops.json');
     if (pend is List) {
@@ -212,7 +255,12 @@ class LibraryController extends ChangeNotifier {
         'Попросите друга поделиться ею с вами.');
   }
 
+  void _forgetScanCursors() {
+    settings.view.removeWhere((key, _) => key.startsWith('changes.'));
+  }
+
   Future<void> createHub(String email) async {
+    _forgetScanCursors();
     final folder = await drive.createFolder(email, 'Cave Player');
     final fresh = LibraryData();
     final acc = accounts.byEmail(email);
@@ -227,8 +275,10 @@ class LibraryController extends ChangeNotifier {
     _dataFolderId = null;
     dataFolders = const [];
     _libModified = f['modifiedTime'] as String?;
+    _libVersion = null;
     data = fresh;
     _pending.clear();
+    _clearRecentOps();
     await saveSettings();
     await _saveLocal();
     _changed();
@@ -236,6 +286,7 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> joinHub(String input) async {
+    _forgetScanCursors();
     var id = parseDriveId(input);
     if (id == null) throw LibraryException('Это не похоже на ссылку на папку Google Диска');
     for (final a in accounts.accounts) {
@@ -276,7 +327,9 @@ class LibraryController extends ChangeNotifier {
       dataFolders = const [];
       data = LibraryData();
       _pending.clear();
+      _clearRecentOps();
       _libModified = null;
+      _libVersion = null;
       await saveSettings();
       await reload();
       final p = accounts.primary;
@@ -293,6 +346,7 @@ class LibraryController extends ChangeNotifier {
   /// Переносит библиотеку в другую папку Диска: создаёт там library.json с текущим содержимым
   /// и дальше работает с ним. Старый файл не трогаем — друзья, которые на него смотрят, ничего не потеряют.
   Future<void> moveLibraryTo(String input) async {
+    _forgetScanCursors();
     final id = parseDriveId(input);
     if (id == null) throw LibraryException('Это не похоже на ссылку на папку Google Диска');
     if (!hasHub) throw LibraryException('Сначала подключитесь к библиотеке');
@@ -314,6 +368,8 @@ class LibraryController extends ChangeNotifier {
       ..libFileId = f['id'] as String
       ..autoJoinDisabled = false;
     _libModified = f['modifiedTime'] as String?;
+    _libVersion = null;
+    _clearRecentOps();
     _dataFolderId = null;
     dataFolders = const [];
     await saveSettings();
@@ -501,6 +557,7 @@ class LibraryController extends ChangeNotifier {
   /// (удаление треков или папок) в library.json не пишется, у друзей всё остаётся как было.
   /// После этого библиотеку сами больше не ищем: подключиться можно только вручную.
   Future<void> leaveHub() async {
+    _forgetScanCursors();
     _pollTimer?.cancel();
     _scanTimer?.cancel();
     _flushTimer?.cancel();
@@ -513,7 +570,9 @@ class LibraryController extends ChangeNotifier {
       ..sourceAccess.clear();
     data = LibraryData();
     _pending.clear();
+    _clearRecentOps();
     _libModified = null;
+    _libVersion = null;
     _dataFolderId = null;
     dataFolders = const [];
     await saveSettings();
@@ -535,22 +594,56 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> reload() async {
     if (!hasHub) return;
+    final elapsed = Stopwatch()..start();
     final gen = _flushGen;
     await _withHub((email) async {
-      final meta = await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime');
-      final latest = await _downloadLatest(email);
-      // Пока скачивали, мы сами сохранили правки: скачанная копия уже старая, её не берём
-      if (_flushing || gen != _flushGen) return;
-      for (final op in _pending) {
-        latest.apply(op);
+      // Ensure metadata and JSON describe the SAME remote revision.
+      // Another client may write while the download is in flight.
+      for (var attempt = 0; attempt < 3; attempt++) {
+        final before = await drive.getFile(email, settings.libFileId!,
+            fields: 'id,modifiedTime,version');
+        final latest = await _downloadLatest(email);
+        final after = await drive.getFile(email, settings.libFileId!,
+            fields: 'id,modifiedTime,version');
+        if (before['version'] != after['version'] ||
+            before['modifiedTime'] != after['modifiedTime']) {
+          if (attempt == 2) throw LibraryException('Библиотека менялась при чтении, повторю позже');
+          continue;
+        }
+        // A local flush completed during the read: do not replace its result.
+        if (_flushing || gen != _flushGen) return;
+        // Replay lost committed edits BEFORE current unsaved edits. Newer
+        // local changes must win when both modify the same field.
+        _pruneRecentOps();
+        final restored = <Map<String, dynamic>>[];
+        for (final (op, _) in _recentOps) {
+          final id = op['oid'];
+          if (id is! String || latest.appliedOps.containsKey(id) ||
+              _pending.any((p) => p['oid'] == id)) continue;
+          latest.apply(op);
+          restored.add(op);
+        }
+        for (final op in _pending) {
+          latest.apply(op);
+        }
+        if (restored.isNotEmpty) {
+          _pending.insertAll(0, restored);
+          AppLog.info('Синхронизация: восстановлено локальных операций: ${restored.length}');
+          unawaited(store.writeJson('pending_ops.json', _pending));
+          _scheduleFlush();
+        }
+        data = latest;
+        _libModified = after['modifiedTime'] as String?;
+        _libVersion = after['version']?.toString();
+        break;
       }
-      data = latest;
-      _libModified = meta['modifiedTime'] as String?;
     });
     syncError = null;
     _reassertRecentMeta();
     await _saveLocal();
     _changed();
+    AppLog.info('Perf: library.reload ${elapsed.elapsedMilliseconds}ms, '
+        'tracks=${data.tracks.length}, pending=${_pending.length}');
     // Кто-то из друзей удалил мои файлы — удаляем их с Диска
     unawaited(processDeletions());
   }
@@ -582,8 +675,11 @@ class LibraryController extends ChangeNotifier {
   Future<void> _poll() async {
     if (!hasHub || _flushing || _pending.isNotEmpty) return;
     try {
-      final meta = await _withHub((e) => drive.getFile(e, settings.libFileId!, fields: 'id,modifiedTime'));
-      if (meta['modifiedTime'] != _libModified) await reload();
+      final meta = await _withHub((e) => drive.getFile(e, settings.libFileId!, fields: 'id,modifiedTime,version'));
+      if (meta['modifiedTime'] != _libModified ||
+          (_libVersion != null && meta['version']?.toString() != _libVersion)) {
+        await reload();
+      }
     } catch (_) {
       // нет сети — попробуем в следующий раз
     }
@@ -592,6 +688,7 @@ class LibraryController extends ChangeNotifier {
   void commit(Map<String, dynamic> op) {
     // Отключились от библиотеки, а сканирование ещё дописывает: эти правки уже ничьи
     if (!hasHub) return;
+    op.putIfAbsent('oid', () => '${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32)}');
     data.apply(op);
     _pending.add(op);
     _changed();
@@ -619,45 +716,60 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> _flush() async {
     if (_flushing || _pending.isEmpty || !hasHub) return;
+    final elapsed = Stopwatch()..start();
     _flushing = true;
     final batch = List<Map<String, dynamic>>.of(_pending);
     final libAtStart = settings.libFileId;
     try {
       await _withHub((email) async {
-        // Б1: перед записью проверяем, что файл не менял кто-то другой с момента скачивания.
-        // Изменился — качаем заново и применяем свои правки поверх (до 3 попыток)
+        // File version (monotonic) detects concurrent writes even when two
+        // modifiedTime values are equal. A local snapshot is mandatory:
+        // commit() may mutate data while this network request is awaiting.
         late LibraryData latest;
         String? modified;
+        String? writtenVersion;
         for (var attempt = 0;; attempt++) {
-          final before = (await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime'))['modifiedTime'];
-          // Е1: файл не менялся с нашего последнего чтения и новых правок за время сохранения нет —
-          // локальная копия уже и есть актуальная, скачивать целиком не нужно
-          if (before != null && before == _libModified && _pending.length == batch.length) {
-            latest = data;
-            modified = await drive.updateFile(email, settings.libFileId!, jsonEncode(latest.toJson()));
-            break;
-          }
-          latest = await _downloadLatest(email);
-          // Пока качали, человек отключился или сменил библиотеку: в чужой файл ничего не пишем
+          final before = await drive.getFile(email, settings.libFileId!,
+              fields: 'id,modifiedTime,version');
           if (settings.libFileId != libAtStart) throw _Abandoned();
-          for (final op in batch) {
-            latest.apply(op);
+          final beforeVersion = before['version']?.toString();
+          if (_libVersion != null && beforeVersion == _libVersion &&
+              before['modifiedTime'] == _libModified &&
+              _pending.length == batch.length) {
+            latest = LibraryData.fromJson(data.toJson());
+          } else {
+            latest = await _downloadLatest(email);
+            if (settings.libFileId != libAtStart) throw _Abandoned();
+            for (final op in batch) {
+              latest.apply(op);
+            }
           }
-          final after = (await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime'))['modifiedTime'];
-          if (after != before) {
+          final after = await drive.getFile(email, settings.libFileId!,
+              fields: 'id,modifiedTime,version');
+          if (settings.libFileId != libAtStart) throw _Abandoned();
+          if (beforeVersion != after['version']?.toString() ||
+              before['modifiedTime'] != after['modifiedTime']) {
             if (attempt >= 2) throw LibraryException('Библиотеку одновременно правят другие, сохраню чуть позже');
             AppLog.info('Библиотека изменилась во время сохранения, повторяю (${attempt + 1})');
             continue;
           }
-          modified = await drive.updateFile(email, settings.libFileId!, jsonEncode(latest.toJson()));
+          final saved = await drive.updateFileWithVersion(
+              email, settings.libFileId!, jsonEncode(latest.toJson()));
+          modified = saved.$1;
+          writtenVersion = saved.$2;
+          // The user may have switched libraries while the PATCH was waiting.
+          // Never drain the new library's pending operations into the old file.
+          if (settings.libFileId != libAtStart) throw _Abandoned();
           break;
         }
+        if (_pending.length < batch.length) throw _Abandoned();
         _pending.removeRange(0, batch.length);
         for (final op in _pending) {
           latest.apply(op);
         }
         data = latest;
         _libModified = modified;
+        _libVersion = writtenVersion;
         _flushGen++;
         final now = DateTime.now();
         for (final op in batch) {
@@ -665,8 +777,18 @@ class LibraryController extends ChangeNotifier {
         }
       });
       syncError = null;
+      final now = DateTime.now();
+      for (final op in batch) {
+        if (op['oid'] is String) _recentOps.add((op, now));
+      }
+      _pruneRecentOps();
+      // Persist the reconciliation ledger BEFORE clearing pending_ops on disk.
+      // If the app exits at this point, the same operation can be recovered.
+      await _saveRecentOps();
       await store.writeJson('pending_ops.json', _pending);
       await _saveLocal();
+      AppLog.info('Perf: library.flush ${elapsed.elapsedMilliseconds}ms, '
+          'batch=${batch.length}, pending=${_pending.length}');
     } on _Abandoned {
       // библиотеку сменили: письмо в старый файл не нужно
     } catch (e) {
@@ -700,6 +822,7 @@ class LibraryController extends ChangeNotifier {
     return store.writeJson('library_cache.json', {
       'hub': settings.hubId,
       'modified': _libModified,
+      'version': _libVersion,
       'data': data.toJson(),
     });
   }
@@ -766,6 +889,7 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> _runScan(List<Source> sources, {bool quiet = false, bool forcePrune = false}) async {
     if (scan.running || accounts.accounts.isEmpty) return;
+    final elapsed = Stopwatch()..start();
     scan
       ..running = true
       ..done = 0
@@ -792,6 +916,9 @@ class LibraryController extends ChangeNotifier {
       }
       if (merged > 0) messages.add('Одинаковые файлы объединены, лишние копии удалены: $merged');
     } finally {
+      AppLog.info('Perf: library.scan ${elapsed.elapsedMilliseconds}ms, '
+          'sources=${sources.length}, scanned=${scan.done}/${scan.total}, '
+          'new=$added');
       scan
         ..running = false
         ..text = '';
@@ -801,17 +928,59 @@ class LibraryController extends ChangeNotifier {
 
   Future<int> _scanSource(Source s, {bool forcePrune = false}) async {
     var email = await accessFor(s.id);
+    String cursorKey(String account) => 'changes.cursor:${s.id}:$account';
+    String foldersKey(String account) => 'changes.folders:${s.id}:$account';
+    String fullScanKey(String account) => 'changes.full:${s.id}:$account';
+    final existing = {for (final t in data.tracks.values) if (t.source == s.id) t.id: t};
+
+    // A first scan builds the subtree. Later scans ask Google Drive only for
+    // changed file IDs; unrelated account activity must not walk every folder.
+    // Force prune and the one-off legacy disc-number migration always scan.
+    final cursor = settings.view[cursorKey(email)];
+    final foldersJson = settings.view[foldersKey(email)];
+    final lastFull = DateTime.tryParse(settings.view[fullScanKey(email)] ?? '');
+    final stillFresh = lastFull != null &&
+        DateTime.now().difference(lastFull) < const Duration(hours: 24);
+    if (!forcePrune && stillFresh && cursor != null && foldersJson != null &&
+        settings.viewOf('disc.scan:${s.id}', '') == '1') {
+      try {
+        final folderList = jsonDecode(foldersJson) as List;
+        final folders = <String>{s.id, ...folderList.map((x) => '$x')};
+        final changes = await drive.changesSince(email, cursor);
+        if (!changes.affects(existing.keys.toSet(), folders)) {
+          settings.view[cursorKey(email)] = changes.nextCursor;
+          unawaited(saveSettings());
+          return 0;
+        }
+      } catch (e) {
+        // Access changes, invalid tokens or uncertain changes always fall
+        // back to the full walk; skipping files is never the fallback.
+        AppLog.info('Drive Changes: полная проверка «${s.name}»: $e');
+      }
+    }
+
+    String? nextCursor;
+    try {
+      nextCursor = await drive.startPageToken(email);
+    } catch (_) {} // unsupported change feed: keep full scanning
+    final visitedFolders = <String>{s.id};
     List<_Found> found;
     Map<String, String> covers;
     try {
-      (found, covers) = await _walk(email, s);
+      (found, covers) = await _walk(email, s, folderIds: visitedFolders);
     } on DriveException catch (e) {
       if (!e.notFound && !e.forbidden) rethrow;
       email = await accessFor(s.id, recheck: true);
-      (found, covers) = await _walk(email, s);
+      visitedFolders.clear();
+      visitedFolders.add(s.id);
+      try {
+        nextCursor = await drive.startPageToken(email);
+      } catch (_) {
+        nextCursor = null;
+      }
+      (found, covers) = await _walk(email, s, folderIds: visitedFolders);
     }
 
-    final existing = {for (final t in data.tracks.values) if (t.source == s.id) t.id: t};
     // Номер диска появился в 0.2.250: один раз перечитываем теги у треков из альбомов, где номера повторяются
     // (там могло быть два диска), остальные не трогаем
     final discKey = 'disc.scan:${s.id}';
@@ -924,30 +1093,53 @@ class LibraryController extends ChangeNotifier {
     } else {
       suspiciousSources.remove(s.id);
     }
+    // Persist the cursor only after a successful walk and metadata scan.
+    // Taking it before the walk ensures changes arriving during the walk are
+    // picked up on the next run.
+    if (nextCursor != null) {
+      settings.view[cursorKey(email)] = nextCursor;
+      settings.view[foldersKey(email)] = jsonEncode(visitedFolders.toList());
+      settings.view[fullScanKey(email)] = DateTime.now().toIso8601String();
+      unawaited(saveSettings());
+    }
     // Сообщаем только о своих новых треках: чужие появляются в библиотеке и ленте без уведомления
     return mine;
   }
 
-  Future<(List<_Found>, Map<String, String>)> _walk(String email, Source s) async {
+  Future<(List<_Found>, Map<String, String>)> _walk(String email, Source s, {Set<String>? folderIds}) async {
+    final elapsed = Stopwatch()..start();
+    var requests = 0;
     final found = <_Found>[];
     final covers = <String, String>{};
     final queue = <(String, String, int)>[(s.id, '', 0)];
+    // Четыре папки одновременно вместо последовательных сетевых round-trip.
+    // Результаты обрабатываем в порядке обхода, чтобы выбор cover.jpg был стабильным.
     while (queue.isNotEmpty) {
-      final (folder, path, depth) = queue.removeAt(0);
-      scan.text = 'Смотрю «${path.isEmpty ? s.name : path}»';
+      final batch = queue.take(4).toList();
+      queue.removeRange(0, batch.length);
+      scan.text = 'Смотрю «${batch.first.$2.isEmpty ? s.name : batch.first.$2}»';
       notifyListeners();
-      final children = await drive.listChildren(email, folder);
-      for (final c in children) {
-        if (c.isFolder) {
-          if ((c.name == dataFolderName || c.name == coversFolderName) && folder == settings.hubId) continue; // служебные папки
-          if (depth < 10) queue.add((c.id, path.isEmpty ? c.name : '$path/${c.name}', depth + 1));
-        } else if (audioExt.hasMatch(c.name) || c.mimeType.startsWith('audio/')) {
-          found.add(_Found(c, folder, path));
-        } else if (coverName.hasMatch(c.name)) {
-          covers[folder] ??= c.id;
+      requests += batch.length;
+      final childrenBatch = await Future.wait([
+        for (final item in batch) drive.listChildren(email, item.$1),
+      ]);
+      for (var i = 0; i < batch.length; i++) {
+        final (folder, path, depth) = batch[i];
+        folderIds?.add(folder);
+        for (final c in childrenBatch[i]) {
+          if (c.isFolder) {
+            if ((c.name == dataFolderName || c.name == coversFolderName) && folder == settings.hubId) continue;
+            if (depth < 10) queue.add((c.id, path.isEmpty ? c.name : '$path/${c.name}', depth + 1));
+          } else if (audioExt.hasMatch(c.name) || c.mimeType.startsWith('audio/')) {
+            found.add(_Found(c, folder, path));
+          } else if (coverName.hasMatch(c.name)) {
+            covers[folder] ??= c.id;
+          }
         }
       }
     }
+    AppLog.info('Perf: library.walk ${elapsed.elapsedMilliseconds}ms, '
+        'folders=$requests, audio=${found.length}, covers=${covers.length}');
     return (found, covers);
   }
 
@@ -1051,6 +1243,7 @@ class LibraryController extends ChangeNotifier {
   // ---------- представления ----------
 
   int _version = 0;
+  int get revision => _version;
   int _cachedVersion = -1;
   List<Track> _all = const [];
   List<Album> _albums = const [];
@@ -1541,8 +1734,9 @@ class LibraryController extends ChangeNotifier {
     return (v == null || v.isEmpty) ? null : v;
   }
 
-  /// Своя обложка: у альбома она важнее, чем у его треков, а у трека — важнее обложки из файла
-  String? customCoverOf(Track t) => albumCover(t.albumKey) ?? t.customCover;
+  /// Explicit per-track artwork must win over album-wide artwork; the
+  /// latter remains the fallback for tracks without an individual override.
+  String? customCoverOf(Track t) => t.customCover ?? albumCover(t.albumKey);
   // ---------- профиль: ник, аватарка, баннер (хранятся в edits['u:<почта>']) ----------
 
   String? profileNick(String email) => _metaValue('u:$email', 'nick');
@@ -1686,9 +1880,26 @@ class LibraryController extends ChangeNotifier {
     return _coversFolderId = id;
   }
 
-  /// Кладёт картинку в общую папку обложек и возвращает её id. Одинаковые картинки не дублируются
-  Future<String> uploadCover(Uint8List bytes, String ext) async {
-    final name = '${sha1.convert(bytes)}.$ext';
+  /// A batch (e.g. a Deezer album) usually reuses the same cover dozens of
+  /// times. One Drive upload/lookup per image per library is enough.
+  final Map<String, Future<String>> _coverInflight = {};
+  final Map<String, String> _coverKnown = {};
+
+  /// Upload a unique cover at most once for the currently selected hub.
+  Future<String> uploadCover(Uint8List bytes, String ext) {
+    final digest = '${sha1.convert(bytes)}';
+    final key = '${settings.hubId}:$digest.$ext';
+    final known = _coverKnown[key];
+    if (known != null) return Future.value(known);
+    return _coverInflight[key] ??=
+        _uploadCoverUnique(bytes, '$digest.$ext').then((id) {
+          if (_coverKnown.length >= 200) _coverKnown.remove(_coverKnown.keys.first);
+          _coverKnown[key] = id;
+          return id;
+        }).whenComplete(() => _coverInflight.remove(key));
+  }
+
+  Future<String> _uploadCoverUnique(Uint8List bytes, String name) async {
     final folder = await coversFolder();
     final tmp = File('${Directory.systemTemp.path}${Platform.pathSeparator}cave-$name');
     await tmp.writeAsBytes(bytes, flush: true);
@@ -2025,7 +2236,7 @@ Album buildAlbum(List<String> keys, Map<String, List<Track>> groups) {
   final shown = <String, String>{};
   for (final t in tracks) {
     titles[t.displayAlbum] = (titles[t.displayAlbum] ?? 0) + 1;
-    final w = t.albumArtist.isNotEmpty ? t.albumArtist : t.displayArtist;
+    final w = canonicalArtistName(t.albumArtist.isNotEmpty ? t.albumArtist : t.displayArtist);
     whole[w] = (whole[w] ?? 0) + 1;
     for (final n in {...t.artists, if (t.albumArtist.isNotEmpty) ...splitArtists(t.albumArtist)}) {
       final k = n.toLowerCase();

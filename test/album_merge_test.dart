@@ -82,6 +82,33 @@ void main() {
     expect(a.artist, 'Разные исполнители');
   });
 
+  test('Tyler, The Creator — один артист, запятая не создаёт второго', () {
+    expect(splitArtists('Tyler, The Creator'), ['Tyler, The Creator']);
+    expect(splitArtists('Tyler The Creator'), ['Tyler, The Creator']);
+    expect(splitArtists('Tyler, The Creator, Kali Uchis'),
+        ['Tyler, The Creator', 'Kali Uchis']);
+    expect(splitArtists('Tyler, The Creator feat. Pharrell Williams'),
+        ['Tyler, The Creator', 'Pharrell Williams']);
+    expect(splitArtists('Korn, Slipknot'), ['Korn', 'Slipknot']);
+  });
+
+  test('IGOR 2019 с разными написаниями исполнителя остаётся одним альбомом', () {
+    final first = t('EARFQUAKE', 'Tyler, The Creator', 'IGOR', no: 3);
+    final second = t('NEW MAGIC WAND', 'Tyler The Creator', 'IGOR', no: 6);
+    final third = t('ARE WE STILL FRIENDS?', 'Tyler, the Creator', 'IGOR', no: 12,
+        aa: 'Tyler The Creator');
+    final g = groups([first, second, third]);
+    expect(g.length, 1);
+    final albums = mergeAlbumGroups(g);
+    expect(albums.length, 1);
+    final album = buildAlbum(albums.single, g);
+    expect(album.tracks.length, 3);
+    expect(album.artist, 'Tyler, The Creator');
+    expect(album.artists, ['Tyler, The Creator']);
+    expect(first.artists, ['Tyler, The Creator']);
+    expect(second.displayArtist, 'Tyler, The Creator');
+  });
+
   test('Ключ после правки исполнителя альбома', () {
     final x = t('1', 'Lyn', 'P5');
     expect(x.albumKeyWith(newAlbumArtist: 'ATLUS'), 'atlus\u0001p5');

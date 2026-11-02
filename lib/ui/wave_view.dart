@@ -280,7 +280,7 @@ class _FlowCardState extends State<_FlowCard> {
           SizedBox.square(
             dimension: s,
             child: Stack(children: [
-              Positioned.fill(child: FittedBox(child: CoverImage(track: track, size: 300, radius: 20))),
+              Positioned.fill(child: FittedBox(child: CoverImage(track: track, size: 360, radius: 20))),
               // Сердечко по центру обложки играющего трека, при наведении
               if (current)
                 Positioned.fill(

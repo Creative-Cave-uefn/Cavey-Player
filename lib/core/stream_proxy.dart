@@ -25,12 +25,13 @@ import 'log.dart';
 class _Entry {
   final String id;
   final int size; // 0 — размер неизвестен, просто пересылаем запросы
+  final String version; // modifiedTime: новый файл с тем же ID и размером не использует старые байты
   final Future<String> Function() token;
   Future<Uint8List?>? tail;
   int tailStart = 0;
   Future<Uint8List?>? head;
   bool timed = false; // время до первого байта уже записали в журнал
-  _Entry(this.id, this.size, this.token);
+  _Entry(this.id, this.size, this.token, this.version);
 }
 
 class StreamProxy {
@@ -71,9 +72,9 @@ class StreamProxy {
         return s;
       }();
 
-  _Entry _entry(String id, int size, Future<String> Function() token) {
+  _Entry _entry(String id, int size, Future<String> Function() token, {String version = ''}) {
     var e = _entries.remove(id);
-    if (e == null || e.size != size) e = _Entry(id, size, token);
+    if (e == null || e.size != size || e.version != version) e = _Entry(id, size, token, version);
     _entries[id] = e; // в конец: недавно нужный
     while (_entries.length > keep) {
       _entries.remove(_entries.keys.first);
@@ -89,17 +90,17 @@ class StreamProxy {
   }
 
   /// Ссылка для плеера. Сразу начинает скачивать конец файла.
-  Future<Uri> register(String id, {required int size, required Future<String> Function() token}) async {
+  Future<Uri> register(String id, {required int size, required Future<String> Function() token, String version = ''}) async {
     final s = await _ensure();
-    _entry(id, size, token).timed = false;
+    _entry(id, size, token, version: version).timed = false;
     return Uri.parse('http://127.0.0.1:${s.port}/t/$_secret/$id');
   }
 
   /// Трек скоро могут включить: заранее скачиваем начало и конец
-  Future<void> prefetch(String id, {required int size, required Future<String> Function() token}) async {
+  Future<void> prefetch(String id, {required int size, required Future<String> Function() token, String version = ''}) async {
     if (size <= 0) return;
     await _ensure();
-    final e = _entry(id, size, token);
+    final e = _entry(id, size, token, version: version);
     e.head ??= _fetch(e, 0, (size < headSize ? size : headSize) - 1).catchError((Object err) {
       AppLog.warn('Не получилось заранее скачать начало файла', err);
       e.head = null; // попробуем в другой раз
@@ -120,16 +121,31 @@ class StreamProxy {
     }());
   }
 
+  void invalidate(String id) => _entries.remove(id);
+
   Future<Uint8List?> _fetch(_Entry e, int start, int end) async {
     final req = http.Request('GET', urlFor(e.id))
       ..headers['Authorization'] = 'Bearer ${await e.token()}'
       ..headers['Range'] = 'bytes=$start-$end';
     upstreamRequests++;
     final res = await _client.send(req).timeout(const Duration(seconds: 20));
-    final bytes = await res.stream.toBytes();
-    if (res.statusCode == 206) return bytes;
-    if (res.statusCode == 200 && bytes.length > end) return Uint8List.sublistView(bytes, start, end + 1);
-    throw HttpException('Диск ответил ${res.statusCode}');
+    // Не буферизуем весь файл, если upstream проигнорировал Range.
+    final expected = end - start + 1;
+    if (res.statusCode != 206 && !(res.statusCode == 200 && start == 0)) {
+      throw HttpException('Диск проигнорировал Range (HTTP ${res.statusCode})');
+    }
+    if (res.contentLength != null && res.contentLength! > expected) {
+      throw const HttpException('Диск прислал больше запрошенного диапазона');
+    }
+    final builder = BytesBuilder(copy: false);
+    var length = 0;
+    await for (final chunk in res.stream.timeout(const Duration(seconds: 30))) {
+      length += chunk.length;
+      if (length > expected) throw const HttpException('Диапазон превысил лимит');
+      builder.add(chunk);
+    }
+    if (length != expected) throw HttpException('Неполный диапазон: $length из $expected');
+    return builder.takeBytes();
   }
 
   static final _range = RegExp(r'^bytes=(\d*)-(\d*)$');
@@ -234,11 +250,25 @@ class StreamProxy {
       e.timed = true;
       AppLog.info('Прокси: Диск ответил через ${DateTime.now().difference(sent).inMilliseconds} мс');
     }
-    if (res.statusCode != 206 && !(res.statusCode == 200 && start == 0)) {
-      await res.stream.drain<void>();
-      throw HttpException('Диск ответил ${res.statusCode}');
+    // HTTP 200 допустим только для всего файла. Иначе сервер может вернуть
+    // начало вместо требуемого участка, а mpv проиграет неверные байты.
+    if (res.statusCode != 206 && !(res.statusCode == 200 && start == 0 && end == e.size - 1)) {
+      throw HttpException('Диск не подтвердил частичный ответ (HTTP ${res.statusCode})');
     }
-    await out.addStream(res.stream.timeout(const Duration(seconds: 30)));
+    final expected = end - start + 1;
+    if (res.contentLength != null && res.contentLength != expected) {
+      throw HttpException('Неверная длина ответа Google Drive');
+    }
+    var got = 0;
+    Stream<List<int>> exactBytes() async* {
+      await for (final bytes in res.stream.timeout(const Duration(seconds: 30))) {
+        got += bytes.length;
+        if (got > expected) throw const HttpException('Ответ превысил запрошенный диапазон');
+        yield bytes;
+      }
+      if (got != expected) throw HttpException('Неполный поток: $got из $expected');
+    }
+    await out.addStream(exactBytes());
     await out.close();
   }
 

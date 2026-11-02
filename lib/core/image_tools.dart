@@ -56,7 +56,7 @@ Future<Uint8List> compressImage(Uint8List bytes, {required int maxSide, int qual
 /// Уменьшенная копия для кэша. Картинки, которые и так не больше [side], остаются как есть
 Future<Uint8List> makeThumbnail(Uint8List bytes, int side) async {
   try {
-    final out = await compute(_thumb, _Job(bytes, side, 80));
+    final out = await compute(_thumb, _Job(bytes, side, 88));
     if (out != null) return out;
   } catch (_) {}
   return bytes;
@@ -72,4 +72,37 @@ Uint8List? _thumb(_Job j) {
   if (src == null) return null;
   if (math.max(src.width, src.height) <= j.maxSide) return j.bytes;
   return compressImageSync(j.bytes, j.maxSide, j.quality);
+}
+
+/// Both pictures show the same artwork, possibly at different sizes or compression.
+/// Compares 16x16 miniatures; unreadable or differently cropped pictures count as different.
+Future<bool> sameArtwork(Uint8List a, Uint8List b) async {
+  try {
+    return await compute(_sameArt, [a, b]);
+  } catch (_) {
+    return false;
+  }
+}
+
+bool _sameArt(List<Uint8List> pair) {
+  img.Image? small(Uint8List bytes) {
+    try {
+      final full = img.decodeImage(bytes);
+      if (full == null) return null;
+      return img.copyResize(full, width: 16, height: 16, interpolation: img.Interpolation.average);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  final a = small(pair[0]), b = small(pair[1]);
+  if (a == null || b == null) return false;
+  var sum = 0.0;
+  for (var y = 0; y < 16; y++) {
+    for (var x = 0; x < 16; x++) {
+      final p = a.getPixel(x, y), q = b.getPixel(x, y);
+      sum += (p.r - q.r).abs() + (p.g - q.g).abs() + (p.b - q.b).abs();
+    }
+  }
+  return sum / (16 * 16 * 3) < 24;
 }

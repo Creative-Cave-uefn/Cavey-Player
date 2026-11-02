@@ -11,6 +11,7 @@ import '../core/log.dart';
 import '../core/models.dart';
 import '../core/tags.dart';
 import 'cover_picker.dart';
+import 'batch_deezer.dart';
 import 'list_filter.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
@@ -788,7 +789,7 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
               choice: choice,
               current: CoverImage(track: t, size: 120, radius: 0),
               canReset: t.customCover != null,
-              note: albumHasOwn ? 'У альбома своя обложка, она показывается поверх обложек его треков.' : null,
+              note: albumHasOwn ? 'У альбома есть общая обложка. Отдельная обложка трека имеет приоритет.' : null,
             ),
             _DeezerCoverLookup(track: t, title: title, artist: artist, album: album, choice: choice),
             const SizedBox(height: 18),
@@ -842,6 +843,7 @@ Future<bool> editTracksDialog(BuildContext context, List<Track> tracks) async {
   var artistDirty = false;
   var albumDirty = false;
   final choice = CoverChoice();
+  final deezer = BatchDeezerDraft();
   final sameCover = tracks.map(app.covers.keyOf).toSet().length == 1;
   final anyAlbumOwn = tracks.any((t) => lib.albumCover(t.albumKey) != null);
   final ok = await showGlassDialog<bool>(
@@ -864,8 +866,9 @@ Future<bool> editTracksDialog(BuildContext context, List<Track> tracks) async {
                           textAlign: TextAlign.center, style: TextStyle(color: C.muted, fontSize: 12)),
                     ),
               canReset: tracks.any((t) => t.customCover != null),
-              note: anyAlbumOwn ? 'У части альбомов своя обложка, она показывается поверх обложек треков.' : null,
+              note: anyAlbumOwn ? 'У части альбомов есть общие обложки. Отдельно найденная обложка трека будет иметь приоритет.' : null,
             ),
+            BatchDeezerActions(tracks: tracks, draft: deezer),
             const SizedBox(height: 18),
             const Text('Исполнитель', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
@@ -890,21 +893,64 @@ Future<bool> editTracksDialog(BuildContext context, List<Track> tracks) async {
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: C.muted))),
-        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
+        ValueListenableBuilder<bool>(
+          valueListenable: deezer.busy,
+          builder: (_, busy, __) => FilledButton(
+            onPressed: busy ? null : () => Navigator.pop(ctx, true),
+            child: const Text('Сохранить'),
+          ),
+        ),
       ],
     ),
   );
   if (ok != true) return false;
-  final fields = <String, String>{
+  final commonFields = <String, String>{
     if (artistDirty) 'a': artist.text.trim(),
     if (albumDirty) 'al': album.text.trim(),
   };
-  if (choice.changed) {
-    final cv = context.mounted ? await choice.commit(context) : null;
-    if (cv != null) fields['cv'] = cv;
+  // Each found result belongs to its own track, not to all selected tracks.
+  final perTrack = <String, Map<String, String>>{
+    for (final entry in deezer.metadata.entries) entry.key: {...entry.value},
+  };
+  // Looked-up covers are staged until Save. Upload each distinct image to the
+  // shared Cavey covers folder; uploadCover deduplicates matching image hashes.
+  // Never lose the metadata results if an individual cover upload fails.
+  if (!choice.changed && deezer.covers.isNotEmpty) {
+    final ids = deezer.covers.keys.toList();
+    var cursor = 0;
+    var uploaded = 0;
+    Future<void> worker() async {
+      while (cursor < ids.length) {
+        final id = ids[cursor++];
+        final picked = deezer.covers[id]!;
+        try {
+          final coverId = await lib.uploadCover(picked.bytes, picked.ext);
+          await app.covers.seed(coverId, picked.bytes);
+          perTrack.putIfAbsent(id, () => <String, String>{})['cv'] = coverId;
+          uploaded++;
+        } catch (e) {
+          AppLog.warn('Deezer: не удалось сохранить обложку трека $id', e);
+        }
+      }
+    }
+    await Future.wait([for (var i = 0; i < 3 && i < ids.length; i++) worker()]);
+    if (uploaded != ids.length) {
+      lib.messages.add('Обложки Deezer: сохранено $uploaded из ${ids.length}. '
+          'Недоступные изображения пропущены.');
+    }
   }
-  if (fields.isEmpty) return false;
-  lib.editTracks([for (final t in tracks) t.id], fields);
-  lib.messages.add('Изменено: ${countTracks(tracks.length)}');
+  if (choice.changed) {
+    final sharedCover = context.mounted ? await choice.commit(context) : null;
+    if (sharedCover != null) commonFields['cv'] = sharedCover;
+  }
+  if (commonFields.isNotEmpty) {
+    for (final t in tracks) {
+      perTrack.putIfAbsent(t.id, () => <String, String>{}).addAll(commonFields);
+    }
+  }
+  perTrack.removeWhere((_, fields) => fields.isEmpty);
+  if (perTrack.isEmpty) return false;
+  lib.setMeta(perTrack);
+  lib.messages.add('Изменено: ${countTracks(perTrack.length)}');
   return true;
 }

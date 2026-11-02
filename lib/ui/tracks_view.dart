@@ -392,6 +392,25 @@ class _TracksPageState extends State<TracksPage> {
   final _searchFocus = FocusNode();
   String _query = '';
 
+  // Сортировка и фильтрация нескольких тысяч треков — O(n log n).
+  // Повторные build без изменений библиотеки используют прежний результат.
+  List<Track>? _memoTracks;
+  List<Track>? _memoVisible;
+  String _memoQuery = '';
+  String _memoSort = '';
+  bool _memoDesc = false;
+  int _memoRevision = -1;
+
+  List<Track> _rememberVisible(List<Track> tracks, LibraryController lib) {
+    _memoTracks = widget.tracks;
+    _memoVisible = tracks;
+    _memoQuery = _query;
+    _memoSort = _sort;
+    _memoDesc = _desc;
+    _memoRevision = lib.revision;
+    return tracks;
+  }
+
   // Групповое выделение: Shift + клик по треку включает режим
   bool _selecting = false;
   final Set<String> _sel = {};
@@ -655,6 +674,11 @@ class _TracksPageState extends State<TracksPage> {
   }
 
   List<Track> _visible(LibraryController lib, String Function(String) nameOf, Map<String, int>? addedAt) {
+    if (identical(_memoTracks, widget.tracks) && _memoVisible != null &&
+        _memoQuery == _query && _memoSort == _sort && _memoDesc == _desc &&
+        _memoRevision == lib.revision) {
+      return _memoVisible!;
+    }
     final q = _query.trim().toLowerCase();
     var list = q.isEmpty
         ? widget.tracks
@@ -662,7 +686,7 @@ class _TracksPageState extends State<TracksPage> {
             .where((t) =>
                 t.title.toLowerCase().contains(q) || t.artist.toLowerCase().contains(q) || t.album.toLowerCase().contains(q))
             .toList();
-    if (_sort.isEmpty) return list;
+    if (_sort.isEmpty) return _rememberVisible(list, lib);
     int byText(String a, String b) => a.toLowerCase().compareTo(b.toLowerCase());
     int byNo(Track a, Track b) => (a.no ?? 9999).compareTo(b.no ?? 9999);
     String when(Track t) => t.added.isNotEmpty ? t.added : t.modified;
@@ -698,7 +722,7 @@ class _TracksPageState extends State<TracksPage> {
     }
 
     list = List.of(list)..sort(stable);
-    return _desc ? list.reversed.toList() : list;
+    return _rememberVisible(_desc ? list.reversed.toList() : list, lib);
   }
 
   void _setSort(String key) {

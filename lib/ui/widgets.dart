@@ -94,8 +94,12 @@ class CoverImage extends StatefulWidget {
   /// Закрашивать всю площадь: под обложкой кладётся её же размытая копия, чтобы прозрачные поля
   /// и неквадратные картинки не оставляли пустых полос (плеер)
   final bool fill;
+
+  /// Обложка на весь экран (кинотеатр): грузится вне очереди за списками, оригинал запоминается,
+  /// при уменьшении используется качественная фильтрация
+  final bool fullscreen;
   const CoverImage(
-      {super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx, this.fill = false});
+      {super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx, this.fill = false, this.fullscreen = false});
 
   @override
   State<CoverImage> createState() => _CoverImageState();
@@ -108,6 +112,23 @@ class _CoverImageState extends State<CoverImage> {
   int _gen = 0;
   bool _wants = false;
   CoverService? _svc;
+  String? _brokenKey;
+
+  /// Картинку не удалось разобрать: показываем плашку, сбрасываем её кэш и грузим заново
+  /// (один раз на картинку, см. CoverService.discard)
+  Widget _onBroken(Widget placeholder) {
+    final key = _key;
+    if (key != null && _brokenKey != key) {
+      _brokenKey = key;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || key != _key) return;
+        _svc?.discard(key);
+        setState(() => _bytes = null);
+        if (_wants) _request();
+      });
+    }
+    return placeholder;
+  }
 
   @override
   void didChangeDependencies() {
@@ -175,7 +196,10 @@ class _CoverImageState extends State<CoverImage> {
     final key = _key;
     final gen = ++_gen;
     final px = _wantPx;
-    final f = id != null ? svc.forFile(id, px: px) : (t == null ? Future<Uint8List?>.value(null) : svc.forTrack(t, px: px));
+    final fs = widget.fullscreen;
+    final f = id != null
+        ? svc.forFile(id, px: px, fullscreen: fs)
+        : (t == null ? Future<Uint8List?>.value(null) : svc.forTrack(t, px: px, fullscreen: fs));
     f.then((b) {
       if (!mounted || gen != _gen || key != _key || b == null || identical(b, _bytes)) return;
       setState(() => _bytes = b);
@@ -228,15 +252,17 @@ class _CoverImageState extends State<CoverImage> {
                       filterQuality: FilterQuality.medium,
                       gaplessPlayback: true,
                       cacheWidth: (widget.size * dpr).round(),
-                      errorBuilder: (_, __, ___) => placeholder,
+                      errorBuilder: (_, __, ___) => _onBroken(placeholder),
                     ),
                   ])
                 : Image.memory(
                     bytes,
                     fit: BoxFit.cover,
                     gaplessPlayback: true,
+                    // На весь экран картинку уменьшают, и качественная фильтрация держит резкость
+                    filterQuality: widget.fullscreen ? FilterQuality.high : FilterQuality.low,
                     cacheWidth: (widget.size * dpr).round(),
-                    errorBuilder: (_, __, ___) => placeholder,
+                    errorBuilder: (_, __, ___) => _onBroken(placeholder),
                   ),
       ),
     );
