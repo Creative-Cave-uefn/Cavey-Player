@@ -107,7 +107,7 @@ class CoverService extends ChangeNotifier {
   Uint8List? peek(Track t, {int px = 0}) {
     final c = lib.customCoverOf(t);
     if (c != null) return peekFile(c, px: px);
-    return t.hasCover ? _peekKey(_key(t), px) : null;
+    return (t.hasCover || canFindInDeezer(t)) ? _peekKey(_key(t), px) : null;
   }
 
   Uint8List? peekFile(String fileId, {int px = 0}) => _peekKey('cv_$fileId', px);
