@@ -10,6 +10,9 @@ import '../core/models.dart';
 import '../core/player.dart' show RepeatSetting;
 import '../mobile_main.dart';
 import '../ui/theme.dart';
+import 'mobile_ambient.dart';
+import 'mobile_lyrics.dart';
+import 'mobile_pages.dart';
 import 'mobile_updater.dart';
 
 /// Android-версия в том же «стеклянном» стиле, что и Windows: тёмная основа, под всем —
@@ -44,70 +47,9 @@ class Backdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Stack(fit: StackFit.expand, children: [
-        const ColoredBox(color: C.bg),
-        AnimatedBuilder(
-          animation: services.player,
-          builder: (_, __) {
-            final t = services.player.current;
-            return AnimatedSwitcher(
-              duration: const Duration(milliseconds: 700),
-              child: t == null
-                  ? const SizedBox.expand(key: ValueKey('none'))
-                  : _BlurCover(key: ValueKey(t.id), services: services, track: t),
-            );
-          },
-        ),
+        MobileAmbient(services: services),
         child,
       ]);
-}
-
-class _BlurCover extends StatefulWidget {
-  const _BlurCover({super.key, required this.services, required this.track});
-  final MobileServices services;
-  final Track track;
-  @override
-  State<_BlurCover> createState() => _BlurCoverState();
-}
-
-class _BlurCoverState extends State<_BlurCover> {
-  Uint8List? bytes;
-
-  @override
-  void initState() {
-    super.initState();
-    final c = widget.services.covers;
-    bytes = c.peek(widget.track, px: 160);
-    if (bytes == null && c.wants(widget.track)) {
-      c.forTrack(widget.track, px: 160).then((b) {
-        if (mounted && b != null) setState(() => bytes = b);
-      }).catchError((_) {});
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final b = bytes;
-    return RepaintBoundary(
-      child: SizedBox.expand(
-        child: Stack(fit: StackFit.expand, children: [
-          if (b != null)
-            ImageFiltered(
-              imageFilter: ui.ImageFilter.blur(sigmaX: 30, sigmaY: 30, tileMode: TileMode.mirror),
-              child: Image.memory(b, fit: BoxFit.cover, gaplessPlayback: true),
-            ),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [C.bg.withAlpha(150), C.bg.withAlpha(215)],
-              ),
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
 }
 
 class Glass extends StatelessWidget {
@@ -283,6 +225,7 @@ class MobileShell extends StatefulWidget {
 class _MobileShellState extends State<MobileShell> {
   int tab = 0;
   int section = 0;
+  bool webSearch = false;
   String query = '';
   MobileServices get s => widget.services;
 
@@ -306,11 +249,11 @@ class _MobileShellState extends State<MobileShell> {
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-        animation: Listenable.merge([s.library, s.player, s.updater]),
+        animation: Listenable.merge([s.library, s.player, s.updater, s.cache]),
         builder: (_, __) => Scaffold(
           body: SafeArea(
             bottom: false,
-            child: IndexedStack(index: tab, children: [home(), search(), library(), ProfileTab(services: s)]),
+            child: IndexedStack(index: tab, children: [home(), WaveTab(services: s), search(), library(), more()]),
           ),
           bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [
             if (s.player.current != null)
@@ -321,9 +264,10 @@ class _MobileShellState extends State<MobileShell> {
                 top: false,
                 child: Row(children: [
                   navItem(0, Icons.home_outlined, Icons.home_rounded, 'Главная'),
-                  navItem(1, Icons.search_rounded, Icons.search_rounded, 'Поиск'),
-                  navItem(2, Icons.library_music_outlined, Icons.library_music_rounded, 'Медиатека'),
-                  navItem(3, Icons.person_outline_rounded, Icons.person_rounded, 'Профиль', badge: s.updater.available != null),
+                  navItem(1, Icons.waves_rounded, Icons.waves_rounded, 'Волна'),
+                  navItem(2, Icons.search_rounded, Icons.search_rounded, 'Поиск'),
+                  navItem(3, Icons.library_music_outlined, Icons.library_music_rounded, 'Медиатека'),
+                  navItem(4, Icons.menu_rounded, Icons.menu_rounded, 'Ещё', badge: s.updater.available != null),
                 ]),
               ),
             ),
@@ -398,7 +342,7 @@ class _MobileShellState extends State<MobileShell> {
           ]),
         ),
         if (albums.isNotEmpty) SectionTitle('Альбомы', onMore: () => setState(() {
-              tab = 2;
+              tab = 3;
               section = 2;
             })),
         SizedBox(
@@ -417,6 +361,37 @@ class _MobileShellState extends State<MobileShell> {
         const SizedBox(height: 12),
       ]),
     );
+  }
+
+  void openPage(Widget page) => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
+
+  Widget more() {
+    final unread = s.social.notices.length;
+    Widget tile(IconData icon, String title, String sub, VoidCallback onTap, {bool dot = false}) => Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+          child: Glass(
+            radius: 16,
+            color: C.surface,
+            child: ListTile(
+              leading: Badge(isLabelVisible: dot, smallSize: 8, backgroundColor: C.accent, child: Icon(icon, color: C.accent, size: 26)),
+              title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: Text(sub, style: const TextStyle(color: C.muted, fontSize: 12)),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: onTap,
+            ),
+          ),
+        );
+    return ListView(children: [
+      header('Ещё'),
+      tile(Icons.new_releases_outlined, 'Новинки', 'Свежие релизы ваших исполнителей', () => openPage(NewReleasesPage(services: s))),
+      tile(Icons.groups_outlined, 'Компания', 'Друзья, что они слушают, уведомления', () => openPage(CompanyPage(services: s)), dot: unread > 0),
+      tile(Icons.download_done_rounded, 'Скачано', 'Треки на телефоне, доступны без интернета', () => setState(() {
+            tab = 3;
+            section = 5;
+          })),
+      tile(Icons.person_outline_rounded, 'Профиль и память', 'Аккаунт, обновления, кэш', () => openPage(SubPage(services: s, title: 'Профиль', child: ProfileTab(services: s))),
+          dot: s.updater.available != null),
+    ]);
   }
 
   Widget search() {
@@ -438,8 +413,25 @@ class _MobileShellState extends State<MobileShell> {
           decoration: const InputDecoration(prefixIcon: Icon(Icons.search_rounded), hintText: 'Трек, альбом или исполнитель'),
         ),
       ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
+        child: Row(children: [
+          for (final (label, web) in const [('Библиотека', false), ('Интернет', true)])
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(label),
+                selected: webSearch == web,
+                labelStyle: TextStyle(color: webSearch == web ? C.accentInk : C.text, fontWeight: FontWeight.w600),
+                onSelected: (_) => setState(() => webSearch = web),
+              ),
+            ),
+        ]),
+      ),
       Expanded(
-        child: q.isEmpty
+        child: webSearch
+            ? WebSearchSection(services: s, query: query)
+            : q.isEmpty
             ? const Center(child: Text('Поиск по общей библиотеке', style: TextStyle(color: C.muted)))
             : ListView(children: [
                 if (albums.isNotEmpty) ...[
@@ -465,8 +457,39 @@ class _MobileShellState extends State<MobileShell> {
     ]);
   }
 
+  Widget downloads() {
+    final cache = s.cache;
+    final ids = s.settings.offlineTracks;
+    final tracks = s.library.allTracks.where((t) => ids.contains(t.id)).toList();
+    final ready = tracks.where((t) => cache.has(t.id)).length;
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 12, 4),
+        child: Row(children: [
+          Expanded(
+            child: Text(
+              tracks.isEmpty
+                  ? 'Здесь будут треки, скачанные на телефон'
+                  : '$ready из ${tracks.length} · ${formatBytes(cache.offlineBytes)}${cache.pending > 0 ? ' · качается ${cache.pending}' : ''}',
+              style: const TextStyle(color: C.muted),
+            ),
+          ),
+          if (tracks.isNotEmpty)
+            TextButton(
+              onPressed: () async {
+                final ok = await confirm(context, 'Убрать все загрузки?', 'Треки останутся в общей библиотеке и в кэше, пока хватает места.');
+                if (ok) await cache.setTracksOffline(List.of(ids), false);
+              },
+              child: Text('Убрать все', style: TextStyle(color: C.accent)),
+            ),
+        ]),
+      ),
+      Expanded(child: TrackList(services: s, tracks: tracks, onPlay: play, onToast: toast)),
+    ]);
+  }
+
   Widget library() {
-    const labels = ['Все', 'Любимые', 'Альбомы', 'Исполнители', 'Плейлисты'];
+    const labels = ['Все', 'Любимые', 'Альбомы', 'Исполнители', 'Плейлисты', 'Скачано'];
     final albums = s.library.albums;
     final artists = s.library.artists;
     final playlists = s.library.visiblePlaylists;
@@ -510,6 +533,7 @@ class _MobileShellState extends State<MobileShell> {
                   onTap: () => openTracks(a.name, a.tracks, cover: a.coverTrack),
                 );
               }),
+          5 => downloads(),
           _ => playlists.isEmpty
               ? const Center(child: Text('Плейлистов пока нет', style: TextStyle(color: C.muted)))
               : ListView.builder(
@@ -534,6 +558,28 @@ class _MobileShellState extends State<MobileShell> {
       ),
     ]);
   }
+}
+
+String formatBytes(int b) {
+  if (b < 1024 * 1024) return '${(b / 1024).round()} КБ';
+  if (b < 1024 * 1024 * 1024) return '${(b / 1024 / 1024).toStringAsFixed(b < 100 * 1024 * 1024 ? 1 : 0)} МБ';
+  return '${(b / 1024 / 1024 / 1024).toStringAsFixed(2)} ГБ';
+}
+
+Future<bool> confirm(BuildContext context, String title, String text) async {
+  final r = await showDialog<bool>(
+    context: context,
+    builder: (d) => AlertDialog(
+      backgroundColor: C.panel,
+      title: Text(title),
+      content: Text(text, style: const TextStyle(color: C.muted)),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Отмена')),
+        TextButton(onPressed: () => Navigator.pop(d, true), child: Text('Да', style: TextStyle(color: C.accent))),
+      ],
+    ),
+  );
+  return r == true;
 }
 
 Future<void> playTracks(BuildContext context, MobileServices s, List<Track> tracks, int index) async {
@@ -682,6 +728,16 @@ class TrackTile extends StatelessWidget {
             },
           ),
           ListTile(
+            leading: Icon(services.cache.isTrackOffline(track.id) ? Icons.download_done_rounded : Icons.download_rounded),
+            title: Text(services.cache.isTrackOffline(track.id) ? 'Убрать из загрузок' : 'Скачать на телефон'),
+            onTap: () {
+              final on = !services.cache.isTrackOffline(track.id);
+              services.cache.setTracksOffline([track.id], on);
+              Navigator.pop(sheet);
+              onToast?.call(on ? 'Скачиваем «${track.title}»' : 'Убрано из загрузок');
+            },
+          ),
+          ListTile(
             leading: Icon(services.library.isLiked(track.id) ? Icons.favorite_border_rounded : Icons.favorite_rounded),
             title: Text(services.library.isLiked(track.id) ? 'Убрать из любимых' : 'В любимые'),
             onTap: () {
@@ -703,7 +759,17 @@ class TrackTile extends StatelessWidget {
       leading: TrackCover(services: services, track: track, size: 50),
       title: Text(track.title,
           maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontWeight: FontWeight.w600, color: playing ? C.accent : C.text)),
-      subtitle: Text(track.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+      subtitle: Row(children: [
+        if (services.cache.isTrackOffline(track.id))
+          Padding(
+            padding: const EdgeInsets.only(right: 5),
+            child: services.cache.has(track.id)
+                ? Icon(Icons.download_done_rounded, size: 15, color: C.accent)
+                : const SizedBox.square(dimension: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+          ),
+        Expanded(
+            child: Text(track.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13))),
+      ]),
       onTap: onTap,
       onLongPress: () => menu(context),
       trailing: IconButton(
@@ -790,6 +856,41 @@ class _CoverPlaceholder extends StatelessWidget {
       );
 }
 
+// ───────────────────────────── скачка ─────────────────────────────
+
+/// «Скачать всё» для альбома, плейлиста или любого списка: ручная скачка, кэш её не вытесняет
+class DownloadButton extends StatelessWidget {
+  const DownloadButton({super.key, required this.services, required this.tracks});
+  final MobileServices services;
+  final List<Track> tracks;
+
+  @override
+  Widget build(BuildContext context) {
+    final cache = services.cache;
+    final ids = [for (final t in tracks) t.id];
+    final marked = ids.where(cache.isTrackOffline).length;
+    final ready = ids.where((id) => cache.isTrackOffline(id) && cache.has(id)).length;
+    final all = ids.isNotEmpty && marked == ids.length;
+    final busy = all && ready < ids.length;
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        onPressed: ids.isEmpty
+            ? null
+            : () {
+                cache.setTracksOffline(ids, !all);
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(all ? 'Убрано из загрузок' : 'Скачиваем ${ids.length} треков')));
+              },
+        icon: busy
+            ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+            : Icon(all ? Icons.download_done_rounded : Icons.download_rounded),
+        label: Text(busy ? 'Скачано $ready из ${ids.length}' : (all ? 'Скачано · убрать' : (marked > 0 ? 'Докачать ($marked из ${ids.length})' : 'Скачать на телефон'))),
+      ),
+    );
+  }
+}
+
 // ───────────────────────────── страница альбома / списка ─────────────────────────────
 
 class CollectionPage extends StatelessWidget {
@@ -814,7 +915,9 @@ class CollectionPage extends StatelessWidget {
     return Scaffold(
       body: SafeArea(
         bottom: false,
-        child: CustomScrollView(slivers: [
+        child: AnimatedBuilder(
+          animation: Listenable.merge([services.cache, services.library, services.player]),
+          builder: (context, _) => CustomScrollView(slivers: [
           SliverAppBar(
             backgroundColor: Colors.transparent,
             surfaceTintColor: Colors.transparent,
@@ -844,6 +947,8 @@ class CollectionPage extends StatelessWidget {
                           icon: const Icon(Icons.shuffle_rounded),
                           label: const Text('Вперемешку'))),
                 ]),
+                const SizedBox(height: 8),
+                DownloadButton(services: services, tracks: tracks),
               ]),
             ),
           ),
@@ -858,6 +963,7 @@ class CollectionPage extends StatelessWidget {
           ),
           const SliverToBoxAdapter(child: SizedBox(height: 12)),
         ]),
+        ),
       ),
       bottomNavigationBar: AnimatedBuilder(
         animation: services.player,
@@ -910,6 +1016,65 @@ class UpdateBanner extends StatelessWidget {
           ]),
         ),
       ),
+    );
+  }
+}
+
+class StorageCard extends StatelessWidget {
+  const StorageCard({super.key, required this.services});
+  final MobileServices services;
+
+  @override
+  Widget build(BuildContext context) {
+    final cache = services.cache;
+    const limits = [512, 1024, 2048, 4096, 8192, 16384];
+    return AnimatedBuilder(
+      animation: cache,
+      builder: (_, __) {
+        final manual = cache.offlineBytes;
+        final auto = (cache.sizeBytes - manual).clamp(0, 1 << 40);
+        final limit = services.settings.cacheLimitMb;
+        return Glass(
+          radius: 16,
+          color: C.surface,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Память', style: TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 10),
+              Row(children: [
+                const Expanded(child: Text('Скачано вручную', style: TextStyle(color: C.muted))),
+                Text(formatBytes(manual)),
+              ]),
+              const SizedBox(height: 4),
+              Row(children: [
+                const Expanded(child: Text('Кэш прослушанного', style: TextStyle(color: C.muted))),
+                Text(formatBytes(auto)),
+              ]),
+              const SizedBox(height: 12),
+              const Text('Лимит кэша (ручные загрузки в него не входят)', style: TextStyle(color: C.muted, fontSize: 12)),
+              const SizedBox(height: 6),
+              Wrap(spacing: 8, children: [
+                for (final mb in limits)
+                  ChoiceChip(
+                    label: Text(mb >= 1024 ? '${mb ~/ 1024} ГБ' : '$mb МБ'),
+                    selected: limit == mb,
+                    labelStyle: TextStyle(color: limit == mb ? C.accentInk : C.text, fontWeight: FontWeight.w600),
+                    onSelected: (_) => cache.setLimit(mb),
+                  ),
+              ]),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  if (await confirm(context, 'Очистить кэш?', 'Скачанные вручную треки останутся.')) await cache.clear();
+                },
+                icon: const Icon(Icons.cleaning_services_rounded),
+                label: const Text('Очистить кэш'),
+              ),
+            ]),
+          ),
+        );
+      },
     );
   }
 }
@@ -992,6 +1157,8 @@ class ProfileTab extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
+        StorageCard(services: s),
+        const SizedBox(height: 14),
         OutlinedButton.icon(
           onPressed: () async {
             if (email.isNotEmpty) await s.accounts.remove(email);
@@ -1008,7 +1175,7 @@ class ProfileTab extends StatelessWidget {
 
 void showPlayer(BuildContext context, MobileServices services) {
   Navigator.of(context, rootNavigator: true).push(PageRouteBuilder<void>(
-    opaque: false,
+    opaque: true,
     transitionDuration: const Duration(milliseconds: 320),
     reverseTransitionDuration: const Duration(milliseconds: 260),
     pageBuilder: (_, __, ___) => FullPlayer(services: services),
@@ -1066,9 +1233,16 @@ class MiniPlayer extends StatelessWidget {
   }
 }
 
-class FullPlayer extends StatelessWidget {
+class FullPlayer extends StatefulWidget {
   const FullPlayer({super.key, required this.services});
   final MobileServices services;
+  @override
+  State<FullPlayer> createState() => _FullPlayerState();
+}
+
+class _FullPlayerState extends State<FullPlayer> {
+  MobileServices get services => widget.services;
+  bool lyrics = false;
 
   static String time(Duration d) {
     final seconds = d.inSeconds.clamp(0, 999999);
@@ -1088,13 +1262,13 @@ class FullPlayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        backgroundColor: C.bg.withAlpha(120),
+        backgroundColor: Colors.transparent,
         body: GestureDetector(
           onVerticalDragEnd: (d) {
             if ((d.primaryVelocity ?? 0) > 700) Navigator.pop(context);
           },
           child: AnimatedBuilder(
-            animation: Listenable.merge([services.player, services.library]),
+            animation: Listenable.merge([services.player, services.library, services.cache, services.wave]),
             builder: (context, __) {
               final p = services.player;
               final t = p.current;
@@ -1109,17 +1283,25 @@ class FullPlayer extends StatelessWidget {
                       IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 34, color: C.text)),
                       const Expanded(
                           child: Text('Сейчас играет', textAlign: TextAlign.center, style: TextStyle(color: C.muted, fontWeight: FontWeight.w600))),
+                      IconButton(
+                          tooltip: 'Текст песни',
+                          onPressed: () => setState(() => lyrics = !lyrics),
+                          icon: Icon(Icons.lyrics_outlined, size: 25, color: lyrics ? C.accent : C.text)),
                       IconButton(onPressed: () => queue(context), icon: const Icon(Icons.queue_music_rounded, size: 26, color: C.text)),
                     ]),
-                    const Spacer(),
-                    DecoratedBox(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(22),
-                        boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 36, offset: Offset(0, 16))],
-                      ),
-                      child: TrackCover(services: services, track: t, size: cover, radius: 22, fullscreen: true),
+                    Expanded(
+                      child: lyrics
+                          ? LyricsView(services: services, track: t)
+                          : Center(
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(22),
+                                  boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 36, offset: Offset(0, 16))],
+                                ),
+                                child: TrackCover(services: services, track: t, size: cover, radius: 22, fullscreen: true),
+                              ),
+                            ),
                     ),
-                    const Spacer(),
                     Row(children: [
                       Expanded(
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1127,6 +1309,24 @@ class FullPlayer extends StatelessWidget {
                           const SizedBox(height: 4),
                           Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 15)),
                         ]),
+                      ),
+                      if (services.wave.active) ...[
+                        IconButton(onPressed: services.wave.dislike, tooltip: 'Не нравится', icon: const Icon(Icons.thumb_down_alt_outlined, color: C.muted, size: 24)),
+                        IconButton(
+                            onPressed: services.wave.upvote,
+                            tooltip: 'Нравится в волне',
+                            icon: Icon(services.wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
+                                color: services.wave.isUpvoted(t.id) ? C.accent : C.muted, size: 24)),
+                      ],
+                      IconButton(
+                        tooltip: services.cache.isTrackOffline(t.id) ? 'Убрать из загрузок' : 'Скачать на телефон',
+                        onPressed: () => services.cache.setTracksOffline([t.id], !services.cache.isTrackOffline(t.id)),
+                        icon: Icon(
+                            services.cache.isTrackOffline(t.id)
+                                ? (services.cache.has(t.id) ? Icons.download_done_rounded : Icons.downloading_rounded)
+                                : Icons.download_rounded,
+                            color: services.cache.isTrackOffline(t.id) ? C.accent : C.muted,
+                            size: 26),
                       ),
                       IconButton(
                         onPressed: () => services.library.toggleLike(t.id),

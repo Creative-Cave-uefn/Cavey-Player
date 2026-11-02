@@ -101,6 +101,8 @@ class Settings {
   int cacheLimitMb = 2048;
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
+  /// Треки, скачанные вручную (Android): лежат на телефоне, пока их не удалят, кэш их не вытесняет
+  Set<String> offlineTracks = {};
   /// Активный загрузчик: youtube, sockseek, bandcamp, deezer или full.
   String downloadProvider = 'youtube';
   bool discord = true;
@@ -138,6 +140,7 @@ class Settings {
         'cacheLimitMb': cacheLimitMb,
         'offlineLiked': offlineLiked,
         'offlinePlaylists': offlinePlaylists.toList(),
+        'offlineTracks': offlineTracks.toList(),
         'downloadProvider': downloadProvider,
         'discord': discord,
         'betaUpdates': betaUpdates,
@@ -172,6 +175,7 @@ class Settings {
     s.cacheLimitMb = (j['cacheLimitMb'] as num?)?.toInt() ?? 2048;
     s.offlineLiked = j['offlineLiked'] == true;
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
+    s.offlineTracks = {for (final x in (j['offlineTracks'] as List? ?? const [])) '$x'};
     // Старые настройки Zotify намеренно не восстанавливаем. Sockseek переносим.
     final provider = j['downloadProvider'];
     if (provider == 'youtube' || provider == 'sockseek' || provider == 'bandcamp' || provider == 'deezer' || provider == 'full') {

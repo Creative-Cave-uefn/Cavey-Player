@@ -194,11 +194,44 @@ class AudioCache extends ChangeNotifier {
 
   Set<String> get pinnedIds {
     final ids = <String>{};
+    ids.addAll(settings.offlineTracks);
     if (settings.offlineLiked) ids.addAll(lib.liked.map((t) => t.id));
     for (final p in settings.offlinePlaylists) {
       ids.addAll(lib.playlistTracks(p).map((t) => t.id));
     }
     return ids;
+  }
+
+  bool isTrackOffline(String id) => settings.offlineTracks.contains(id);
+
+  /// Ручная скачка (Android): трек сохраняется на телефон и не вытесняется кэшем
+  Future<void> setTracksOffline(Iterable<String> ids, bool on) async {
+    if (on) {
+      settings.offlineTracks.addAll(ids);
+      for (final id in ids) {
+        _failed.remove(id);
+        _retryAt.remove(id);
+        _failureCount.remove(id);
+        enqueue(id);
+      }
+    } else {
+      settings.offlineTracks.removeAll(ids);
+    }
+    await lib.saveSettings();
+    _schedulePinSync();
+    notifyListeners();
+  }
+
+  /// Размер ручных загрузок на диске
+  int get offlineBytes {
+    var n = 0;
+    for (final id in settings.offlineTracks) {
+      if (!_have.contains(id)) continue;
+      try {
+        n += fileFor(id).lengthSync();
+      } catch (_) {}
+    }
+    return n;
   }
 
   bool isPlaylistOffline(String id) => settings.offlinePlaylists.contains(id);
@@ -252,7 +285,9 @@ class AudioCache extends ChangeNotifier {
   }
 
   Future<void> _evictNow() async {
-    if (sizeBytes <= limitBytes) return;
+    // Ручные загрузки в лимит кэша не входят
+    final allowed = limitBytes + (settings.offlineTracks.isEmpty ? 0 : offlineBytes);
+    if (sizeBytes <= allowed) return;
     final pinned = pinnedIds;
     final files = <(File, DateTime, int)>[];
     for (final id in _have) {
@@ -264,7 +299,7 @@ class AudioCache extends ChangeNotifier {
     }
     files.sort((a, b) => a.$2.compareTo(b.$2));
     for (final (f, _, len) in files) {
-      if (sizeBytes <= limitBytes) break;
+      if (sizeBytes <= allowed) break;
       try {
         await f.delete();
         final name = f.uri.pathSegments.last;

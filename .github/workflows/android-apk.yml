@@ -45,7 +45,7 @@ jobs:
         run: flutter analyze --no-fatal-infos --no-fatal-warnings lib/mobile_main.dart lib/mobile
 
       - name: Тесты
-        run: flutter test test/cover_cache_test.dart test/fullscreen_cover_test.dart
+        run: flutter test test/cover_cache_test.dart test/fullscreen_cover_test.dart test/offline_settings_test.dart
 
       - name: Проверить секреты
         env:
