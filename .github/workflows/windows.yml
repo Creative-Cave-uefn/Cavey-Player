@@ -144,7 +144,10 @@ jobs:
         id: native-cache
         uses: actions/cache/restore@v4
         with:
-          path: build/windows/x64
+          path: |
+            build/windows/x64/CMakeFiles
+            build/windows/x64/runner/CMakeFiles
+            build/windows/x64/plugins
           key: cave-windows-native-v1-${{ runner.os }}-flutter3274-${{ hashFiles('pubspec.yaml', 'pubspec.lock', 'windows/**') }}-${{ github.run_id }}
           restore-keys: |
             cave-windows-native-v1-${{ runner.os }}-flutter3274-${{ hashFiles('pubspec.yaml', 'pubspec.lock', 'windows/**') }}-
@@ -201,7 +204,10 @@ jobs:
       - name: Сохранить кэш нативной сборки
         uses: actions/cache/save@v4
         with:
-          path: build/windows/x64
+          path: |
+            build/windows/x64/CMakeFiles
+            build/windows/x64/runner/CMakeFiles
+            build/windows/x64/plugins
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
 
       # The downloader is a separate private project. Only the CI runner receives
