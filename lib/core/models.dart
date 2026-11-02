@@ -204,6 +204,11 @@ class LibraryData {
   final Map<String, int> likeTimes = {};
   final Map<String, String> members = {}; // email → имя
   final Map<String, Map<String, String>> edits = {}; // ручные правки тегов
+
+  /// IDs of recently committed operations. A remote snapshot records which
+  /// edits it contains, so peers can recover an edit lost by a stale writer.
+  /// Bounded to avoid growing library.json indefinitely.
+  final Map<String, int> appliedOps = {};
   final Set<String> hidden = {}; // скрытые треки (например, дубликаты)
 
   /// Объединённые дубликаты: id скрытой копии → id той, что осталась.
@@ -240,6 +245,7 @@ class LibraryData {
         if (likeTimes.isNotEmpty) 'lt': likeTimes,
         'members': members,
         'edits': edits,
+        if (appliedOps.isNotEmpty) 'appliedOps': appliedOps,
         'hidden': hidden.toList(),
         if (merged.isNotEmpty) 'merged': merged,
         if (deleted.isNotEmpty) 'deleted': deleted,
@@ -276,6 +282,16 @@ class LibraryData {
     }
     final m = j['members'];
     if (m is Map) m.forEach((k, v) => d.members['$k'] = '$v');
+    final operations = j['appliedOps'];
+    if (operations is Map) {
+      final cutoff = DateTime.now().subtract(const Duration(hours: 24)).millisecondsSinceEpoch;
+      for (final entry in operations.entries) {
+        final time = entry.value;
+        if (time is num && time.toInt() >= cutoff) {
+          d.appliedOps['${entry.key}'] = time.toInt();
+        }
+      }
+    }
     final e = j['edits'];
     if (e is Map) {
       e.forEach((k, v) {
@@ -303,6 +319,8 @@ class LibraryData {
 
   /// Применяет одну операцию. Операции идемпотентны: повтор ничего не ломает.
   void apply(Map<String, dynamic> op) {
+    final id = op['oid'];
+    if (id is String && id.isNotEmpty && appliedOps.containsKey(id)) return;
     switch (op['op']) {
       case 'addSource':
         {
@@ -477,6 +495,16 @@ class LibraryData {
           }
           if (set.isEmpty) likes.remove(id);
         }
+    }
+    if (id is String && id.isNotEmpty) {
+      appliedOps[id] = DateTime.now().millisecondsSinceEpoch;
+      if (appliedOps.length > 1500) {
+        final oldest = appliedOps.entries.toList()
+          ..sort((a, b) => a.value.compareTo(b.value));
+        for (final e in oldest.take(appliedOps.length - 1200)) {
+          appliedOps.remove(e.key);
+        }
+      }
     }
   }
 
