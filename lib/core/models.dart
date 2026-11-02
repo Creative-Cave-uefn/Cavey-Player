@@ -21,6 +21,15 @@ class Source {
       );
 }
 
+// Реальный сценический псевдоним с запятой: нельзя делить его на Tyler / The Creator.
+final _tylerCreator = RegExp(r'\btyler\s*,?\s*the\s+creator\b', caseSensitive: false);
+const _tylerCreatorToken = '\u0002cavey-tyler-creator\u0002';
+
+/// Единое написание артиста для показа и группировки: теги из разных
+/// источников часто используют Tyler The Creator и Tyler, The Creator.
+String canonicalArtistName(String raw) =>
+    raw.trim().replaceAll(_tylerCreator, 'Tyler, The Creator');
+
 // Разделители соавторов в поле «исполнитель»: «A, B», «A feat. B», «A & B», «A x B».
 // «&» и «x» — только с пробелами вокруг, чтобы не резать «AC/DC» и «A&B».
 final _artistSep = RegExp(
@@ -37,8 +46,12 @@ List<String> splitArtists(String artist, [String title = '']) {
   final out = <String>[];
   final seen = <String>{};
   void add(String raw) {
-    for (final part in raw.split(_artistSep)) {
-      final name = part.trim();
+    // Temporarily protect the comma inside this artist name. Other comma-
+    // separated collaborations still work: «Tyler, The Creator, Kali Uchis».
+    final protected = raw.replaceAll(_tylerCreator, _tylerCreatorToken);
+    for (final part in protected.split(_artistSep)) {
+      final name = canonicalArtistName(part.replaceAll(
+          _tylerCreatorToken, 'Tyler, The Creator'));
       if (name.isEmpty || !seen.add(name.toLowerCase())) continue;
       out.add(name);
     }
@@ -97,13 +110,15 @@ class Track {
     this.added = '',
   });
 
-  String get displayArtist => artist.isNotEmpty ? artist : 'Неизвестный исполнитель';
+  String get displayArtist => artist.isNotEmpty
+      ? canonicalArtistName(artist)
+      : 'Неизвестный исполнитель';
 
   /// Каждый исполнитель отдельно (для страниц исполнителей и ссылок)
   late final List<String> artists = artist.isEmpty ? const ['Неизвестный исполнитель'] : splitArtists(artist, title);
   String get displayAlbum => album.isNotEmpty ? album : (path.isNotEmpty ? path.split('/').last : 'Без альбома');
   String get albumKey =>
-      '${(albumArtist.isNotEmpty ? albumArtist : artist).toLowerCase()}\u0001${displayAlbum.toLowerCase()}';
+      '${canonicalArtistName(albumArtist.isNotEmpty ? albumArtist : artist).toLowerCase()}\u0001${displayAlbum.toLowerCase()}';
 
   /// Ключ альбома, в который трек попадёт после правки исполнителя или альбома
   String albumKeyWith({String? newArtist, String? newAlbum, String? newAlbumArtist}) {
@@ -111,7 +126,7 @@ class Track {
     final al = newAlbum ?? album;
     final aa = newAlbumArtist ?? albumArtist;
     final shown = al.isNotEmpty ? al : (path.isNotEmpty ? path.split('/').last : 'Без альбома');
-    return '${(aa.isNotEmpty ? aa : a).toLowerCase()}\u0001${shown.toLowerCase()}';
+    return '${canonicalArtistName(aa.isNotEmpty ? aa : a).toLowerCase()}\u0001${shown.toLowerCase()}';
   }
 
   bool get hasCover => pic != null || cover != null || customCover != null;

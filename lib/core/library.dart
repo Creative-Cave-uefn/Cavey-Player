@@ -2034,7 +2034,7 @@ Album buildAlbum(List<String> keys, Map<String, List<Track>> groups) {
   final shown = <String, String>{};
   for (final t in tracks) {
     titles[t.displayAlbum] = (titles[t.displayAlbum] ?? 0) + 1;
-    final w = t.albumArtist.isNotEmpty ? t.albumArtist : t.displayArtist;
+    final w = canonicalArtistName(t.albumArtist.isNotEmpty ? t.albumArtist : t.displayArtist);
     whole[w] = (whole[w] ?? 0) + 1;
     for (final n in {...t.artists, if (t.albumArtist.isNotEmpty) ...splitArtists(t.albumArtist)}) {
       final k = n.toLowerCase();
