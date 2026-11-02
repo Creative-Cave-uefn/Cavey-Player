@@ -92,7 +92,7 @@ class _LyricsViewState extends State<LyricsView> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ctx = i < keys.length ? keys[i].currentContext : null;
       if (ctx == null || !mounted) return;
-      Scrollable.ensureVisible(ctx, alignment: 0.35, duration: const Duration(milliseconds: 380), curve: Curves.easeOutCubic);
+      Scrollable.ensureVisible(ctx, alignment: 0.22, duration: const Duration(milliseconds: 380), curve: Curves.easeOutCubic);
     });
   }
 
@@ -113,29 +113,42 @@ class _LyricsViewState extends State<LyricsView> {
     if (ly.instrumental || ly.lines.isEmpty) return const _Note(text: 'Инструментальный трек');
     // Тик нужен сразу: строка могла стать текущей, пока текст грузился
     WidgetsBinding.instance.addPostFrameCallback((_) => tick());
-    return SingleChildScrollView(
-      controller: scroll,
-      padding: const EdgeInsets.fromLTRB(8, 40, 8, 120),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (ly.approx)
-          const Padding(
-            padding: EdgeInsets.only(bottom: 14),
-            child: Text('Версия текста может немного отличаться от трека', style: TextStyle(color: C.faint, fontSize: 12)),
-          ),
-        for (var i = 0; i < ly.lines.length; i++)
-          KeyedSubtree(
-            key: keys[i],
-            child: _Line(
-              line: ly.lines[i],
-              index: i,
-              synced: ly.synced,
-              current: current,
-              position: widget.services.player.position,
-              onTap: ly.synced && ly.lines[i].at != null ? () => widget.services.player.seek(ly.lines[i].at!) : null,
-            ),
-          ),
-      ]),
-    );
+    return LayoutBuilder(builder: (context, box) {
+      // Как в режиме кинотеатра на ПК: активная строка ближе к верху, края плавно гаснут
+      return ShaderMask(
+        blendMode: BlendMode.dstIn,
+        shaderCallback: (r) => const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0x00FFFFFF), Color(0xFFFFFFFF), Color(0xFFFFFFFF), Color(0x00FFFFFF)],
+          stops: [0.0, 0.14, 0.82, 1.0],
+        ).createShader(r),
+        child: SingleChildScrollView(
+          controller: scroll,
+          physics: const BouncingScrollPhysics(),
+          padding: EdgeInsets.fromLTRB(10, box.maxHeight * 0.2, 10, box.maxHeight * 0.6),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (ly.approx)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 14, left: 8),
+                child: Text('Версия текста может немного отличаться от трека', style: TextStyle(color: C.faint, fontSize: 12)),
+              ),
+            for (var i = 0; i < ly.lines.length; i++)
+              KeyedSubtree(
+                key: keys[i],
+                child: _Line(
+                  line: ly.lines[i],
+                  index: i,
+                  synced: ly.synced,
+                  current: current,
+                  position: widget.services.player.position,
+                  onTap: ly.synced && ly.lines[i].at != null ? () => widget.services.player.seek(ly.lines[i].at!) : null,
+                ),
+              ),
+          ]),
+        ),
+      );
+    });
   }
 }
 
@@ -170,11 +183,12 @@ class _Line extends StatelessWidget {
       builder: (_, now, __) {
         final active = synced && now == index;
         final past = synced && now > index;
+        final dist = synced ? (now - index).abs() : 0;
         final base = TextStyle(
-          fontSize: active ? 27 : 24,
-          height: 1.25,
-          fontWeight: FontWeight.w700,
-          color: !synced ? C.text : (active ? C.text : (past ? C.faint : C.muted.withValues(alpha: 0.55))),
+          fontSize: 30,
+          height: 1.22,
+          fontWeight: FontWeight.w800,
+          color: !synced ? C.text : (active ? C.text : (past ? C.text.withValues(alpha: 0.32) : C.text.withValues(alpha: dist <= 2 ? 0.45 : 0.3))),
         );
         final words = line.words;
         Widget text;
@@ -184,7 +198,12 @@ class _Line extends StatelessWidget {
             builder: (_, pos, __) => Text.rich(_karaoke(line.text, words, pos, base)),
           );
         } else {
-          text = Text(line.text, style: base);
+          text = AnimatedDefaultTextStyle(
+            duration: const Duration(milliseconds: 280),
+            curve: Curves.easeOut,
+            style: base,
+            child: Text(line.text),
+          );
         }
         return InkWell(
           onTap: onTap,
@@ -195,18 +214,21 @@ class _Line extends StatelessWidget {
     );
   }
 
-  /// Слова, до которых музыка уже дошла, — акцентным цветом, остальные — приглушённые
+  /// Слова заливаются плавно по мере пения: спетые — белые, ещё не спетые — приглушённые
   static TextSpan _karaoke(String text, List<KWord> words, Duration pos, TextStyle base) {
+    final dim = C.text.withValues(alpha: 0.38);
     final spans = <InlineSpan>[];
     var at = 0;
     for (final w in words) {
       final from = w.from.clamp(0, text.length);
       final to = w.to.clamp(from, text.length);
-      if (from > at) spans.add(TextSpan(text: text.substring(at, from), style: base.copyWith(color: C.muted)));
-      spans.add(TextSpan(text: text.substring(from, to), style: base.copyWith(color: pos >= w.start ? C.accent : C.muted)));
+      if (from > at) spans.add(TextSpan(text: text.substring(at, from), style: base.copyWith(color: dim)));
+      final span = (w.end - w.start).inMilliseconds;
+      final k = pos <= w.start ? 0.0 : (pos >= w.end || span <= 0 ? 1.0 : (pos - w.start).inMilliseconds / span);
+      spans.add(TextSpan(text: text.substring(from, to), style: base.copyWith(color: Color.lerp(dim, C.text, k))));
       at = to;
     }
-    if (at < text.length) spans.add(TextSpan(text: text.substring(at), style: base.copyWith(color: C.muted)));
+    if (at < text.length) spans.add(TextSpan(text: text.substring(at), style: base.copyWith(color: dim)));
     return TextSpan(children: spans);
   }
 }
