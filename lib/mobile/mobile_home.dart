@@ -1477,7 +1477,7 @@ class _FullPlayerState extends State<FullPlayer> {
               final t = p.current;
               if (t == null) return const Center(child: Text('Ничего не играет'));
               final size = MediaQuery.sizeOf(context);
-              final cover = math.min(size.width - 40, size.height * 0.48);
+              final cover = math.min(size.width - 40, size.height * 0.42);
               return SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -1492,34 +1492,34 @@ class _FullPlayerState extends State<FullPlayer> {
                           icon: Icon(Icons.lyrics_outlined, size: 25, color: lyrics ? C.accent : C.text)),
                       IconButton(onPressed: () => queue(context), icon: const Icon(Icons.queue_music_rounded, size: 26, color: C.text)),
                     ]),
-                    Expanded(
-                      child: lyrics
-                          ? LyricsView(services: services, track: t)
-                          : GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onHorizontalDragEnd: (d) {
-                                final v = d.primaryVelocity ?? 0;
-                                if (v < -300) {
-                                  HapticFeedback.selectionClick();
-                                  p.next();
-                                } else if (v > 300) {
-                                  HapticFeedback.selectionClick();
-                                  p.previous();
-                                }
-                              },
-                              child: Align(
-                              alignment: const Alignment(0, -0.75),
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(22),
-                                  boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 36, offset: Offset(0, 16))],
-                                ),
-                                child: TrackCover(services: services, track: t, size: cover, radius: 22, fullscreen: true),
-                              ),
+                    if (lyrics)
+                      Expanded(child: LyricsView(services: services, track: t))
+                    else
+                      // Обложка и управление идут сразу друг за другом: кнопки почти под картинкой
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onHorizontalDragEnd: (d) {
+                          final v = d.primaryVelocity ?? 0;
+                          if (v < -300) {
+                            HapticFeedback.selectionClick();
+                            p.next();
+                          } else if (v > 300) {
+                            HapticFeedback.selectionClick();
+                            p.previous();
+                          }
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(22),
+                              boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 36, offset: Offset(0, 16))],
                             ),
-                            ),
-                    ),
-                    const SizedBox(height: 12),
+                            child: TrackCover(services: services, track: t, size: cover, radius: 22, fullscreen: true),
+                          ),
+                        ),
+                      ),
+                    SizedBox(height: lyrics ? 12 : 22),
                     Row(children: [
                       Expanded(
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1606,6 +1606,7 @@ class _FullPlayerState extends State<FullPlayer> {
                           icon: Icon(p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
                               size: 26, color: p.repeat == RepeatSetting.off ? C.muted : C.accent)),
                     ]),
+                    if (!lyrics) const Spacer(),
                     const SizedBox(height: 18),
                   ]),
                 ),
