@@ -91,11 +91,15 @@ class CoverImage extends StatefulWidget {
   /// Не просить копию крупнее этого размера в пикселях (для размытых баннеров хватает 640)
   final int? maxPx;
 
+  /// Fullscreen/cinema should load the original file, not stop at 640px.
+  /// A cached 160/640px thumbnail remains a temporary visual placeholder.
+  final bool originalQuality;
+
   /// Закрашивать всю площадь: под обложкой кладётся её же размытая копия, чтобы прозрачные поля
   /// и неквадратные картинки не оставляли пустых полос (плеер)
   final bool fill;
   const CoverImage(
-      {super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx, this.fill = false});
+      {super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx, this.fill = false, this.originalQuality = false});
 
   @override
   State<CoverImage> createState() => _CoverImageState();
@@ -136,6 +140,7 @@ class _CoverImageState extends State<CoverImage> {
   }
 
   int get _wantPx {
+    if (widget.originalQuality) return 0;
     final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
     final px = (math.max(widget.size, widget.height ?? 0) * dpr).round();
     final cap = widget.maxPx;
@@ -239,7 +244,7 @@ class _CoverImageState extends State<CoverImage> {
                       alignment: Alignment.center,
                       filterQuality: FilterQuality.medium,
                       gaplessPlayback: true,
-                      cacheWidth: math.min(1600, (widget.size * dpr).round()),
+                      cacheWidth: widget.originalQuality ? null : math.min(1600, (widget.size * dpr).round()),
                       errorBuilder: (_, __, ___) => placeholder,
                     ),
                   ])
@@ -247,7 +252,7 @@ class _CoverImageState extends State<CoverImage> {
                     bytes,
                     fit: BoxFit.cover,
                     gaplessPlayback: true,
-                    cacheWidth: (widget.size * dpr).round(),
+                    cacheWidth: widget.originalQuality ? null : (widget.size * dpr).round(),
                     errorBuilder: (_, __, ___) => placeholder,
                   ),
       ),
