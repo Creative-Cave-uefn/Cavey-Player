@@ -90,6 +90,32 @@ class LibraryController extends ChangeNotifier {
   /// Недавно сохранённые правки полей (setMeta). Если другой клиент в то же время переписал library.json
   /// со старой копией, наша правка (например, ник) пропадёт; здесь мы это замечаем и сохраняем её заново
   final List<(Map<String, dynamic>, DateTime)> _recentMeta = [];
+
+  /// Locally durable reconciliation ledger: if a stale peer overwrites a
+  /// recently saved operation, requeue it on the next reload. Shared snapshots
+  /// carry bounded appliedOps IDs so normal reloads do not replay anything.
+  final List<(Map<String, dynamic>, DateTime)> _recentOps = [];
+
+  void _clearRecentOps() {
+    _recentOps.clear();
+    unawaited(store.writeJson('recent_ops.json', {'hub': settings.hubId, 'ops': []}));
+  }
+
+  Future<void> _saveRecentOps() => store.writeJson('recent_ops.json', {
+    'hub': settings.hubId,
+    'ops': [
+      for (final (op, when) in _recentOps)
+        {'op': op, 'at': when.toIso8601String()},
+    ],
+  });
+
+  void _pruneRecentOps() {
+    final cutoff = DateTime.now().subtract(const Duration(hours: 24));
+    _recentOps.removeWhere((item) => item.$2.isBefore(cutoff));
+    if (_recentOps.length > 1200) {
+      _recentOps.removeRange(0, _recentOps.length - 1200);
+    }
+  }
   int _flushGen = 0;
   String? _libModified;
   String? _libVersion;
@@ -125,6 +151,19 @@ class LibraryController extends ChangeNotifier {
       data = LibraryData.fromJson(cached['data']);
       _libModified = cached['modified'] as String?;
       _libVersion = cached['version'] as String?;
+    }
+    final recent = await store.readJson('recent_ops.json');
+    if (recent is Map && recent['hub'] == settings.hubId) {
+      for (final item in (recent['ops'] as List? ?? const [])) {
+        if (item is! Map || item['op'] is! Map) continue;
+        final raw = item['op'] as Map;
+        final id = raw['oid'];
+        final date = DateTime.tryParse('${item['at'] ?? ''}');
+        if (id is String && id.isNotEmpty && date != null) {
+          _recentOps.add((Map<String, dynamic>.from(raw), date));
+        }
+      }
+      _pruneRecentOps();
     }
     final pend = await store.readJson('pending_ops.json');
     if (pend is List) {
@@ -237,6 +276,7 @@ class LibraryController extends ChangeNotifier {
     _libVersion = null;
     data = fresh;
     _pending.clear();
+    _clearRecentOps();
     await saveSettings();
     await _saveLocal();
     _changed();
@@ -285,6 +325,7 @@ class LibraryController extends ChangeNotifier {
       dataFolders = const [];
       data = LibraryData();
       _pending.clear();
+      _clearRecentOps();
       _libModified = null;
       _libVersion = null;
       await saveSettings();
@@ -326,6 +367,7 @@ class LibraryController extends ChangeNotifier {
       ..autoJoinDisabled = false;
     _libModified = f['modifiedTime'] as String?;
     _libVersion = null;
+    _clearRecentOps();
     _dataFolderId = null;
     dataFolders = const [];
     await saveSettings();
@@ -526,6 +568,7 @@ class LibraryController extends ChangeNotifier {
       ..sourceAccess.clear();
     data = LibraryData();
     _pending.clear();
+    _clearRecentOps();
     _libModified = null;
     _libVersion = null;
     _dataFolderId = null;
@@ -568,6 +611,24 @@ class LibraryController extends ChangeNotifier {
         if (_flushing || gen != _flushGen) return;
         for (final op in _pending) {
           latest.apply(op);
+        }
+        // A peer could have published an old snapshot after our successful
+        // PATCH. Bring our missing recent changes back, in their original
+        // order, without replaying operations already present in the JSON.
+        _pruneRecentOps();
+        var recovered = 0;
+        for (final (op, _) in _recentOps) {
+          final id = op['oid'];
+          if (id is! String || latest.appliedOps.containsKey(id) ||
+              _pending.any((p) => p['oid'] == id)) continue;
+          latest.apply(op);
+          _pending.add(op);
+          recovered++;
+        }
+        if (recovered > 0) {
+          AppLog.info('Синхронизация: восстановлено локальных операций: $recovered');
+          unawaited(store.writeJson('pending_ops.json', _pending));
+          _scheduleFlush();
         }
         data = latest;
         _libModified = after['modifiedTime'] as String?;
@@ -623,6 +684,7 @@ class LibraryController extends ChangeNotifier {
   void commit(Map<String, dynamic> op) {
     // Отключились от библиотеки, а сканирование ещё дописывает: эти правки уже ничьи
     if (!hasHub) return;
+    op.putIfAbsent('oid', () => '${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32)}');
     data.apply(op);
     _pending.add(op);
     _changed();
@@ -710,6 +772,14 @@ class LibraryController extends ChangeNotifier {
         }
       });
       syncError = null;
+      final now = DateTime.now();
+      for (final op in batch) {
+        if (op['oid'] is String) _recentOps.add((op, now));
+      }
+      _pruneRecentOps();
+      // Persist the reconciliation ledger BEFORE clearing pending_ops on disk.
+      // If the app exits at this point, the same operation can be recovered.
+      await _saveRecentOps();
       await store.writeJson('pending_ops.json', _pending);
       await _saveLocal();
     } on _Abandoned {
