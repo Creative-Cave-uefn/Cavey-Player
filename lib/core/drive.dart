@@ -206,54 +206,109 @@ class DriveApi {
     return res.bodyBytes;
   }
 
-  /// Скачивает файл целиком на диск по частям, не держа его в памяти
-  Future<void> downloadToFile(String email, String id, File target, {void Function(int got, int total)? onProgress}) async {
-    for (var attempt = 0; attempt < 3; attempt++) {
-      final token = await accounts.token(email, force: attempt == 1);
-      final req = http.Request('GET', mediaUrl(id))..headers['Authorization'] = 'Bearer $token';
-      final http.StreamedResponse res;
-      try {
-        res = await _http.send(req).timeout(const Duration(seconds: 30));
-      } on TimeoutException {
-        if (attempt < 2) continue;
-        throw DriveException(408, 'Google Диск не ответил вовремя');
-      }
-      if (res.statusCode == 401 && attempt == 0) {
-        await res.stream.drain<void>();
-        continue;
-      }
-      // Г2: 429 и 5xx — Google просит подождать, пробуем ещё раз
-      if ((res.statusCode == 429 || res.statusCode >= 500) && attempt < 2) {
-        await res.stream.drain<void>();
-        await Future<void>.delayed(Duration(milliseconds: 800 * (attempt + 1) + Random().nextInt(400)));
-        continue;
-      }
-      if (res.statusCode >= 400) {
-        final body = await http.Response.fromStream(res);
-        throw DriveException(res.statusCode, _errorText(body));
-      }
-      final part = File('${target.path}.part');
-      final sink = part.openWrite();
-      var got = 0;
-      try {
-        await for (final chunk in res.stream.timeout(const Duration(seconds: 30))) {
-          sink.add(chunk);
-          got += chunk.length;
-          onProgress?.call(got, res.contentLength ?? 0);
-        }
-      } finally {
-        await sink.close();
-      }
-      // Г2: недокачанный файл не должен попасть в кэш как целый
-      final promised = res.contentLength ?? 0;
-      if (promised > 0 && got != promised) {
-        await part.delete();
-        throw DriveException(0, 'файл скачан не полностью ($got из $promised байт)');
-      }
-      if (await target.exists()) await target.delete();
-      await part.rename(target.path);
-      return;
+  /// Persist interrupted downloads only for the same source revision.
+  Future<void> downloadToFile(
+    String email, String id, File target, {
+    String? expectedModified,
+    void Function(int got, int total)? onProgress,
+  }) async {
+    final part = File('${target.path}.part');
+    final marker = File('${target.path}.part.version');
+    final revision = expectedModified ?? '';
+    final savedRevision = await marker.exists() ? await marker.readAsString() : '';
+    if (revision.isEmpty || savedRevision != revision) {
+      if (await part.exists()) await part.delete();
+      if (await marker.exists()) await marker.delete();
     }
+    if (revision.isNotEmpty && !await marker.exists()) {
+      await marker.writeAsString(revision, flush: true);
+    }
+    Object? lastError;
+    for (var attempt = 0; attempt < 5; attempt++) {
+      var offset = await part.exists() ? await part.length() : 0;
+      final token = await accounts.token(email);
+      final req = http.Request('GET', mediaUrl(id))
+        ..headers['Authorization'] = 'Bearer $token';
+      if (offset > 0) req.headers['Range'] = 'bytes=$offset-';
+      try {
+        final res = await _http.send(req).timeout(const Duration(seconds: 30));
+        if (res.statusCode == 416 && offset > 0) {
+          await res.stream.drain<void>();
+          await part.delete();
+          if (attempt < 4) continue;
+          throw DriveException(416, 'Изменился размер файла при скачивании');
+        }
+        if (res.statusCode == 401 && attempt == 0) {
+          await res.stream.drain<void>();
+          await accounts.token(email, force: true);
+          continue;
+        }
+        if (res.statusCode == 429 || res.statusCode >= 500) {
+          await res.stream.drain<void>();
+          if (attempt < 4) {
+            await Future<void>.delayed(retryDelay(attempt));
+            continue;
+          }
+          throw DriveException(res.statusCode, 'Google Диск временно недоступен');
+        }
+        if (res.statusCode >= 400) {
+          final body = await http.Response.fromStream(res);
+          throw DriveException(res.statusCode, _errorText(body));
+        }
+        if (res.statusCode != 200 && res.statusCode != 206) {
+          await res.stream.drain<void>();
+          throw DriveException(res.statusCode, 'Неожиданный ответ на скачивание');
+        }
+        var total = res.contentLength ?? 0;
+        if (res.statusCode == 206) {
+          final match = RegExp(r'^bytes (\d+)-(\d+)/(\d+)$')
+              .firstMatch(res.headers['content-range'] ?? '');
+          final first = match == null ? null : int.tryParse(match.group(1)!);
+          final last = match == null ? null : int.tryParse(match.group(2)!);
+          final entire = match == null ? null : int.tryParse(match.group(3)!);
+          if (first != offset || last == null || entire == null ||
+              last < first! || last >= entire) {
+            await res.stream.drain<void>();
+            throw DriveException(502, 'Google Диск вернул неверный Content-Range');
+          }
+          total = entire;
+        } else if (offset > 0) {
+          // A full HTTP 200 response must replace, not append to, a partial.
+          offset = 0;
+        }
+        final sink = part.openWrite(mode: offset == 0 ? FileMode.write : FileMode.append);
+        var got = offset;
+        var transferred = 0;
+        try {
+          await for (final chunk in res.stream.timeout(const Duration(seconds: 30))) {
+            sink.add(chunk);
+            got += chunk.length;
+            transferred += chunk.length;
+            onProgress?.call(got, total);
+          }
+        } finally {
+          await sink.close();
+        }
+        final promised = res.contentLength;
+        if ((promised != null && transferred != promised) ||
+            (total > 0 && got != total)) {
+          throw DriveException(503, 'Скачивание прервано: $got из $total байт');
+        }
+        if (await target.exists()) await target.delete();
+        await part.rename(target.path);
+        if (await marker.exists()) await marker.delete();
+        return;
+      } on DriveException catch (e) {
+        lastError = e;
+        if (!(e.status == 408 || e.status == 429 || e.status >= 500) ||
+            attempt == 4) rethrow;
+      } catch (e) {
+        lastError = e;
+        if (!isRetryableReadFailure(e) || attempt == 4) rethrow;
+      }
+      await Future<void>.delayed(retryDelay(attempt));
+    }
+    throw DriveException(503, 'Не удалось докачать файл: $lastError');
   }
 
   Future<Uint8List> download(String email, String id) async {
