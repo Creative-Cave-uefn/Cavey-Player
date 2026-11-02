@@ -626,97 +626,10 @@ class _NewReleasesPageState extends State<NewReleasesPage> {
   }
 }
 
-// ───────────────────────────── Компания ─────────────────────────────
+// ───────────────────────────── уведомления ─────────────────────────────
 
-class CompanyPage extends StatelessWidget {
-  const CompanyPage({super.key, required this.services});
-  final MobileServices services;
-
-  String ago(DateTime t) {
-    final d = Member.nowSynced.difference(t);
-    if (d.inMinutes < 2) return 'только что';
-    if (d.inMinutes < 60) return '${d.inMinutes} мин назад';
-    if (d.inHours < 24) return '${d.inHours} ч назад';
-    return '${d.inDays} дн назад';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final social = services.social;
-    final lib = services.library;
-    return SubPage(
-      services: services,
-      title: 'Компания',
-      child: AnimatedBuilder(
-        animation: Listenable.merge([social, lib]),
-        builder: (_, __) {
-          final friends = social.friends;
-          final notices = social.notices.take(30).toList();
-          final following = social.following;
-          return ListView(children: [
-            if (following != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                child: Glass(
-                  radius: 16,
-                  color: C.surface,
-                  child: ListTile(
-                    leading: Icon(Icons.headphones_rounded, color: C.accent),
-                    title: Text('Слушаете вместе: ${_name(social, following)}'),
-                    trailing: TextButton(onPressed: social.stopFollowing, child: Text('Выйти', style: TextStyle(color: C.accent))),
-                  ),
-                ),
-              ),
-            const SectionTitle('Друзья'),
-            if (friends.isEmpty)
-              const Padding(padding: EdgeInsets.fromLTRB(20, 0, 20, 12), child: Text('Пока никого нет рядом', style: TextStyle(color: C.muted))),
-            for (final m in friends)
-              ListTile(
-                leading: Stack(children: [
-                  CircleAvatar(
-                    radius: 22,
-                    backgroundColor: friendColor(m.email),
-                    child: Text(m.name.isEmpty ? '?' : m.name[0].toUpperCase(), style: const TextStyle(color: Color(0xFF14141B), fontWeight: FontWeight.w700)),
-                  ),
-                  if (m.live)
-                    Positioned(
-                      right: 0,
-                      bottom: 0,
-                      child: Container(width: 12, height: 12, decoration: BoxDecoration(color: const Color(0xFF5BD66F), shape: BoxShape.circle, border: Border.all(color: C.bg, width: 2))),
-                    ),
-                ]),
-                title: Text(m.name.isEmpty ? m.email : m.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Text(
-                  m.now == null ? 'Давно не слушал' : '${m.live ? '' : 'Недавно · '}${m.now!.title} — ${m.now!.artist}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: C.muted, fontSize: 13),
-                ),
-                trailing: m.live
-                    ? IconButton(
-                        tooltip: 'Слушать вместе',
-                        icon: Icon(following == m.email ? Icons.headphones_rounded : Icons.headphones_outlined, color: following == m.email ? C.accent : C.text),
-                        onPressed: () => following == m.email ? social.stopFollowing() : social.follow(m.email),
-                      )
-                    : null,
-              ),
-            if (notices.isNotEmpty) const SectionTitle('Вам'),
-            for (final n in notices) _NoticeTile(services: services, notice: n, ago: ago(n.at)),
-            const SizedBox(height: 16),
-          ]);
-        },
-      ),
-    );
-  }
-
-  String _name(SocialController s, String email) {
-    final m = s.members[email];
-    return m == null || m.name.isEmpty ? email : m.name;
-  }
-}
-
-class _NoticeTile extends StatelessWidget {
-  const _NoticeTile({required this.services, required this.notice, required this.ago});
+class NoticeTile extends StatelessWidget {
+  const NoticeTile({required this.services, required this.notice, required this.ago});
   final MobileServices services;
   final Notice notice;
   final String ago;

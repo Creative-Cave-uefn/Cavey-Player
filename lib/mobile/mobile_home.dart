@@ -15,6 +15,7 @@ import '../ui/theme.dart';
 import 'mobile_ambient.dart';
 import 'mobile_lyrics.dart';
 import 'mobile_pages.dart';
+import 'mobile_social.dart';
 import 'mobile_updater.dart';
 
 /// Android-версия в том же «стеклянном» стиле, что и Windows: тёмная основа, под всем —
@@ -562,12 +563,13 @@ class _MobileShellState extends State<MobileShell> {
     return ListView(children: [
       header('Ещё'),
       tile(Icons.new_releases_outlined, 'Новинки', 'Свежие релизы ваших исполнителей', () => openPage(NewReleasesPage(services: s))),
-      tile(Icons.groups_outlined, 'Компания', 'Друзья, что они слушают, уведомления', () => openPage(CompanyPage(services: s)), dot: unread > 0),
+      tile(Icons.account_circle_outlined, 'Моя страница', 'Статистика, любимые треки, плейлисты', () => openPage(UserPage(services: s, email: s.library.me ?? ''))),
+      tile(Icons.groups_outlined, 'Компания', 'Друзья, чарт недели, лента, уведомления', () => openPage(CompanyPage(services: s)), dot: unread > 0),
       tile(Icons.download_done_rounded, 'Скачано', 'Треки на телефоне, доступны без интернета', () => setState(() {
             tab = 3;
             section = 5;
           })),
-      tile(Icons.person_outline_rounded, 'Профиль и память', 'Аккаунт, обновления, кэш', () => openPage(SubPage(services: s, title: 'Профиль', child: ProfileTab(services: s))),
+      tile(Icons.settings_outlined, 'Настройки', 'Аккаунт, обновления, кэш', () => openPage(SubPage(services: s, title: 'Настройки', child: ProfileTab(services: s))),
           dot: s.updater.available != null),
     ]);
   }
@@ -1470,7 +1472,7 @@ class _FullPlayerState extends State<FullPlayer> {
               final t = p.current;
               if (t == null) return const Center(child: Text('Ничего не играет'));
               final size = MediaQuery.sizeOf(context);
-              final cover = math.min(size.width - 48, size.height * 0.42);
+              final cover = math.min(size.width - 40, size.height * 0.48);
               return SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -1500,7 +1502,8 @@ class _FullPlayerState extends State<FullPlayer> {
                                   p.previous();
                                 }
                               },
-                              child: Center(
+                              child: Align(
+                              alignment: const Alignment(0, -0.75),
                               child: DecoratedBox(
                                 decoration: BoxDecoration(
                                   borderRadius: BorderRadius.circular(22),
