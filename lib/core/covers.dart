@@ -54,15 +54,21 @@ class CoverService extends ChangeNotifier {
     return bytes;
   }
 
-  /// A larger view can immediately show an existing small thumbnail while
-  /// the high-resolution image is being loaded in the background.
+  /// Requested size first, then available larger/smaller previews.
+  /// A fullscreen view can display the small cached image instantly, while
+  /// forTrack/forFile independently upgrade it to full resolution.
+  static List<int> previewBucketPriority(int px) => switch (bucketFor(px)) {
+    160 => const [160, 640, 0],
+    640 => const [640, 0, 160],
+    _ => const [0, 640, 160],
+  };
+
   Uint8List? _peekKey(String key, int px) {
-    final b = bucketFor(px);
-    final exact = _touch(_mk(key, b));
-    if (exact != null) return exact;
-    if (b == 160) return _touch(_mk(key, 640)) ?? _touch(key);
-    if (b == 640) return _touch(key) ?? _touch(_mk(key, 160));
-    return _touch(_mk(key, 640)) ?? _touch(_mk(key, 160));
+    for (final bucket in previewBucketPriority(px)) {
+      final cached = _touch(_mk(key, bucket));
+      if (cached != null) return cached;
+    }
+    return null;
   }
 
   /// Distinguish a placeholder-quality thumbnail from the requested size,
