@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -142,6 +143,16 @@ class MobileServices {
       library.noteDuration(t, d);
     };
 
+    // Свой идентификатор устройства: по нему видно, что тот же аккаунт играет на другом устройстве
+    var dev = '';
+    final saved = await store.readJson('device.json');
+    if (saved is Map && '${saved['id']}'.isNotEmpty) dev = '${saved['id']}';
+    if (dev.isEmpty) {
+      final r = math.Random.secure();
+      dev = 'a${List.generate(10, (_) => r.nextInt(36).toRadixString(36)).join()}';
+      await store.writeJson('device.json', {'id': dev});
+    }
+    SocialController.deviceId = dev;
     final social = SocialController(library, drive, player)..start();
     final web = WebInfoService(store.sub('web'), library);
     final preview = PreviewPlayer(player);

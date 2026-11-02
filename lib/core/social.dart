@@ -23,13 +23,16 @@ class NowPlaying {
   final bool playing;
   final Duration pos;
   final DateTime at;
-  const NowPlaying(this.trackId, this.title, this.artist, this.playing, this.pos, this.at);
+
+  /// Какое устройство пишет статус (пусто у старых версий): по нему видно, что человек играет на другом своём устройстве
+  final String device;
+  const NowPlaying(this.trackId, this.title, this.artist, this.playing, this.pos, this.at, [this.device = '']);
 
   /// Где трек сейчас, с учётом времени, прошедшего с последнего сохранения
   Duration estimate() => playing ? pos + Member.nowSynced.difference(at) : pos;
 
   Map<String, dynamic> toJson() =>
-      {'id': trackId, 't': title, 'a': artist, 'p': playing, 'pos': pos.inMilliseconds, 'at': at.toIso8601String()};
+      {'id': trackId, 't': title, 'a': artist, 'p': playing, 'pos': pos.inMilliseconds, 'at': at.toIso8601String(), if (device.isNotEmpty) 'd': device};
 
   static NowPlaying? fromJson(dynamic j) {
     if (j is! Map || j['id'] == null) return null;
@@ -40,6 +43,7 @@ class NowPlaying {
       j['p'] == true,
       Duration(milliseconds: (j['pos'] as num?)?.toInt() ?? 0),
       DateTime.tryParse('${j['at']}')?.toUtc() ?? DateTime.now().toUtc(),
+      '${j['d'] ?? ''}',
     );
   }
 }
@@ -258,10 +262,16 @@ class SocialController extends ChangeNotifier {
 
   // ---------- что я слушаю ----------
 
+  /// Идентификатор этого устройства; приложение на телефоне задаёт свой, на ПК пусто
+  static String deviceId = '';
+
+  /// Что играет на другом моём устройстве (того же аккаунта): по этому статусу телефон предлагает «продолжить здесь»
+  NowPlaying? otherDevice;
+
   NowPlaying? _myNow() {
     final t = player.current;
     if (t == null) return null;
-    return NowPlaying(t.id, t.title, t.displayArtist, player.playing, player.position.value, DateTime.now().toUtc());
+    return NowPlaying(t.id, t.title, t.displayArtist, player.playing, player.position.value, DateTime.now().toUtc(), deviceId);
   }
 
   void _onPlayer() {
@@ -448,6 +458,7 @@ class SocialController extends ChangeNotifier {
       });
       if (lastWrite == null) AppLog.info('Статус сохранён в cave-data');
       lastWrite = DateTime.now();
+      if (player.playing) otherDevice = null; // теперь играем здесь
       _refreshMe();
     } catch (e) {
       _dirty = true;
@@ -512,7 +523,7 @@ class SocialController extends ChangeNotifier {
             _myFileId = f.id;
             _myFileFolder = main;
           }
-          if (_loadedMine) continue;
+          if (_loadedMine && (_fileModified[f.id] == f.modifiedTime || deviceId.isEmpty)) continue;
         }
         if (_fileModified[f.id] == f.modifiedTime && members.containsKey(email)) continue;
         toLoad.add(() async {
@@ -557,11 +568,17 @@ class SocialController extends ChangeNotifier {
       final off = srv.difference(m.updated);
       if (off.abs() > const Duration(seconds: 10)) {
         final n = m.now;
-        if (n != null) m.now = NowPlaying(n.trackId, n.title, n.artist, n.playing, n.pos, n.at.add(off));
+        if (n != null) m.now = NowPlaying(n.trackId, n.title, n.artist, n.playing, n.pos, n.at.add(off), n.device);
         m.updated = srv;
       }
     }
     if (email == me) {
+      final n = m.now;
+      final other = n != null && deviceId.isNotEmpty && n.device != deviceId ? n : null;
+      if (other != otherDevice || other != null) {
+        otherDevice = other;
+        notifyListeners();
+      }
       // История с другого компьютера: объединяем с тем, что накопилось здесь
       final known = {for (final e in _myEvents) '${e['at']}${e['k']}'};
       _myEvents = [...m.events.where((e) => !known.contains('${e['at']}${e['k']}')), ..._myEvents]

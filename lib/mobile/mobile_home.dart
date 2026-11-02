@@ -10,6 +10,7 @@ import '../config.dart';
 import '../core/library.dart';
 import '../core/models.dart';
 import '../core/player.dart' show RepeatSetting;
+import '../core/social.dart' show Member;
 import '../mobile_main.dart';
 import '../ui/theme.dart';
 import 'mobile_ambient.dart';
@@ -428,6 +429,7 @@ class _MobileShellState extends State<MobileShell> {
         ),
         const SizedBox(height: 10),
         if (s.updater.available != null) UpdateBanner(updater: s.updater, onToast: toast),
+        HandoffCard(services: s),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Column(children: [
@@ -1647,6 +1649,64 @@ class QueueSheet extends StatelessWidget {
               ),
             ),
           ]);
+        },
+      );
+}
+
+
+/// «Играет на другом устройстве»: тот же аккаунт слушает на ПК или втором телефоне — можно продолжить здесь,
+/// с того же трека и того же места
+class HandoffCard extends StatelessWidget {
+  const HandoffCard({super.key, required this.services});
+  final MobileServices services;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: Listenable.merge([services.social, services.player]),
+        builder: (context, _) {
+          final n = services.social.otherDevice;
+          final p = services.player;
+          if (n == null) return const SizedBox.shrink();
+          final fresh = Member.nowSynced.difference(n.at) < const Duration(minutes: 20);
+          final track = services.library.data.tracks[services.library.data.resolve(n.trackId)];
+          if (!fresh || track == null || (p.playing && p.current?.id == track.id)) return const SizedBox.shrink();
+          final where = n.device.isEmpty ? 'на компьютере' : 'на другом устройстве';
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Glass(
+              radius: 18,
+              color: C.surface,
+              child: InkWell(
+                onTap: () async {
+                  final at = n.estimate();
+                  await playTracks(context, services, [track], 0);
+                  // Трек должен успеть открыться, иначе перемотка сбросится
+                  await Future<void>.delayed(const Duration(milliseconds: 600));
+                  await services.player.seek(at);
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(children: [
+                    TrackCover(services: services, track: track, size: 50, radius: 12),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(n.playing ? 'Играет $where' : 'Остановлено $where', style: TextStyle(color: C.accent, fontSize: 12, fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 2),
+                        Text(track.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+                        Text(track.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+                      ]),
+                    ),
+                    FilledButton(
+                      onPressed: null,
+                      style: FilledButton.styleFrom(disabledBackgroundColor: C.accent, disabledForegroundColor: C.accentInk),
+                      child: const Text('Продолжить'),
+                    ),
+                  ]),
+                ),
+              ),
+            ),
+          );
         },
       );
 }
