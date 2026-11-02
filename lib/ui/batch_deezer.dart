@@ -132,10 +132,40 @@ class _BatchDeezerActionsState extends State<BatchDeezerActions> {
         LinearProgressIndicator(value: widget.tracks.isEmpty ? null : _finished / widget.tracks.length),
       ],
       if (widget.draft.metadata.isNotEmpty || widget.draft.covers.isNotEmpty) ...[
-        const SizedBox(height: 5),
+        const SizedBox(height: 6),
         Text('Подготовлено: ${widget.draft.metadata.length} названий, '
              '${widget.draft.covers.length} обложек.',
              style: const TextStyle(color: C.faint, fontSize: 12)),
+        if (widget.draft.metadata.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          for (final entry in widget.draft.metadata.entries.take(2))
+            Text(
+              '${entry.value['a'] ?? ""} — ${entry.value['t'] ?? ""}',
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+              style: const TextStyle(color: C.muted, fontSize: 11),
+            ),
+        ],
+        if (widget.draft.covers.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 56,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                for (final entry in widget.draft.covers.entries.take(8))
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(5),
+                      child: Image.memory(entry.value.bytes,
+                        width: 52, height: 52, cacheWidth: 104, fit: BoxFit.cover),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
       ],
     ]),
   );
