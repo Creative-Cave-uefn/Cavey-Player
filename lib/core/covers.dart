@@ -4,7 +4,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 
+import 'deezer_art.dart';
 import 'drive.dart';
+import 'log.dart';
 import 'image_tools.dart';
 import 'library.dart';
 import 'models.dart';
@@ -25,6 +27,8 @@ class CoverService extends ChangeNotifier {
   static const int _memoryLimitBytes = 48 * 1024 * 1024;
   final Map<String, Future<Uint8List?>> _inflight = {};
   final Map<String, Future<Uint8List?>> _originalInflight = {};
+  final Map<String, Future<DeezerArtwork?>> _albumLookupInflight = {};
+  final Set<String> _savingDeezer = {};
   final Map<String, DateTime> _retryAt = {};
   final Map<String, int> _failures = {};
   int _active = 0;
@@ -37,6 +41,12 @@ class CoverService extends ChangeNotifier {
 
   /// Какой размер копии нужен для картинки в [px] физических пикселей: 160, 640 или 0 (оригинал)
   static int bucketFor(int px) => px <= 0 ? 0 : (px <= 200 ? 160 : (px <= 720 ? 640 : 0));
+
+  /// A newly imported song may contain no APIC, cover.jpg or saved artwork.
+  /// Public catalog lookup is an optional last resort, never required to play.
+  static bool canFindInDeezer(Track t) =>
+      t.artist.trim().isNotEmpty &&
+      (t.album.trim().isNotEmpty || t.title.trim().isNotEmpty);
 
   /// Ключ картинки трека: загруженная обложка (альбома или трека) важнее обложки из файла
   String keyOf(Track t) {
@@ -103,13 +113,15 @@ class CoverService extends ChangeNotifier {
   Uint8List? peekFile(String fileId, {int px = 0}) => _peekKey('cv_$fileId', px);
 
   /// Картинку трека ещё предстоит загрузить (есть обложка, но в памяти её нет)
-  bool wants(Track t) => lib.customCoverOf(t) != null || t.hasCover;
+  bool wants(Track t) => lib.customCoverOf(t) != null || t.hasCover || canFindInDeezer(t);
 
   Future<Uint8List?> forTrack(Track t, {int px = 0}) {
     final c = lib.customCoverOf(t);
     if (c != null) return forFile(c, px: px);
-    if (!t.hasCover) return Future.value(null);
     final key = _key(t);
+    if (!t.hasCover) return canFindInDeezer(t)
+        ? _get(key, px, () => _deezerCover(t))
+        : Future.value(null);
     return _get(key, px, () async {
       final email = await lib.accessFor(t.source);
       final pic = t.pic;
@@ -117,6 +129,87 @@ class CoverService extends ChangeNotifier {
       if (pic != null) return drive.readRange(email, t.id, pic.offset, pic.offset + pic.length - 1);
       return null;
     });
+  }
+
+  /// Resolve a high-resolution image when the source file itself contains
+  /// only a small embedded cover. The existing picture is still shown while
+  /// a verified Deezer match is retrieved.
+  Future<Uint8List?> forFullscreen(Track t) async {
+    final original = await forTrack(t, px: 0);
+    if (!canFindInDeezer(t) || lib.customCoverOf(t) != null) return original;
+    if (original != null && original.isNotEmpty) {
+      try {
+        final dims = await DeezerArt.dimensionsInBackground(original)
+            .timeout(const Duration(seconds: 4));
+        if (dims != null && dims.$1 >= 900 && dims.$2 >= 900) return original;
+        final artwork = await _findDeezer(t);
+        if (artwork == null || (dims != null &&
+            !artwork.betterThan(dims.$1, dims.$2))) return original;
+        _saveFoundCover(t, artwork.bytes);
+        return artwork.bytes;
+      } catch (e) {
+        AppLog.info('Fullscreen artwork: не получилось улучшить разрешение: $e');
+        return original;
+      }
+    }
+    // Missing embedded artwork may have been fetched directly by forTrack.
+    return original;
+  }
+
+  Future<DeezerArtwork?> _findDeezer(Track t) async {
+    final artist = t.albumArtist.trim().isNotEmpty
+        ? t.albumArtist : t.artist;
+    final album = t.album.trim();
+    if (album.isNotEmpty) {
+      final key = '${DeezerArt.normalize(artist)}|${DeezerArt.normalize(album)}';
+      var found = _albumLookupInflight[key];
+      if (found == null) {
+        found = DeezerArt.find(artist: artist, title: '', album: album);
+        _albumLookupInflight[key] = found;
+        found.whenComplete(() { _albumLookupInflight.remove(key); });
+      }
+      final albumArt = await found;
+      if (albumArt != null) return albumArt;
+    }
+    if (t.title.trim().isEmpty) return null;
+    return DeezerArt.find(artist: t.artist, title: t.title, album: album);
+  }
+
+  Future<Uint8List?> _deezerCover(Track t) async {
+    try {
+      final art = await _findDeezer(t);
+      if (art == null) {
+        AppLog.info('Обложка Deezer: нет совпадения для «${t.displayAlbum}»');
+        return null;
+      }
+      _saveFoundCover(t, art.bytes);
+      return art.bytes;
+    } catch (e) {
+      AppLog.warn('Обложка Deezer: ошибка поиска для ${t.id}', e);
+      return null;
+    }
+  }
+
+  /// First display the cover locally, then persist it for all library members.
+  /// Never override a manually chosen or album-wide cover.
+  void _saveFoundCover(Track t, Uint8List bytes) {
+    if (!lib.hasHub || !_savingDeezer.add(t.id)) return;
+    unawaited(() async {
+      try {
+        final current = lib.data.tracks[t.id];
+        if (current == null || lib.customCoverOf(current) != null) return;
+        final id = await lib.uploadCover(bytes, 'jpg');
+        final latest = lib.data.tracks[t.id];
+        if (latest == null || lib.customCoverOf(latest) != null) return;
+        await seed(id, bytes);
+        lib.setMeta({t.id: {'cv': id}});
+        AppLog.info('Обложка Deezer: восстановлена для ${t.id} и сохранена на Drive');
+      } catch (e) {
+        AppLog.warn('Обложка Deezer: показана локально, но не сохранена на Drive', e);
+      } finally {
+        _savingDeezer.remove(t.id);
+      }
+    }());
   }
 
   /// Картинка из папки covers на Диске: обложка, которую выбрал кто-то из друзей
@@ -137,7 +230,8 @@ class CoverService extends ChangeNotifier {
   Future<Uint8List?> _get(String key, int px, Future<Uint8List?> Function() fetch) {
     final bucket = bucketFor(px);
     final mk = _mk(key, bucket);
-    if (_mem.containsKey(mk)) return Future.value(_touch(mk));
+    // Null is a temporary miss, not proof the source will never gain art.
+    if (_mem[mk] != null) return Future.value(_touch(mk));
     // A lower-resolution cached thumbnail is only a visual fallback: do not
     // return it as the final result and accidentally suppress the full-size load.
     final until = _retryAt[key];
@@ -156,7 +250,9 @@ class CoverService extends ChangeNotifier {
       if (bytes == null) {
         final orig = await _original(key, fetch);
         if (orig == null || orig.isEmpty) {
-          _store(mk, null); // у трека действительно нет картинки
+          _store(mk, null);
+          _retryAt[key] = DateTime.now().add(const Duration(minutes: 5));
+          Timer(const Duration(minutes: 5), _signal);
           return null;
         }
         bytes = bucket == 0 ? orig : await makeThumbnail(orig, bucket);
