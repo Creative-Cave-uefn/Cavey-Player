@@ -472,7 +472,7 @@ class PlayerController extends ChangeNotifier {
     if (cache.has(t.id)) return;
     _proxy.warmUp();
     unawaited(_proxy
-        .prefetch(t.id, size: t.size, token: () async => accounts.token(await lib.accessFor(t.source)))
+        .prefetch(t.id, size: t.size, version: t.modified, token: () async => accounts.token(await lib.accessFor(t.source)))
         .catchError((Object _) {}));
   }
 
@@ -648,6 +648,9 @@ class PlayerController extends ChangeNotifier {
 
   // ---------- воспроизведение ----------
 
+  /// После замены аудио под тем же ID не используем старые байты прокси.
+  void invalidateStream(String id) => _proxy.invalidate(id);
+
   /// Что открывать в проигрывателе: сохранённый трек играет с диска, остальные — потоком с Google Диска через прокси
   Future<Media> _mediaFor(Track t) async {
     final local = cache.fileFor(t.id);
@@ -656,6 +659,7 @@ class PlayerController extends ChangeNotifier {
       final url = await _proxy.register(
         t.id,
         size: t.size,
+        version: t.modified,
         token: () async => accounts.token(await lib.accessFor(t.source)),
       );
       return Media(url.toString());

@@ -932,19 +932,27 @@ class LibraryController extends ChangeNotifier {
     final found = <_Found>[];
     final covers = <String, String>{};
     final queue = <(String, String, int)>[(s.id, '', 0)];
+    // Четыре папки одновременно вместо последовательных сетевых round-trip.
+    // Результаты обрабатываем в порядке обхода, чтобы выбор cover.jpg был стабильным.
     while (queue.isNotEmpty) {
-      final (folder, path, depth) = queue.removeAt(0);
-      scan.text = 'Смотрю «${path.isEmpty ? s.name : path}»';
+      final batch = queue.take(4).toList();
+      queue.removeRange(0, batch.length);
+      scan.text = 'Смотрю «${batch.first.$2.isEmpty ? s.name : batch.first.$2}»';
       notifyListeners();
-      final children = await drive.listChildren(email, folder);
-      for (final c in children) {
-        if (c.isFolder) {
-          if ((c.name == dataFolderName || c.name == coversFolderName) && folder == settings.hubId) continue; // служебные папки
-          if (depth < 10) queue.add((c.id, path.isEmpty ? c.name : '$path/${c.name}', depth + 1));
-        } else if (audioExt.hasMatch(c.name) || c.mimeType.startsWith('audio/')) {
-          found.add(_Found(c, folder, path));
-        } else if (coverName.hasMatch(c.name)) {
-          covers[folder] ??= c.id;
+      final childrenBatch = await Future.wait([
+        for (final item in batch) drive.listChildren(email, item.$1),
+      ]);
+      for (var i = 0; i < batch.length; i++) {
+        final (folder, path, depth) = batch[i];
+        for (final c in childrenBatch[i]) {
+          if (c.isFolder) {
+            if ((c.name == dataFolderName || c.name == coversFolderName) && folder == settings.hubId) continue;
+            if (depth < 10) queue.add((c.id, path.isEmpty ? c.name : '$path/${c.name}', depth + 1));
+          } else if (audioExt.hasMatch(c.name) || c.mimeType.startsWith('audio/')) {
+            found.add(_Found(c, folder, path));
+          } else if (coverName.hasMatch(c.name)) {
+            covers[folder] ??= c.id;
+          }
         }
       }
     }

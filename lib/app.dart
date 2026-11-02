@@ -153,7 +153,8 @@ class AppServices {
       social.onUserAction();
       showInDiscord();
     };
-    final downloads = DownloadService(lib, store.sub('downloads'), cache: cache, covers: covers);
+    final downloads = DownloadService(lib, store.sub('downloads'), cache: cache, covers: covers,
+        onAudioReplaced: player.invalidateStream);
     late final AppServices app;
     final tray = TrayController(
       player: player,
@@ -285,6 +286,7 @@ class AppServices {
       await wave.flush();
       await lib.flushNow();
     } catch (_) {}
+    await AppLog.flush();
     try {
       await tray.dispose();
       await windowManager.destroy();
