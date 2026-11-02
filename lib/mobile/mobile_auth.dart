@@ -37,27 +37,20 @@ class MobileAccountManager extends AccountManager {
     _initialized = true;
   }
 
+  /// Вход запоминается на телефоне: при запуске Google не опрашиваем вообще, поэтому приложение
+  /// открывается сразу. Токен для Диска берётся позже, когда он понадобится ([token]);
+  /// если Google его не даст — показывается плашка «войдите снова», а не экран входа.
   @override
   Future<void> load() async {
-    // Do not trust access tokens persisted by a different implementation.
-    await super.load();
     accounts.clear();
-    if (!configured) return;
-    try {
-      await _init();
-      final user = await _google.attemptLightweightAuthentication();
-      if (user == null) return;
-      _active = user;
-      final grant = await user.authorizationClient.authorizationForScopes(
-        const [AccountManager.driveScope],
-      );
-      if (grant != null) {
-        await _setUser(user);
+    final j = await store.readJson('accounts.json');
+    if (j is List) {
+      for (final a in j) {
+        if (a is Map && a['email'] is String) {
+          final email = a['email'] as String;
+          accounts.add(Account(email: email, name: '${a['name'] ?? email}', refreshToken: ''));
+        }
       }
-    } catch (_) {
-      // First launch and revoked Android consent must still allow interactive
-      // sign-in from the button in the UI.
-      _active = null;
     }
     notifyListeners();
   }
@@ -109,13 +102,26 @@ class MobileAccountManager extends AccountManager {
     }
   }
 
+  void _markNeedsSignIn(String email) {
+    final acc = byEmail(email);
+    if (acc != null && !acc.needsSignIn) {
+      acc.needsSignIn = true;
+      notifyListeners();
+    }
+  }
+
   @override
   Future<String> token(String email, {bool force = false}) async {
     await _init();
     var user = _active;
     if (user == null || user.email != email) {
-      user = await _google.attemptLightweightAuthentication();
+      try {
+        user = await _google.attemptLightweightAuthentication();
+      } catch (_) {
+        user = null;
+      }
       if (user == null || user.email != email) {
+        _markNeedsSignIn(email);
         throw AuthException('Нужно повторно войти в Google: $email');
       }
       _active = user;
@@ -126,9 +132,13 @@ class MobileAccountManager extends AccountManager {
       const [AccountManager.driveScope],
     );
     if (grant == null || grant.accessToken.isEmpty) {
-      byEmail(email)?.needsSignIn = true;
-      notifyListeners();
+      _markNeedsSignIn(email);
       throw AuthException(AccountManager.noDriveAccess);
+    }
+    final acc = byEmail(email);
+    if (acc != null && acc.needsSignIn) {
+      acc.needsSignIn = false;
+      notifyListeners();
     }
     return grant.accessToken;
   }

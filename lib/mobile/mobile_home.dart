@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../config.dart';
 import '../core/library.dart';
@@ -25,8 +27,16 @@ class CaveyAndroid extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
         title: 'Cavey Player',
         debugShowCheckedModeBanner: false,
-        theme: buildTheme(),
-        builder: (_, child) => Backdrop(services: services, child: child ?? const SizedBox.shrink()),
+        // На телефоне нужна видимая реакция на касание, в десктопной теме её нет
+        theme: buildTheme().copyWith(splashFactory: InkRipple.splashFactory, splashColor: C.pressOverlay),
+        builder: (ctx, child) {
+          final mq = MediaQuery.of(ctx);
+          // Очень крупный системный шрифт ломает вёрстку плеера: ограничиваем
+          return MediaQuery(
+            data: mq.copyWith(textScaler: mq.textScaler.clamp(maxScaleFactor: 1.2)),
+            child: Backdrop(services: services, child: child ?? const SizedBox.shrink()),
+          );
+        },
         home: AnimatedBuilder(
           animation: Listenable.merge([services.accounts, services.library]),
           builder: (_, __) {
@@ -224,6 +234,7 @@ class MobileShell extends StatefulWidget {
 
 class _MobileShellState extends State<MobileShell> {
   int tab = 0;
+  final Set<int> visited = {0};
   int section = 0;
   bool webSearch = false;
   String query = '';
@@ -247,13 +258,77 @@ class _MobileShellState extends State<MobileShell> {
   void openTracks(String title, List<Track> tracks, {Track? cover}) => Navigator.of(context)
       .push(MaterialPageRoute<void>(builder: (_) => CollectionPage(services: s, title: title, tracks: tracks, cover: cover)));
 
+  Widget tabPage(int i) {
+    if (!visited.contains(i)) return const SizedBox.shrink();
+    switch (i) {
+      case 0:
+        return home();
+      case 1:
+        return WaveTab(services: s);
+      case 2:
+        return search();
+      case 3:
+        return library();
+      default:
+        return more();
+    }
+  }
+
+  void selectTab(int i) {
+    if (i == tab) return;
+    HapticFeedback.selectionClick();
+    setState(() {
+      tab = i;
+      visited.add(i);
+    });
+  }
+
+  Widget signInStrip() => Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+        child: Glass(
+          radius: 14,
+          color: C.surface,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+            child: Row(children: [
+              Icon(Icons.info_outline_rounded, color: C.accent, size: 20),
+              const SizedBox(width: 10),
+              const Expanded(child: Text('Google просит войти заново', style: TextStyle(fontSize: 13))),
+              TextButton(
+                onPressed: () async {
+                  try {
+                    await s.accounts.signIn();
+                    unawaited(s.library.reload());
+                  } catch (e) {
+                    toast(e.toString());
+                  }
+                },
+                child: Text('Войти', style: TextStyle(color: C.accent, fontWeight: FontWeight.w700)),
+              ),
+            ]),
+          ),
+        ),
+      );
+
   @override
-  Widget build(BuildContext context) => AnimatedBuilder(
-        animation: Listenable.merge([s.library, s.player, s.updater, s.cache]),
+  Widget build(BuildContext context) => PopScope(
+        canPop: tab == 0,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) selectTab(0);
+        },
+        child: AnimatedBuilder(
+        animation: Listenable.merge([s.library, s.player, s.updater, s.cache, s.accounts]),
         builder: (_, __) => Scaffold(
           body: SafeArea(
             bottom: false,
-            child: IndexedStack(index: tab, children: [home(), WaveTab(services: s), search(), library(), more()]),
+            child: Column(children: [
+              if (s.accounts.primary?.needsSignIn == true) signInStrip(),
+              Expanded(
+                child: IndexedStack(index: tab, children: [
+                  for (var i = 0; i < 5; i++) tabPage(i),
+                ]),
+              ),
+            ]),
           ),
           bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [
             if (s.player.current != null)
@@ -273,23 +348,36 @@ class _MobileShellState extends State<MobileShell> {
             ),
           ]),
         ),
+        ),
       );
 
   Widget navItem(int i, IconData icon, IconData active, String label, {bool badge = false}) {
     final on = tab == i;
     return Expanded(
       child: InkWell(
-        onTap: () => setState(() => tab = i),
+        onTap: () => selectTab(i),
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 9),
+          padding: const EdgeInsets.symmetric(vertical: 8),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Badge(
-              isLabelVisible: badge,
-              smallSize: 8,
-              backgroundColor: C.accent,
-              child: Icon(on ? active : icon, size: 24, color: on ? C.accent : C.muted),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              width: on ? 58 : 36,
+              height: 30,
+              decoration: BoxDecoration(
+                color: on ? C.accent.withValues(alpha: 0.2) : Colors.transparent,
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: Center(
+                child: Badge(
+                  isLabelVisible: badge,
+                  smallSize: 8,
+                  backgroundColor: C.accent,
+                  child: Icon(on ? active : icon, size: 24, color: on ? C.accent : C.muted),
+                ),
+              ),
             ),
-            const SizedBox(height: 3),
+            const SizedBox(height: 2),
             Text(label,
                 style: TextStyle(fontSize: 11, fontWeight: on ? FontWeight.w600 : FontWeight.w500, color: on ? C.accent : C.muted)),
           ]),
@@ -306,58 +394,148 @@ class _MobileShellState extends State<MobileShell> {
         ]),
       );
 
+  String greeting() {
+    final h = DateTime.now().hour;
+    final word = h < 5 ? 'Доброй ночи' : (h < 12 ? 'Доброе утро' : (h < 18 ? 'Добрый день' : 'Добрый вечер'));
+    final name = (s.accounts.primary?.name ?? '').trim().split(' ').first;
+    return name.isEmpty || name.contains('@') ? word : '$word, $name';
+  }
+
   Widget home() {
     final recent = s.library.recent.take(30).toList();
     final albums = s.library.albums.take(24).toList();
+    final artists = s.library.artists.take(20).toList();
     final all = s.library.allTracks;
     final liked = s.library.liked;
+    final offline = s.settings.offlineTracks.length;
     return RefreshIndicator(
       color: C.accent,
       onRefresh: refresh,
       child: ListView(children: [
-        header('Главная',
-            trailing: IconButton(onPressed: refresh, tooltip: 'Обновить', icon: const Icon(Icons.refresh_rounded, size: 24))),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 8, 4),
+          child: Row(children: [
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(greeting(), style: display(26)),
+                const SizedBox(height: 2),
+                Text('${all.length} треков в библиотеке', style: const TextStyle(color: C.muted, fontSize: 13)),
+              ]),
+            ),
+            IconButton(onPressed: refresh, tooltip: 'Обновить', icon: const Icon(Icons.refresh_rounded, size: 24)),
+          ]),
+        ),
+        const SizedBox(height: 10),
         if (s.updater.available != null) UpdateBanner(updater: s.updater, onToast: toast),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(children: [
-            Expanded(
-                child: ActionTile(
-                    icon: Icons.favorite_rounded,
-                    title: 'Любимые',
-                    subtitle: '${liked.length} треков',
-                    onTap: liked.isEmpty ? null : () => openTracks('Любимые', liked))),
-            const SizedBox(width: 12),
-            Expanded(
-                child: ActionTile(
-                    icon: Icons.shuffle_rounded,
-                    title: 'Перемешать',
-                    subtitle: 'вся библиотека',
-                    onTap: all.isEmpty
-                        ? null
-                        : () {
-                            if (!s.player.shuffle) s.player.toggleShuffle();
-                            play(all, math.Random().nextInt(all.length));
-                          })),
+          child: Column(children: [
+            Row(children: [
+              Expanded(
+                  child: ActionTile(
+                      icon: Icons.favorite_rounded,
+                      title: 'Любимые',
+                      subtitle: '${liked.length} треков',
+                      onTap: liked.isEmpty ? null : () => openTracks('Любимые', liked))),
+              const SizedBox(width: 12),
+              Expanded(
+                  child: ActionTile(
+                      icon: Icons.shuffle_rounded,
+                      title: 'Перемешать',
+                      subtitle: 'вся библиотека',
+                      onTap: all.isEmpty
+                          ? null
+                          : () {
+                              if (!s.player.shuffle) s.player.toggleShuffle();
+                              play(all, math.Random().nextInt(all.length));
+                            })),
+            ]),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(
+                  child: ActionTile(
+                      icon: Icons.waves_rounded,
+                      title: 'Моя волна',
+                      subtitle: 'подборка по вкусу',
+                      onTap: all.isEmpty
+                          ? null
+                          : () {
+                              selectTab(1);
+                              s.wave.start();
+                            })),
+              const SizedBox(width: 12),
+              Expanded(
+                  child: ActionTile(
+                      icon: Icons.download_done_rounded,
+                      title: 'Скачано',
+                      subtitle: offline == 0 ? 'пока ничего' : '$offline треков',
+                      onTap: () => setState(() {
+                            tab = 3;
+                            section = 5;
+                            visited.add(3);
+                          }))),
+            ]),
           ]),
         ),
-        if (albums.isNotEmpty) SectionTitle('Альбомы', onMore: () => setState(() {
-              tab = 3;
-              section = 2;
-            })),
-        SizedBox(
-          height: 204,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            itemCount: albums.length,
-            itemBuilder: (_, i) => AlbumCard(
-                services: s, album: albums[i], width: 140, onTap: () => openTracks(albums[i].title, albums[i].tracks, cover: albums[i].coverTrack)),
+        if (albums.isNotEmpty)
+          SectionTitle('Альбомы', onMore: () => setState(() {
+                tab = 3;
+                section = 2;
+                visited.add(3);
+              })),
+        if (albums.isNotEmpty)
+          SizedBox(
+            height: 204,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              itemCount: albums.length,
+              itemBuilder: (_, i) => AlbumCard(
+                  services: s, album: albums[i], width: 140, onTap: () => openTracks(albums[i].title, albums[i].tracks, cover: albums[i].coverTrack)),
+            ),
           ),
-        ),
+        if (artists.isNotEmpty)
+          SectionTitle('Исполнители', onMore: () => setState(() {
+                tab = 3;
+                section = 3;
+                visited.add(3);
+              })),
+        if (artists.isNotEmpty)
+          SizedBox(
+            height: 128,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              itemCount: artists.length,
+              itemBuilder: (_, i) {
+                final a = artists[i];
+                return InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: () => openTracks(a.name, a.tracks, cover: a.coverTrack),
+                  child: SizedBox(
+                    width: 92,
+                    child: Column(children: [
+                      TrackCover(services: s, track: a.coverTrack, size: 76, radius: 38),
+                      const SizedBox(height: 6),
+                      Text(a.name, maxLines: 2, textAlign: TextAlign.center, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                );
+              },
+            ),
+          ),
         const SectionTitle('Недавно добавленные'),
         for (var i = 0; i < recent.length; i++) TrackTile(services: s, track: recent[i], onTap: () => play(recent, i), onToast: toast),
-        if (recent.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Text('Пока нет треков', style: TextStyle(color: C.muted))),
+        if (recent.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(32),
+            child: Column(children: [
+              Icon(Icons.library_music_outlined, size: 44, color: C.faint),
+              SizedBox(height: 10),
+              Text('Пока нет треков', style: TextStyle(color: C.muted)),
+              Text('Потяните вниз, чтобы обновить', style: TextStyle(color: C.faint, fontSize: 12)),
+            ]),
+          ),
         const SizedBox(height: 12),
       ]),
     );
@@ -773,7 +951,10 @@ class TrackTile extends StatelessWidget {
       onTap: onTap,
       onLongPress: () => menu(context),
       trailing: IconButton(
-        onPressed: () => services.library.toggleLike(track.id),
+        onPressed: () {
+          HapticFeedback.lightImpact();
+          services.library.toggleLike(track.id);
+        },
         icon: Icon(liked ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: liked ? C.accent : C.faint, size: 22),
       ),
     );
@@ -1200,8 +1381,23 @@ class MiniPlayer extends StatelessWidget {
       radius: 18,
       color: C.glass,
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-      child: InkWell(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
         onTap: onOpen,
+        // Свайп влево/вправо — следующий/предыдущий трек, вверх — открыть плеер
+        onHorizontalDragEnd: (d) {
+          final v = d.primaryVelocity ?? 0;
+          if (v < -300) {
+            HapticFeedback.selectionClick();
+            p.next();
+          } else if (v > 300) {
+            HapticFeedback.selectionClick();
+            p.previous();
+          }
+        },
+        onVerticalDragEnd: (d) {
+          if ((d.primaryVelocity ?? 0) < -300) onOpen();
+        },
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(8, 8, 4, 6),
@@ -1292,7 +1488,19 @@ class _FullPlayerState extends State<FullPlayer> {
                     Expanded(
                       child: lyrics
                           ? LyricsView(services: services, track: t)
-                          : Center(
+                          : GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onHorizontalDragEnd: (d) {
+                                final v = d.primaryVelocity ?? 0;
+                                if (v < -300) {
+                                  HapticFeedback.selectionClick();
+                                  p.next();
+                                } else if (v > 300) {
+                                  HapticFeedback.selectionClick();
+                                  p.previous();
+                                }
+                              },
+                              child: Center(
                               child: DecoratedBox(
                                 decoration: BoxDecoration(
                                   borderRadius: BorderRadius.circular(22),
@@ -1301,7 +1509,9 @@ class _FullPlayerState extends State<FullPlayer> {
                                 child: TrackCover(services: services, track: t, size: cover, radius: 22, fullscreen: true),
                               ),
                             ),
+                            ),
                     ),
+                    const SizedBox(height: 12),
                     Row(children: [
                       Expanded(
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
