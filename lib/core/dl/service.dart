@@ -343,6 +343,7 @@ class DownloadService extends ChangeNotifier {
         final imagePath = call['coverFile'];
         if (imagePath is String && imagePath.isNotEmpty) {
           try {
+            log('Deezer обложка: файл получен от загрузчика, проверяю формат.');
             final image = await _jobFile(imagePath, image: true);
             final bytes = await image.readAsBytes();
             final png = bytes.length >= 8 && bytes[0] == 0x89 &&
@@ -350,15 +351,20 @@ class DownloadService extends ChangeNotifier {
             final jpeg = bytes.length >= 3 && bytes[0] == 0xFF &&
                 bytes[1] == 0xD8 && bytes[2] == 0xFF;
             if ((png || jpeg) && bytes.length <= 5 * 1024 * 1024) {
+              log('Deezer обложка: изображение проверено, сохраняю в Google Drive.');
               final coverId = await lib.uploadCover(bytes, png ? 'png' : 'jpg');
+              log('Deezer обложка: файл успешно сохранён в Google Drive.');
               lib.setMeta({id: {'cv': coverId}});
+              log('Deezer обложка: привязка к треку добавлена в библиотеку.');
               await covers?.seed(coverId, bytes);
             } else {
               log('Deezer: получена неподдерживаемая обложка, оставляю исходную.');
             }
           } catch (e) {
-            log('Deezer: обложка не добавлена, метаданные сохранены: $e');
+            log('Deezer обложка: не удалось сохранить на Drive или связать с треком: $e. Аудио и другие метаданные сохранены.');
           }
+        } else {
+          log('Deezer обложка: загрузчик не передал изображение. Google Drive нечего сохранять.');
         }
         return true;
       case 'replace':
