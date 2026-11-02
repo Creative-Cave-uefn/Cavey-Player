@@ -414,7 +414,12 @@ class DownloadService extends ChangeNotifier {
     try {
       if (job?.cancelRequested == true) throw StateError('Загрузка отменена');
       if (Platform.isWindows) {
-        moduleExit = WinProc.run(exe.path, args, (_) {},
+        moduleExit = WinProc.run(exe.path, args, (line) {
+          // Surface only the downloader's explicit IPC/operation diagnostics.
+          // These errors used to disappear because all process output was ignored.
+          final message = line.trim();
+          if (message.startsWith('Cavey-Downloader:')) onLog?.call(message);
+        },
           onStarted: (pid) {
             if (session == null) return;
             session.pid = pid;
