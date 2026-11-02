@@ -62,6 +62,22 @@ class DriveFile {
   static const fields = 'id,name,mimeType,size,md5Checksum,modifiedTime,createdTime,owners(emailAddress,displayName),lastModifyingUser(emailAddress,displayName)';
 }
 
+/// A bounded account-level Drive change feed. Changes are filtered against
+/// the known subtree; unknown resource shapes always request a full scan.
+class DriveChanges {
+  final String nextCursor;
+  final Set<String> ids;
+  final Set<String> parents;
+  final bool unknown;
+
+  const DriveChanges(this.nextCursor, this.ids, this.parents, {this.unknown = false});
+
+  bool affects(Set<String> fileIds, Set<String> folderIds) =>
+      unknown ||
+      ids.any((id) => fileIds.contains(id) || folderIds.contains(id)) ||
+      parents.any(folderIds.contains);
+}
+
 /// Достаёт ID папки или файла из ссылки Google Диска (или возвращает строку как есть).
 String? parseDriveId(String input) {
   final s = input.trim();
@@ -199,6 +215,66 @@ class DriveApi {
       page = j['nextPageToken'] as String?;
     } while (page != null);
     return out;
+  }
+
+  /// Capture this BEFORE scanning. Changes arriving during the full walk are
+  /// then seen on the next scan rather than accidentally lost.
+  Future<String> startPageToken(String email) async {
+    final res = await send(email, 'GET', api('changes/startPageToken'));
+    return (jsonDecode(res.body) as Map)['startPageToken'] as String;
+  }
+
+  Future<DriveChanges> changesSince(String email, String cursor) async {
+    final ids = <String>{};
+    final parents = <String>{};
+    var unknown = false;
+    var page = cursor;
+    for (var i = 0; i < 20; i++) {
+      final res = await send(email, 'GET', api('changes', {
+        'pageToken': page,
+        'pageSize': '1000',
+        'includeRemoved': 'true',
+        'includeItemsFromAllDrives': 'true',
+        'fields': 'nextPageToken,newStartPageToken,changes(fileId,removed,file(id,parents,mimeType,trashed))',
+      }));
+      final body = jsonDecode(res.body) as Map;
+      for (final item in (body['changes'] as List? ?? const [])) {
+        if (item is! Map) {
+          unknown = true;
+          continue;
+        }
+        final id = item['fileId'];
+        if (id is String && id.isNotEmpty) {
+          ids.add(id);
+        } else {
+          unknown = true;
+        }
+        final file = item['file'];
+        if (file is Map) {
+          final p = file['parents'];
+          if (p is List) {
+            for (final v in p) {
+              if (v is String) parents.add(v);
+            }
+          } else if (item['removed'] != true) {
+            unknown = true;
+          }
+        } else if (item['removed'] != true) {
+          unknown = true;
+        }
+      }
+      final next = body['nextPageToken'] as String?;
+      if (next == null) {
+        final newCursor = body['newStartPageToken'] as String?;
+        if (newCursor == null || newCursor.isEmpty) {
+          throw const FormatException('Drive changes: missing newStartPageToken');
+        }
+        return DriveChanges(newCursor, ids, parents, unknown: unknown);
+      }
+      if (next == page) throw const FormatException('Drive changes: repeated cursor');
+      page = next;
+    }
+    throw const FormatException('Drive changes: too many pages; full rescan required');
   }
 
   Future<Uint8List> readRange(String email, String id, int start, int endInclusive) async {
