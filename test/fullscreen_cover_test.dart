@@ -1,7 +1,18 @@
 import 'package:cave_player/core/covers.dart';
+import 'package:cave_player/ui/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('Cinema requests original artwork even in a 360px-wide panel', () {
+    expect(CoverImage.requestedPhysicalPixels(
+      size: 360, devicePixelRatio: 1.0, originalQuality: true), 0);
+    expect(CoverService.bucketFor(CoverImage.requestedPhysicalPixels(
+      size: 360, devicePixelRatio: 1.0, originalQuality: true)), 0);
+    expect(CoverImage.requestedPhysicalPixels(
+      size: 360, devicePixelRatio: 1.0), 360);
+    expect(CoverService.bucketFor(360), 640);
+  });
+
   test('Fullscreen requests original quality but immediately reuses thumbnail', () {
     expect(CoverService.bucketFor(1100), 0);
     expect(CoverService.previewBucketPriority(1100), [0, 640, 160]);
