@@ -101,6 +101,21 @@ class CoverImage extends StatefulWidget {
   const CoverImage(
       {super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx, this.fill = false, this.originalQuality = false});
 
+  /// Fullscreen explicitly requests the original (bucket 0), irrespective
+  /// of the displayed panel size. Keep this policy testable without a widget
+  /// tree or network access.
+  static int requestedPhysicalPixels({
+    required double size,
+    double? height,
+    required double devicePixelRatio,
+    int? maxPx,
+    bool originalQuality = false,
+  }) {
+    if (originalQuality) return 0;
+    final pixels = (math.max(size, height ?? 0) * devicePixelRatio).round();
+    return maxPx != null && pixels > maxPx ? maxPx : pixels;
+  }
+
   @override
   State<CoverImage> createState() => _CoverImageState();
 }
@@ -139,13 +154,13 @@ class _CoverImageState extends State<CoverImage> {
     super.dispose();
   }
 
-  int get _wantPx {
-    if (widget.originalQuality) return 0;
-    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
-    final px = (math.max(widget.size, widget.height ?? 0) * dpr).round();
-    final cap = widget.maxPx;
-    return cap != null && px > cap ? cap : px;
-  }
+  int get _wantPx => CoverImage.requestedPhysicalPixels(
+    size: widget.size,
+    height: widget.height,
+    devicePixelRatio: MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0,
+    maxPx: widget.maxPx,
+    originalQuality: widget.originalQuality,
+  );
 
   /// Ключ поменялся (другой трек, другой человек) — старую картинку не показываем ни на кадр
   void _ensure() {
