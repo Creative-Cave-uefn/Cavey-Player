@@ -214,7 +214,12 @@ class LibraryController extends ChangeNotifier {
         'Попросите друга поделиться ею с вами.');
   }
 
+  void _forgetScanCursors() {
+    settings.view.removeWhere((key, _) => key.startsWith('changes.'));
+  }
+
   Future<void> createHub(String email) async {
+    _forgetScanCursors();
     final folder = await drive.createFolder(email, 'Cave Player');
     final fresh = LibraryData();
     final acc = accounts.byEmail(email);
@@ -239,6 +244,7 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<void> joinHub(String input) async {
+    _forgetScanCursors();
     var id = parseDriveId(input);
     if (id == null) throw LibraryException('Это не похоже на ссылку на папку Google Диска');
     for (final a in accounts.accounts) {
@@ -297,6 +303,7 @@ class LibraryController extends ChangeNotifier {
   /// Переносит библиотеку в другую папку Диска: создаёт там library.json с текущим содержимым
   /// и дальше работает с ним. Старый файл не трогаем — друзья, которые на него смотрят, ничего не потеряют.
   Future<void> moveLibraryTo(String input) async {
+    _forgetScanCursors();
     final id = parseDriveId(input);
     if (id == null) throw LibraryException('Это не похоже на ссылку на папку Google Диска');
     if (!hasHub) throw LibraryException('Сначала подключитесь к библиотеке');
@@ -506,6 +513,7 @@ class LibraryController extends ChangeNotifier {
   /// (удаление треков или папок) в library.json не пишется, у друзей всё остаётся как было.
   /// После этого библиотеку сами больше не ищем: подключиться можно только вручную.
   Future<void> leaveHub() async {
+    _forgetScanCursors();
     _pollTimer?.cancel();
     _scanTimer?.cancel();
     _flushTimer?.cancel();
@@ -837,6 +845,7 @@ class LibraryController extends ChangeNotifier {
     var email = await accessFor(s.id);
     String cursorKey(String account) => 'changes.cursor:${s.id}:$account';
     String foldersKey(String account) => 'changes.folders:${s.id}:$account';
+    String fullScanKey(String account) => 'changes.full:${s.id}:$account';
     final existing = {for (final t in data.tracks.values) if (t.source == s.id) t.id: t};
 
     // A first scan builds the subtree. Later scans ask Google Drive only for
@@ -844,7 +853,10 @@ class LibraryController extends ChangeNotifier {
     // Force prune and the one-off legacy disc-number migration always scan.
     final cursor = settings.view[cursorKey(email)];
     final foldersJson = settings.view[foldersKey(email)];
-    if (!forcePrune && cursor != null && foldersJson != null &&
+    final lastFull = DateTime.tryParse(settings.view[fullScanKey(email)] ?? '');
+    final stillFresh = lastFull != null &&
+        DateTime.now().difference(lastFull) < const Duration(hours: 24);
+    if (!forcePrune && stillFresh && cursor != null && foldersJson != null &&
         settings.viewOf('disc.scan:${s.id}', '') == '1') {
       try {
         final folderList = jsonDecode(foldersJson) as List;
@@ -1002,6 +1014,7 @@ class LibraryController extends ChangeNotifier {
     if (nextCursor != null) {
       settings.view[cursorKey(email)] = nextCursor;
       settings.view[foldersKey(email)] = jsonEncode(visitedFolders.toList());
+      settings.view[fullScanKey(email)] = DateTime.now().toIso8601String();
       unawaited(saveSettings());
     }
     // Сообщаем только о своих новых треках: чужие появляются в библиотеке и ленте без уведомления
