@@ -85,7 +85,7 @@ class _MobileAmbientState extends State<MobileAmbient> with SingleTickerProvider
 
   void _onTick(Duration elapsed) {
     final dt = (elapsed - _last).inMicroseconds / 1e6;
-    if (dt < 1 / 20) return; // 20 кадров в секунду: движение медленное, разницы почти не видно
+    if (dt < 1 / 15) return; // 15 кадров в секунду: движение медленное, разницы почти не видно
     _last = elapsed;
     final playing = widget.services.player.playing;
     final target = playing ? 1.0 : 0.0;

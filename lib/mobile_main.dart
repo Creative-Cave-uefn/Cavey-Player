@@ -8,6 +8,7 @@ import 'package:media_kit/media_kit.dart';
 import 'core/audio_cache.dart';
 import 'core/drive.dart';
 import 'core/library.dart';
+import 'mobile/mobile_media.dart';
 import 'core/models.dart';
 import 'core/log.dart';
 import 'core/player.dart';
@@ -105,6 +106,12 @@ class MobileServices {
       ];
       covers.prefetch(next);
     });
+    // Уведомление, экран блокировки и кнопки наушников; служба держит приложение живым при игре
+    try {
+      await CaveyAudioHandler.start(player, library, covers);
+    } catch (e, st) {
+      AppLog.error('media session', e, st);
+    }
     final updater = MobileUpdater()..start();
 
     // Тексты: сначала ищем рядом с треком на Диске и внутри файла, потом в интернете (как на ПК)

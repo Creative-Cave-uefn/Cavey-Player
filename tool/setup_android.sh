@@ -27,7 +27,9 @@ application.set(f"{{{ANDROID}}}label", "Cavey Player")
 application.set(f"{{{ANDROID}}}usesCleartextTraffic", "true")
 application.set(f"{{{ANDROID}}}icon", "@mipmap/ic_launcher")
 # Установка обновлений из приложения
-for perm in ("android.permission.REQUEST_INSTALL_PACKAGES", "android.permission.WAKE_LOCK"):
+for perm in ("android.permission.REQUEST_INSTALL_PACKAGES", "android.permission.WAKE_LOCK",
+             "android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+             "android.permission.POST_NOTIFICATIONS"):
     if perm not in permissions:
         root.insert(0, ET.Element("uses-permission", {f"{{{ANDROID}}}name": perm}))
 if not any(p.get(f"{{{ANDROID}}}name") == "androidx.core.content.FileProvider" for p in application.findall("provider")):
@@ -41,6 +43,21 @@ if not any(p.get(f"{{{ANDROID}}}name") == "androidx.core.content.FileProvider" f
         f"{{{ANDROID}}}name": "android.support.FILE_PROVIDER_PATHS",
         f"{{{ANDROID}}}resource": "@xml/file_paths",
     })
+# Управление плеером из системы: служба воспроизведения и приёмник кнопок наушников (audio_service)
+if not any(x.get(f"{{{ANDROID}}}name") == "com.ryanheise.audioservice.AudioService" for x in application.findall("service")):
+    svc = ET.SubElement(application, "service", {
+        f"{{{ANDROID}}}name": "com.ryanheise.audioservice.AudioService",
+        f"{{{ANDROID}}}foregroundServiceType": "mediaPlayback",
+        f"{{{ANDROID}}}exported": "true",
+    })
+    f = ET.SubElement(svc, "intent-filter")
+    ET.SubElement(f, "action", {f"{{{ANDROID}}}name": "android.media.browse.MediaBrowserService"})
+    rcv = ET.SubElement(application, "receiver", {
+        f"{{{ANDROID}}}name": "com.ryanheise.audioservice.MediaButtonReceiver",
+        f"{{{ANDROID}}}exported": "true",
+    })
+    f = ET.SubElement(rcv, "intent-filter")
+    ET.SubElement(f, "action", {f"{{{ANDROID}}}name": "android.intent.action.MEDIA_BUTTON"})
 tree.write(manifest, encoding="utf-8", xml_declaration=True)
 print("Android runner ready: app.cavey.cave_player")
 PY
