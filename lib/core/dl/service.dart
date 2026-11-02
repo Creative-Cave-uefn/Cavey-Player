@@ -409,6 +409,7 @@ class DownloadService extends ChangeNotifier {
     final uploadLanes = <Future<void>>[Future<void>.value(), Future<void>.value()];
     var nextUploadLane = 0;
     var socketAlive = true;
+    var receivedEnd = false;
     final session = job == null ? null : _TransferSession(job);
     if (session != null) _activeTransfer = session;
     try {
@@ -554,6 +555,7 @@ class DownloadService extends ChangeNotifier {
                   .catchError((Object e, StackTrace stack) => transportFailed(e, stack));
             }
           case 'end':
+            receivedEnd = true;
             // The module may call exit() immediately after returning from
             // serve(). Confirm receiving the final message before it exits.
             await Future.wait([replyQueue, ...uploadLanes]);
@@ -571,6 +573,7 @@ class DownloadService extends ChangeNotifier {
       }
       throw StateError('Модуль отключился до завершения задания.');
     } catch (e) {
+      var processUnfinished = false;
       if (job?.cancelRequested != true && moduleExit != null) {
         // Distinguish a helper crash from a peer socket reset. WinProc can
         // outlive the socket while its child processes still hold stdout.
@@ -578,9 +581,18 @@ class DownloadService extends ChangeNotifier {
           final code = await moduleExit!.timeout(const Duration(seconds: 2));
           onLog?.call('Диагностика: Cavey-Downloader exit code $code, IPC: ${e.runtimeType}');
         } on TimeoutException {
+          processUnfinished = true;
           onLog?.call('Диагностика: соединение оборвано, но процесс '
               'Cavey-Downloader ещё выполняется (или ждёт дочерний процесс).');
         }
+      }
+      // On a transport failure, stop orphaned Python/Soulseek children before
+      // the job is restarted; otherwise two old and new pipelines compete.
+      // Normal end/error messages are not process transport failures.
+      if (!receivedEnd && processUnfinished && session != null &&
+          job?.cancelRequested != true) {
+        onLog?.call('IPC: завершаю оставшиеся подпроцессы перед повторной попыткой.');
+        await _killTransfer(session);
       }
       rethrow;
     } finally {
