@@ -310,6 +310,57 @@ class DownloadService extends ChangeNotifier {
             folderId: target, path: '${call['path'] ?? job.path}');
         job.onTrack?.call(t);
         return t.id;
+      case 'enrich':
+        final id = '${call['trackId'] ?? ''}';
+        final track = lib.data.tracks[id];
+        if (track == null || track.source != job.sourceId) {
+          throw const FormatException('Метаданные разрешены только для нового трека этого задания.');
+        }
+        final m = call['meta'];
+        if (m is! Map) throw const FormatException('Некорректные метаданные.');
+        String field(String name) {
+          final value = '${m[name] ?? ''}'.trim();
+          return value.length <= 300 ? value : value.substring(0, 300);
+        }
+        String? validNumber(String key) {
+          final part = field(key).split('/').first.trim();
+          final parsed = int.tryParse(part);
+          return parsed != null && parsed > 0 && parsed < 1000 ? '$parsed' : null;
+        }
+        final edit = <String, String>{
+          if (field('title').isNotEmpty) 't': field('title'),
+          if (field('artist').isNotEmpty) 'a': field('artist'),
+          if (field('album').isNotEmpty) 'al': field('album'),
+          if (field('albumArtist').isNotEmpty) 'aa': field('albumArtist'),
+          if (field('year').isNotEmpty) 'y': field('year'),
+          if (validNumber('track') case final n?) 'n': n,
+          if (validNumber('disc') case final d?) 'dn': d,
+          if (m['duration'] is num && (m['duration'] as num) > 0)
+            'd': '${((m['duration'] as num) * 1000).round()}',
+        };
+        // Persist metadata even if the image cannot be retrieved or uploaded.
+        if (edit.isNotEmpty) lib.setMeta({id: edit});
+        final imagePath = call['coverFile'];
+        if (imagePath is String && imagePath.isNotEmpty) {
+          try {
+            final image = await _jobFile(imagePath, image: true);
+            final bytes = await image.readAsBytes();
+            final png = bytes.length >= 8 && bytes[0] == 0x89 &&
+                bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47;
+            final jpeg = bytes.length >= 3 && bytes[0] == 0xFF &&
+                bytes[1] == 0xD8 && bytes[2] == 0xFF;
+            if ((png || jpeg) && bytes.length <= 5 * 1024 * 1024) {
+              final coverId = await lib.uploadCover(bytes, png ? 'png' : 'jpg');
+              lib.setMeta({id: {'cv': coverId}});
+              await covers?.seed(coverId, bytes);
+            } else {
+              log('Deezer: получена неподдерживаемая обложка, оставляю исходную.');
+            }
+          } catch (e) {
+            log('Deezer: обложка не добавлена, метаданные сохранены: $e');
+          }
+        }
+        return true;
       case 'replace':
         final id = '${call['trackId'] ?? ''}';
         if (id.isEmpty || id != job.replaceTrackId) {
