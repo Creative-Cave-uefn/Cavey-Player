@@ -801,17 +801,55 @@ class LibraryController extends ChangeNotifier {
 
   Future<int> _scanSource(Source s, {bool forcePrune = false}) async {
     var email = await accessFor(s.id);
+    String cursorKey(String account) => 'changes.cursor:${s.id}:$account';
+    String foldersKey(String account) => 'changes.folders:${s.id}:$account';
+    final existing = {for (final t in data.tracks.values) if (t.source == s.id) t.id: t};
+
+    // A first scan builds the subtree. Later scans ask Google Drive only for
+    // changed file IDs; unrelated account activity must not walk every folder.
+    // Force prune and the one-off legacy disc-number migration always scan.
+    final cursor = settings.view[cursorKey(email)];
+    final foldersJson = settings.view[foldersKey(email)];
+    if (!forcePrune && cursor != null && foldersJson != null &&
+        settings.viewOf('disc.scan:${s.id}', '') == '1') {
+      try {
+        final folderList = jsonDecode(foldersJson) as List;
+        final folders = <String>{s.id, ...folderList.map((x) => '$x')};
+        final changes = await drive.changesSince(email, cursor);
+        if (!changes.affects(existing.keys.toSet(), folders)) {
+          settings.view[cursorKey(email)] = changes.nextCursor;
+          unawaited(saveSettings());
+          return 0;
+        }
+      } catch (e) {
+        // Access changes, invalid tokens or uncertain changes always fall
+        // back to the full walk; skipping files is never the fallback.
+        AppLog.info('Drive Changes: полная проверка «${s.name}»: $e');
+      }
+    }
+
+    String? nextCursor;
+    try {
+      nextCursor = await drive.startPageToken(email);
+    } catch (_) {} // unsupported change feed: keep full scanning
+    final visitedFolders = <String>{s.id};
     List<_Found> found;
     Map<String, String> covers;
     try {
-      (found, covers) = await _walk(email, s);
+      (found, covers) = await _walk(email, s, folderIds: visitedFolders);
     } on DriveException catch (e) {
       if (!e.notFound && !e.forbidden) rethrow;
       email = await accessFor(s.id, recheck: true);
-      (found, covers) = await _walk(email, s);
+      visitedFolders.clear();
+      visitedFolders.add(s.id);
+      try {
+        nextCursor = await drive.startPageToken(email);
+      } catch (_) {
+        nextCursor = null;
+      }
+      (found, covers) = await _walk(email, s, folderIds: visitedFolders);
     }
 
-    final existing = {for (final t in data.tracks.values) if (t.source == s.id) t.id: t};
     // Номер диска появился в 0.2.250: один раз перечитываем теги у треков из альбомов, где номера повторяются
     // (там могло быть два диска), остальные не трогаем
     final discKey = 'disc.scan:${s.id}';
@@ -924,11 +962,19 @@ class LibraryController extends ChangeNotifier {
     } else {
       suspiciousSources.remove(s.id);
     }
+    // Persist the cursor only after a successful walk and metadata scan.
+    // Taking it before the walk ensures changes arriving during the walk are
+    // picked up on the next run.
+    if (nextCursor != null) {
+      settings.view[cursorKey(email)] = nextCursor;
+      settings.view[foldersKey(email)] = jsonEncode(visitedFolders.toList());
+      unawaited(saveSettings());
+    }
     // Сообщаем только о своих новых треках: чужие появляются в библиотеке и ленте без уведомления
     return mine;
   }
 
-  Future<(List<_Found>, Map<String, String>)> _walk(String email, Source s) async {
+  Future<(List<_Found>, Map<String, String>)> _walk(String email, Source s, {Set<String>? folderIds}) async {
     final found = <_Found>[];
     final covers = <String, String>{};
     final queue = <(String, String, int)>[(s.id, '', 0)];
@@ -944,6 +990,7 @@ class LibraryController extends ChangeNotifier {
       ]);
       for (var i = 0; i < batch.length; i++) {
         final (folder, path, depth) = batch[i];
+        folderIds?.add(folder);
         for (final c in childrenBatch[i]) {
           if (c.isFolder) {
             if ((c.name == dataFolderName || c.name == coversFolderName) && folder == settings.hubId) continue;
