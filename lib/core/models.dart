@@ -495,6 +495,18 @@ class LibraryData {
         j[entry.value] = v;
       }
     }
+    // Canonical catalog numbers survive later rescans even when the audio
+    // file's embedded tags are absent or malformed.
+    for (final key in ['n', 'dn']) {
+      final value = e[key];
+      if (value == null) continue;
+      final parsed = int.tryParse(value);
+      if (parsed != null && parsed > 0) {
+        j[key] = parsed;
+      } else if (value.isEmpty) {
+        j.remove(key);
+      }
+    }
     final n = Track.fromJson(id, j);
     final d = int.tryParse(e['d'] ?? '');
     n.durationMs = (d != null && d > 0) ? d : null;
