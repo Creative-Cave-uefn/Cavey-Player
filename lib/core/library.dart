@@ -592,6 +592,7 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> reload() async {
     if (!hasHub) return;
+    final elapsed = Stopwatch()..start();
     final gen = _flushGen;
     await _withHub((email) async {
       // Ensure metadata and JSON describe the SAME remote revision.
@@ -640,6 +641,8 @@ class LibraryController extends ChangeNotifier {
     _reassertRecentMeta();
     await _saveLocal();
     _changed();
+    AppLog.info('Perf: library.reload ${elapsed.elapsedMilliseconds}ms, '
+        'tracks=${data.tracks.length}, pending=${_pending.length}');
     // Кто-то из друзей удалил мои файлы — удаляем их с Диска
     unawaited(processDeletions());
   }
@@ -712,6 +715,7 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> _flush() async {
     if (_flushing || _pending.isEmpty || !hasHub) return;
+    final elapsed = Stopwatch()..start();
     _flushing = true;
     final batch = List<Map<String, dynamic>>.of(_pending);
     final libAtStart = settings.libFileId;
@@ -782,6 +786,8 @@ class LibraryController extends ChangeNotifier {
       await _saveRecentOps();
       await store.writeJson('pending_ops.json', _pending);
       await _saveLocal();
+      AppLog.info('Perf: library.flush ${elapsed.elapsedMilliseconds}ms, '
+          'batch=${batch.length}, pending=${_pending.length}');
     } on _Abandoned {
       // библиотеку сменили: письмо в старый файл не нужно
     } catch (e) {
@@ -882,6 +888,7 @@ class LibraryController extends ChangeNotifier {
 
   Future<void> _runScan(List<Source> sources, {bool quiet = false, bool forcePrune = false}) async {
     if (scan.running || accounts.accounts.isEmpty) return;
+    final elapsed = Stopwatch()..start();
     scan
       ..running = true
       ..done = 0
@@ -908,6 +915,9 @@ class LibraryController extends ChangeNotifier {
       }
       if (merged > 0) messages.add('Одинаковые файлы объединены, лишние копии удалены: $merged');
     } finally {
+      AppLog.info('Perf: library.scan ${elapsed.elapsedMilliseconds}ms, '
+          'sources=${sources.length}, scanned=${scan.done}/${scan.total}, '
+          'new=$added');
       scan
         ..running = false
         ..text = '';
@@ -1096,6 +1106,8 @@ class LibraryController extends ChangeNotifier {
   }
 
   Future<(List<_Found>, Map<String, String>)> _walk(String email, Source s, {Set<String>? folderIds}) async {
+    final elapsed = Stopwatch()..start();
+    var requests = 0;
     final found = <_Found>[];
     final covers = <String, String>{};
     final queue = <(String, String, int)>[(s.id, '', 0)];
@@ -1106,6 +1118,7 @@ class LibraryController extends ChangeNotifier {
       queue.removeRange(0, batch.length);
       scan.text = 'Смотрю «${batch.first.$2.isEmpty ? s.name : batch.first.$2}»';
       notifyListeners();
+      requests += batch.length;
       final childrenBatch = await Future.wait([
         for (final item in batch) drive.listChildren(email, item.$1),
       ]);
@@ -1124,6 +1137,8 @@ class LibraryController extends ChangeNotifier {
         }
       }
     }
+    AppLog.info('Perf: library.walk ${elapsed.elapsedMilliseconds}ms, '
+        'folders=$requests, audio=${found.length}, covers=${covers.length}');
     return (found, covers);
   }
 
