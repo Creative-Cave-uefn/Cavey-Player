@@ -200,7 +200,13 @@ class _CoverImageState extends State<CoverImage> {
     final px = _wantPx;
     _loadingKey = key;
     _loadingBucket = _px;
-    final f = id != null ? svc.forFile(id, px: px) : (t == null ? Future<Uint8List?>.value(null) : svc.forTrack(t, px: px));
+    final f = id != null
+        ? svc.forFile(id, px: px)
+        : (t == null
+            ? Future<Uint8List?>.value(null)
+            : (widget.originalQuality
+                ? svc.forFullscreen(t)
+                : svc.forTrack(t, px: px)));
     f.then((b) {
       if (!mounted || gen != _gen || key != _key || b == null || identical(b, _bytes)) return;
       setState(() => _bytes = b);
