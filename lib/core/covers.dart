@@ -123,12 +123,44 @@ class CoverService extends ChangeNotifier {
         ? _get(key, px, () => _deezerCover(t))
         : Future.value(null);
     return _get(key, px, () async {
-      final email = await lib.accessFor(t.source);
-      final pic = t.pic;
-      if (t.cover != null) return drive.download(email, t.cover!);
-      if (pic != null) return drive.readRange(email, t.id, pic.offset, pic.offset + pic.length - 1);
-      return null;
+      try {
+        final email = await lib.accessFor(t.source);
+        final pic = t.pic;
+        final Uint8List? bytes = t.cover != null
+            ? await drive.download(email, t.cover!)
+            : pic != null
+                ? await drive.readRange(email, t.id, pic.offset, pic.offset + pic.length - 1)
+                : null;
+        if (bytes != null && await _validImage(bytes)) return bytes;
+        AppLog.info('Обложка: встроенное изображение ${t.id} не читается, пробую Deezer');
+      } catch (e) {
+        AppLog.warn('Обложка: ошибка чтения изображения ${t.id}; ищу резервную', e);
+      }
+      return canFindInDeezer(t) ? _deezerCover(t) : null;
     });
+  }
+
+  /// Detect an image before caching it, not just a successful HTTP response.
+  /// Drive can return an MP3 body when an unsupported Range is ignored.
+  static bool looksLikeImage(Uint8List bytes) {
+    if (bytes.length < 16 || bytes.length > 24 * 1024 * 1024) return false;
+    final b = bytes;
+    return (b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff) ||
+        (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4e && b[3] == 0x47) ||
+        (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
+            b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) ||
+        (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) ||
+        (b[0] == 0x42 && b[1] == 0x4d);
+  }
+
+  Future<bool> _validImage(Uint8List bytes) async {
+    if (!looksLikeImage(bytes)) return false;
+    try {
+      return await DeezerArt.dimensionsInBackground(bytes)
+          .timeout(const Duration(seconds: 5)) != null;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Resolve a high-resolution image when the source file itself contains
@@ -288,13 +320,17 @@ class CoverService extends ChangeNotifier {
     if (await file.exists()) {
       try {
         final b = await file.readAsBytes();
-        if (b.isNotEmpty) return b;
+        if (await _validImage(b)) return b;
+        // Invalidate a stale/corrupted media cache; otherwise fullscreen can
+        // keep showing an error or a low-quality leftover indefinitely.
+        await file.delete();
+        AppLog.info('Обложка: повреждённый файл кэша удалён, повторяю загрузку');
       } catch (_) {}
     }
     await _acquire();
     try {
       final b = await fetch();
-      if (b != null && b.isNotEmpty) {
+      if (b != null && await _validImage(b)) {
         try {
           await file.writeAsBytes(b, flush: true);
         } catch (_) {}
