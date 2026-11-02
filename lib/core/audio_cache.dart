@@ -45,8 +45,12 @@ class AudioCache extends ChangeNotifier {
           final name = e.uri.pathSegments.last;
           _have.add(name.substring(0, name.length - 6));
           sizeBytes += await e.length();
-        } else if (e is File && e.path.endsWith('.part')) {
-          await e.delete();
+        } else if (e is File && (e.path.endsWith('.part') || e.path.endsWith('.part.version'))) {
+          // Keep valid recent partial downloads so the next launch resumes
+          // them; prune abandoned parts after a week.
+          if (DateTime.now().difference(await e.lastModified()) > const Duration(days: 7)) {
+            await e.delete();
+          }
         }
       }
     } catch (e) {
@@ -104,7 +108,7 @@ class AudioCache extends ChangeNotifier {
     try {
       final email = await lib.accessFor(t.source);
       final f = fileFor(id);
-      await drive.downloadToFile(email, id, f);
+      await drive.downloadToFile(email, id, f, expectedModified: t.modified);
       if (_invalidateAfterDownload.remove(id)) {
         // A replacement completed while the old bytes were being cached.
         if (await f.exists()) await f.delete();
@@ -155,6 +159,15 @@ class AudioCache extends ChangeNotifier {
     _failureCount.remove(id);
     _retryAt.remove(id);
     _scheduleRetry();
+    // An overwritten Drive file must never resume bytes from its old revision.
+    for (final suffix in ['.part', '.part.version']) {
+      try {
+        final stale = File('${fileFor(id).path}$suffix');
+        if (await stale.exists()) await stale.delete();
+      } catch (e) {
+        AppLog.warn('Аудиокэш: не удалось удалить недокачанный файл', e);
+      }
+    }
     if (!_active.contains(id)) {
       final f = fileFor(id);
       try {
