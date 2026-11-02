@@ -21,6 +21,8 @@ class CoverService extends ChangeNotifier {
   final Directory dir;
 
   final Map<String, Uint8List?> _mem = {};
+  int _memoryBytes = 0;
+  static const int _memoryLimitBytes = 48 * 1024 * 1024;
   final Map<String, Future<Uint8List?>> _inflight = {};
   final Map<String, DateTime> _retryAt = {};
   final Map<String, int> _failures = {};
@@ -44,13 +46,32 @@ class CoverService extends ChangeNotifier {
   String _mk(String key, int bucket) => bucket == 0 ? key : '$key@$bucket';
 
   /// Уже загруженная картинка — чтобы не мигать при перерисовке. Подойдёт и копия побольше
+  Uint8List? _touch(String key) {
+    if (!_mem.containsKey(key)) return null;
+    final bytes = _mem.remove(key);
+    _mem[key] = bytes; // последняя использованная запись — в конце LRU
+    return bytes;
+  }
+
   Uint8List? _peekKey(String key, int px) {
     final b = bucketFor(px);
-    final exact = _mem[_mk(key, b)];
+    final exact = _touch(_mk(key, b));
     if (exact != null) return exact;
-    if (b == 160) return _mem[_mk(key, 640)] ?? _mem[key];
-    if (b == 640) return _mem[key];
+    if (b == 160) return _touch(_mk(key, 640)) ?? _touch(key);
+    if (b == 640) return _touch(key);
     return null;
+  }
+
+  void _remember(String key, Uint8List? bytes) {
+    final previous = _mem.remove(key);
+    _memoryBytes -= previous?.length ?? 0;
+    _mem[key] = bytes;
+    _memoryBytes += bytes?.length ?? 0;
+    while ((_memoryBytes > _memoryLimitBytes || _mem.length > 700) && _mem.length > 1) {
+      final oldest = _mem.keys.first;
+      final removed = _mem.remove(oldest);
+      _memoryBytes -= removed?.length ?? 0;
+    }
   }
 
   Uint8List? peek(Track t, {int px = 0}) {
@@ -86,7 +107,7 @@ class CoverService extends ChangeNotifier {
   /// Только что загруженную картинку сразу кладём в кэш: скачивать её обратно не нужно
   Future<void> seed(String fileId, Uint8List bytes) async {
     final key = 'cv_$fileId';
-    _mem[key] = bytes;
+    _remember(key, bytes);
     _signal();
     try {
       await _file(key).writeAsBytes(bytes, flush: true);
@@ -96,7 +117,7 @@ class CoverService extends ChangeNotifier {
   Future<Uint8List?> _get(String key, int px, Future<Uint8List?> Function() fetch) {
     final bucket = bucketFor(px);
     final mk = _mk(key, bucket);
-    if (_mem.containsKey(mk)) return Future.value(_mem[mk]);
+    if (_mem.containsKey(mk)) return Future.value(_touch(mk));
     final fallback = _peekKey(key, px);
     if (fallback != null) return Future.value(fallback);
     final until = _retryAt[key];
@@ -163,8 +184,7 @@ class CoverService extends ChangeNotifier {
   }
 
   void _store(String mk, Uint8List? bytes) {
-    _mem[mk] = bytes;
-    if (_mem.length > 700) _mem.remove(_mem.keys.first);
+    _remember(mk, bytes);
     _signal();
   }
 
@@ -192,7 +212,7 @@ class CoverService extends ChangeNotifier {
       try {
         if (await f.exists()) {
           final b = await f.readAsBytes();
-          if (b.isNotEmpty) _mem[mk] = b;
+          if (b.isNotEmpty) _remember(mk, b);
         }
       } catch (_) {}
     }

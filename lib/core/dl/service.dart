@@ -58,6 +58,7 @@ class DownloadService extends ChangeNotifier {
   final Directory work;
   final AudioCache? cache;
   final CoverService? covers;
+  final void Function(String id)? onAudioReplaced;
   final List<DownloadJob> jobs = [];
   bool _running = false;
   bool installing = false;
@@ -65,7 +66,7 @@ class DownloadService extends ChangeNotifier {
   Timer? _notifyTimer;
   _TransferSession? _activeTransfer;
 
-  DownloadService(this.lib, this.work, {this.cache, this.covers});
+  DownloadService(this.lib, this.work, {this.cache, this.covers, this.onAudioReplaced});
 
   Directory get _toolsDir => Directory('${work.parent.path}${Platform.pathSeparator}tools');
   bool get busy => _running || installing;
@@ -355,6 +356,7 @@ class DownloadService extends ChangeNotifier {
         log(job.title);
         _notify();
         await cache?.invalidate(track.id);
+        onAudioReplaced?.call(track.id);
         if (oldArtwork != null && oldArtwork.isNotEmpty) {
           job.title = 'Google Drive: сохраняю исходную обложку';
           log(job.title);

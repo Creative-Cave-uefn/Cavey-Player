@@ -23,6 +23,10 @@ class AudioCache extends ChangeNotifier {
   final List<String> _queue = [];
   final Set<String> _active = {};
   final Set<String> _failed = {};
+  final Map<String, int> _failureCount = {};
+  final Map<String, DateTime> _retryAt = {};
+  Timer? _retryTimer;
+  Future<void> _evictFuture = Future<void>.value();
   final Set<String> _invalidateAfterDownload = {};
   int sizeBytes = 0;
   Timer? _pinTimer;
@@ -61,11 +65,17 @@ class AudioCache extends ChangeNotifier {
       } catch (_) {}
       return;
     }
+    // A direct play request should retry now instead of waiting for backoff.
+    _failed.remove(t.id);
+    _retryAt.remove(t.id);
+    _failureCount.remove(t.id);
     enqueue(t.id, front: true);
   }
 
   void enqueue(String id, {bool front = false}) {
     if (_have.contains(id) || _active.contains(id) || _failed.contains(id)) return;
+    final retry = _retryAt[id];
+    if (retry != null && DateTime.now().isBefore(retry)) return;
     _queue.remove(id);
     if (front) {
       _queue.insert(0, id);
@@ -101,18 +111,50 @@ class AudioCache extends ChangeNotifier {
         return;
       }
       _have.add(id);
+      _failed.remove(id);
+      _failureCount.remove(id);
+      _retryAt.remove(id);
       sizeBytes += await f.length();
       await _evict();
     } catch (e) {
-      _failed.add(id); // не пытаемся снова до перезапуска
+      _failed.add(id);
+      final failures = (_failureCount[id] ?? 0) + 1;
+      _failureCount[id] = failures;
+      // После временного сбоя сети пробуем снова без перезапуска приложения.
+      // После 6 попыток ждём явного воспроизведения или изменения библиотеки.
+      if (failures < 6) {
+        final seconds = (5 * (1 << (failures - 1))).clamp(5, 160);
+        _retryAt[id] = DateTime.now().add(Duration(seconds: seconds));
+        _scheduleRetry();
+      }
       AppLog.warn('Не удалось сохранить «${t.title}» в кэш', e);
     }
+  }
+
+  void _scheduleRetry() {
+    _retryTimer?.cancel();
+    if (_retryAt.isEmpty) return;
+    final next = _retryAt.values.reduce((a, b) => a.isBefore(b) ? a : b);
+    final wait = next.difference(DateTime.now());
+    _retryTimer = Timer(wait > Duration.zero ? wait : Duration.zero, () {
+      final now = DateTime.now();
+      final ready = [for (final item in _retryAt.entries) if (!item.value.isAfter(now)) item.key];
+      for (final id in ready) {
+        _retryAt.remove(id);
+        _failed.remove(id);
+        enqueue(id);
+      }
+      _scheduleRetry();
+    });
   }
 
   /// Audio was replaced in Drive under the same ID: cached bytes are now stale.
   Future<void> invalidate(String id) async {
     _queue.remove(id);
     _failed.remove(id);
+    _failureCount.remove(id);
+    _retryAt.remove(id);
+    _scheduleRetry();
     if (!_active.contains(id)) {
       final f = fileFor(id);
       try {
@@ -190,7 +232,13 @@ class AudioCache extends ChangeNotifier {
   }
 
   /// Удаляет давно не игравшие треки, пока кэш не влезет в лимит
-  Future<void> _evict() async {
+  Future<void> _evict() {
+    final next = _evictFuture.then((_) => _evictNow());
+    _evictFuture = next.catchError((Object _) {});
+    return next;
+  }
+
+  Future<void> _evictNow() async {
     if (sizeBytes <= limitBytes) return;
     final pinned = pinnedIds;
     final files = <(File, DateTime, int)>[];
@@ -228,6 +276,17 @@ class AudioCache extends ChangeNotifier {
       } catch (_) {}
     }
     _failed.clear();
+    _failureCount.clear();
+    _retryAt.clear();
+    _scheduleRetry();
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _pinTimer?.cancel();
+    _retryTimer?.cancel();
+    lib.removeListener(_schedulePinSync);
+    super.dispose();
   }
 }
