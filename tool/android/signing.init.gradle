@@ -1,0 +1,22 @@
+// Подпись release-сборки постоянным ключом из переменных окружения.
+// Язык build.gradle в сгенерированном проекте зависит от версии Flutter (groovy / kts),
+// поэтому настройка сделана init-скриптом, а не правкой файла проекта.
+allprojects { p ->
+    p.afterEvaluate {
+        if (!p.plugins.hasPlugin('com.android.application')) return
+        def android = p.extensions.getByName('android')
+        android.defaultConfig.minSdkVersion 24
+        def ks = System.getenv('CAVEY_KEYSTORE')
+        if (ks) {
+            android.signingConfigs.create('cavey') {
+                storeFile p.file(ks)
+                storePassword System.getenv('CAVEY_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('CAVEY_KEY_ALIAS') ?: 'cavey'
+                keyPassword System.getenv('CAVEY_KEY_PASSWORD') ?: System.getenv('CAVEY_KEYSTORE_PASSWORD')
+            }
+            android.buildTypes.release.signingConfig = android.signingConfigs.getByName('cavey')
+        }
+        android.buildTypes.release.minifyEnabled false
+        android.buildTypes.release.shrinkResources false
+    }
+}
