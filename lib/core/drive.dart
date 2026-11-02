@@ -671,16 +671,25 @@ class DriveApi {
     );
   }
 
-  /// Перезаписывает содержимое файла. Возвращает новый modifiedTime.
-  Future<String> updateFile(String email, String id, String content, {String mime = 'application/json'}) async {
+  /// Drive's version increases for every remote mutation, even when timestamps
+  /// would otherwise look equal. Return the version of THIS successful write.
+  Future<(String, String?)> updateFileWithVersion(
+      String email, String id, String content, {String mime = 'application/json'}) async {
     final res = await send(
       email,
       'PATCH',
-      upload('files/$id', {'uploadType': 'media', 'fields': 'id,modifiedTime'}),
+      upload('files/$id', {'uploadType': 'media', 'fields': 'id,modifiedTime,version'}),
       headers: {'Content-Type': '$mime; charset=utf-8'},
       body: utf8.encode(content),
     );
-    return ((jsonDecode(res.body) as Map)['modifiedTime'] as String?) ?? '';
+    final body = jsonDecode(res.body) as Map;
+    return ((body['modifiedTime'] as String?) ?? '', body['version']?.toString());
+  }
+
+  /// Existing callers that only need the timestamp retain their interface.
+  Future<String> updateFile(String email, String id, String content, {String mime = 'application/json'}) async {
+    final saved = await updateFileWithVersion(email, id, content, mime: mime);
+    return saved.$1;
   }
 }
 
