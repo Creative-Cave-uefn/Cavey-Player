@@ -690,8 +690,12 @@ class LibraryController extends ChangeNotifier {
               email, settings.libFileId!, jsonEncode(latest.toJson()));
           modified = saved.$1;
           writtenVersion = saved.$2;
+          // The user may have switched libraries while the PATCH was waiting.
+          // Never drain the new library's pending operations into the old file.
+          if (settings.libFileId != libAtStart) throw _Abandoned();
           break;
         }
+        if (_pending.length < batch.length) throw _Abandoned();
         _pending.removeRange(0, batch.length);
         for (final op in _pending) {
           latest.apply(op);
