@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:media_kit/media_kit.dart';
+import 'package:media_kit/media_kit.dart' hide Track;
 
 import 'core/audio_cache.dart';
 import 'core/drive.dart';
