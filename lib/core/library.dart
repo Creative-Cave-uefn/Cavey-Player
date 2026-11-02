@@ -92,6 +92,7 @@ class LibraryController extends ChangeNotifier {
   final List<(Map<String, dynamic>, DateTime)> _recentMeta = [];
   int _flushGen = 0;
   String? _libModified;
+  String? _libVersion;
   bool _flushing = false;
   Timer? _flushTimer;
   Timer? _pollTimer;
@@ -123,6 +124,7 @@ class LibraryController extends ChangeNotifier {
     if (cached is Map && cached['hub'] == settings.hubId) {
       data = LibraryData.fromJson(cached['data']);
       _libModified = cached['modified'] as String?;
+      _libVersion = cached['version'] as String?;
     }
     final pend = await store.readJson('pending_ops.json');
     if (pend is List) {
@@ -227,6 +229,7 @@ class LibraryController extends ChangeNotifier {
     _dataFolderId = null;
     dataFolders = const [];
     _libModified = f['modifiedTime'] as String?;
+    _libVersion = null;
     data = fresh;
     _pending.clear();
     await saveSettings();
@@ -277,6 +280,7 @@ class LibraryController extends ChangeNotifier {
       data = LibraryData();
       _pending.clear();
       _libModified = null;
+      _libVersion = null;
       await saveSettings();
       await reload();
       final p = accounts.primary;
@@ -314,6 +318,7 @@ class LibraryController extends ChangeNotifier {
       ..libFileId = f['id'] as String
       ..autoJoinDisabled = false;
     _libModified = f['modifiedTime'] as String?;
+    _libVersion = null;
     _dataFolderId = null;
     dataFolders = const [];
     await saveSettings();
@@ -514,6 +519,7 @@ class LibraryController extends ChangeNotifier {
     data = LibraryData();
     _pending.clear();
     _libModified = null;
+    _libVersion = null;
     _dataFolderId = null;
     dataFolders = const [];
     await saveSettings();
@@ -537,15 +543,29 @@ class LibraryController extends ChangeNotifier {
     if (!hasHub) return;
     final gen = _flushGen;
     await _withHub((email) async {
-      final meta = await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime');
-      final latest = await _downloadLatest(email);
-      // Пока скачивали, мы сами сохранили правки: скачанная копия уже старая, её не берём
-      if (_flushing || gen != _flushGen) return;
-      for (final op in _pending) {
-        latest.apply(op);
+      // Ensure metadata and JSON describe the SAME remote revision.
+      // Another client may write while the download is in flight.
+      for (var attempt = 0; attempt < 3; attempt++) {
+        final before = await drive.getFile(email, settings.libFileId!,
+            fields: 'id,modifiedTime,version');
+        final latest = await _downloadLatest(email);
+        final after = await drive.getFile(email, settings.libFileId!,
+            fields: 'id,modifiedTime,version');
+        if (before['version'] != after['version'] ||
+            before['modifiedTime'] != after['modifiedTime']) {
+          if (attempt == 2) throw LibraryException('Библиотека менялась при чтении, повторю позже');
+          continue;
+        }
+        // A local flush completed during the read: do not replace its result.
+        if (_flushing || gen != _flushGen) return;
+        for (final op in _pending) {
+          latest.apply(op);
+        }
+        data = latest;
+        _libModified = after['modifiedTime'] as String?;
+        _libVersion = after['version']?.toString();
+        break;
       }
-      data = latest;
-      _libModified = meta['modifiedTime'] as String?;
     });
     syncError = null;
     _reassertRecentMeta();
@@ -582,8 +602,11 @@ class LibraryController extends ChangeNotifier {
   Future<void> _poll() async {
     if (!hasHub || _flushing || _pending.isNotEmpty) return;
     try {
-      final meta = await _withHub((e) => drive.getFile(e, settings.libFileId!, fields: 'id,modifiedTime'));
-      if (meta['modifiedTime'] != _libModified) await reload();
+      final meta = await _withHub((e) => drive.getFile(e, settings.libFileId!, fields: 'id,modifiedTime,version'));
+      if (meta['modifiedTime'] != _libModified ||
+          (_libVersion != null && meta['version']?.toString() != _libVersion)) {
+        await reload();
+      }
     } catch (_) {
       // нет сети — попробуем в следующий раз
     }
@@ -624,32 +647,41 @@ class LibraryController extends ChangeNotifier {
     final libAtStart = settings.libFileId;
     try {
       await _withHub((email) async {
-        // Б1: перед записью проверяем, что файл не менял кто-то другой с момента скачивания.
-        // Изменился — качаем заново и применяем свои правки поверх (до 3 попыток)
+        // File version (monotonic) detects concurrent writes even when two
+        // modifiedTime values are equal. A local snapshot is mandatory:
+        // commit() may mutate data while this network request is awaiting.
         late LibraryData latest;
         String? modified;
+        String? writtenVersion;
         for (var attempt = 0;; attempt++) {
-          final before = (await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime'))['modifiedTime'];
-          // Е1: файл не менялся с нашего последнего чтения и новых правок за время сохранения нет —
-          // локальная копия уже и есть актуальная, скачивать целиком не нужно
-          if (before != null && before == _libModified && _pending.length == batch.length) {
-            latest = data;
-            modified = await drive.updateFile(email, settings.libFileId!, jsonEncode(latest.toJson()));
-            break;
-          }
-          latest = await _downloadLatest(email);
-          // Пока качали, человек отключился или сменил библиотеку: в чужой файл ничего не пишем
+          final before = await drive.getFile(email, settings.libFileId!,
+              fields: 'id,modifiedTime,version');
           if (settings.libFileId != libAtStart) throw _Abandoned();
-          for (final op in batch) {
-            latest.apply(op);
+          final beforeVersion = before['version']?.toString();
+          if (_libVersion != null && beforeVersion == _libVersion &&
+              before['modifiedTime'] == _libModified &&
+              _pending.length == batch.length) {
+            latest = LibraryData.fromJson(data.toJson());
+          } else {
+            latest = await _downloadLatest(email);
+            if (settings.libFileId != libAtStart) throw _Abandoned();
+            for (final op in batch) {
+              latest.apply(op);
+            }
           }
-          final after = (await drive.getFile(email, settings.libFileId!, fields: 'id,modifiedTime'))['modifiedTime'];
-          if (after != before) {
+          final after = await drive.getFile(email, settings.libFileId!,
+              fields: 'id,modifiedTime,version');
+          if (settings.libFileId != libAtStart) throw _Abandoned();
+          if (beforeVersion != after['version']?.toString() ||
+              before['modifiedTime'] != after['modifiedTime']) {
             if (attempt >= 2) throw LibraryException('Библиотеку одновременно правят другие, сохраню чуть позже');
             AppLog.info('Библиотека изменилась во время сохранения, повторяю (${attempt + 1})');
             continue;
           }
-          modified = await drive.updateFile(email, settings.libFileId!, jsonEncode(latest.toJson()));
+          final saved = await drive.updateFileWithVersion(
+              email, settings.libFileId!, jsonEncode(latest.toJson()));
+          modified = saved.$1;
+          writtenVersion = saved.$2;
           break;
         }
         _pending.removeRange(0, batch.length);
@@ -658,6 +690,7 @@ class LibraryController extends ChangeNotifier {
         }
         data = latest;
         _libModified = modified;
+        _libVersion = writtenVersion;
         _flushGen++;
         final now = DateTime.now();
         for (final op in batch) {
@@ -700,6 +733,7 @@ class LibraryController extends ChangeNotifier {
     return store.writeJson('library_cache.json', {
       'hub': settings.hubId,
       'modified': _libModified,
+      'version': _libVersion,
       'data': data.toJson(),
     });
   }
