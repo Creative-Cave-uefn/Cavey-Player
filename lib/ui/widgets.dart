@@ -129,6 +129,25 @@ class _CoverImageState extends State<CoverImage> {
   CoverService? _svc;
   String? _loadingKey;
   int? _loadingBucket;
+  String? _brokenKey;
+
+  /// The bytes could not be decoded: show the placeholder, drop the cached copies
+  /// and fetch the cover again (once per picture, see CoverService.discard)
+  Widget _onBroken(Widget placeholder) {
+    final key = _key;
+    if (key != null && _brokenKey != key) {
+      _brokenKey = key;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || key != _key) return;
+        _svc?.discard(key);
+        setState(() => _bytes = null);
+        _loadingKey = null;
+        _loadingBucket = null;
+        if (_wants) _request();
+      });
+    }
+    return placeholder;
+  }
 
   @override
   void didChangeDependencies() {
@@ -185,7 +204,7 @@ class _CoverImageState extends State<CoverImage> {
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
     if (!sameKey || peek != null) _bytes = peek;
     final exact = id != null ? svc.hasExactFile(id, px: px)
-        : (t != null && svc.hasExact(t, px: px));
+        : (t != null && svc.hasExact(t, px: px, upgrade: widget.originalQuality));
     if (_wants && !exact) _request();
   }
 
@@ -229,11 +248,13 @@ class _CoverImageState extends State<CoverImage> {
     if (!_wants) return;
     final px = _wantPx;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
-    if (peek != null && !identical(peek, _bytes)) {
+    // Fullscreen already showing something only ever moves up in quality (via _request)
+    final keep = widget.originalQuality && _bytes != null;
+    if (peek != null && !identical(peek, _bytes) && !keep) {
       setState(() => _bytes = peek);
     }
     final exact = id != null ? svc.hasExactFile(id, px: px) :
-        (t != null && svc.hasExact(t, px: px));
+        (t != null && svc.hasExact(t, px: px, upgrade: widget.originalQuality));
     if (!exact) _request();
   }
 
@@ -263,18 +284,20 @@ class _CoverImageState extends State<CoverImage> {
                       bytes,
                       fit: BoxFit.cover,
                       alignment: Alignment.center,
-                      filterQuality: FilterQuality.medium,
+                      filterQuality: widget.originalQuality ? FilterQuality.high : FilterQuality.medium,
                       gaplessPlayback: true,
                       cacheWidth: widget.originalQuality ? null : math.min(1600, (widget.size * dpr).round()),
-                      errorBuilder: (_, __, ___) => placeholder,
+                      errorBuilder: (_, __, ___) => _onBroken(placeholder),
                     ),
                   ])
                 : Image.memory(
                     bytes,
                     fit: BoxFit.cover,
                     gaplessPlayback: true,
+                    // Fullscreen scales a large original down: high-quality filtering keeps it sharp
+                    filterQuality: widget.originalQuality ? FilterQuality.high : FilterQuality.low,
                     cacheWidth: widget.originalQuality ? null : (widget.size * dpr).round(),
-                    errorBuilder: (_, __, ___) => placeholder,
+                    errorBuilder: (_, __, ___) => _onBroken(placeholder),
                   ),
       ),
     );

@@ -56,7 +56,7 @@ Future<Uint8List> compressImage(Uint8List bytes, {required int maxSide, int qual
 /// Уменьшенная копия для кэша. Картинки, которые и так не больше [side], остаются как есть
 Future<Uint8List> makeThumbnail(Uint8List bytes, int side) async {
   try {
-    final out = await compute(_thumb, _Job(bytes, side, 80));
+    final out = await compute(_thumb, _Job(bytes, side, 88));
     if (out != null) return out;
   } catch (_) {}
   return bytes;

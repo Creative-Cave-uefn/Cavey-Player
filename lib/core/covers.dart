@@ -31,6 +31,14 @@ class CoverService extends ChangeNotifier {
   final Set<String> _savingDeezer = {};
   final Map<String, DateTime> _retryAt = {};
   final Map<String, int> _failures = {};
+  // Full-resolution artwork found for fullscreen (e.g. via Deezer) when the
+  // source file only embeds a small cover. Kept apart from _mem so that the
+  // thumbnail/original cache can never overwrite it with the small original.
+  final Map<String, Uint8List> _upgraded = {};
+  final Map<String, DateTime> _fullChecked = {};
+  final Map<String, Future<Uint8List?>> _fullInflight = {};
+  // Cached files that failed to decode are dropped once per session.
+  final Set<String> _discarded = {};
   int _active = 0;
   final List<Completer<void>> _waiting = [];
   bool _notifyQueued = false;
@@ -40,7 +48,41 @@ class CoverService extends ChangeNotifier {
   static String _key(Track t) => t.cover ?? 'p_${t.id}';
 
   /// Какой размер копии нужен для картинки в [px] физических пикселей: 160, 640 или 0 (оригинал)
-  static int bucketFor(int px) => px <= 0 ? 0 : (px <= 200 ? 160 : (px <= 720 ? 640 : 0));
+  /// 160 берём только когда хватает без растяжения: от 161 px уже нужна копия 640
+  static int bucketFor(int px) => px <= 0 ? 0 : (px <= 160 ? 160 : (px <= 720 ? 640 : 0));
+
+  /// Cheap integrity check for cached thumbnails: a JPEG must end with EOI and
+  /// a PNG with IEND. A write cut short by a crash would otherwise be read
+  /// from disk on every start and never display.
+  @visibleForTesting
+  static bool looksComplete(Uint8List b) {
+    if (b.length < 16) return false;
+    if (b[0] == 0xFF && b[1] == 0xD8) {
+      var end = b.length;
+      while (end > 2 && b[end - 1] == 0) {
+        end--;
+      }
+      return b[end - 2] == 0xFF && b[end - 1] == 0xD9;
+    }
+    if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
+      final n = b.length;
+      return b[n - 8] == 0x49 && b[n - 7] == 0x45 && b[n - 6] == 0x4E && b[n - 5] == 0x44;
+    }
+    return true;
+  }
+
+  /// Write through a temporary file so a crash never leaves half an image behind.
+  Future<void> _writeAtomic(File f, Uint8List bytes) async {
+    final tmp = File('${f.path}.tmp');
+    try {
+      await tmp.writeAsBytes(bytes, flush: true);
+      await tmp.rename(f.path);
+    } catch (_) {
+      try {
+        await tmp.delete();
+      } catch (_) {}
+    }
+  }
 
   /// A newly imported song may contain no APIC, cover.jpg or saved artwork.
   /// Public catalog lookup is an optional last resort, never required to play.
@@ -74,6 +116,10 @@ class CoverService extends ChangeNotifier {
   };
 
   Uint8List? _peekKey(String key, int px) {
+    if (bucketFor(px) == 0) {
+      final better = _upgraded[key];
+      if (better != null) return better;
+    }
     for (final bucket in previewBucketPriority(px)) {
       final cached = _touch(_mk(key, bucket));
       if (cached != null) return cached;
@@ -83,10 +129,24 @@ class CoverService extends ChangeNotifier {
 
   /// Distinguish a placeholder-quality thumbnail from the requested size,
   /// so a cinema/fullscreen view continues upgrading it to the original.
-  bool hasExact(Track t, {int px = 0}) {
+  ///
+  /// With [upgrade] (fullscreen) a small original in memory is not final: the
+  /// check for larger artwork must have finished too, otherwise reopening the
+  /// fullscreen view would keep showing the small embedded cover forever.
+  bool hasExact(Track t, {int px = 0, bool upgrade = false}) {
     final cover = lib.customCoverOf(t);
     final key = cover == null ? _key(t) : 'cv_$cover';
-    return _mem[_mk(key, bucketFor(px))] != null;
+    final bucket = bucketFor(px);
+    if (bucket == 0 && cover == null) {
+      if (_upgraded.containsKey(key)) return true;
+      if (upgrade && canFindInDeezer(t) && !_fullDone(key)) return false;
+    }
+    return _mem[_mk(key, bucket)] != null;
+  }
+
+  bool _fullDone(String key) {
+    final at = _fullChecked[key];
+    return at != null && DateTime.now().difference(at) < const Duration(minutes: 10);
   }
 
   bool hasExactFile(String fileId, {int px = 0}) =>
@@ -166,26 +226,87 @@ class CoverService extends ChangeNotifier {
   /// Resolve a high-resolution image when the source file itself contains
   /// only a small embedded cover. The existing picture is still shown while
   /// a verified Deezer match is retrieved.
-  Future<Uint8List?> forFullscreen(Track t) async {
+  Future<Uint8List?> forFullscreen(Track t) {
+    if (lib.customCoverOf(t) != null) return forTrack(t, px: 0);
+    final key = _key(t);
+    final ready = _upgraded[key];
+    if (ready != null) return Future.value(ready);
+    return _fullInflight[key] ??=
+        _upgrade(t, key).whenComplete(() => _fullInflight.remove(key));
+  }
+
+  void _setUpgraded(String key, Uint8List bytes) {
+    _upgraded.remove(key);
+    _upgraded[key] = bytes;
+    while (_upgraded.length > 12) {
+      _upgraded.remove(_upgraded.keys.first);
+    }
+    _fullChecked[key] = DateTime.now();
+    _signal();
+  }
+
+  Future<Uint8List?> _upgrade(Track t, String key) async {
     final original = await forTrack(t, px: 0);
-    if (!canFindInDeezer(t) || lib.customCoverOf(t) != null) return original;
-    if (original != null && original.isNotEmpty) {
-      try {
-        final dims = await DeezerArt.dimensionsInBackground(original)
-            .timeout(const Duration(seconds: 4));
-        if (dims != null && dims.$1 >= 900 && dims.$2 >= 900) return original;
-        final artwork = await _findDeezer(t);
-        if (artwork == null || (dims != null &&
-            !artwork.betterThan(dims.$1, dims.$2))) return original;
-        _saveFoundCover(t, artwork.bytes);
-        return artwork.bytes;
-      } catch (e) {
-        AppLog.info('Fullscreen artwork: не получилось улучшить разрешение: $e');
+    if (!canFindInDeezer(t)) {
+      _fullChecked[key] = DateTime.now();
+      return original;
+    }
+    // Found in an earlier session: show it at once, no network.
+    final saved = _file('$key@hq');
+    try {
+      if (await saved.exists()) {
+        final b = await saved.readAsBytes();
+        if (looksComplete(b)) {
+          _setUpgraded(key, b);
+          return b;
+        }
+        await saved.delete();
+      }
+    } catch (_) {}
+    if (original == null || original.isEmpty) return original;
+    // No embedded cover at all: forTrack already fetched it from Deezer.
+    if (!t.hasCover) {
+      _fullChecked[key] = DateTime.now();
+      return original;
+    }
+    try {
+      final dims = await DeezerArt.dimensionsInBackground(original)
+          .timeout(const Duration(seconds: 4));
+      if (dims != null && dims.$1 >= 900 && dims.$2 >= 900) {
+        _fullChecked[key] = DateTime.now();
         return original;
       }
+      final artwork = await _findDeezer(t);
+      _fullChecked[key] = DateTime.now();
+      if (artwork == null || (dims != null && !artwork.betterThan(dims.$1, dims.$2))) {
+        return original;
+      }
+      _setUpgraded(key, artwork.bytes);
+      unawaited(_writeAtomic(saved, artwork.bytes));
+      _saveFoundCover(t, artwork.bytes);
+      return artwork.bytes;
+    } catch (e) {
+      AppLog.info('Fullscreen artwork: не получилось улучшить разрешение: $e');
+      return original;
     }
-    // Missing embedded artwork may have been fetched directly by forTrack.
-    return original;
+  }
+
+  /// A cached picture failed to decode: drop the cached copies (thumbnails and the
+  /// downloaded original) so the next load fetches them again. Once per picture and
+  /// session, so a source file that is itself broken cannot cause a reload loop.
+  void discard(String? key) {
+    if (key == null || !_discarded.add(key)) return;
+    for (final mk in [_mk(key, 160), _mk(key, 640), key]) {
+      final old = _mem.remove(mk);
+      _memoryBytes -= old?.length ?? 0;
+      try {
+        _file(mk).deleteSync();
+      } catch (_) {}
+    }
+    _retryAt.remove(key);
+    _failures.remove(key);
+    AppLog.info('Обложка $key не читается: сбросил кэш, загружу заново');
+    _signal();
   }
 
   Future<DeezerArtwork?> _findDeezer(Track t) async {
@@ -254,9 +375,7 @@ class CoverService extends ChangeNotifier {
     final key = 'cv_$fileId';
     _remember(key, bytes);
     _signal();
-    try {
-      await _file(key).writeAsBytes(bytes, flush: true);
-    } catch (_) {}
+    await _writeAtomic(_file(key), bytes);
   }
 
   Future<Uint8List?> _get(String key, int px, Future<Uint8List?> Function() fetch) {
@@ -277,7 +396,13 @@ class CoverService extends ChangeNotifier {
       final thumbFile = bucket == 0 ? null : _file(mk);
       if (thumbFile != null && await thumbFile.exists()) {
         bytes = await thumbFile.readAsBytes();
-        if (bytes.isEmpty) bytes = null;
+        if (!looksComplete(bytes)) {
+          // Оборванная запись: удаляем и делаем копию заново из оригинала
+          bytes = null;
+          try {
+            await thumbFile.delete();
+          } catch (_) {}
+        }
       }
       if (bytes == null) {
         final orig = await _original(key, fetch);
@@ -288,11 +413,7 @@ class CoverService extends ChangeNotifier {
           return null;
         }
         bytes = bucket == 0 ? orig : await makeThumbnail(orig, bucket);
-        if (thumbFile != null) {
-          try {
-            await thumbFile.writeAsBytes(bytes, flush: true);
-          } catch (_) {}
-        }
+        if (thumbFile != null) await _writeAtomic(thumbFile, bytes);
       }
       _failures.remove(key);
       _retryAt.remove(key);
@@ -331,9 +452,7 @@ class CoverService extends ChangeNotifier {
     try {
       final b = await fetch();
       if (b == null || !await _validImage(b)) return null;
-      try {
-        await file.writeAsBytes(b, flush: true);
-      } catch (_) {}
+      await _writeAtomic(file, b);
       return b;
     } finally {
       _release();
@@ -369,7 +488,7 @@ class CoverService extends ChangeNotifier {
       try {
         if (await f.exists()) {
           final b = await f.readAsBytes();
-          if (b.isNotEmpty) _remember(mk, b);
+          if (looksComplete(b)) _remember(mk, b);
         }
       } catch (_) {}
     }
