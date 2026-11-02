@@ -76,9 +76,23 @@ String folderUrl(String id) => 'https://drive.google.com/drive/folders/$id';
 
 class DriveApi {
   final AccountManager accounts;
-  final http.Client _http = http.Client();
+  final http.Client _http;
 
-  DriveApi(this.accounts);
+  DriveApi(this.accounts, {http.Client? client}) : _http = client ?? http.Client();
+
+  /// GET is safe to retry after an abrupt close before HTTP headers arrive.
+  /// Mutating requests must never be repeated after an ambiguous connection loss.
+  static bool isRetryableReadFailure(Object error) =>
+      error is http.ClientException || error is SocketException ||
+      error is HttpException || error is TimeoutException;
+
+  static Duration retryDelay(int attempt, {int? retryAfterSeconds}) {
+    if (retryAfterSeconds != null && retryAfterSeconds >= 0) {
+      return Duration(seconds: min(retryAfterSeconds, 30));
+    }
+    final base = min(500 * (1 << attempt), 6000);
+    return Duration(milliseconds: base + Random().nextInt(350));
+  }
 
   static Uri api(String path, [Map<String, String>? q]) =>
       Uri.https('www.googleapis.com', '/drive/v3/$path', {'supportsAllDrives': 'true', ...?q});
@@ -96,31 +110,48 @@ class DriveApi {
     Map<String, String>? headers,
     List<int>? body,
   }) async {
-    for (var attempt = 0; attempt < 3; attempt++) {
-      final token = await accounts.token(email, force: attempt == 1);
+    final reading = method == 'GET';
+    final maxAttempts = reading ? 5 : 3;
+    var refreshToken = false;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      final token = await accounts.token(email, force: refreshToken);
+      refreshToken = false;
       final req = http.Request(method, uri)..headers['Authorization'] = 'Bearer $token';
       if (headers != null) req.headers.addAll(headers);
       if (body != null) req.bodyBytes = body;
       final http.Response res;
       try {
-        // Г1: зависшее соединение не должно вешать запрос навсегда
-        res = await http.Response.fromStream(await _http.send(req).timeout(const Duration(seconds: 30)))
-            .timeout(const Duration(seconds: 60));
-      } on TimeoutException {
-        // повторяем только чтение: повтор записи мог бы создать дубль
-        if (method == 'GET' && attempt < 2) continue;
-        throw DriveException(408, 'Google Диск не ответил вовремя');
+        res = await http.Response.fromStream(
+          await _http.send(req).timeout(const Duration(seconds: 30)),
+        ).timeout(const Duration(seconds: 60));
+      } catch (e) {
+        if (reading && isRetryableReadFailure(e) && attempt + 1 < maxAttempts) {
+          await Future<void>.delayed(retryDelay(attempt));
+          continue;
+        }
+        if (e is TimeoutException) {
+          throw DriveException(408, 'Google Диск не ответил вовремя');
+        }
+        if (isRetryableReadFailure(e)) {
+          throw DriveException(503,
+              'Google Диск разорвал соединение. Повторные попытки исчерпаны: $e');
+        }
+        rethrow;
       }
-      if (res.statusCode == 401 && attempt == 0) continue;
-      // 429 / 5xx — Google просит подождать
-      if ((res.statusCode == 429 || res.statusCode >= 500) && attempt < 2) {
-        await Future<void>.delayed(Duration(milliseconds: 600 * (attempt + 1) + Random().nextInt(400)));
+      if (res.statusCode == 401 && attempt == 0) {
+        refreshToken = true; // do not refresh on every transient network retry
+        continue;
+      }
+      if ((res.statusCode == 429 || res.statusCode >= 500) &&
+          attempt + 1 < maxAttempts) {
+        final retryAfter = int.tryParse(res.headers['retry-after'] ?? '');
+        await Future<void>.delayed(retryDelay(attempt, retryAfterSeconds: retryAfter));
         continue;
       }
       if (res.statusCode >= 400) throw DriveException(res.statusCode, _errorText(res));
       return res;
     }
-    throw DriveException(401, 'нет доступа');
+    throw DriveException(503, 'Google Диск не ответил после повторных попыток');
   }
 
   static String _errorText(http.Response res) {
