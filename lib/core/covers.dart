@@ -24,6 +24,7 @@ class CoverService extends ChangeNotifier {
   int _memoryBytes = 0;
   static const int _memoryLimitBytes = 48 * 1024 * 1024;
   final Map<String, Future<Uint8List?>> _inflight = {};
+  final Map<String, Future<Uint8List?>> _originalInflight = {};
   final Map<String, DateTime> _retryAt = {};
   final Map<String, int> _failures = {};
   int _active = 0;
@@ -161,7 +162,13 @@ class CoverService extends ChangeNotifier {
     }
   }
 
-  Future<Uint8List?> _original(String key, Future<Uint8List?> Function() fetch) async {
+  // Two thumbnails of the same cover can be requested simultaneously.
+  // Share a single original Drive download across all thumbnail sizes.
+  Future<Uint8List?> _original(String key, Future<Uint8List?> Function() fetch) =>
+      _originalInflight[key] ??=
+          _loadOriginal(key, fetch).whenComplete(() => _originalInflight.remove(key));
+
+  Future<Uint8List?> _loadOriginal(String key, Future<Uint8List?> Function() fetch) async {
     final file = _file(key);
     if (await file.exists()) {
       try {
