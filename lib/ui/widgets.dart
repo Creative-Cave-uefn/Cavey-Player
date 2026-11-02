@@ -91,30 +91,15 @@ class CoverImage extends StatefulWidget {
   /// Не просить копию крупнее этого размера в пикселях (для размытых баннеров хватает 640)
   final int? maxPx;
 
-  /// Fullscreen/cinema should load the original file, not stop at 640px.
-  /// A cached 160/640px thumbnail remains a temporary visual placeholder.
-  final bool originalQuality;
-
   /// Закрашивать всю площадь: под обложкой кладётся её же размытая копия, чтобы прозрачные поля
   /// и неквадратные картинки не оставляли пустых полос (плеер)
   final bool fill;
-  const CoverImage(
-      {super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx, this.fill = false, this.originalQuality = false});
 
-  /// Fullscreen explicitly requests the original (bucket 0), irrespective
-  /// of the displayed panel size. Keep this policy testable without a widget
-  /// tree or network access.
-  static int requestedPhysicalPixels({
-    required double size,
-    double? height,
-    required double devicePixelRatio,
-    int? maxPx,
-    bool originalQuality = false,
-  }) {
-    if (originalQuality) return 0;
-    final pixels = (math.max(size, height ?? 0) * devicePixelRatio).round();
-    return maxPx != null && pixels > maxPx ? maxPx : pixels;
-  }
+  /// Обложка на весь экран (кинотеатр): грузится вне очереди за списками, оригинал запоминается,
+  /// при уменьшении используется качественная фильтрация
+  final bool fullscreen;
+  const CoverImage(
+      {super.key, required this.track, required this.size, this.height, this.radius = 6, this.fileId, this.label, this.maxPx, this.fill = false, this.fullscreen = false});
 
   @override
   State<CoverImage> createState() => _CoverImageState();
@@ -127,12 +112,10 @@ class _CoverImageState extends State<CoverImage> {
   int _gen = 0;
   bool _wants = false;
   CoverService? _svc;
-  String? _loadingKey;
-  int? _loadingBucket;
   String? _brokenKey;
 
-  /// The bytes could not be decoded: show the placeholder, drop the cached copies
-  /// and fetch the cover again (once per picture, see CoverService.discard)
+  /// Картинку не удалось разобрать: показываем плашку, сбрасываем её кэш и грузим заново
+  /// (один раз на картинку, см. CoverService.discard)
   Widget _onBroken(Widget placeholder) {
     final key = _key;
     if (key != null && _brokenKey != key) {
@@ -141,8 +124,6 @@ class _CoverImageState extends State<CoverImage> {
         if (!mounted || key != _key) return;
         _svc?.discard(key);
         setState(() => _bytes = null);
-        _loadingKey = null;
-        _loadingBucket = null;
         if (_wants) _request();
       });
     }
@@ -173,13 +154,12 @@ class _CoverImageState extends State<CoverImage> {
     super.dispose();
   }
 
-  int get _wantPx => CoverImage.requestedPhysicalPixels(
-    size: widget.size,
-    height: widget.height,
-    devicePixelRatio: MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0,
-    maxPx: widget.maxPx,
-    originalQuality: widget.originalQuality,
-  );
+  int get _wantPx {
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
+    final px = (math.max(widget.size, widget.height ?? 0) * dpr).round();
+    final cap = widget.maxPx;
+    return cap != null && px > cap ? cap : px;
+  }
 
   /// Ключ поменялся (другой трек, другой человек) — старую картинку не показываем ни на кадр
   void _ensure() {
@@ -192,9 +172,11 @@ class _CoverImageState extends State<CoverImage> {
     final bucket = CoverService.bucketFor(px);
     final wantsNow = id != null || (t != null && svc.wants(t));
     if (key == _key && bucket == _px) {
+      // Тот же трек, но у него появилась обложка (досканировали, нашли cover.jpg) — сразу просим её,
+      // а не ждём, пока виджет пересоздадут сменой вкладки
       final became = wantsNow && !_wants;
       _wants = wantsNow;
-      if (became) _request();
+      if (became && _bytes == null) _request();
       return;
     }
     final sameKey = key == _key;
@@ -203,10 +185,7 @@ class _CoverImageState extends State<CoverImage> {
     _wants = wantsNow;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
     if (!sameKey || peek != null) _bytes = peek;
-    if (widget.originalQuality && t != null && peek != null) svc.trace(t, peek, 'кэш в памяти');
-    final exact = id != null ? svc.hasExactFile(id, px: px)
-        : (t != null && svc.hasExact(t, px: px, upgrade: widget.originalQuality));
-    if (_wants && !exact) _request();
+    if (peek == null && _wants) _request();
   }
 
   void _request() {
@@ -215,42 +194,21 @@ class _CoverImageState extends State<CoverImage> {
     final t = widget.track;
     final id = widget.fileId;
     final key = _key;
-    if (_loadingKey == key && _loadingBucket == _px) return;
     final gen = ++_gen;
     final px = _wantPx;
-    _loadingKey = key;
-    _loadingBucket = _px;
-    void apply(Uint8List? b, String from) {
+    final fs = widget.fullscreen;
+    final f = id != null
+        ? svc.forFile(id, px: px, fullscreen: fs)
+        : (t == null ? Future<Uint8List?>.value(null) : svc.forTrack(t, px: px, fullscreen: fs));
+    f.then((b) {
       if (!mounted || gen != _gen || key != _key || b == null || identical(b, _bytes)) return;
-      if (widget.originalQuality && t != null) svc.trace(t, b, from);
       setState(() => _bytes = b);
-    }
-
-    final first = id != null
-        ? svc.forFile(id, px: px)
-        : (t == null
-            ? Future<Uint8List?>.value(null)
-            : (widget.originalQuality ? svc.fullscreenOriginal(t) : svc.forTrack(t, px: px)));
-    var chain = first.then((b) => apply(b, widget.originalQuality ? 'оригинал для полного экрана' : 'загружено'));
-    // Fullscreen shows the original as soon as it is loaded and swaps in a larger
-    // picture afterwards, instead of waiting for the whole search to finish
-    if (widget.originalQuality && id == null && t != null) {
-      chain = chain
-          .then((_) => svc.forFullscreen(t))
-          .then((b) => apply(b, 'улучшенная версия'));
-    }
-    chain.catchError((Object _) {}).whenComplete(() {
-      if (gen == _gen) {
-        _loadingKey = null;
-        _loadingBucket = null;
-      }
     });
   }
 
-  /// On a fullscreen transition, an existing 160/640-pixel thumbnail is
-  /// displayed immediately and then upgraded without waiting for a new tab.
+  /// Сервис что-то догрузил или пришло время повторить: если у нас картинки ещё нет, пробуем снова
   void _onReady() {
-    if (!mounted || _key == null) return;
+    if (!mounted || _bytes != null || _key == null) return;
     final t = widget.track;
     final id = widget.fileId;
     final svc = _svc!;
@@ -258,14 +216,11 @@ class _CoverImageState extends State<CoverImage> {
     if (!_wants) return;
     final px = _wantPx;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
-    // Fullscreen already showing something only ever moves up in quality (via _request)
-    final keep = widget.originalQuality && _bytes != null;
-    if (peek != null && !identical(peek, _bytes) && !keep) {
+    if (peek != null) {
       setState(() => _bytes = peek);
+    } else {
+      _request();
     }
-    final exact = id != null ? svc.hasExactFile(id, px: px) :
-        (t != null && svc.hasExact(t, px: px, upgrade: widget.originalQuality));
-    if (!exact) _request();
   }
 
   @override
@@ -294,9 +249,9 @@ class _CoverImageState extends State<CoverImage> {
                       bytes,
                       fit: BoxFit.cover,
                       alignment: Alignment.center,
-                      filterQuality: widget.originalQuality ? FilterQuality.high : FilterQuality.medium,
+                      filterQuality: FilterQuality.medium,
                       gaplessPlayback: true,
-                      cacheWidth: widget.originalQuality ? null : math.min(1600, (widget.size * dpr).round()),
+                      cacheWidth: (widget.size * dpr).round(),
                       errorBuilder: (_, __, ___) => _onBroken(placeholder),
                     ),
                   ])
@@ -304,9 +259,9 @@ class _CoverImageState extends State<CoverImage> {
                     bytes,
                     fit: BoxFit.cover,
                     gaplessPlayback: true,
-                    // Fullscreen scales a large original down: high-quality filtering keeps it sharp
-                    filterQuality: widget.originalQuality ? FilterQuality.high : FilterQuality.low,
-                    cacheWidth: widget.originalQuality ? null : (widget.size * dpr).round(),
+                    // На весь экран картинку уменьшают, и качественная фильтрация держит резкость
+                    filterQuality: widget.fullscreen ? FilterQuality.high : FilterQuality.low,
+                    cacheWidth: (widget.size * dpr).round(),
                     errorBuilder: (_, __, ___) => _onBroken(placeholder),
                   ),
       ),

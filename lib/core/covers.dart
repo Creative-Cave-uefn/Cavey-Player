@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
 import 'deezer_art.dart';
@@ -13,12 +11,55 @@ import 'image_tools.dart';
 import 'library.dart';
 import 'models.dart';
 
+/// Ограничивает число одновременных загрузок обложек. То, на что человек смотрит прямо сейчас
+/// (полный экран), обгоняет фоновые загрузки для списков и не ждёт свободного слота.
+class LoadGate {
+  LoadGate(this.limit);
+
+  final int limit;
+  int _active = 0;
+  final List<({String key, Completer<void> done})> _waiting = [];
+  final Set<String> _urgent = {};
+
+  int get active => _active;
+
+  Future<void> acquire(String key) async {
+    if (_active < limit || _urgent.contains(key)) {
+      _active++;
+      return;
+    }
+    final c = Completer<void>();
+    _waiting.add((key: key, done: c));
+    await c.future;
+  }
+
+  void release() {
+    if (_active > limit || _waiting.isEmpty) {
+      _active--;
+    } else {
+      _waiting.removeAt(0).done.complete();
+    }
+  }
+
+  /// Загрузка [key] нужна сейчас: если она уже стоит в очереди — идёт первой, а новая не ждёт
+  void prioritize(String key) {
+    _urgent.add(key);
+    final i = _waiting.indexWhere((w) => w.key == key);
+    if (i > 0) _waiting.insert(0, _waiting.removeAt(i));
+  }
+
+  void settle(String key) => _urgent.remove(key);
+}
+
 /// Обложки: из cover.jpg рядом с треком или из тегов (догружаем только нужный
 /// кусок файла). Кэшируются в памяти и на диске, чтобы не качать повторно.
 ///
 /// Рядом с оригиналом на диске лежат уменьшенные копии (160 и 640 px): списки читают маленькую,
 /// она открывается мгновенно и после перезапуска. Когда картинка догрузилась, сервис оповещает
 /// виджеты, и они обновляются сами, без смены вкладки.
+///
+/// Вместо картинки меньше нужной виджет ничего не получает: если в кэше есть только копия поменьше,
+/// он ждёт нужную. Копию побольше берём сразу.
 class CoverService extends ChangeNotifier {
   final DriveApi drive;
   final LibraryController lib;
@@ -26,25 +67,25 @@ class CoverService extends ChangeNotifier {
 
   final Map<String, Uint8List?> _mem = {};
   int _memoryBytes = 0;
-  static const int _memoryLimitBytes = 48 * 1024 * 1024;
+  static const int _memoryLimitBytes = 64 * 1024 * 1024;
+
+  // Оригиналы, которые показывали на весь экран: хранятся отдельно от общего кэша, чтобы повторное
+  // открытие того же трека не читало и не разбирало файл заново
+  final Map<String, Uint8List> _pinned = {};
+  static const int _pinnedLimit = 6;
+
   final Map<String, Future<Uint8List?>> _inflight = {};
   final Map<String, Future<Uint8List?>> _originalInflight = {};
   final Map<String, Future<DeezerArtwork?>> _albumLookupInflight = {};
   final Set<String> _savingDeezer = {};
   final Map<String, DateTime> _retryAt = {};
   final Map<String, int> _failures = {};
-  // Full-resolution artwork found for fullscreen (e.g. via Deezer) when the
-  // source file only embeds a small cover. Kept apart from _mem so that the
-  // thumbnail/original cache can never overwrite it with the small original.
-  final Map<String, Uint8List> _upgraded = {};
-  final Map<String, DateTime> _fullChecked = {};
-  final Map<String, Future<Uint8List?>> _fullInflight = {};
-  // Cached files that failed to decode are dropped once per session.
+  // Картинки, которые не читаются: кэш сбрасываем один раз за сессию
   final Set<String> _discarded = {};
-  int _active = 0;
-  final List<({String key, Completer<void> done})> _waiting = [];
-  // Covers the person is looking at right now: they jump the queue of background loads
-  final Set<String> _urgent = {};
+  // Диск и сеть Google Drive: 4 загрузки сразу. Каталог Deezer (поиск обложки трекам без неё)
+  // идёт в своей очереди и не занимает слоты Drive.
+  final LoadGate _driveGate = LoadGate(4);
+  final LoadGate _deezerGate = LoadGate(2);
   bool _notifyQueued = false;
 
   CoverService(this.drive, this.lib, this.dir);
@@ -52,8 +93,34 @@ class CoverService extends ChangeNotifier {
   static String _key(Track t) => t.cover ?? 'p_${t.id}';
 
   /// Какой размер копии нужен для картинки в [px] физических пикселей: 160, 640 или 0 (оригинал)
-  /// 160 берём только когда хватает без растяжения: от 161 px уже нужна копия 640
   static int bucketFor(int px) => px <= 0 ? 0 : (px <= 160 ? 160 : (px <= 720 ? 640 : 0));
+
+  /// A newly imported song may contain no APIC, cover.jpg or saved artwork.
+  /// Public catalog lookup is an optional last resort, never required to play.
+  static bool canFindInDeezer(Track t) =>
+      t.artist.trim().isNotEmpty &&
+      (t.album.trim().isNotEmpty || t.title.trim().isNotEmpty);
+
+  /// Ключ картинки трека: загруженная обложка (альбома или трека) важнее обложки из файла
+  String keyOf(Track t) {
+    final c = lib.customCoverOf(t);
+    return c != null ? 'cv_$c' : _key(t);
+  }
+
+  String _mk(String key, int bucket) => bucket == 0 ? key : '$key@$bucket';
+
+  /// Detect an image before caching it, not just a successful HTTP response.
+  /// Drive can return an MP3 body when an unsupported Range is ignored.
+  static bool looksLikeImage(Uint8List bytes) {
+    if (bytes.length < 16 || bytes.length > 24 * 1024 * 1024) return false;
+    final b = bytes;
+    return (b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff) ||
+        (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4e && b[3] == 0x47) ||
+        (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
+            b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) ||
+        (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) ||
+        (b[0] == 0x42 && b[1] == 0x4d);
+  }
 
   /// Cheap integrity check for cached thumbnails: a JPEG must end with EOI and
   /// a PNG with IEND. A write cut short by a crash would otherwise be read
@@ -88,77 +155,25 @@ class CoverService extends ChangeNotifier {
     }
   }
 
-  /// A newly imported song may contain no APIC, cover.jpg or saved artwork.
-  /// Public catalog lookup is an optional last resort, never required to play.
-  static bool canFindInDeezer(Track t) =>
-      t.artist.trim().isNotEmpty &&
-      (t.album.trim().isNotEmpty || t.title.trim().isNotEmpty);
-
-  /// Ключ картинки трека: загруженная обложка (альбома или трека) важнее обложки из файла
-  String keyOf(Track t) {
-    final c = lib.customCoverOf(t);
-    return c != null ? 'cv_$c' : _key(t);
-  }
-
-  String _mk(String key, int bucket) => bucket == 0 ? key : '$key@$bucket';
-
-  /// Уже загруженная картинка — чтобы не мигать при перерисовке. Подойдёт и копия побольше
+  /// Уже загруженная картинка — чтобы не мигать при перерисовке. Последняя использованная — в конце
   Uint8List? _touch(String key) {
     if (!_mem.containsKey(key)) return null;
     final bytes = _mem.remove(key);
-    _mem[key] = bytes; // последняя использованная запись — в конце LRU
+    _mem[key] = bytes;
     return bytes;
   }
 
-  /// Requested size first, then available larger/smaller previews.
-  /// A fullscreen view can display the small cached image instantly, while
-  /// forTrack/forFile independently upgrade it to full resolution.
-  static List<int> previewBucketPriority(int px) => switch (bucketFor(px)) {
-    160 => const [160, 640, 0],
-    640 => const [640, 0, 160],
-    _ => const [0, 640, 160],
-  };
-
+  /// Нужной величины или больше. Копию меньше нужной не отдаём: она растянется и будет мыльной.
   Uint8List? _peekKey(String key, int px) {
-    for (final bucket in previewBucketPriority(px)) {
-      final cached = _touch(_mk(key, bucket));
-      if (cached != null) return cached;
-    }
+    final b = bucketFor(px);
+    final exact = _touch(_mk(key, b));
+    if (exact != null) return exact;
+    final pinned = _pinned[key];
+    if (pinned != null) return pinned;
+    if (b == 160) return _touch(_mk(key, 640)) ?? _touch(key);
+    if (b == 640) return _touch(key);
     return null;
   }
-
-  /// Distinguish a placeholder-quality thumbnail from the requested size,
-  /// so a cinema/fullscreen view continues upgrading it to the original.
-  ///
-  /// With [upgrade] (fullscreen) a small original in memory is not final: the
-  /// check for larger artwork must have finished too, otherwise reopening the
-  /// fullscreen view would keep showing the small embedded cover forever.
-  bool hasExact(Track t, {int px = 0, bool upgrade = false}) {
-    final cover = lib.customCoverOf(t);
-    final key = cover == null ? _key(t) : 'cv_$cover';
-    final bucket = bucketFor(px);
-    if (bucket == 0) {
-      final fk = _fullKey(t);
-      if (_upgraded.containsKey(fk)) return true;
-      if (upgrade && canFindInDeezer(t) && !_fullDone(fk)) return false;
-    }
-    return _mem[_mk(key, bucket)] != null;
-  }
-
-  /// The fullscreen upgrade belongs to the cover *and* to what the track is called: once the
-  /// tags are corrected (e.g. filled in from Deezer), an earlier "nothing better found"
-  /// or a match for the old names no longer applies.
-  String _fullKey(Track t) => '${keyOf(t)}|${t.artist}|${t.albumArtist}|${t.album}|${t.title}';
-
-  String _hqName(String fk) => 'hq-${sha1.convert(utf8.encode(fk)).toString().substring(0, 24)}';
-
-  bool _fullDone(String fk) {
-    final at = _fullChecked[fk];
-    return at != null && DateTime.now().difference(at) < const Duration(minutes: 10);
-  }
-
-  bool hasExactFile(String fileId, {int px = 0}) =>
-      _mem[_mk('cv_$fileId', bucketFor(px))] != null;
 
   void _remember(String key, Uint8List? bytes) {
     final previous = _mem.remove(key);
@@ -172,11 +187,15 @@ class CoverService extends ChangeNotifier {
     }
   }
 
-  Uint8List? peek(Track t, {int px = 0}) {
-    if (bucketFor(px) == 0) {
-      final better = _upgraded[_fullKey(t)];
-      if (better != null) return better;
+  void _pin(String key, Uint8List bytes) {
+    _pinned.remove(key);
+    _pinned[key] = bytes;
+    while (_pinned.length > _pinnedLimit) {
+      _pinned.remove(_pinned.keys.first);
     }
+  }
+
+  Uint8List? peek(Track t, {int px = 0}) {
     final c = lib.customCoverOf(t);
     if (c != null) return peekFile(c, px: px);
     return (t.hasCover || canFindInDeezer(t)) ? _peekKey(_key(t), px) : null;
@@ -187,13 +206,16 @@ class CoverService extends ChangeNotifier {
   /// Картинку трека ещё предстоит загрузить (есть обложка, но в памяти её нет)
   bool wants(Track t) => lib.customCoverOf(t) != null || t.hasCover || canFindInDeezer(t);
 
-  Future<Uint8List?> forTrack(Track t, {int px = 0}) {
+  /// [fullscreen] — картинка на весь экран: грузится вне очереди, оригинал запоминается отдельно.
+  Future<Uint8List?> forTrack(Track t, {int px = 0, bool fullscreen = false}) {
     final c = lib.customCoverOf(t);
-    if (c != null) return forFile(c, px: px);
+    if (c != null) return forFile(c, px: px, fullscreen: fullscreen);
     final key = _key(t);
-    if (!t.hasCover) return canFindInDeezer(t)
-        ? _get(key, px, () => _deezerCover(t))
-        : Future.value(null);
+    if (!t.hasCover) {
+      return canFindInDeezer(t)
+          ? _get(key, px, () => _deezerCover(t), fullscreen: fullscreen, gate: _deezerGate)
+          : Future.value(null);
+    }
     return _get(key, px, () async {
       try {
         final email = await lib.accessFor(t.source);
@@ -203,158 +225,13 @@ class CoverService extends ChangeNotifier {
             : pic != null
                 ? await drive.readRange(email, t.id, pic.offset, pic.offset + pic.length - 1)
                 : null;
-        if (bytes != null && await _validImage(bytes)) return bytes;
+        if (bytes != null && looksLikeImage(bytes)) return bytes;
         AppLog.info('Обложка: встроенное изображение ${t.id} не читается, пробую Deezer');
       } catch (e) {
         AppLog.warn('Обложка: ошибка чтения изображения ${t.id}; ищу резервную', e);
       }
       return canFindInDeezer(t) ? _deezerCover(t) : null;
-    });
-  }
-
-  /// Detect an image before caching it, not just a successful HTTP response.
-  /// Drive can return an MP3 body when an unsupported Range is ignored.
-  static bool looksLikeImage(Uint8List bytes) {
-    if (bytes.length < 16 || bytes.length > 24 * 1024 * 1024) return false;
-    final b = bytes;
-    return (b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff) ||
-        (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4e && b[3] == 0x47) ||
-        (b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
-            b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) ||
-        (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) ||
-        (b[0] == 0x42 && b[1] == 0x4d);
-  }
-
-  Future<bool> _validImage(Uint8List bytes) async {
-    if (!looksLikeImage(bytes)) return false;
-    try {
-      return await DeezerArt.dimensionsInBackground(bytes)
-          .timeout(const Duration(seconds: 5)) != null;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Resolve a high-resolution image when the cover we have (embedded in the file or the
-  /// one saved next to it on Drive, e.g. by the downloader) is small. The existing picture
-  /// is still shown while a verified Deezer match is retrieved.
-  /// The cover for the fullscreen view as it is (no search for a larger one): shown at once,
-  /// before the slower [forFullscreen] has looked for a better picture. Jumps the load queue.
-  Future<Uint8List?> fullscreenOriginal(Track t) {
-    _prioritize(keyOf(t));
-    return forTrack(t, px: 0);
-  }
-
-  Future<Uint8List?> forFullscreen(Track t) {
-    _prioritize(keyOf(t));
-    final fk = _fullKey(t);
-    final ready = _upgraded[fk];
-    if (ready != null) return Future.value(ready);
-    return _fullInflight[fk] ??= _upgrade(t, fk).whenComplete(() => _fullInflight.remove(fk));
-  }
-
-  void _setUpgraded(String fk, Uint8List bytes) {
-    _upgraded.remove(fk);
-    _upgraded[fk] = bytes;
-    while (_upgraded.length > 12) {
-      _upgraded.remove(_upgraded.keys.first);
-    }
-    _fullChecked[fk] = DateTime.now();
-    _signal();
-  }
-
-  Future<Uint8List?> _upgrade(Track t, String fk) async {
-    final custom = lib.customCoverOf(t) != null;
-    final original = await forTrack(t, px: 0);
-    if (!canFindInDeezer(t)) {
-      _fullChecked[fk] = DateTime.now();
-      return original;
-    }
-    // Found in an earlier session: show it at once, no network.
-    final saved = _file(_hqName(fk));
-    try {
-      if (await saved.exists()) {
-        final b = await saved.readAsBytes();
-        if (looksComplete(b)) {
-          _setUpgraded(fk, b);
-          return b;
-        }
-        await saved.delete();
-      }
-    } catch (_) {}
-    if (original == null || original.isEmpty) return original;
-    // No cover of our own at all: forTrack already fetched it from Deezer.
-    if (!custom && !t.hasCover) {
-      _fullChecked[fk] = DateTime.now();
-      return original;
-    }
-    try {
-      final dims = await DeezerArt.dimensionsInBackground(original)
-          .timeout(const Duration(seconds: 4));
-      if (dims != null && dims.$1 >= 900 && dims.$2 >= 900) {
-        _fullChecked[fk] = DateTime.now();
-        AppLog.info('Полный экран: «${t.title}» ${custom ? 'своя' : 'встроенная'} обложка '
-            '${dims.$1}×${dims.$2} достаточна, поиск лучшей не нужен');
-        return original;
-      }
-      final artwork = await _findDeezer(t);
-      _fullChecked[fk] = DateTime.now();
-      AppLog.info('Полный экран: «${t.title}» ${custom ? 'своя' : 'встроенная'} обложка '
-          '${dims == null ? '?' : '${dims.$1}×${dims.$2}'}, Deezer: '
-          '${artwork == null ? 'совпадения нет' : '${artwork.width}×${artwork.height}'}');
-      if (artwork == null || (dims != null && !artwork.betterThan(dims.$1, dims.$2))) {
-        return original;
-      }
-      // A cover someone picked by hand can differ from the catalog one: swap in the larger
-      // picture only when it shows the same artwork
-      if (custom && !await sameArtwork(original, artwork.bytes)) {
-        AppLog.info('Fullscreen artwork: своя обложка отличается от каталожной, оставляю её');
-        return original;
-      }
-      _setUpgraded(fk, artwork.bytes);
-      unawaited(_writeAtomic(saved, artwork.bytes));
-      if (!custom) _saveFoundCover(t, artwork.bytes);
-      return artwork.bytes;
-    } catch (e) {
-      AppLog.info('Fullscreen artwork: не получилось улучшить разрешение: $e');
-      return original;
-    }
-  }
-
-  final Set<String> _traced = {};
-
-  /// Diagnostics for the log: which picture the fullscreen view really shows
-  /// (source, bytes and pixel size). One line per track, source and size.
-  void trace(Track t, Uint8List bytes, String from) {
-    final id = '${keyOf(t)}|$from|${bytes.length}';
-    if (!_traced.add(id)) return;
-    if (_traced.length > 300) _traced.clear();
-    unawaited(() async {
-      (int, int)? dims;
-      try {
-        dims = await DeezerArt.dimensionsInBackground(bytes).timeout(const Duration(seconds: 5));
-      } catch (_) {}
-      AppLog.info('Полный экран: «${t.title}» (${t.artist} — ${t.album}), ${keyOf(t)}, '
-          'показано: $from, ${bytes.length} Б, ${dims == null ? 'размер не определён' : '${dims.$1}×${dims.$2}'}');
-    }());
-  }
-
-  /// A cached picture failed to decode: drop the cached copies (thumbnails and the
-  /// downloaded original) so the next load fetches them again. Once per picture and
-  /// session, so a source file that is itself broken cannot cause a reload loop.
-  void discard(String? key) {
-    if (key == null || !_discarded.add(key)) return;
-    for (final mk in [_mk(key, 160), _mk(key, 640), key]) {
-      final old = _mem.remove(mk);
-      _memoryBytes -= old?.length ?? 0;
-      try {
-        _file(mk).deleteSync();
-      } catch (_) {}
-    }
-    _retryAt.remove(key);
-    _failures.remove(key);
-    AppLog.info('Обложка $key не читается: сбросил кэш, загружу заново');
-    _signal();
+    }, fullscreen: fullscreen);
   }
 
   Future<DeezerArtwork?> _findDeezer(Track t) async {
@@ -414,7 +291,8 @@ class CoverService extends ChangeNotifier {
   }
 
   /// Картинка из папки covers на Диске: обложка, которую выбрал кто-то из друзей
-  Future<Uint8List?> forFile(String fileId, {int px = 0}) => _get('cv_$fileId', px, () => lib.downloadCover(fileId));
+  Future<Uint8List?> forFile(String fileId, {int px = 0, bool fullscreen = false}) =>
+      _get('cv_$fileId', px, () => lib.downloadCover(fileId), fullscreen: fullscreen);
 
   File _file(String name) => File('${dir.path}${Platform.pathSeparator}${name.replaceAll(RegExp(r'[^A-Za-z0-9_@-]'), '_')}.img');
 
@@ -426,19 +304,43 @@ class CoverService extends ChangeNotifier {
     await _writeAtomic(_file(key), bytes);
   }
 
-  Future<Uint8List?> _get(String key, int px, Future<Uint8List?> Function() fetch) {
+  Future<Uint8List?> _get(String key, int px, Future<Uint8List?> Function() fetch,
+      {bool fullscreen = false, LoadGate? gate}) {
     final bucket = bucketFor(px);
     final mk = _mk(key, bucket);
-    // Null is a temporary miss, not proof the source will never gain art.
-    if (_mem[mk] != null) return Future.value(_touch(mk));
-    // A lower-resolution cached thumbnail is only a visual fallback: do not
-    // return it as the final result and accidentally suppress the full-size load.
+    if (fullscreen) {
+      // Эту картинку смотрят прямо сейчас: она не должна стоять в очереди за списками
+      _driveGate.prioritize(key);
+      _deezerGate.prioritize(key);
+    }
+    if (bucket == 0) {
+      final pinned = _pinned[key];
+      if (pinned != null) return Future.value(pinned);
+    }
+    // Null — временная неудача, а не вечное «картинки нет»
+    final hit = _touch(mk);
+    if (hit != null) {
+      if (fullscreen && bucket == 0) _pin(key, hit);
+      return Future.value(hit);
+    }
+    // Копия не меньше нужной уже есть — отдаём её, перезагружать незачем
+    final larger = _peekKey(key, px);
+    if (larger != null) return Future.value(larger);
     final until = _retryAt[key];
     if (until != null && DateTime.now().isBefore(until)) return Future.value(null);
-    return _inflight[mk] ??= _resolve(key, mk, bucket, fetch).whenComplete(() => _inflight.remove(mk));
+    final load = _inflight[mk] ??=
+        _resolve(key, mk, bucket, fetch, gate ?? _driveGate).whenComplete(() => _inflight.remove(mk));
+    if (fullscreen && bucket == 0) {
+      return load.then((b) {
+        if (b != null) _pin(key, b);
+        return b;
+      });
+    }
+    return load;
   }
 
-  Future<Uint8List?> _resolve(String key, String mk, int bucket, Future<Uint8List?> Function() fetch) async {
+  Future<Uint8List?> _resolve(String key, String mk, int bucket,
+      Future<Uint8List?> Function() fetch, LoadGate gate) async {
     try {
       Uint8List? bytes;
       final thumbFile = bucket == 0 ? null : _file(mk);
@@ -453,7 +355,7 @@ class CoverService extends ChangeNotifier {
         }
       }
       if (bytes == null) {
-        final orig = await _original(key, fetch);
+        final orig = await _original(key, fetch, gate);
         if (orig == null || orig.isEmpty) {
           _store(mk, null);
           _retryAt[key] = DateTime.now().add(const Duration(minutes: 5));
@@ -478,44 +380,77 @@ class CoverService extends ChangeNotifier {
     }
   }
 
-  // Two thumbnails of the same cover can be requested simultaneously.
-  // Share a single original Drive download across all thumbnail sizes.
-  Future<Uint8List?> _original(String key, Future<Uint8List?> Function() fetch) =>
-      _originalInflight[key] ??= _loadOriginal(key, fetch).whenComplete(() {
+  // Две копии одной обложки могут запросить одновременно: оригинал грузим один раз
+  Future<Uint8List?> _original(String key, Future<Uint8List?> Function() fetch, LoadGate gate) =>
+      _originalInflight[key] ??= _loadOriginal(key, fetch, gate).whenComplete(() {
         _originalInflight.remove(key);
-        _urgent.remove(key);
+        _driveGate.settle(key);
+        _deezerGate.settle(key);
       });
 
-  Future<Uint8List?> _loadOriginal(String key, Future<Uint8List?> Function() fetch) async {
+  Future<Uint8List?> _loadOriginal(String key, Future<Uint8List?> Function() fetch, LoadGate gate) async {
     final file = _file(key);
     if (await file.exists()) {
       try {
         final b = await file.readAsBytes();
-        if (await _validImage(b)) return b;
-        AppLog.info('Обложка $key: файл в кэше (${b.length} Б) не прошёл проверку изображения');
-        // Invalidate a stale/corrupted media cache; otherwise fullscreen can
-        // keep showing an error or a low-quality leftover indefinitely.
+        // С диска проверяем только заголовок: без разбора картинки, это быстро
+        if (looksLikeImage(b)) return b;
+        AppLog.info('Обложка $key: файл в кэше (${b.length} Б) не картинка, удаляю и качаю заново');
         await file.delete();
-        AppLog.info('Обложка: повреждённый файл кэша удалён, повторяю загрузку');
       } catch (_) {}
     }
-    await _acquire(key);
+    Uint8List? b;
+    await gate.acquire(key);
     try {
-      final b = await fetch();
-      if (b == null) return null;
-      if (!await _validImage(b)) {
-        AppLog.info('Обложка $key: загруженный файл (${b.length} Б) не прошёл проверку изображения');
-        return null;
-      }
-      await _writeAtomic(file, b);
-      return b;
+      b = await fetch();
     } finally {
-      _release();
+      gate.release();
+    }
+    if (b == null || b.isEmpty) return b;
+    // Разбор картинки — только для свежескачанного, и вне очереди загрузок.
+    // Каталог Deezer уже проверил размер сам.
+    if (!identical(gate, _deezerGate) && !await _acceptDownload(b)) {
+      AppLog.info('Обложка $key: скачанный файл (${b.length} Б) не прошёл проверку изображения');
+      return null;
+    }
+    await _writeAtomic(file, b);
+    return b;
+  }
+
+  /// Новая картинка с Диска: заголовок картинки и разбор. Если разбор не уложился в срок,
+  /// не отбрасываем: файл большой, а не битый.
+  Future<bool> _acceptDownload(Uint8List bytes) async {
+    if (!looksLikeImage(bytes)) return false;
+    try {
+      return await DeezerArt.dimensionsInBackground(bytes).timeout(const Duration(seconds: 5)) != null;
+    } on TimeoutException {
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
   void _store(String mk, Uint8List? bytes) {
     _remember(mk, bytes);
+    _signal();
+  }
+
+  /// A cached picture failed to decode: drop the cached copies (thumbnails and the
+  /// downloaded original) so the next load fetches them again. Once per picture and
+  /// session, so a source file that is itself broken cannot cause a reload loop.
+  void discard(String? key) {
+    if (key == null || !_discarded.add(key)) return;
+    _pinned.remove(key);
+    for (final mk in [_mk(key, 160), _mk(key, 640), key]) {
+      final old = _mem.remove(mk);
+      _memoryBytes -= old?.length ?? 0;
+      try {
+        _file(mk).deleteSync();
+      } catch (_) {}
+    }
+    _retryAt.remove(key);
+    _failures.remove(key);
+    AppLog.info('Обложка $key не читается: сбросил кэш, загружу заново');
     _signal();
   }
 
@@ -548,31 +483,5 @@ class CoverService extends ChangeNotifier {
       } catch (_) {}
     }
     _signal();
-  }
-
-  Future<void> _acquire(String key) async {
-    // An urgent load never waits behind the background ones, even when all slots are busy
-    if (_active < 4 || _urgent.contains(key)) {
-      _active++;
-      return;
-    }
-    final c = Completer<void>();
-    _waiting.add((key: key, done: c));
-    await c.future;
-  }
-
-  /// Marks a picture as wanted right now: a load already waiting for a slot moves to the front
-  void _prioritize(String key) {
-    _urgent.add(key);
-    final i = _waiting.indexWhere((w) => w.key == key);
-    if (i > 0) _waiting.insert(0, _waiting.removeAt(i));
-  }
-
-  void _release() {
-    if (_active > 4 || _waiting.isEmpty) {
-      _active--;
-    } else {
-      _waiting.removeAt(0).done.complete();
-    }
   }
 }

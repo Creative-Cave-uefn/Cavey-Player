@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:cave_player/core/covers.dart';
@@ -97,6 +98,45 @@ void main() {
       expect(DeezerArt.sameArtist('Pilots', 'Twenty One Pilots'), isFalse);
       expect(DeezerArt.sameArtist('Ambassadors', 'X Ambassadors'), isFalse);
       expect(DeezerArt.sameArtist('', 'A, B'), isFalse);
+    });
+  });
+
+  group('LoadGate', () {
+    test('a load somebody is looking at jumps the queue', () async {
+      final gate = LoadGate(1);
+      await gate.acquire('a');
+      final order = <String>[];
+      final b = gate.acquire('b').then((_) => order.add('b'));
+      final c = gate.acquire('c').then((_) => order.add('c'));
+      gate.prioritize('c');
+      gate.release();
+      await c;
+      gate.release();
+      await b;
+      expect(order, ['c', 'b']);
+    });
+
+    test('an urgent load does not wait for a free slot', () async {
+      final gate = LoadGate(1);
+      await gate.acquire('a');
+      gate.prioritize('x');
+      await gate.acquire('x').timeout(const Duration(seconds: 1));
+      expect(gate.active, 2);
+      gate.release();
+      expect(gate.active, 1);
+    });
+
+    test('ordinary loads keep the limit', () async {
+      final gate = LoadGate(2);
+      await gate.acquire('a');
+      await gate.acquire('b');
+      var third = false;
+      unawaited(gate.acquire('c').then((_) => third = true));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(third, isFalse);
+      gate.release();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(third, isTrue);
     });
   });
 }

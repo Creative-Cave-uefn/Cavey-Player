@@ -180,7 +180,7 @@ class NowPanel extends StatelessWidget {
             borderRadius: BorderRadius.circular(14),
             boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 50, offset: Offset(0, 22))],
           ),
-          child: CoverImage(track: t, size: width, radius: 14, originalQuality: true),
+          child: CoverImage(track: t, size: width, radius: 14, fullscreen: true),
         ),
         const SizedBox(height: 22),
         Row(children: [
