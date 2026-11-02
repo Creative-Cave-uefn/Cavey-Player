@@ -15,6 +15,7 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+jobs:
   # Fast Release: tests and compilation run on separate Windows runners.
   # Publication waits for BOTH jobs; failed tests never reach auto-updates.
   checks:
