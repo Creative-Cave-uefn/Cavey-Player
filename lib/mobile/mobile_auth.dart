@@ -3,11 +3,17 @@ import 'dart:io';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import '../core/auth.dart';
+import '../core/log.dart';
 
 /// OAuth Client ID of type "Web application" in the same Google Cloud project.
 /// Android additionally requires a separate Android OAuth client with the right
 /// applicationId and SHA-1. No client secret or refresh token is embedded in APK.
 const mobileWebClientId = String.fromEnvironment('GOOGLE_WEB_CLIENT_ID');
+
+/// Конец Web Client ID для диагностики (целиком его показывать не нужно)
+String mobileClientHint() => mobileWebClientId.isEmpty
+    ? 'не задан'
+    : '${mobileWebClientId.split('-').first}-…${mobileWebClientId.endsWith('.apps.googleusercontent.com') ? '' : ' (формат неверный: нужен …apps.googleusercontent.com)'}';
 
 /// Android uses Google Play Services instead of the desktop loopback server.
 /// The existing DriveApi and LibraryController can use this AccountManager.
@@ -77,12 +83,14 @@ class MobileAccountManager extends AccountManager {
   @override
   Future<Account> signIn({String? loginHint}) async {
     await _init();
+    var step = 'выбор аккаунта';
     try {
       // Android Google Sign In currently supports one active user at a time.
       // Re-authenticate explicitly for account switching.
       final user = await _google.authenticate(
         scopeHint: const [AccountManager.driveScope],
       );
+      step = 'доступ к Google Диску';
       final grant = await user.authorizationClient.authorizationForScopes(
             const [AccountManager.driveScope],
           ) ??
@@ -95,7 +103,9 @@ class MobileAccountManager extends AccountManager {
       _active = user;
       return await _setUser(user);
     } on GoogleSignInException catch (e) {
-      throw AuthException('Не удалось подключить Google: $e');
+      AppLog.error('Вход через Google, шаг «$step»', e);
+      throw AuthException('Не удалось подключить Google (шаг: $step): $e\n'
+          'Клиент: ${mobileClientHint()}');
     }
   }
 
