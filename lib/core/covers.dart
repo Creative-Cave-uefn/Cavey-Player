@@ -283,10 +283,15 @@ class CoverService extends ChangeNotifier {
           .timeout(const Duration(seconds: 4));
       if (dims != null && dims.$1 >= 900 && dims.$2 >= 900) {
         _fullChecked[fk] = DateTime.now();
+        AppLog.info('Полный экран: «${t.title}» ${custom ? 'своя' : 'встроенная'} обложка '
+            '${dims.$1}×${dims.$2} достаточна, поиск лучшей не нужен');
         return original;
       }
       final artwork = await _findDeezer(t);
       _fullChecked[fk] = DateTime.now();
+      AppLog.info('Полный экран: «${t.title}» ${custom ? 'своя' : 'встроенная'} обложка '
+          '${dims == null ? '?' : '${dims.$1}×${dims.$2}'}, Deezer: '
+          '${artwork == null ? 'совпадения нет' : '${artwork.width}×${artwork.height}'}');
       if (artwork == null || (dims != null && !artwork.betterThan(dims.$1, dims.$2))) {
         return original;
       }
@@ -304,6 +309,24 @@ class CoverService extends ChangeNotifier {
       AppLog.info('Fullscreen artwork: не получилось улучшить разрешение: $e');
       return original;
     }
+  }
+
+  final Set<String> _traced = {};
+
+  /// Diagnostics for the log: which picture the fullscreen view really shows
+  /// (source, bytes and pixel size). One line per track, source and size.
+  void trace(Track t, Uint8List bytes, String from) {
+    final id = '${keyOf(t)}|$from|${bytes.length}';
+    if (!_traced.add(id)) return;
+    if (_traced.length > 300) _traced.clear();
+    unawaited(() async {
+      (int, int)? dims;
+      try {
+        dims = await DeezerArt.dimensionsInBackground(bytes).timeout(const Duration(seconds: 5));
+      } catch (_) {}
+      AppLog.info('Полный экран: «${t.title}» (${t.artist} — ${t.album}), ${keyOf(t)}, '
+          'показано: $from, ${bytes.length} Б, ${dims == null ? 'размер не определён' : '${dims.$1}×${dims.$2}'}');
+    }());
   }
 
   /// A cached picture failed to decode: drop the cached copies (thumbnails and the
@@ -457,6 +480,7 @@ class CoverService extends ChangeNotifier {
       try {
         final b = await file.readAsBytes();
         if (await _validImage(b)) return b;
+        AppLog.info('Обложка $key: файл в кэше (${b.length} Б) не прошёл проверку изображения');
         // Invalidate a stale/corrupted media cache; otherwise fullscreen can
         // keep showing an error or a low-quality leftover indefinitely.
         await file.delete();
@@ -466,7 +490,11 @@ class CoverService extends ChangeNotifier {
     await _acquire();
     try {
       final b = await fetch();
-      if (b == null || !await _validImage(b)) return null;
+      if (b == null) return null;
+      if (!await _validImage(b)) {
+        AppLog.info('Обложка $key: загруженный файл (${b.length} Б) не прошёл проверку изображения');
+        return null;
+      }
       await _writeAtomic(file, b);
       return b;
     } finally {

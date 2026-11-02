@@ -203,6 +203,7 @@ class _CoverImageState extends State<CoverImage> {
     _wants = wantsNow;
     final peek = id != null ? svc.peekFile(id, px: px) : (t == null ? null : svc.peek(t, px: px));
     if (!sameKey || peek != null) _bytes = peek;
+    if (widget.originalQuality && t != null && peek != null) svc.trace(t, peek, 'кэш в памяти');
     final exact = id != null ? svc.hasExactFile(id, px: px)
         : (t != null && svc.hasExact(t, px: px, upgrade: widget.originalQuality));
     if (_wants && !exact) _request();
@@ -228,6 +229,7 @@ class _CoverImageState extends State<CoverImage> {
                 : svc.forTrack(t, px: px)));
     f.then((b) {
       if (!mounted || gen != _gen || key != _key || b == null || identical(b, _bytes)) return;
+      if (widget.originalQuality && t != null) svc.trace(t, b, 'загружено для полного экрана');
       setState(() => _bytes = b);
     }).whenComplete(() {
       if (gen == _gen) {
