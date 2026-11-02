@@ -330,11 +330,10 @@ class CoverService extends ChangeNotifier {
     await _acquire();
     try {
       final b = await fetch();
-      if (b != null && await _validImage(b)) {
-        try {
-          await file.writeAsBytes(b, flush: true);
-        } catch (_) {}
-      }
+      if (b == null || !await _validImage(b)) return null;
+      try {
+        await file.writeAsBytes(b, flush: true);
+      } catch (_) {}
       return b;
     } finally {
       _release();
