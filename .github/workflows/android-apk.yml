@@ -39,6 +39,8 @@ jobs:
           cache: true
 
       - name: Подготовить проект Android
+        env:
+          GOOGLE_ANDROID_CLIENT_ID: ${{ secrets.GOOGLE_ANDROID_CLIENT_ID }}
         run: bash tool/setup_android.sh
 
       - name: Проверка кода
@@ -80,11 +82,13 @@ jobs:
       - name: Собрать подписанный APK
         env:
           GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
+          GOOGLE_ANDROID_CLIENT_ID: ${{ secrets.GOOGLE_ANDROID_CLIENT_ID }}
           BUILD_CHANNEL: ${{ github.ref_name }}
         run: |
           flutter build apk --release --target lib/mobile_main.dart \
             --build-name "$APP_VERSION" --build-number "${{ github.run_number }}" \
             --dart-define=GOOGLE_WEB_CLIENT_ID="$GOOGLE_WEB_CLIENT_ID" \
+            --dart-define=GOOGLE_ANDROID_CLIENT_ID="$GOOGLE_ANDROID_CLIENT_ID" \
             --dart-define=APP_VERSION="$APP_VERSION" \
             --dart-define=BUILD_CHANNEL="$BUILD_CHANNEL"
           mkdir -p dist

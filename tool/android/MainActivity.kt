@@ -14,6 +14,21 @@ import java.io.File
 // Установка обновлений: Dart скачивает APK в cache/updates, а системный установщик
 // открывается здесь. Подпись должна совпадать с установленной — поэтому ключ в CI один и тот же.
 class MainActivity : AudioServiceActivity() {
+    // Вход через браузер: Google возвращает код по ссылке com.googleusercontent.apps.…:/oauth2redirect
+    private var authChannel: MethodChannel? = null
+
+    private fun forwardAuth(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme?.startsWith("com.googleusercontent.apps.") == true) {
+            authChannel?.invokeMethod("redirect", data.toString())
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        forwardAuth(intent)
+    }
+
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         // Android 13+: без разрешения уведомление с кнопками плеера не покажется
@@ -27,6 +42,7 @@ class MainActivity : AudioServiceActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        authChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "cavey/auth")
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "cavey/installer")
             .setMethodCallHandler { call, result ->
                 when (call.method) {

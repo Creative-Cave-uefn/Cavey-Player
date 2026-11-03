@@ -58,6 +58,21 @@ if not any(x.get(f"{{{ANDROID}}}name") == "com.ryanheise.audioservice.AudioServi
     })
     f = ET.SubElement(rcv, "intent-filter")
     ET.SubElement(f, "action", {f"{{{ANDROID}}}name": "android.intent.action.MEDIA_BUTTON"})
+# Вход через браузер: возврат в приложение по схеме из Android Client ID (если он задан)
+import os
+cid = os.environ.get("GOOGLE_ANDROID_CLIENT_ID", "").strip()
+if cid:
+    scheme = "com.googleusercontent.apps." + cid.replace(".apps.googleusercontent.com", "")
+    activity = application.find("activity")
+    has = any(d.get(f"{{{ANDROID}}}scheme") == scheme for d in activity.iter("data"))
+    if not has:
+        f = ET.SubElement(activity, "intent-filter")
+        ET.SubElement(f, "action", {f"{{{ANDROID}}}name": "android.intent.action.VIEW"})
+        ET.SubElement(f, "category", {f"{{{ANDROID}}}name": "android.intent.category.DEFAULT"})
+        ET.SubElement(f, "category", {f"{{{ANDROID}}}name": "android.intent.category.BROWSABLE"})
+        ET.SubElement(f, "data", {f"{{{ANDROID}}}scheme": scheme})
+        # Ссылка входа не должна уходить в навигацию Flutter как маршрут
+        ET.SubElement(activity, "meta-data", {f"{{{ANDROID}}}name": "flutter_deeply_linking_enabled", f"{{{ANDROID}}}value": "false"})
 tree.write(manifest, encoding="utf-8", xml_declaration=True)
 print("Android runner ready: app.cavey.cave_player")
 PY
