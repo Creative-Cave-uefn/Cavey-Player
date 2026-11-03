@@ -236,6 +236,9 @@ class MobileShell extends StatefulWidget {
 
 class _MobileShellState extends State<MobileShell> {
   int tab = 0;
+
+  /// Нижняя панель свёрнута: при прокрутке вниз остаются кнопка активной вкладки, плеер и поиск
+  bool dockCollapsed = false;
   final Set<int> visited = {0};
   int section = 0;
   bool webSearch = false;
@@ -281,6 +284,7 @@ class _MobileShellState extends State<MobileShell> {
     HapticFeedback.selectionClick();
     setState(() {
       tab = i;
+      dockCollapsed = false;
       visited.add(i);
     });
   }
@@ -326,32 +330,105 @@ class _MobileShellState extends State<MobileShell> {
             child: Column(children: [
               if (s.accounts.primary?.needsSignIn == true) signInStrip(),
               Expanded(
-                child: IndexedStack(index: tab, children: [
-                  for (var i = 0; i < 5; i++) tabPage(i),
-                ]),
+                child: NotificationListener<ScrollNotification>(
+                  onNotification: (n) {
+                    if (n.depth != 0 || n.metrics.axis != Axis.vertical) return false;
+                    // Вниз по списку — сворачиваем панель, вернулись к самому верху — разворачиваем
+                    if (n is ScrollUpdateNotification) {
+                      final dy = n.scrollDelta ?? 0;
+                      if (!dockCollapsed && n.metrics.pixels > 60 && dy > 2) {
+                        setState(() => dockCollapsed = true);
+                      } else if (dockCollapsed && n.metrics.pixels <= 4) {
+                        setState(() => dockCollapsed = false);
+                      }
+                    }
+                    return false;
+                  },
+                  child: IndexedStack(index: tab, children: [
+                    for (var i = 0; i < 5; i++) tabPage(i),
+                  ]),
+                ),
               ),
             ]),
           ),
-          bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [
-            if (s.player.current != null)
-              MiniPlayer(services: s, onOpen: () => showPlayer(context, s)),
-            Glass(
-              color: C.glass,
-              child: SafeArea(
-                top: false,
-                child: Row(children: [
-                  navItem(0, Icons.home_outlined, Icons.home_rounded, 'Главная'),
-                  navItem(1, Icons.waves_rounded, Icons.waves_rounded, 'Волна'),
-                  navItem(2, Icons.search_rounded, Icons.search_rounded, 'Поиск'),
-                  navItem(3, Icons.library_music_outlined, Icons.library_music_rounded, 'Медиатека'),
-                  navItem(4, Icons.menu_rounded, Icons.menu_rounded, 'Ещё', badge: s.updater.available != null),
-                ]),
-              ),
-            ),
-          ]),
+          bottomNavigationBar: dock(),
         ),
         ),
       );
+
+  static const _tabIcons = <int, (IconData, IconData)>{
+    0: (Icons.home_outlined, Icons.home_rounded),
+    1: (Icons.waves_rounded, Icons.waves_rounded),
+    2: (Icons.search_rounded, Icons.search_rounded),
+    3: (Icons.library_music_outlined, Icons.library_music_rounded),
+    4: (Icons.menu_rounded, Icons.menu_rounded),
+  };
+
+  Widget roundButton(Widget icon, VoidCallback onTap, {double size = 56, bool on = false}) => Glass(
+        radius: size / 2,
+        color: on ? C.accent.withValues(alpha: 0.22) : C.glass,
+        child: InkWell(
+          onTap: onTap,
+          child: SizedBox(width: size, height: size, child: Center(child: icon)),
+        ),
+      );
+
+  /// Плавающая нижняя панель как в Apple Music: вкладки и поиск, над ними плеер.
+  /// При прокрутке сворачивается: слева кнопка активной вкладки, справа поиск, между ними плеер.
+  Widget dock() {
+    final hasMini = s.player.current != null;
+    final Widget body;
+    if (dockCollapsed) {
+      final shown = tab == 2 ? 0 : tab;
+      final icons = _tabIcons[shown]!;
+      body = Row(key: const ValueKey('collapsed'), children: [
+        roundButton(Icon(icons.$2, size: 25, color: C.accent), () => setState(() => dockCollapsed = false)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: hasMini
+              ? MiniPlayer(services: s, compact: true, margin: EdgeInsets.zero, onOpen: () => showPlayer(context, s))
+              : const SizedBox(height: 56),
+        ),
+        const SizedBox(width: 8),
+        roundButton(Icon(Icons.search_rounded, size: 26, color: tab == 2 ? C.accent : C.text), () => selectTab(2), on: tab == 2),
+      ]);
+    } else {
+      body = Column(key: const ValueKey('expanded'), mainAxisSize: MainAxisSize.min, children: [
+        if (hasMini) ...[
+          MiniPlayer(services: s, margin: EdgeInsets.zero, onOpen: () => showPlayer(context, s)),
+          const SizedBox(height: 8),
+        ],
+        Row(children: [
+          Expanded(
+            child: Glass(
+              radius: 32,
+              color: C.glass,
+              child: Row(children: [
+                navItem(0, Icons.home_outlined, Icons.home_rounded, 'Главная'),
+                navItem(1, Icons.waves_rounded, Icons.waves_rounded, 'Волна'),
+                navItem(3, Icons.library_music_outlined, Icons.library_music_rounded, 'Медиатека'),
+                navItem(4, Icons.menu_rounded, Icons.menu_rounded, 'Ещё', badge: s.updater.available != null),
+              ]),
+            ),
+          ),
+          const SizedBox(width: 8),
+          roundButton(Icon(Icons.search_rounded, size: 27, color: tab == 2 ? C.accent : C.text), () => selectTab(2), size: 64, on: tab == 2),
+        ]),
+      ]);
+    }
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+        child: AnimatedSize(
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.bottomCenter,
+          child: AnimatedSwitcher(duration: const Duration(milliseconds: 200), child: body),
+        ),
+      ),
+    );
+  }
 
   Widget navItem(int i, IconData icon, IconData active, String label, {bool badge = false}) {
     final on = tab == i;
@@ -866,16 +943,19 @@ class TrackList extends StatelessWidget {
       ? const Center(child: Text('Здесь пока пусто', style: TextStyle(color: C.muted)))
       : ListView.builder(
           itemCount: tracks.length,
-          itemBuilder: (_, i) => TrackTile(services: services, track: tracks[i], onTap: () => onPlay(tracks, i), onToast: onToast),
+          itemBuilder: (_, i) => TrackTile(services: services, track: tracks[i], index: i + 1, onTap: () => onPlay(tracks, i), onToast: onToast),
         );
 }
 
 class TrackTile extends StatelessWidget {
-  const TrackTile({super.key, required this.services, required this.track, required this.onTap, this.onToast});
+  const TrackTile({super.key, required this.services, required this.track, required this.onTap, this.onToast, this.index});
   final MobileServices services;
   final Track track;
   final VoidCallback onTap;
   final void Function(String)? onToast;
+
+  /// Номер в списке. Как на ПК: на месте номера у играющего трека значок эквалайзера (на паузе — пауза)
+  final int? index;
 
   void menu(BuildContext context) {
     final p = services.player;
@@ -937,8 +1017,19 @@ class TrackTile extends StatelessWidget {
     final liked = services.library.isLiked(track.id);
     final playing = services.player.current?.id == track.id;
     return ListTile(
-      contentPadding: const EdgeInsets.only(left: 16, right: 4),
-      leading: TrackCover(services: services, track: track, size: 50),
+      contentPadding: const EdgeInsets.only(left: 12, right: 4),
+      leading: Row(mainAxisSize: MainAxisSize.min, children: [
+        if (index != null)
+          SizedBox(
+            width: 26,
+            child: Center(
+              child: playing
+                  ? Icon(services.player.playing ? Icons.graphic_eq_rounded : Icons.pause_rounded, size: 19, color: C.accent)
+                  : Text('$index', style: const TextStyle(color: C.faint, fontSize: 13, fontFeatures: [ui.FontFeature.tabularFigures()])),
+            ),
+          ),
+        TrackCover(services: services, track: track, size: 50),
+      ]),
       title: Text(track.title,
           maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontWeight: FontWeight.w600, color: playing ? C.accent : C.text)),
       subtitle: Row(children: [
@@ -1034,6 +1125,43 @@ class _TrackCoverState extends State<TrackCover> {
   }
 }
 
+/// Обложка на всю ширину: снизу растворяется в фон, как в Apple Music
+class FadeCover extends StatelessWidget {
+  const FadeCover({super.key, required this.services, required this.track, required this.width, required this.height});
+  final MobileServices services;
+  final Track track;
+  final double width;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final side = math.max(width, height);
+    return ClipRect(
+      child: SizedBox(
+        width: width,
+        height: height,
+        child: ShaderMask(
+          blendMode: BlendMode.dstIn,
+          shaderCallback: (r) => const LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.black, Colors.black, Colors.transparent],
+            stops: [0, 0.58, 1],
+          ).createShader(r),
+          child: OverflowBox(
+            alignment: Alignment.topCenter,
+            minWidth: 0,
+            minHeight: 0,
+            maxWidth: side,
+            maxHeight: side,
+            child: TrackCover(services: services, track: track, size: side, radius: 0, fullscreen: true),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _CoverPlaceholder extends StatelessWidget {
   const _CoverPlaceholder();
   @override
@@ -1098,43 +1226,72 @@ class CollectionPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = cover ?? (tracks.isEmpty ? null : tracks.first);
     final width = MediaQuery.sizeOf(context).width;
-    final side = math.min(width - 96, 260.0);
+    final top = MediaQuery.paddingOf(context).top;
+    // Обложка на всю ширину, нижняя часть растворяется; название лежит на переходе
+    final coverH = width;
+    final heroH = coverH - 40 + 78;
     return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: AnimatedBuilder(
-          animation: Listenable.merge([services.cache, services.library, services.player]),
-          builder: (context, _) => CustomScrollView(slivers: [
-          SliverAppBar(
-            backgroundColor: Colors.transparent,
-            surfaceTintColor: Colors.transparent,
-            pinned: true,
-            title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: display(18)),
+      body: AnimatedBuilder(
+        animation: Listenable.merge([services.cache, services.library, services.player]),
+        builder: (context, _) => CustomScrollView(slivers: [
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: heroH,
+              child: Stack(children: [
+                if (c != null) Positioned(top: 0, left: 0, right: 0, height: coverH, child: FadeCover(services: services, track: c, width: width, height: coverH)),
+                Positioned(
+                  left: 16,
+                  top: top + 8,
+                  child: Glass(
+                    radius: 23,
+                    color: C.glassLight,
+                    child: InkWell(
+                      onTap: () => Navigator.of(context).maybePop(),
+                      child: const SizedBox(width: 46, height: 46, child: Icon(Icons.chevron_left_rounded, size: 30, color: C.text)),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 20,
+                  right: 20,
+                  top: coverH - 40,
+                  child: Column(children: [
+                    Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(26)),
+                    const SizedBox(height: 6),
+                    Text('${tracks.length} треков', style: const TextStyle(color: C.muted, fontSize: 14)),
+                  ]),
+                ),
+              ]),
+            ),
           ),
           SliverToBoxAdapter(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 6, 24, 8),
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
               child: Column(children: [
-                if (c != null) TrackCover(services: services, track: c, size: side, radius: 18),
-                const SizedBox(height: 14),
-                Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(22)),
-                const SizedBox(height: 4),
-                Text('${tracks.length} треков', style: const TextStyle(color: C.muted)),
-                const SizedBox(height: 14),
                 Row(children: [
-                  Expanded(
-                      child: FilledButton.icon(
-                          onPressed: tracks.isEmpty ? null : () => play(context),
-                          icon: const Icon(Icons.play_arrow_rounded),
-                          label: const Text('Играть'))),
+                  Material(
+                    color: C.raised,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: tracks.isEmpty ? null : () => play(context, shuffle: true),
+                      child: const SizedBox(width: 50, height: 50, child: Icon(Icons.shuffle_rounded, size: 23, color: C.text)),
+                    ),
+                  ),
                   const SizedBox(width: 12),
                   Expanded(
-                      child: OutlinedButton.icon(
-                          onPressed: tracks.isEmpty ? null : () => play(context, shuffle: true),
-                          icon: const Icon(Icons.shuffle_rounded),
-                          label: const Text('Вперемешку'))),
+                    child: SizedBox(
+                      height: 50,
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(shape: const StadiumBorder(), textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                        onPressed: tracks.isEmpty ? null : () => play(context),
+                        icon: const Icon(Icons.play_arrow_rounded, size: 26),
+                        label: const Text('Воспроизвести'),
+                      ),
+                    ),
+                  ),
                 ]),
-                const SizedBox(height: 8),
+                const SizedBox(height: 10),
                 DownloadButton(services: services, tracks: tracks),
               ]),
             ),
@@ -1144,19 +1301,19 @@ class CollectionPage extends StatelessWidget {
             itemBuilder: (_, i) => TrackTile(
               services: services,
               track: tracks[i],
+              index: i + 1,
               onTap: () => playTracks(context, services, tracks, i),
               onToast: (m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m))),
             ),
           ),
           const SliverToBoxAdapter(child: SizedBox(height: 12)),
         ]),
-        ),
       ),
       bottomNavigationBar: AnimatedBuilder(
         animation: services.player,
         builder: (_, __) => services.player.current == null
             ? const SizedBox.shrink()
-            : MiniPlayer(services: services, onOpen: () => showPlayer(context, services)),
+            : SafeArea(top: false, child: MiniPlayer(services: services, onOpen: () => showPlayer(context, services))),
       ),
     );
   }
@@ -1377,62 +1534,103 @@ void showPlayer(BuildContext context, MobileServices services) {
 }
 
 class MiniPlayer extends StatelessWidget {
-  const MiniPlayer({super.key, required this.services, required this.onOpen});
+  const MiniPlayer({super.key, required this.services, required this.onOpen, this.compact = false, this.margin = const EdgeInsets.fromLTRB(10, 0, 10, 8)});
   final MobileServices services;
   final VoidCallback onOpen;
+
+  /// Свёрнутая нижняя панель: плеер зажат между круглыми кнопками, остаётся только пауза
+  final bool compact;
+  final EdgeInsets margin;
 
   @override
   Widget build(BuildContext context) {
     final p = services.player;
     final t = p.current;
     if (t == null) return const SizedBox.shrink();
+    final h = compact ? 56.0 : 60.0;
+    final coverW = compact ? 84.0 : 104.0;
     return Glass(
-      radius: 18,
+      radius: 30,
       color: C.glass,
-      margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: onOpen,
-        // Свайп влево/вправо — следующий/предыдущий трек, вверх — открыть плеер
-        onHorizontalDragEnd: (d) {
-          final v = d.primaryVelocity ?? 0;
-          if (v < -300) {
-            HapticFeedback.selectionClick();
-            p.next();
-          } else if (v > 300) {
-            HapticFeedback.selectionClick();
-            p.previous();
-          }
-        },
-        onVerticalDragEnd: (d) {
-          if ((d.primaryVelocity ?? 0) < -300) onOpen();
-        },
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 4, 6),
-            child: Row(children: [
-              TrackCover(services: services, track: t, size: 44),
-              const SizedBox(width: 12),
+      margin: margin,
+      child: SizedBox(
+        height: h,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onOpen,
+          // Свайп влево/вправо — следующий/предыдущий трек, вверх — открыть плеер
+          onHorizontalDragEnd: (d) {
+            final v = d.primaryVelocity ?? 0;
+            if (v < -300) {
+              HapticFeedback.selectionClick();
+              p.next();
+            } else if (v > 300) {
+              HapticFeedback.selectionClick();
+              p.previous();
+            }
+          },
+          onVerticalDragEnd: (d) {
+            if ((d.primaryVelocity ?? 0) < -300) onOpen();
+          },
+          child: Stack(children: [
+            // Фон-подсветка цвета акцента слева, под обложкой
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(colors: [C.accent.withValues(alpha: 0.16), Colors.transparent], stops: const [0, 0.7]),
+                ),
+              ),
+            ),
+            // Обложка во всю высоту, справа растворяется в капсулу, как на ПК
+            Positioned(
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: coverW,
+              child: ShaderMask(
+                blendMode: BlendMode.dstIn,
+                shaderCallback: (r) => const LinearGradient(colors: [Colors.black, Colors.black, Colors.transparent], stops: [0, 0.5, 1]).createShader(r),
+                child: ClipRect(
+                  child: OverflowBox(
+                    alignment: Alignment.center,
+                    minWidth: 0,
+                    minHeight: 0,
+                    maxWidth: coverW,
+                    maxHeight: coverW,
+                    child: TrackCover(services: services, track: t, size: coverW, radius: 0),
+                  ),
+                ),
+              ),
+            ),
+            Row(children: [
+              SizedBox(width: coverW - 24),
               Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
-                  Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: C.muted)),
+                child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15.5)),
+                  const SizedBox(height: 1),
+                  Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, color: C.muted)),
                 ]),
               ),
               IconButton(onPressed: p.toggle, icon: Icon(p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 30, color: C.text)),
-              IconButton(onPressed: p.next, icon: const Icon(Icons.skip_next_rounded, size: 28, color: C.text)),
+              if (!compact) IconButton(onPressed: p.next, icon: const Icon(Icons.skip_next_rounded, size: 30, color: C.text)),
+              SizedBox(width: compact ? 6 : 4),
             ]),
-          ),
-          ValueListenableBuilder<Duration>(
-            valueListenable: p.position,
-            builder: (_, pos, __) => LinearProgressIndicator(
-              value: p.duration.inMilliseconds <= 0 ? 0 : (pos.inMilliseconds / p.duration.inMilliseconds).clamp(0.0, 1.0).toDouble(),
-              minHeight: 2,
-              color: C.accent,
-              backgroundColor: Colors.transparent,
+            Positioned(
+              left: 26,
+              right: 26,
+              bottom: 0,
+              child: ValueListenableBuilder<Duration>(
+                valueListenable: p.position,
+                builder: (_, pos, __) => LinearProgressIndicator(
+                  value: p.duration.inMilliseconds <= 0 ? 0 : (pos.inMilliseconds / p.duration.inMilliseconds).clamp(0.0, 1.0).toDouble(),
+                  minHeight: 2,
+                  color: C.accent,
+                  backgroundColor: Colors.transparent,
+                ),
+              ),
             ),
-          ),
-        ]),
+          ]),
+        ),
       ),
     );
   }
@@ -1479,49 +1677,55 @@ class _FullPlayerState extends State<FullPlayer> {
               final t = p.current;
               if (t == null) return const Center(child: Text('Ничего не играет'));
               final size = MediaQuery.sizeOf(context);
-              final cover = math.min(size.width - 40, size.height * 0.42);
-              return SafeArea(
+              final heroH = size.height * 0.54;
+              final topPad = MediaQuery.paddingOf(context).top;
+              final heroSpace = math.max(120.0, heroH - topPad - 56 - 78);
+              final body = SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
                   child: Column(children: [
-                    Row(children: [
-                      IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 34, color: C.text)),
-                      const Expanded(
-                          child: Text('Сейчас играет', textAlign: TextAlign.center, style: TextStyle(color: C.muted, fontWeight: FontWeight.w600))),
-                      IconButton(
-                          tooltip: 'Текст песни',
-                          onPressed: () => setState(() => lyrics = !lyrics),
-                          icon: Icon(Icons.lyrics_outlined, size: 25, color: lyrics ? C.accent : C.text)),
-                      IconButton(onPressed: () => queue(context), icon: const Icon(Icons.queue_music_rounded, size: 26, color: C.text)),
-                    ]),
-                    if (lyrics)
-                      Expanded(child: LyricsView(services: services, track: t))
-                    else
-                      // Обложка и управление идут сразу друг за другом: кнопки почти под картинкой
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onHorizontalDragEnd: (d) {
-                          final v = d.primaryVelocity ?? 0;
-                          if (v < -300) {
-                            HapticFeedback.selectionClick();
-                            p.next();
-                          } else if (v > 300) {
-                            HapticFeedback.selectionClick();
-                            p.previous();
-                          }
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 6),
+                    if (lyrics) ...[
+                      // Текст песни: сверху маленькая обложка; нажатие на неё возвращает к большой обложке
+                      Row(children: [
+                        GestureDetector(
+                          onTap: () => setState(() => lyrics = false),
                           child: DecoratedBox(
                             decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(22),
-                              boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 36, offset: Offset(0, 16))],
+                              borderRadius: BorderRadius.circular(12),
+                              boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 18, offset: Offset(0, 8))],
                             ),
-                            child: TrackCover(services: services, track: t, size: cover, radius: 22, fullscreen: true),
+                            child: TrackCover(services: services, track: t, size: 66, radius: 12),
                           ),
                         ),
-                      ),
-                    SizedBox(height: lyrics ? 12 : 22),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                            const SizedBox(height: 2),
+                            Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 15)),
+                          ]),
+                        ),
+                        IconButton(
+                          onPressed: () => services.library.toggleLike(t.id),
+                          icon: Icon(services.library.isLiked(t.id) ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                              color: services.library.isLiked(t.id) ? C.accent : C.text, size: 26),
+                        ),
+                        IconButton(onPressed: () => queue(context), icon: const Icon(Icons.queue_music_rounded, size: 26, color: C.text)),
+                      ]),
+                      const SizedBox(height: 8),
+                      Expanded(child: LyricsView(services: services, track: t)),
+                    ] else ...[
+                      Row(children: [
+                        IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 34, color: C.text)),
+                        const Expanded(child: SizedBox.shrink()),
+                        IconButton(
+                            tooltip: 'Текст песни',
+                            onPressed: () => setState(() => lyrics = true),
+                            icon: const Icon(Icons.lyrics_outlined, size: 25, color: C.text)),
+                        IconButton(onPressed: () => queue(context), icon: const Icon(Icons.queue_music_rounded, size: 26, color: C.text)),
+                      ]),
+                      // Место под обложку: она лежит на весь экран позади и растворяется у названия
+                      SizedBox(height: heroSpace),
                     Row(children: [
                       Expanded(
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1608,11 +1812,36 @@ class _FullPlayerState extends State<FullPlayer> {
                           icon: Icon(p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
                               size: 26, color: p.repeat == RepeatSetting.off ? C.muted : C.accent)),
                     ]),
-                    if (!lyrics) const Spacer(),
-                    const SizedBox(height: 18),
+                      const Spacer(),
+                      const SizedBox(height: 18),
+                    ],
                   ]),
                 ),
               );
+              return Stack(children: [
+                if (!lyrics)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    height: heroH,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragEnd: (d) {
+                        final v = d.primaryVelocity ?? 0;
+                        if (v < -300) {
+                          HapticFeedback.selectionClick();
+                          p.next();
+                        } else if (v > 300) {
+                          HapticFeedback.selectionClick();
+                          p.previous();
+                        }
+                      },
+                      child: FadeCover(services: services, track: t, width: size.width, height: heroH),
+                    ),
+                  ),
+                body,
+              ]);
             },
           ),
         ),
