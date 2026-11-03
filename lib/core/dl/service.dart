@@ -860,7 +860,7 @@ class DownloadService extends ChangeNotifier {
         _activeTransfer = null;
       }
       if (socket != null) {
-        if (receivedEnd && !socket.isClosed) {
+        if (receivedEnd) {
           // Allow the peer to receive end-ack. Immediate destroy() can send
           // an RST and make a completed download appear to have crashed.
           try {
