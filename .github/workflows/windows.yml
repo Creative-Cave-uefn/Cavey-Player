@@ -241,7 +241,16 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.DOWNLOADER_READ_TOKEN }}
+          CAVE_SPOTIFY_CLIENT_ID: ${{ secrets.CAVE_SPOTIFY_CLIENT_ID }}
         run: |
+          # Prebuilt Downloader is created in a different repository with different
+          # Actions secrets. It cannot include this player's Spotify Client ID.
+          # When configured, compile from source in the player workflow instead.
+          if (-not [string]::IsNullOrWhiteSpace($env:CAVE_SPOTIFY_CLIENT_ID)) {
+            Write-Output '::notice::Spotify Client ID настроен: соберу Downloader локально с Client ID из Cavey-Player Secrets.'
+            exit 0
+          }
+          Write-Output '::warning::CAVE_SPOTIFY_CLIENT_ID не найден в Cavey-Player Actions Secrets. Без него требуется ручной ввод Client ID.'
           $repo = 'Creative-Cave-uefn/Cavey-Downloader'
           $source = '.cave-downloader-module'
           $sha = (git -C $source rev-parse HEAD).Trim()
@@ -289,7 +298,7 @@ jobs:
               "--define=CAVE_DEEZER_ARL_DEFAULT=$env:CAVE_DEEZER_ARL_DEFAULT" `
               "--define=CAVE_SOULSEEK_USERNAME_DEFAULT=$env:CAVE_SOULSEEK_USERNAME_DEFAULT" `
               "--define=CAVE_SOULSEEK_PASSWORD_DEFAULT=$env:CAVE_SOULSEEK_PASSWORD_DEFAULT" `
-            "--define=CAVE_SPOTIFY_CLIENT_ID_DEFAULT=$env:CAVE_SPOTIFY_CLIENT_ID_DEFAULT"
+              "--define=CAVE_SPOTIFY_CLIENT_ID_DEFAULT=$env:CAVE_SPOTIFY_CLIENT_ID_DEFAULT"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Copy-Item cave-downloader-windows-x64.exe ../build/windows/x64/runner/Release/ -Force
           } finally { Pop-Location }
