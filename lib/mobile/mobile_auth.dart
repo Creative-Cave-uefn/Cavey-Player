@@ -110,17 +110,33 @@ class MobileAccountManager extends AccountManager {
     }
   }
 
+  /// Токен Диска живёт около часа: держим его в памяти и не дёргаем Google на каждый запрос
+  final Map<String, ({String token, DateTime until})> _tokens = {};
+
+  /// Обращение к Google с повтором: сбой сети или занятый Play Services не повод просить войти заново
+  Future<T?> _retry<T>(Future<T?> Function() job) async {
+    for (var i = 0; i < 3; i++) {
+      try {
+        final r = await job();
+        if (r != null) return r;
+      } catch (e) {
+        AppLog.warn('Google: попытка ${i + 1} не удалась', e);
+      }
+      if (i < 2) await Future<void>.delayed(Duration(milliseconds: 600 * (i + 1)));
+    }
+    return null;
+  }
+
   @override
   Future<String> token(String email, {bool force = false}) async {
+    final cached = _tokens[email];
+    if (!force && cached != null && cached.until.isAfter(DateTime.now())) return cached.token;
     await _init();
     var user = _active;
     if (user == null || user.email != email) {
-      try {
-        user = await _google.attemptLightweightAuthentication();
-      } catch (_) {
-        user = null;
-      }
+      user = await _retry<GoogleSignInAccount>(() async => await _google.attemptLightweightAuthentication());
       if (user == null || user.email != email) {
+        // Плашку «войдите снова» показываем только когда Google точно не вспомнил аккаунт
         _markNeedsSignIn(email);
         throw AuthException('Нужно повторно войти в Google: $email');
       }
@@ -128,13 +144,13 @@ class MobileAccountManager extends AccountManager {
     }
     // Never open consent from a background Drive request. If access is revoked,
     // the user must use the login button to authorize Drive again.
-    final grant = await user.authorizationClient.authorizationForScopes(
-      const [AccountManager.driveScope],
-    );
+    final u = user;
+    final grant = await _retry(() => u.authorizationClient.authorizationForScopes(const [AccountManager.driveScope]));
     if (grant == null || grant.accessToken.isEmpty) {
       _markNeedsSignIn(email);
       throw AuthException(AccountManager.noDriveAccess);
     }
+    _tokens[email] = (token: grant.accessToken, until: DateTime.now().add(const Duration(minutes: 45)));
     final acc = byEmail(email);
     if (acc != null && acc.needsSignIn) {
       acc.needsSignIn = false;
@@ -146,6 +162,7 @@ class MobileAccountManager extends AccountManager {
   @override
   Future<void> remove(String email) async {
     await super.remove(email);
+    _tokens.remove(email);
     if (_active?.email == email) {
       await _google.signOut();
       _active = null;

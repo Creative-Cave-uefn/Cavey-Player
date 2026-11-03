@@ -103,7 +103,9 @@ jobs:
             exit 1
           fi
 
+      # Если на аккаунте закончилась квота артефактов, это не должно мешать публикации APK в релизы
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: CaveyPlayer-${{ env.APP_VERSION }}
           path: dist/CaveyPlayer.apk
