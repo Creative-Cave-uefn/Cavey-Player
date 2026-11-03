@@ -53,13 +53,14 @@ class CaveyAndroid extends StatelessWidget {
 // ───────────────────────────── фон и стекло ─────────────────────────────
 
 class Backdrop extends StatelessWidget {
-  const Backdrop({super.key, required this.services, required this.child});
+  const Backdrop({super.key, required this.services, required this.child, this.track});
   final MobileServices services;
   final Widget child;
+  final Track? track;
 
   @override
   Widget build(BuildContext context) => Stack(fit: StackFit.expand, children: [
-        MobileAmbient(services: services),
+        MobileAmbient(services: services, track: track),
         child,
       ]);
 }
@@ -1230,7 +1231,12 @@ class CollectionPage extends StatelessWidget {
     // Обложка на всю ширину, нижняя часть растворяется; название лежит на переходе
     final coverH = width;
     final heroH = coverH - 40 + 78;
-    return Scaffold(
+    // Фон под цвет обложки альбома, а не играющего трека
+    return Backdrop(
+      services: services,
+      track: c,
+      child: Scaffold(
+      backgroundColor: Colors.transparent,
       body: AnimatedBuilder(
         animation: Listenable.merge([services.cache, services.library, services.player]),
         builder: (context, _) => CustomScrollView(slivers: [
@@ -1315,7 +1321,7 @@ class CollectionPage extends StatelessWidget {
             ? const SizedBox.shrink()
             : SafeArea(top: false, child: MiniPlayer(services: services, onOpen: () => showPlayer(context, services))),
       ),
-    );
+    ));
   }
 }
 
@@ -1519,18 +1525,174 @@ class ProfileTab extends StatelessWidget {
 
 void showPlayer(BuildContext context, MobileServices services) {
   Navigator.of(context, rootNavigator: true).push(PageRouteBuilder<void>(
-    opaque: true,
-    transitionDuration: const Duration(milliseconds: 320),
-    reverseTransitionDuration: const Duration(milliseconds: 260),
-    pageBuilder: (_, __, ___) => ColoredBox(
-      color: C.bg,
-      child: Backdrop(services: services, child: FullPlayer(services: services)),
-    ),
-    transitionsBuilder: (_, anim, __, child) => SlideTransition(
-      position: Tween(begin: const Offset(0, 1), end: Offset.zero).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
-      child: child,
-    ),
+    opaque: false,
+    barrierColor: null,
+    transitionDuration: const Duration(milliseconds: 340),
+    // Закрытие анимирует сама шторка (она едет за пальцем), поэтому у маршрута оно мгновенное
+    reverseTransitionDuration: Duration.zero,
+    pageBuilder: (_, anim, __) => PlayerSheet(services: services, anim: anim),
+    transitionsBuilder: (_, __, ___, child) => child,
   ));
+}
+
+/// Плеер — шторка: выезжает снизу, закруглённые углы, тянется за пальцем и уезжает вниз.
+/// Позади видно предыдущий экран, он затемняется.
+class PlayerSheet extends StatefulWidget {
+  const PlayerSheet({super.key, required this.services, required this.anim});
+  final MobileServices services;
+  final Animation<double> anim;
+  @override
+  State<PlayerSheet> createState() => _PlayerSheetState();
+}
+
+class _PlayerSheetState extends State<PlayerSheet> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 260));
+  double _dy = 0;
+  double _from = 0;
+  double _to = 0;
+  bool _closing = false;
+  double _h = 800;
+
+  @override
+  void initState() {
+    super.initState();
+    _c.addListener(() => setState(() => _dy = _from + (_to - _from) * Curves.easeOutCubic.transform(_c.value)));
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  Future<void> close() async {
+    if (_closing) return;
+    _closing = true;
+    final nav = Navigator.of(context, rootNavigator: true);
+    _from = _dy;
+    _to = _h;
+    await _c.forward(from: 0);
+    if (nav.mounted) nav.pop();
+  }
+
+  void _end(double v) {
+    if (_closing) return;
+    if (v > 700 || _dy > _h * 0.25) {
+      close();
+    } else {
+      _from = _dy;
+      _to = 0;
+      _c.forward(from: 0);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _h = MediaQuery.sizeOf(context).height;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) close();
+      },
+      child: AnimatedBuilder(
+        animation: widget.anim,
+        builder: (context, _) {
+          final open = Curves.easeOutCubic.transform(widget.anim.value);
+          final shown = (1 - _dy / _h).clamp(0.0, 1.0);
+          return Stack(children: [
+            Positioned.fill(child: ColoredBox(color: Color.fromRGBO(0, 0, 0, 0.6 * open * shown))),
+            Positioned.fill(
+              child: Transform.translate(
+              offset: Offset(0, (1 - open) * _h + _dy),
+              child: GestureDetector(
+                onVerticalDragUpdate: (d) {
+                  if (_closing) return;
+                  _c.stop();
+                  setState(() => _dy = (_dy + d.delta.dy).clamp(0.0, _h));
+                },
+                onVerticalDragEnd: (d) => _end(d.primaryVelocity ?? 0),
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(38)),
+                  child: ColoredBox(
+                    color: C.bg,
+                    child: Backdrop(services: widget.services, child: FullPlayer(services: widget.services, onClose: close)),
+                  ),
+                ),
+              ),
+            )),
+          ]);
+        },
+      ),
+    );
+  }
+}
+
+/// Куда перейти из плеера
+class _GoTarget {
+  _GoTarget(this.title, this.tracks, this.cover);
+  final String title;
+  final List<Track> tracks;
+  final Track? cover;
+}
+
+/// Плашка «Перейти к артисту / к альбому» под названием трека
+class _GoMenu extends StatelessWidget {
+  const _GoMenu({required this.rect, required this.track, required this.library});
+  final Rect rect;
+  final Track track;
+  final LibraryController library;
+
+  @override
+  Widget build(BuildContext context) {
+    final w = MediaQuery.sizeOf(context).width;
+    final rows = <Widget>[];
+    Widget row(IconData icon, String title, String sub, _GoTarget target) => InkWell(
+          onTap: () => Navigator.of(context).pop(target),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            child: Row(children: [
+              Icon(icon, size: 24, color: C.text),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                  Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, color: C.muted)),
+                ]),
+              ),
+            ]),
+          ),
+        );
+    for (final name in track.artists) {
+      final a = library.artist(name.toLowerCase());
+      if (a != null) rows.add(row(Icons.mic_external_on_rounded, 'Перейти к артисту', a.name, _GoTarget(a.name, a.tracks, a.coverTrack)));
+    }
+    final al = library.albumOf(track);
+    if (al != null && track.album.isNotEmpty) {
+      rows.add(row(Icons.album_rounded, 'Перейти к альбому', al.title, _GoTarget(al.title, al.tracks, al.coverTrack)));
+    }
+    if (rows.isEmpty) return const SizedBox.shrink();
+    return Stack(children: [
+      Positioned(
+        left: math.min(rect.left + 36, w - 316),
+        top: rect.bottom + 6,
+        width: 300,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: const Color(0xD9261C22),
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: C.line),
+              ),
+              child: Material(type: MaterialType.transparency, child: Column(mainAxisSize: MainAxisSize.min, children: rows)),
+            ),
+          ),
+        ),
+      ),
+    ]);
+  }
 }
 
 class MiniPlayer extends StatelessWidget {
@@ -1637,8 +1799,9 @@ class MiniPlayer extends StatelessWidget {
 }
 
 class FullPlayer extends StatefulWidget {
-  const FullPlayer({super.key, required this.services});
+  const FullPlayer({super.key, required this.services, required this.onClose});
   final MobileServices services;
+  final Future<void> Function() onClose;
   @override
   State<FullPlayer> createState() => _FullPlayerState();
 }
@@ -1646,6 +1809,35 @@ class FullPlayer extends StatefulWidget {
 class _FullPlayerState extends State<FullPlayer> {
   MobileServices get services => widget.services;
   bool lyrics = false;
+  final GlobalKey _nameKey = GlobalKey();
+
+  /// Нажатие на название/артиста: плашка перехода к артисту или альбому
+  Future<void> goMenu(Track t) async {
+    final box = _nameKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+    final rect = box.localToGlobal(Offset.zero) & box.size;
+    final nav = Navigator.of(context, rootNavigator: true);
+    final pick = await showGeneralDialog<_GoTarget>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Закрыть',
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 160),
+      pageBuilder: (_, __, ___) => _GoMenu(rect: rect, track: t, library: services.library),
+      transitionBuilder: (_, a, __, child) => FadeTransition(
+        opacity: a,
+        child: ScaleTransition(
+          scale: Tween<double>(begin: 0.92, end: 1).animate(CurvedAnimation(parent: a, curve: Curves.easeOut)),
+          alignment: Alignment.topLeft,
+          child: child,
+        ),
+      ),
+    );
+    if (pick == null) return;
+    await widget.onClose();
+    nav.push(MaterialPageRoute<void>(
+        builder: (_) => CollectionPage(services: services, title: pick.title, tracks: pick.tracks, cover: pick.cover)));
+  }
 
   static String time(Duration d) {
     final seconds = d.inSeconds.clamp(0, 999999);
@@ -1667,9 +1859,6 @@ class _FullPlayerState extends State<FullPlayer> {
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: Colors.transparent,
         body: GestureDetector(
-          onVerticalDragEnd: (d) {
-            if ((d.primaryVelocity ?? 0) > 700) Navigator.pop(context);
-          },
           child: AnimatedBuilder(
             animation: Listenable.merge([services.player, services.library, services.cache, services.wave]),
             builder: (context, __) {
@@ -1685,6 +1874,7 @@ class _FullPlayerState extends State<FullPlayer> {
                   padding: const EdgeInsets.symmetric(horizontal: 24),
                   child: Column(children: [
                     if (lyrics) ...[
+                      const SizedBox(height: 22),
                       // Текст песни: сверху маленькая обложка; нажатие на неё возвращает к большой обложке
                       Row(children: [
                         GestureDetector(
@@ -1699,11 +1889,15 @@ class _FullPlayerState extends State<FullPlayer> {
                         ),
                         const SizedBox(width: 14),
                         Expanded(
-                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
-                            const SizedBox(height: 2),
-                            Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 15)),
-                          ]),
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => goMenu(t),
+                            child: Column(key: _nameKey, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+                              const SizedBox(height: 2),
+                              Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 15)),
+                            ]),
+                          ),
                         ),
                         IconButton(
                           onPressed: () => services.library.toggleLike(t.id),
@@ -1716,7 +1910,7 @@ class _FullPlayerState extends State<FullPlayer> {
                       Expanded(child: LyricsView(services: services, track: t)),
                     ] else ...[
                       Row(children: [
-                        IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 34, color: C.text)),
+                        const SizedBox(height: 48),
                         const Expanded(child: SizedBox.shrink()),
                         IconButton(
                             tooltip: 'Текст песни',
@@ -1728,11 +1922,15 @@ class _FullPlayerState extends State<FullPlayer> {
                       SizedBox(height: heroSpace),
                     Row(children: [
                       Expanded(
-                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text(t.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(23)),
-                          const SizedBox(height: 4),
-                          Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 15)),
-                        ]),
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => goMenu(t),
+                          child: Column(key: _nameKey, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text(t.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(23)),
+                            const SizedBox(height: 4),
+                            Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 15)),
+                          ]),
+                        ),
                       ),
                       if (services.wave.active) ...[
                         IconButton(onPressed: services.wave.dislike, tooltip: 'Не нравится', icon: const Icon(Icons.thumb_down_alt_outlined, color: C.muted, size: 24)),
@@ -1841,6 +2039,22 @@ class _FullPlayerState extends State<FullPlayer> {
                     ),
                   ),
                 body,
+                // Ручка шторки: потянуть вниз или нажать — закрыть
+                Positioned(
+                  top: topPad + 6,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: widget.onClose,
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 40, vertical: 8),
+                        child: SizedBox(width: 54, height: 5, child: DecoratedBox(decoration: BoxDecoration(color: Color(0x73FFFFFF), borderRadius: BorderRadius.all(Radius.circular(3))))),
+                      ),
+                    ),
+                  ),
+                ),
               ]);
             },
           ),

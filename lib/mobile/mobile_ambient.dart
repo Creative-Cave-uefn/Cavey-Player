@@ -16,8 +16,11 @@ import '../ui/theme.dart';
 /// На каждом кадре ничего не размывается, поэтому прокрутка не тормозит. Фон замирает,
 /// когда приложение свёрнуто, и замедляется на паузе.
 class MobileAmbient extends StatefulWidget {
-  const MobileAmbient({super.key, required this.services});
+  const MobileAmbient({super.key, required this.services, this.track});
   final MobileServices services;
+
+  /// Чей цвет брать для фона. Если не задан — играющий сейчас трек (страница альбома задаёт обложку альбома)
+  final Track? track;
 
   @override
   State<MobileAmbient> createState() => _MobileAmbientState();
@@ -48,6 +51,12 @@ class _MobileAmbientState extends State<MobileAmbient> with SingleTickerProvider
     WidgetsBinding.instance.addObserver(this);
     _ticker = createTicker(_onTick)..start();
     _sync();
+  }
+
+  @override
+  void didUpdateWidget(MobileAmbient old) {
+    super.didUpdateWidget(old);
+    if (old.track?.id != widget.track?.id) _sync();
   }
 
   @override
@@ -98,7 +107,7 @@ class _MobileAmbientState extends State<MobileAmbient> with SingleTickerProvider
   }
 
   Future<void> _sync() async {
-    final Track? t = widget.services.player.current;
+    final Track? t = widget.track ?? widget.services.player.current;
     final key = t?.id;
     if (key == _key) return;
     _key = key;
