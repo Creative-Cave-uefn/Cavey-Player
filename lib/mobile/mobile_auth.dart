@@ -112,6 +112,39 @@ class MobileAccountManager extends AccountManager {
 
   /// Токен Диска живёт около часа: держим его в памяти и не дёргаем Google на каждый запрос
   final Map<String, ({String token, DateTime until})> _tokens = {};
+  bool _tokensLoaded = false;
+
+  /// Токен переживает перезапуск приложения (файл в закрытом хранилище приложения): пока он действует,
+  /// при входе в приложение к Google не обращаемся вообще, и никаких проверок аккаунта нет
+  Future<void> _loadTokens() async {
+    if (_tokensLoaded) return;
+    _tokensLoaded = true;
+    try {
+      final j = await store.readJson('mobile_tokens.json');
+      if (j is Map) {
+        j.forEach((email, v) {
+          if (v is Map && v['t'] is String && v['u'] is int) {
+            _tokens[email as String] = (
+              token: v['t'] as String,
+              until: DateTime.fromMillisecondsSinceEpoch(v['u'] as int),
+            );
+          }
+        });
+      }
+    } catch (e) {
+      AppLog.warn('Не удалось прочитать сохранённый токен', e);
+    }
+  }
+
+  Future<void> _saveTokens() async {
+    try {
+      await store.writeJson('mobile_tokens.json', {
+        for (final e in _tokens.entries) e.key: {'t': e.value.token, 'u': e.value.until.millisecondsSinceEpoch},
+      });
+    } catch (e) {
+      AppLog.warn('Не удалось сохранить токен', e);
+    }
+  }
 
   /// Обращение к Google с повтором: сбой сети или занятый Play Services не повод просить войти заново
   Future<T?> _retry<T>(Future<T?> Function() job) async {
@@ -129,6 +162,7 @@ class MobileAccountManager extends AccountManager {
 
   @override
   Future<String> token(String email, {bool force = false}) async {
+    await _loadTokens();
     final cached = _tokens[email];
     if (!force && cached != null && cached.until.isAfter(DateTime.now())) return cached.token;
     await _init();
@@ -150,7 +184,8 @@ class MobileAccountManager extends AccountManager {
       _markNeedsSignIn(email);
       throw AuthException(AccountManager.noDriveAccess);
     }
-    _tokens[email] = (token: grant.accessToken, until: DateTime.now().add(const Duration(minutes: 45)));
+    _tokens[email] = (token: grant.accessToken, until: DateTime.now().add(const Duration(minutes: 50)));
+    await _saveTokens();
     final acc = byEmail(email);
     if (acc != null && acc.needsSignIn) {
       acc.needsSignIn = false;
@@ -163,6 +198,7 @@ class MobileAccountManager extends AccountManager {
   Future<void> remove(String email) async {
     await super.remove(email);
     _tokens.remove(email);
+    await _saveTokens();
     if (_active?.email == email) {
       await _google.signOut();
       _active = null;
