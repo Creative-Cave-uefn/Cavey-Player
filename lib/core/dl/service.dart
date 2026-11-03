@@ -81,13 +81,19 @@ class DownloadService extends ChangeNotifier {
   bool _running = false;
   bool installing = false;
   String toolsVersion = '';
+  bool spotifyBusy = false;
+  bool spotifyConfigured = false;
+  bool spotifyConnected = false;
+  String spotifyAccount = '';
+  String spotifyMessage = '';
+  String spotifyError = '';
   Timer? _notifyTimer;
   _TransferSession? _activeTransfer;
 
   DownloadService(this.lib, this.work, {this.cache, this.covers, this.onAudioReplaced});
 
   Directory get _toolsDir => Directory('${work.parent.path}${Platform.pathSeparator}tools');
-  bool get busy => _running || installing;
+  bool get busy => _running || installing || spotifyBusy;
 
   void _notify() {
     if (_notifyTimer?.isActive ?? false) return;
@@ -356,6 +362,65 @@ class DownloadService extends ChangeNotifier {
     }
   }
 
+  Future<void> refreshSpotify() async {
+    if (spotifyBusy) return;
+    try {
+      final value = await _callModule('spotify-status');
+      if (value is Map) {
+        spotifyConfigured = value['configured'] == true;
+        spotifyConnected = value['connected'] == true;
+        spotifyAccount = '${value['account'] ?? ''}';
+      }
+      spotifyError = '';
+    } catch (e) {
+      spotifyError = 'Не удалось проверить Spotify: $e';
+    }
+    notifyListeners();
+  }
+
+  Future<void> loginSpotify(String clientId) async {
+    if (busy) return;
+    spotifyBusy = true;
+    spotifyMessage = 'Открываю страницу входа Spotify…';
+    spotifyError = '';
+    notifyListeners();
+    try {
+      final result = await _callModule('spotify-login',
+          extra: {'clientId': clientId.trim()}, onLog: (line) {
+        spotifyMessage = line;
+        notifyListeners();
+      });
+      spotifyAccount = '$result';
+      spotifyConnected = true;
+      spotifyConfigured = true;
+      spotifyMessage = 'Spotify подключён: $spotifyAccount';
+    } catch (e) {
+      spotifyError = 'Spotify: $e';
+      spotifyMessage = '';
+    } finally {
+      spotifyBusy = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> logoutSpotify() async {
+    if (busy) return;
+    spotifyBusy = true;
+    spotifyError = '';
+    notifyListeners();
+    try {
+      await _callModule('spotify-logout');
+      spotifyConnected = false;
+      spotifyAccount = '';
+      spotifyMessage = 'Spotify отключён.';
+    } catch (e) {
+      spotifyError = 'Не удалось отключить Spotify: $e';
+    } finally {
+      spotifyBusy = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> installProvider(String provider, void Function(String) log) async {
     if (provider != 'deezer' && provider != 'sockseek') throw ArgumentError.value(provider);
     installing = true;
@@ -581,7 +646,7 @@ class DownloadService extends ChangeNotifier {
   }
 
   Future<Object?> _callModule(String kind, {DownloadJob? job,
-      void Function(String)? onLog}) async {
+      void Function(String)? onLog, Map<String, Object?>? extra}) async {
     final exe = _module();
     await work.create(recursive: true);
     await _toolsDir.create(recursive: true);
@@ -659,6 +724,7 @@ class DownloadService extends ChangeNotifier {
       }
       final request = <String, Object?>{
         't': 'job', 'kind': kind, 'endAck': true,
+        ...?extra,
         'tools': _toolsDir.absolute.path,
         'work': work.absolute.path,
         if (job != null) ...{
@@ -793,7 +859,19 @@ class DownloadService extends ChangeNotifier {
       if (session != null && identical(_activeTransfer, session)) {
         _activeTransfer = null;
       }
-      socket?.destroy();
+      if (socket != null) {
+        if (receivedEnd && !socket.isClosed) {
+          // Allow the peer to receive end-ack. Immediate destroy() can send
+          // an RST and make a completed download appear to have crashed.
+          try {
+            await socket.close().timeout(const Duration(seconds: 5));
+          } catch (_) {
+            socket.destroy();
+          }
+        } else {
+          socket.destroy();
+        }
+      }
       await server.close();
       installing = false;
       _notify();
