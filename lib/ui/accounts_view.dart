@@ -212,6 +212,8 @@ class _AccountsPageState extends State<AccountsPage> {
               gap,
               _DownloaderSection(),
               gap,
+              _SpotifySettingsSection(),
+              gap,
               LibrarySection(parts: {'leave'}),
             ],
           'debug' => const [_DebugSection()],
@@ -1255,6 +1257,111 @@ class _DiscordSectionState extends State<_DiscordSection> {
 }
 
 
+
+/// Spotify account authorization belongs to Library settings, not the download
+/// form. Only the Client ID is configured by the app or supplied by the user;
+/// OAuth tokens and the user's password never pass through this UI.
+class _SpotifySettingsSection extends StatefulWidget {
+  const _SpotifySettingsSection();
+
+  @override
+  State<_SpotifySettingsSection> createState() => _SpotifySettingsSectionState();
+}
+
+class _SpotifySettingsSectionState extends State<_SpotifySettingsSection> {
+  final _clientId = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Services.of(context).downloads.refreshSpotify();
+    });
+  }
+
+  @override
+  void dispose() {
+    _clientId.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dl = Services.of(context).downloads;
+    return ListenableBuilder(
+      listenable: dl,
+      builder: (context, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Spotify', style: display(20)),
+          const SizedBox(height: 8),
+          Text(
+            dl.spotifyConnected
+                ? 'Подключён: ${dl.spotifyAccount.isEmpty ? 'Spotify' : dl.spotifyAccount}. '
+                  'Можно импортировать свои плейлисты целиком, до 2000 записей.'
+                : 'Подключите Spotify, чтобы импортировать свои плейлисты полностью. '
+                  'Плейлисты других пользователей могут быть ограничены Spotify API.',
+            style: const TextStyle(color: C.muted, fontSize: 13, height: 1.5),
+          ),
+          if (!dl.spotifyConnected && !dl.spotifyConfigured) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: _clientId,
+              decoration: const InputDecoration(
+                labelText: 'Spotify Client ID',
+                hintText: 'Client ID из Spotify Developer Dashboard',
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const SelectableText(
+              'Redirect URI: http://127.0.0.1:43811/callback',
+              style: TextStyle(color: C.faint, fontSize: 12),
+            ),
+          ],
+          if (!dl.spotifyConnected && dl.spotifyConfigured) ...[
+            const SizedBox(height: 6),
+            const Text('Client ID уже настроен — вручную вводить не нужно.',
+                style: TextStyle(color: C.faint, fontSize: 12)),
+          ],
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              if (dl.spotifyConnected)
+                OutlinedButton.icon(
+                  onPressed: dl.busy ? null : dl.logoutSpotify,
+                  icon: const Icon(Icons.logout, size: 18),
+                  label: const Text('Выйти из Spotify'),
+                )
+              else
+                FilledButton.icon(
+                  onPressed: dl.busy ? null : () => dl.loginSpotify(_clientId.text),
+                  icon: const Icon(Icons.login_rounded, size: 18),
+                  label: const Text('Войти в Spotify'),
+                ),
+              if (dl.spotifyBusy)
+                const SizedBox.square(dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+            ],
+          ),
+          if (dl.spotifyMessage.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(dl.spotifyMessage,
+                style: const TextStyle(color: C.muted, fontSize: 12)),
+          ],
+          if (dl.spotifyError.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(dl.spotifyError,
+                style: const TextStyle(color: C.danger, fontSize: 12)),
+          ],
+        ],
+      ),
+    );
+  }
+}
 
 class _DownloaderSection extends StatefulWidget {
   const _DownloaderSection();
