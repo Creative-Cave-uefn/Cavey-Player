@@ -191,6 +191,7 @@ class PlayerController extends ChangeNotifier {
       queue = q;
       index = i;
       _origin = [for (final x in (s['origin'] as List? ?? const [])) fix(x)].where((id) => lib.data.tracks[id] != null).toList();
+      sourcePlaylist = s['src'] is String ? s['src'] as String : null;
       if (_origin.isEmpty) _origin = List.of(queue);
       shuffle = s['shuffle'] == true;
       repeat = RepeatSetting.values.firstWhere((r) => r.name == s['repeat'], orElse: () => RepeatSetting.off);
@@ -225,6 +226,7 @@ class PlayerController extends ChangeNotifier {
             // Очень длинные очереди обрезаем: хватит того, что вокруг текущего трека
             'queue': queue.length > 2000 ? queue.sublist(index > 500 ? index - 500 : 0).take(2000).toList() : queue,
             'origin': _origin.length > 2000 ? const <String>[] : _origin,
+            'src': sourcePlaylist,
             'current': cur.id,
             'index': index,
             'pos': (_resumeAt ?? position.value).inMilliseconds,
@@ -238,9 +240,13 @@ class PlayerController extends ChangeNotifier {
 
   // ---------- очередь ----------
 
-  Future<void> playTracks(List<Track> list, int start) async {
+  /// Плейлист, из которого запущено воспроизведение (для пункта «Перейти в плейлист»); null — другой источник
+  String? sourcePlaylist;
+
+  Future<void> playTracks(List<Track> list, int start, {String? playlistId}) async {
     if (list.isEmpty) return;
     feeder = null; // выбрали что-то сами — волна выключается
+    sourcePlaylist = playlistId;
     _origin = [for (final t in list) t.id];
     if (shuffle) {
       final first = _origin[start];

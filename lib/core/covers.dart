@@ -299,9 +299,13 @@ class CoverService extends ChangeNotifier {
   /// Только что загруженную картинку сразу кладём в кэш: скачивать её обратно не нужно
   Future<void> seed(String fileId, Uint8List bytes) async {
     final key = 'cv_$fileId';
+    // Сначала файл, потом сигнал: иначе виджет успевал спросить картинку раньше, не находил её,
+    // шёл на Диск и получал отказ, который помнится 5 минут
+    await _writeAtomic(_file(key), bytes);
+    _retryAt.remove(key);
+    _failures.remove(key);
     _remember(key, bytes);
     _signal();
-    await _writeAtomic(_file(key), bytes);
   }
 
   Future<Uint8List?> _get(String key, int px, Future<Uint8List?> Function() fetch,

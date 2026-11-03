@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/image_tools.dart';
+import '../core/log.dart';
 import 'crop_dialog.dart';
 import 'theme.dart';
 import 'glass_popup.dart';
@@ -86,15 +87,23 @@ class CoverChoice extends ChangeNotifier {
     final p = picked;
     if (p == null) return null;
     final app = Services.of(context);
-    try {
-      app.lib.messages.add('Загружаю обложку…');
-      final id = await app.lib.uploadCover(p.bytes, p.ext);
-      await app.covers.seed(id, p.bytes);
-      return id;
-    } catch (e) {
-      app.lib.messages.add('Обложку загрузить не вышло: $e');
-      return null;
+    app.lib.messages.add('Загружаю обложку…');
+    // Первая попытка нередко упирается в разовый сбой Диска (тогда обложку приходилось отправлять второй раз):
+    // повторяем сами до трёх раз с паузой
+    Object? last;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (attempt > 0) await Future<void>.delayed(Duration(seconds: attempt * 2));
+        final id = await app.lib.uploadCover(p.bytes, p.ext).timeout(const Duration(seconds: 45));
+        await app.covers.seed(id, p.bytes);
+        return id;
+      } catch (e) {
+        last = e;
+        AppLog.warn('Загрузка обложки: попытка ${attempt + 1} не удалась', e);
+      }
     }
+    app.lib.messages.add('Обложку загрузить не вышло: $last');
+    return null;
   }
 }
 

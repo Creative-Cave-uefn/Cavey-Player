@@ -1892,7 +1892,7 @@ class LibraryController extends ChangeNotifier {
     final known = _coverKnown[key];
     if (known != null) return Future.value(known);
     return _coverInflight[key] ??=
-        _uploadCoverUnique(bytes, '$digest.$ext').then((id) {
+        _uploadCoverUnique(bytes, '$digest.$ext').timeout(const Duration(seconds: 90)).then((id) {
           if (_coverKnown.length >= 200) _coverKnown.remove(_coverKnown.keys.first);
           _coverKnown[key] = id;
           return id;

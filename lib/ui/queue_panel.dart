@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/models.dart';
+import 'shell.dart' show SidePanelSlot;
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -17,7 +18,7 @@ class QueuePanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     return Container(
-      width: 360,
+      width: SidePanelSlot.panelWidth,
       margin: const EdgeInsets.fromLTRB(0, 12, 12, 12),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(24), border: Border.all(color: C.line)),

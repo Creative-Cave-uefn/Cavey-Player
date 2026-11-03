@@ -112,6 +112,16 @@ class SmoothScroll {
         final off = node.offset;
         return off is ScrollPosition && off.hasPixels ? off : null;
       }
+      // SingleChildScrollView строит не RenderViewportBase, а свой закрытый viewport: берём его offset напрямую.
+      // Без этого колесо над ним (например, над текстом песни в кинотеатре) крутило рывками
+      if (node is RenderAbstractViewport) {
+        try {
+          final off = (node as dynamic).offset;
+          if (off is ScrollPosition) return off.hasPixels ? off : null;
+        } catch (_) {
+          // нет такого поля — идём дальше по цепочке
+        }
+      }
       RenderObject? only;
       var count = 0;
       node.visitChildren((c) {
