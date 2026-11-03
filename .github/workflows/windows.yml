@@ -16,8 +16,8 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # Fast Release: tests and compilation run on separate Windows runners.
-  # Publication waits for BOTH jobs; failed tests never reach auto-updates.
+  # Validate before compilation and release. Publishing directly from the Windows
+  # build runner avoids the GitHub Actions artifact storage quota.
   checks:
     if: github.event_name != 'delete'
     runs-on: windows-2022
@@ -105,7 +105,10 @@ jobs:
 
   build:
     if: github.event_name != 'delete'
-    # Only the publish job writes Releases; build produces an artifact.
+    needs: checks
+    permissions:
+      contents: write
+    # Publish verified installers directly to Releases without Actions artifacts.
     # Flutter 3.27 знает только Visual Studio 2022, она есть на образе windows-2022
     runs-on: windows-2022
     env:
@@ -114,7 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       # Версия Flutter закреплена: в свежих версиях движок под Windows вылетает
       # (access violation в flutter_windows.dll, см. историю коммитов)
@@ -321,49 +324,6 @@ jobs:
             }
           }
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: CavePlayer-Windows
-          path: dist/*
-
-  # Publish only a verified Release installer to the existing update channels.
-  # Downloading the built artifact avoids a second Flutter compilation.
-  publish:
-    if: github.event_name != 'delete'
-    needs: [checks, build]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      APP_VERSION: 0.2.${{ github.run_number }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: actions/download-artifact@v4
-        with:
-          name: CavePlayer-Windows
-          path: dist
-      # Канал сборки: пусто для main, имя ветки для тестовых. Плеер по нему понимает,
-      # за какой веткой следить при автообновлении
-      - name: Канал сборки
-        shell: pwsh
-        env:
-          BRANCH: ${{ github.ref_name }}
-        run: |
-          $ref = "${{ github.ref }}"
-          # Бета не вшивает канал: получать её или нет, решает галочка в настройках
-          $beta = if ($ref -eq 'refs/heads/beta') { 'true' } else { 'false' }
-          "BUILD_BETA=$beta" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          if ($ref -eq 'refs/heads/main' -or $ref -eq 'refs/heads/beta') {
-            "BUILD_CHANNEL=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            "BUILD_SLUG=" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          } else {
-            $slug = ($env:BRANCH.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
-            if (-not $slug) { $slug = 'branch' }
-            "BUILD_CHANNEL=$env:BRANCH" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-            "BUILD_SLUG=$slug" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          }
 
       # Что изменилось с прошлой версии: заголовки коммитов без слияний. Приложение показывает это под «Проверить обновления»
       - name: Список изменений
@@ -442,7 +402,7 @@ jobs:
             Where-Object { $_ -and $_.StartsWith($prefix) }
           foreach ($tag in $old) { gh release delete $tag --repo $repo --cleanup-tag --yes | Out-Null }
           $notes = if ($env:NOTES) { $env:NOTES } else { "Тестовая сборка ветки $env:BUILD_CHANNEL" }
-          $out = gh release create "$prefix$env:APP_VERSION" dist/CavePlayer-Setup.exe `
+          $out = gh release create "$prefix$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
             --repo $repo --prerelease `
             --title "Тест: $env:BUILD_CHANNEL · $env:APP_VERSION" --notes $notes 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) {
