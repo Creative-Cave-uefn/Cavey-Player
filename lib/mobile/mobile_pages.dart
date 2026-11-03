@@ -200,13 +200,10 @@ class WaveTab extends StatelessWidget {
           Padding(padding: const EdgeInsets.fromLTRB(20, 22, 20, 0), child: Text('Под настроение', style: display(21))),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-            child: GridView.count(
+            child: GridView(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
-              crossAxisCount: 2,
-              mainAxisSpacing: 10,
-              crossAxisSpacing: 10,
-              mainAxisExtent: 70,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, mainAxisSpacing: 10, crossAxisSpacing: 10, mainAxisExtent: 70),
               children: [
                 for (final (i, m) in waveMoods.indexed)
                   InkWell(
