@@ -89,6 +89,11 @@ class DownloadService extends ChangeNotifier {
   String spotifyError = '';
   Timer? _notifyTimer;
   _TransferSession? _activeTransfer;
+  // Artwork belongs to a separate, bounded lane. A stalled Drive cover
+  // upload must never hold the downloader's IPC metadata reply or audio queue.
+  Future<void> _coverQueue = Future<void>.value();
+  int _queuedCovers = 0;
+  static const maxQueuedCovers = 16;
 
   DownloadService(this.lib, this.work, {this.cache, this.covers, this.onAudioReplaced});
 
@@ -167,6 +172,9 @@ class DownloadService extends ChangeNotifier {
   /// Сколько задание может молчать, прежде чем сторож его перезапустит
   static const stallLimit = Duration(minutes: 3);
   static const maxAutoRestarts = 2;
+  // Independent transport retries: brief localhost disconnects must not
+  // discard a long playlist after a single successful resume.
+  static const maxTransportRetries = 3;
 
   static bool isStalled(DateTime last, DateTime now, {Duration limit = stallLimit}) =>
       now.difference(last) >= limit;
@@ -309,13 +317,16 @@ class DownloadService extends ChangeNotifier {
               if (planned) {
                 job.add('Запускаю задание заново: уже загруженные песни будут пропущены.');
               } else {
-                if (restarts >= 1 || !retryableDisconnect(e)) rethrow;
+                if (restarts >= maxTransportRetries || !retryableDisconnect(e)) rethrow;
                 restarts++;
-                job.add('Локальное соединение с загрузчиком оборвалось. '
-                    'Перезапускаю задание один раз; уже добавленные песни будут пропущены.');
+                job.add('Локальное соединение с загрузчиком оборвалось '
+                    '(попытка $restarts из $maxTransportRetries). '
+                    'Продолжаю скачивание; уже добавленные песни пропускаю.');
               }
               _notify();
-              await Future<void>.delayed(const Duration(milliseconds: 700));
+              // Give disconnected child processes time to release their
+              // resources before starting the same large playlist again.
+              await Future<void>.delayed(Duration(milliseconds: 600 * restarts.clamp(1, 5).toInt()));
             } finally {
               watchdog?.cancel();
             }
@@ -461,6 +472,43 @@ class DownloadService extends ChangeNotifier {
     return File(real);
   }
 
+  void _enqueueArtwork(DownloadJob job, String trackId, Uint8List bytes,
+      String ext, void Function(String) log) {
+    if (job.skipCovers) return;
+    if (_queuedCovers >= maxQueuedCovers) {
+      job.skipCovers = true;
+      log('Deezer обложки: очередь Google Drive переполнена, '
+          'для остальных треков задания сохраняю только метаданные и аудио.');
+      return;
+    }
+    _queuedCovers++;
+    _coverQueue = _coverQueue.then((_) async {
+      if (job.skipCovers) return;
+      try {
+        final coverId = await lib.uploadCover(bytes, ext)
+            .timeout(const Duration(seconds: 60));
+        // The file may have been removed during a long upload.
+        if (lib.data.tracks.containsKey(trackId)) {
+          lib.setMeta({trackId: {'cv': coverId}});
+          await covers?.seed(coverId, bytes);
+        }
+        log('Deezer обложка: сохранена на Google Drive и привязана к треку.');
+      } on TimeoutException {
+        job.skipCovers = true;
+        log('Deezer обложка: Google Drive не ответил за 60 секунд. '
+            'Очередь обложек остановлена, скачивание аудио продолжается.');
+      } catch (e) {
+        // Optional artwork must never interrupt a music download.
+        log('Deezer обложка: не удалось сохранить ($e). '
+            'Аудио и метаданные остались в библиотеке.');
+      }
+    }).catchError((Object e, StackTrace st) {
+      AppLog.error('Необработанная ошибка очереди обложек', e, st);
+    }).whenComplete(() {
+      _queuedCovers--;
+    });
+  }
+
   Future<void> _preserveCover(Track original, Uint8List? bytes, void Function(String) log) async {
     if (bytes == null || bytes.isEmpty) return;
     try {
@@ -529,40 +577,33 @@ class DownloadService extends ChangeNotifier {
         if (edit.isNotEmpty) lib.setMeta({id: edit});
         final imagePath = call['coverFile'];
         if (imagePath is String && imagePath.isNotEmpty) {
-          try {
-            log('Deezer обложка: файл получен от загрузчика, проверяю формат.');
-            final image = await _jobFile(imagePath, image: true);
-            final bytes = await image.readAsBytes();
-            final png = bytes.length >= 8 && bytes[0] == 0x89 &&
-                bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47;
-            final jpeg = bytes.length >= 3 && bytes[0] == 0xFF &&
-                bytes[1] == 0xD8 && bytes[2] == 0xFF;
-            if (job.skipCovers) {
-              log('Deezer обложка: Google Drive не отвечал на сохранение обложки, трек сохранён без своей обложки.');
-            } else if ((png || jpeg) && bytes.length <= 5 * 1024 * 1024) {
-              log('Deezer обложка: изображение проверено, сохраняю в Google Drive.');
-              final String coverId;
-              try {
-                coverId = await lib.uploadCover(bytes, png ? 'png' : 'jpg').timeout(const Duration(seconds: 60));
-              } on TimeoutException {
-                // Раньше сюда упирались все потоки скачивания альбома и задание вставало на третьем треке
-                job.skipCovers = true;
-                log('Deezer обложка: Google Drive не ответил за 60 секунд. Трек сохранён без своей обложки, '
-                    'для остальных треков задания обложки пропускаю.');
-                return true;
+          if (job.skipCovers) {
+            // A cover previously failed or the queue is full; never block
+            // playback/download metadata on further Drive cover attempts.
+            log('Deezer обложка: Google Drive медленный, '
+                'сохраняю аудио и метаданные без отдельной обложки.');
+          } else {
+            try {
+              final image = await _jobFile(imagePath, image: true);
+              final bytes = await image.readAsBytes();
+              final png = bytes.length >= 8 && bytes[0] == 0x89 &&
+                  bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47;
+              final jpeg = bytes.length >= 3 && bytes[0] == 0xFF &&
+                  bytes[1] == 0xD8 && bytes[2] == 0xFF;
+              if ((png || jpeg) && bytes.length <= 5 * 1024 * 1024) {
+                _enqueueArtwork(job, id, bytes, png ? 'png' : 'jpg', log);
+                // Return immediately: audio and tag IPC operations never await
+                // an external Google Drive artwork upload.
+              } else {
+                log('Deezer: получена неподдерживаемая обложка, оставляю исходную.');
               }
-              log('Deezer обложка: файл успешно сохранён в Google Drive.');
-              lib.setMeta({id: {'cv': coverId}});
-              log('Deezer обложка: привязка к треку добавлена в библиотеку.');
-              await covers?.seed(coverId, bytes);
-            } else {
-              log('Deezer: получена неподдерживаемая обложка, оставляю исходную.');
+            } catch (e) {
+              log('Deezer обложка: файл недоступен ($e); аудио сохранено.');
             }
-          } catch (e) {
-            log('Deezer обложка: не удалось сохранить на Drive или связать с треком: $e. Аудио и другие метаданные сохранены.');
           }
         } else {
-          log('Deezer обложка: загрузчик не передал изображение. Google Drive нечего сохранять.');
+          log('Deezer обложка: загрузчик не передал изображение. '
+              'Google Drive нечего сохранять.');
         }
         return true;
       case 'replace':
@@ -773,6 +814,9 @@ class DownloadService extends ChangeNotifier {
 
       void transportFailed(Object e, StackTrace stack) {
         AppLog.error('Ошибка очереди IPC-ответов', e, stack);
+        if (!socketAlive) return;
+        onLog?.call('IPC: ошибка обработки запроса: ${e.runtimeType}. '
+            'Соединение закрыто для безопасного восстановления задания.');
         socketAlive = false;
         socket?.destroy();
       }
@@ -787,6 +831,8 @@ class DownloadService extends ChangeNotifier {
           case 'progress':
             if (job != null) {
               job.touch();
+              // Liveness messages are not track progress. Skip UI rebuilds.
+              if (msg['heartbeat'] == true) break;
               // The downloader's old status must not overwrite Drive progress.
               if (job.replaceTrackId == null || !job.title.startsWith('Google Drive:')) {
                 job.title = '${msg['title'] ?? job.title}';
@@ -797,6 +843,9 @@ class DownloadService extends ChangeNotifier {
               job.skipped = (msg['skipped'] as num?)?.toInt() ?? job.skipped;
               _notify();
             }
+          case 'heartbeat':
+            // Heartbeats mark a healthy connection, not a completed track.
+            job?.touch();
           case 'installing':
             installing = msg['on'] == true;
             _notify();
@@ -829,6 +878,9 @@ class DownloadService extends ChangeNotifier {
             if (msg['ok'] != true) throw StateError('${msg['error'] ?? 'Не удалось выполнить задание'}');
             return msg['value'] ?? true;
         }
+      }
+      if (!receivedEnd && job?.cancelRequested != true) {
+        onLog?.call('IPC: сокет закрыт до получения финального ответа загрузчика.');
       }
       throw StateError('Модуль отключился до завершения задания.');
     } catch (e) {
