@@ -8,7 +8,6 @@ import '../app.dart';
 import '../core/dl/service.dart';
 import 'shell.dart';
 import 'theme.dart';
-import 'widgets.dart';
 
 /// Раздел «Скачать»: ссылка или название → трек на Диске и в библиотеке у всех
 class DownloadPage extends StatefulWidget {

@@ -7,7 +7,6 @@ import 'list_filter.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
 import 'theme.dart';
-import 'tracks_view.dart';
 import 'widgets.dart';
 
 /// Обложка плейлиста: своя, а если её нет — сетка 2×2 из первых четырёх разных обложек (или обложка первого трека)
