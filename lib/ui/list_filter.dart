@@ -31,13 +31,13 @@ class ListSort {
     if (raw == null) return ListSort('name', legacyDesc);
     final i = raw.lastIndexOf('|');
     final mode = i < 0 ? raw : raw.substring(0, i);
-    return ListSort(const ['name', 'first', 'count'].contains(mode) ? mode : 'name', i >= 0 && raw.substring(i + 1) == '1');
+    return ListSort(const ['name', 'first', 'count', 'date', 'author'].contains(mode) ? mode : 'name', i >= 0 && raw.substring(i + 1) == '1');
   }
 
   void write(Settings s, String key) => s.view['sort.$key'] = '$mode|${desc ? 1 : 0}';
 
   /// Какое направление выбирать у режима при первом переходе на него: новые и самые большие сверху, имена по алфавиту
-  static bool defaultDesc(String mode) => mode != 'name';
+  static bool defaultDesc(String mode) => mode != 'name' && mode != 'author';
 }
 
 /// Самая ранняя дата появления файла на Диске среди треков (ISO-строка; пусто, если дат нет)

@@ -69,7 +69,9 @@ class _WindowBarState extends State<WindowBar> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
+    // RepaintBoundary: полоса перерисовывается отдельным слоем и не тянет за собой остальное окно
+    return RepaintBoundary(
+        child: SizedBox(
       height: WindowBar.height,
       child: Row(children: [
         // Слева: настройки, «Назад» и «Вперёд» — на одном уровне с кнопками окна
@@ -91,7 +93,7 @@ class _WindowBarState extends State<WindowBar> with WindowListener {
         ),
         _CaptionButton(icon: Icons.close_rounded, tooltip: 'Закрыть', danger: true, onTap: () => windowManager.close()),
       ]),
-    );
+    ));
   }
 }
 
@@ -113,16 +115,18 @@ class _CaptionButtonState extends State<_CaptionButton> {
   @override
   Widget build(BuildContext context) {
     final bg = !_hover ? Colors.transparent : (widget.danger ? const Color(0xFFC42B1C) : C.hoverOverlay);
-    return Tooltip(
-      message: widget.tooltip,
-      waitDuration: const Duration(milliseconds: 700),
+    // Без всплывающей подсказки: через ~0,7 с она заставляла окно перерисоваться, и вся полоса на миг заливалась серым.
+    // Названия кнопок известны всем, а для чтения с экрана подпись остаётся
+    return Semantics(
+      button: true,
+      label: widget.tooltip,
       child: MouseRegion(
         onEnter: (_) => setState(() => _hover = true),
         onExit: (_) => setState(() => _hover = false),
         child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
           onTap: widget.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
+          child: Container(
             width: 46,
             height: WindowBar.height,
             color: bg,
@@ -150,7 +154,6 @@ class _NavButtons extends StatelessWidget {
           builder: (context, _) {
             final inSettings = nav.value.kind == 'accounts' || nav.value.kind == 'sources';
             final needSignIn = app.accounts.accounts.any((a) => a.needsSignIn);
-            final scanning = app.lib.scan.running;
             return Padding(
               padding: const EdgeInsets.only(left: 8),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -161,9 +164,7 @@ class _NavButtons extends StatelessWidget {
                   onTap: () => nav.go(const Nav('accounts')),
                   badge: needSignIn
                       ? const Icon(Icons.error_rounded, size: 11, color: C.danger)
-                      : scanning
-                          ? const SizedBox.square(dimension: 9, child: CircularProgressIndicator(strokeWidth: 1.6))
-                          : null,
+                      : null,
                 ),
                 const SizedBox(width: 2),
                 _BarIcon(

@@ -11,6 +11,7 @@ import '../core/log.dart';
 import '../core/media_keys.dart';
 import '../core/share_link.dart';
 import '../core/models.dart';
+import '../core/player.dart' show PlayerController;
 import '../core/updater.dart';
 import 'accounts_view.dart';
 import 'albums_view.dart';
@@ -379,16 +380,7 @@ class _ShellState extends State<Shell> {
                           ]),
                         ),
                         // В кинотеатре текст и так на половине экрана. Справа одна панель: текст песни или очередь
-                        if (nav.kind != 'cinema')
-                          ValueListenableBuilder<bool>(
-                            valueListenable: app.player.lyricsOpen,
-                            builder: (context, open, _) => open ? const LyricsPanel() : const SizedBox.shrink(),
-                          ),
-                        if (nav.kind != 'cinema')
-                          ValueListenableBuilder<bool>(
-                            valueListenable: app.player.queueOpen,
-                            builder: (context, open, _) => open ? const QueuePanel() : const SizedBox.shrink(),
-                          ),
+                        if (nav.kind != 'cinema') const SidePanelSlot(),
                       ]),
                     ),
                     if (immersive && !cinema) ...[
@@ -1505,6 +1497,98 @@ class _ScrollTopButton extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+
+/// Правая панель: текст песни или очередь. Обе одной ширины; появляются и исчезают плавно, раскрываясь от правого края
+class SidePanelSlot extends StatefulWidget {
+  const SidePanelSlot({super.key});
+
+  /// Ширина самой панели; с отступом справа слот занимает на 12 больше
+  static const panelWidth = 360.0;
+
+  @override
+  State<SidePanelSlot> createState() => _SidePanelSlotState();
+}
+
+class _SidePanelSlotState extends State<SidePanelSlot> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 300));
+  late final Animation<double> _t = CurvedAnimation(parent: _c, curve: Curves.easeOutCubic, reverseCurve: Curves.easeInCubic);
+  String? _shown; // что рисуем сейчас; пока панель закрывается, остаётся прежним
+  PlayerController? _p;
+
+  String? _want(PlayerController p) => p.lyricsOpen.value ? 'lyrics' : (p.queueOpen.value ? 'queue' : null);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final p = Services.of(context).player;
+    if (!identical(p, _p)) {
+      _p?.lyricsOpen.removeListener(_sync);
+      _p?.queueOpen.removeListener(_sync);
+      _p = p;
+      p.lyricsOpen.addListener(_sync);
+      p.queueOpen.addListener(_sync);
+      _shown = _want(p);
+      _c.value = _shown == null ? 0 : 1;
+    }
+  }
+
+  @override
+  void dispose() {
+    _p?.lyricsOpen.removeListener(_sync);
+    _p?.queueOpen.removeListener(_sync);
+    _c.dispose();
+    super.dispose();
+  }
+
+  void _sync() {
+    final want = _want(_p!);
+    if (want != null) {
+      // Открыли другую панель вместо прежней — меняем содержимое без скачка ширины
+      setState(() => _shown = want);
+      _c.forward();
+    } else {
+      _c.reverse();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_shown == null) return const SizedBox.shrink();
+    const full = SidePanelSlot.panelWidth + 12;
+    return AnimatedBuilder(
+      animation: _t,
+      builder: (context, _) {
+        final t = _t.value;
+        if (t <= 0 && !_c.isAnimating) return const SizedBox.shrink();
+        return ClipRect(
+          child: SizedBox(
+            width: full * t,
+            child: OverflowBox(
+              alignment: Alignment.centerRight,
+              minWidth: full,
+              maxWidth: full,
+              child: Opacity(
+                opacity: t.clamp(0.0, 1.0),
+                child: Transform.scale(
+                  alignment: Alignment.topRight,
+                  scale: 0.94 + 0.06 * t,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 200),
+                    child: KeyedSubtree(
+                      key: ValueKey(_shown),
+                      child: _shown == 'lyrics' ? const LyricsPanel() : const QueuePanel(),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

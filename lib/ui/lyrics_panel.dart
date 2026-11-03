@@ -11,6 +11,7 @@ import '../core/karaoke.dart';
 import '../core/lyrics.dart';
 import '../core/models.dart';
 import '../core/player.dart';
+import 'shell.dart' show SidePanelSlot;
 import 'theme.dart';
 
 /// Панель справа с текстом песни. Синхронный текст подсвечивается по ходу трека,
@@ -22,7 +23,7 @@ class LyricsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     return Container(
-      width: 340,
+      width: SidePanelSlot.panelWidth,
       margin: const EdgeInsets.fromLTRB(0, 12, 12, 12),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(24), border: Border.all(color: C.line)),
@@ -214,9 +215,10 @@ class _LyricsBodyState extends State<LyricsBody> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final ctx = _keys[idx].currentContext;
       if (ctx != null) {
-        // Кинотеатр: первая строка стоит по центру по высоте, дальше текст держит строку на трети высоты, как раньше
+        // Кинотеатр: текущая строка всегда на середине высоты, и шаг между строками везде одинаковый
+        // (раньше первая строка стояла по центру, а остальные выше, и между первой и второй был большой скачок)
         Scrollable.ensureVisible(ctx,
-            alignment: widget.big && idx == 0 ? 0.5 : 0.35, duration: const Duration(milliseconds: 350), curve: Curves.easeOutCubic);
+            alignment: widget.big ? 0.5 : 0.35, duration: const Duration(milliseconds: 350), curve: Curves.easeOutCubic);
       }
     });
   }
@@ -367,9 +369,16 @@ class _LyricsBodyState extends State<LyricsBody> {
 
     return NotificationListener<UserScrollNotification>(
       onNotification: _onScroll,
-      child: LayoutBuilder(builder: (context, box) => SingleChildScrollView(
-        // В кинотеатре сверху пустое место: до первой строки текст не прижат к верхнему краю, а начинается с середины
-        padding: EdgeInsets.fromLTRB(14, widget.big && box.maxHeight.isFinite ? math.max(4.0, box.maxHeight * 0.5 - 31) : 4, 14, 200),
+      child: LayoutBuilder(builder: (context, box) => ScrollConfiguration(
+        // В кинотеатре полоса прокрутки у текста не нужна
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
+        child: SingleChildScrollView(
+        // В кинотеатре сверху и снизу пустое место: и первая, и последняя строки могут встать на середину высоты
+        padding: EdgeInsets.fromLTRB(
+            14,
+            widget.big && box.maxHeight.isFinite ? math.max(4.0, box.maxHeight * 0.5 - 31) : 4,
+            14,
+            widget.big && box.maxHeight.isFinite ? math.max(200.0, box.maxHeight * 0.5) : 200),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           for (var i = 0; i < ly.lines.length; i++) ...[
             _focus(
@@ -404,7 +413,7 @@ class _LyricsBodyState extends State<LyricsBody> {
           ],
           Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: _again()),
         ]),
-      )),
+      ))),
     );
   }
 }

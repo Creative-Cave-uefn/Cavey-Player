@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/smooth_position.dart';
 import '../core/models.dart';
 import '../core/player.dart';
 import 'ambient.dart';
 import 'lyrics_panel.dart';
 import 'shell.dart';
+import 'player_bar.dart' show VolumeWheel;
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
@@ -25,40 +27,44 @@ class _CinemaPageState extends State<CinemaPage> {
   /// Текст включён человеком (кнопка внизу справа)
   bool _lyrics = true;
 
-  /// У текущего трека текста нет: режим текста выключается сам, плеер встаёт по центру.
-  /// У следующего трека с текстом он снова появится, если его не выключали кнопкой.
-  /// Решает по тому, что лежит в сервисе текстов, — ровно по тому же, что показала бы панель,
-  /// поэтому срабатывает и при первом поиске, а не только когда ответ уже сохранён
-  bool _none = false;
-  String? _noneFor;
+  /// Есть ли у текущего трека текст, который можно показать. Колонка текста появляется только
+  /// когда текст найден; пока он ищется, остаётся прежнее решение (при входе — «нет»), а «не нашёлся»,
+  /// «инструментал» и «база не отвечает» никогда не рисуют окно поиска справа — об этом говорит подсказка у кнопки
+  bool _found = false;
+  String? _foundFor;
   String? _asked;
 
-  /// Пока текст ищется — остаётся прежнее решение; нашёлся или не нашёлся — решение по ответу
-  bool _noText(Track t) {
+  /// Подсказка «Текст не найден» над кнопкой
+  bool _hint = false;
+
+  /// 'found' | 'loading' | 'none' | 'failed'
+  String _state(Track t) {
     final lyr = Services.of(context).lyrics;
-    if (_noneFor != t.id) {
-      _noneFor = t.id;
-      _none = false;
+    if (_foundFor != t.id) {
+      _foundFor = t.id;
+      _hint = false;
     }
     if (lyr.known(t)) {
       final l = lyr.cached(t);
-      _none = l == null || l.instrumental || l.lines.isEmpty;
-    } else if (lyr.failed(t) && !lyr.loading(t)) {
-      // Нет сети — это не «текста нет»: панель остаётся и сама предложит повторить
-      _none = false;
+      _found = l != null && !l.instrumental && l.lines.isNotEmpty;
+      return _found ? 'found' : 'none';
     }
-    return _none;
+    if (lyr.failed(t) && !lyr.loading(t)) {
+      _found = false;
+      return 'failed';
+    }
+    return 'loading';
   }
 
   /// Поиск обычно уже начат плеером; если нет — начинаем, чтобы узнать ответ и со скрытой панелью текста
-  void _ask(Track t) {
-    if (_asked == t.id) return;
+  void _ask(Track t, {bool refresh = false}) {
+    if (!refresh && _asked == t.id) return;
     _asked = t.id;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final app = Services.of(context);
-      if (app.lyrics.known(t) || app.lyrics.loading(t)) return;
-      app.lyrics.forTrack(t, app.player.duration).then<void>((_) {}, onError: (Object _) {});
+      if (!refresh && (app.lyrics.known(t) || app.lyrics.loading(t))) return;
+      app.lyrics.forTrack(t, app.player.duration, refresh: refresh).then<void>((_) {}, onError: (Object _) {});
     });
   }
 
@@ -88,8 +94,9 @@ class _CinemaPageState extends State<CinemaPage> {
       builder: (context, _) {
         final t = p.current;
         if (t != null) _ask(t);
-        final none = t != null && _noText(t);
-        final showLyrics = _lyrics && !none;
+        final state = t == null ? 'loading' : _state(t);
+        final none = state == 'none' || state == 'failed';
+        final showLyrics = _lyrics && _found;
         return Stack(children: [
           if (t == null)
             const EmptyState(
@@ -99,38 +106,86 @@ class _CinemaPageState extends State<CinemaPage> {
             )
           else
             LayoutBuilder(builder: (context, box) {
-              final narrow = box.maxWidth < 900 || !showLyrics;
+              final narrow = box.maxWidth < 900;
               final sideW = narrow ? box.maxWidth : box.maxWidth * 0.46;
-              final cover = (narrow && showLyrics ? box.maxHeight * 0.34 : sideW - 120)
-                  .clamp(160.0, (box.maxHeight - 330).clamp(160.0, 560.0))
-                  .toDouble();
-              final left = NowPanel(width: cover);
-              if (!showLyrics) return Center(child: left);
-              final lyrics = ShaderMask(
-                // Текст растворяется у верхнего и нижнего края, как в Apple Music
-                shaderCallback: (r) => const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.white, Colors.white, Colors.transparent],
-                  stops: [0.0, 0.18, 0.82, 1.0],
-                ).createShader(r),
-                blendMode: BlendMode.dstIn,
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(narrow ? 32 : 24, 0, narrow ? 32 : 96, 0),
-                  child: LyricsBody(key: ValueKey(t.id), track: t, big: true, karaoke: true),
-                ),
+              final maxCover = (box.maxHeight - 330).clamp(160.0, 560.0);
+              // Обложка в двух раскладках: по центру окна и в левой части рядом с текстом
+              final coverSplit = (narrow ? box.maxHeight * 0.34 : sideW - 120).clamp(160.0, maxCover).toDouble();
+              final coverCentered = (box.maxWidth - 120).clamp(160.0, maxCover).toDouble();
+              return TweenAnimationBuilder<double>(
+                tween: Tween(end: showLyrics ? 1.0 : 0.0),
+                duration: const Duration(milliseconds: 480),
+                curve: Curves.easeInOutCubic,
+                builder: (context, k, _) {
+                  final cover = coverCentered + (coverSplit - coverCentered) * k;
+                  final left = NowPanel(width: cover);
+                  Widget? lyrics;
+                  if (k > 0.001) {
+                    lyrics = ShaderMask(
+                      // Текст растворяется у верхнего и нижнего края, как в Apple Music
+                      shaderCallback: (r) => const LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.transparent, Colors.white, Colors.white, Colors.transparent],
+                        stops: [0.0, 0.18, 0.82, 1.0],
+                      ).createShader(r),
+                      blendMode: BlendMode.dstIn,
+                      child: Padding(
+                        padding: EdgeInsets.fromLTRB(narrow ? 32 : 24, 0, narrow ? 32 : 96, 0),
+                        child: LyricsBody(key: ValueKey(t.id), track: t, big: true, karaoke: true),
+                      ),
+                    );
+                    lyrics = IgnorePointer(
+                      ignoring: k < 0.6,
+                      child: Opacity(opacity: k.clamp(0.0, 1.0), child: Transform.translate(offset: Offset((1 - k) * 60, 0), child: lyrics)),
+                    );
+                  }
+                  if (narrow) {
+                    // Узкое окно: обложка уезжает из центра вверх, текст проявляется под ней
+                    final top = 56 + coverSplit + 215;
+                    return Stack(children: [
+                      Positioned.fill(
+                        child: Align(
+                          alignment: Alignment(0, -k),
+                          child: Padding(padding: EdgeInsets.only(top: 56 * k), child: left),
+                        ),
+                      ),
+                      if (lyrics != null) Positioned(left: 0, right: 0, top: top, bottom: 0, child: lyrics),
+                    ]);
+                  }
+                  final leftW = box.maxWidth + (sideW - box.maxWidth) * k;
+                  return Stack(children: [
+                    Positioned(left: 0, top: 0, bottom: 0, width: leftW, child: Center(child: left)),
+                    if (lyrics != null) Positioned(left: sideW, right: 0, top: 0, bottom: 0, child: lyrics),
+                  ]);
+                },
               );
-              if (narrow) {
-                return Column(children: [
-                  Padding(padding: const EdgeInsets.only(top: 56), child: left),
-                  Expanded(child: lyrics),
-                ]);
-              }
-              return Row(children: [
-                SizedBox(width: sideW, child: Center(child: left)),
-                Expanded(child: lyrics),
-              ]);
             }),
+          // Подсказка, если у трека нет текста
+          if (t != null && none && _hint)
+            Positioned(
+              right: 23,
+              bottom: 80,
+              child: Material(
+                color: C.glassLight,
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 10, 8),
+                  child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(state == 'failed' ? 'База текстов не отвечает' : 'Текст не найден', style: const TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(() => _hint = false);
+                        _ask(t, refresh: true);
+                      },
+                      icon: const Icon(Icons.search_rounded, size: 18),
+                      label: const Text('Найти текст'),
+                    ),
+                  ]),
+                ),
+              ),
+            ),
           // Выход — там же, где в плеере кнопка входа; левее него — кнопка текста. Обе приглушены, чтобы не бросались в глаза
           Positioned(
             right: 23,
@@ -145,8 +200,10 @@ class _CinemaPageState extends State<CinemaPage> {
             right: 23 + 48 + 4,
             bottom: 24,
             child: IconButton(
-              tooltip: none ? 'У этого трека текста нет' : (_lyrics ? 'Скрыть текст' : 'Показать текст'),
-              onPressed: none ? null : () => setState(() => _lyrics = !_lyrics),
+              tooltip: none
+                  ? 'Текст не найден'
+                  : (state == 'loading' && !_found ? 'Ищем текст…' : (_lyrics ? 'Скрыть текст' : 'Показать текст')),
+              onPressed: none ? () => setState(() => _hint = !_hint) : () => setState(() => _lyrics = !_lyrics),
               icon: Icon(Icons.lyrics_outlined, color: showLyrics ? C.text.withValues(alpha: 0.55) : C.text.withValues(alpha: 0.28)),
             ),
           ),
@@ -203,7 +260,7 @@ class NowPanel extends StatelessWidget {
             onTap: () => app.lib.toggleLike(t.id),
           ),
           const SizedBox(width: 10),
-          SizedBox.square(dimension: 34, child: Center(child: TrackMenu(track: t))),
+          SizedBox.square(dimension: 34, child: Center(child: TrackMenu(track: t, openPlaylist: Services.of(context).player.sourcePlaylist))),
         ]),
         const SizedBox(height: 18),
         NowControls(leftAction: leftAction, rightAction: rightAction),
@@ -221,7 +278,8 @@ class NowControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = Services.of(context).player;
-    return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    // Колесо над всем блоком управления меняет громкость (плавно, как в основном плеере)
+    return VolumeWheel(p: p, builder: (context, stop) => Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         _Seek(player: p),
         const SizedBox(height: 12),
         // Кнопки сжимаются под ширину обложки, а не вылезают вправо: иначе «Играть» уезжает от центра
@@ -260,12 +318,18 @@ class NowControls extends StatelessWidget {
           Expanded(
             child: SliderTheme(
               data: SliderTheme.of(context).copyWith(trackHeight: 4, activeTrackColor: C.text, inactiveTrackColor: const Color(0x40FFFFFF)),
-              child: Slider(value: p.volume, max: 100, onChanged: (v) => p.setVolume(v, save: true)),
+              child: Slider(
+                value: p.volume.clamp(0.0, 100.0).toDouble(),
+                max: 100,
+                onChangeStart: (_) => stop(),
+                onChanged: (v) => p.setVolume(v),
+                onChangeEnd: (v) => p.setVolume(v, save: true),
+              ),
             ),
           ),
           const Icon(Icons.volume_up_rounded, size: 20, color: C.muted),
         ]),
-    ]);
+    ]));
   }
 }
 
@@ -308,7 +372,7 @@ class _SeekState extends State<_Seek> {
     final p = widget.player;
     const time = TextStyle(color: C.muted, fontSize: 12, fontFeatures: [FontFeature.tabularFigures()]);
     return ValueListenableBuilder<Duration>(
-      valueListenable: p.position,
+      valueListenable: SmoothPosition.of(p),
       builder: (context, pos, _) {
         final total = p.duration.inMilliseconds.toDouble();
         final v = (_drag ?? pos.inMilliseconds.toDouble()).clamp(0.0, total <= 0 ? 1.0 : total).toDouble();

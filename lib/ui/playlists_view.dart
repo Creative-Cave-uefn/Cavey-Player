@@ -2,14 +2,14 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/models.dart';
+import 'glass_popup.dart';
 import 'list_filter.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
 import 'theme.dart';
-import 'tracks_view.dart';
 import 'widgets.dart';
 
-/// Обложка плейлиста: своя, а если её нет — обложка первого трека с картинкой
+/// Обложка плейлиста: своя, а если её нет — сетка 2×2 из первых четырёх разных обложек (или обложка первого трека)
 class PlaylistCover extends StatelessWidget {
   final Playlist playlist;
   final double size;
@@ -20,6 +20,11 @@ class PlaylistCover extends StatelessWidget {
   Widget build(BuildContext context) {
     final lib = Services.of(context).lib;
     final tracks = lib.playlistTracks(playlist.id);
+    final own = lib.playlistCover(playlist.id);
+    if (own == null) {
+      final grid = gridCoverTracks(tracks);
+      if (grid.length == 4) return CoverGrid(tracks: grid, size: size, radius: radius);
+    }
     Track? t;
     for (final x in tracks) {
       if (x.hasCover) {
@@ -50,7 +55,29 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       listenable: app.lib,
       builder: (context, _) {
         final lib = app.lib;
-        final lists = lib.visiblePlaylists;
+        final all = lib.visiblePlaylists;
+        // Фильтр по авторам и сортировка запоминаются на этом компьютере
+        final hidden = {for (final e in app.settings.viewOf('hide.playlists', '').split(',')) if (e.isNotEmpty) e};
+        final sort = ListSort.read(app.settings, 'playlists');
+        int by(Playlist a, Playlist b) {
+          final c = switch (sort.mode) {
+            'count' => a.items.length.compareTo(b.items.length),
+            'date' => a.createdAt.compareTo(b.createdAt),
+            'author' => lib.firstNameOf(a.by).toLowerCase().compareTo(lib.firstNameOf(b.by).toLowerCase()),
+            _ => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+          };
+          final r = c != 0 ? c : a.name.toLowerCase().compareTo(b.name.toLowerCase());
+          final d = sort.desc ? -r : r;
+          return d != 0 ? d : a.id.compareTo(b.id);
+        }
+
+        final lists = [for (final p in all) if (!hidden.contains(p.by)) p]..sort(by);
+        final authors = <String>{for (final p in all) p.by};
+        void save() {
+          app.lib.saveSettings();
+          setState(() {});
+        }
+
         final prefs = ViewPrefs(app.settings, 'playlists', defaultGrid: true, gridDef: 180, listDef: 60, listMin: 48, listMax: 96);
         final header = Padding(
           padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
@@ -67,6 +94,75 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                 icon: const Icon(Icons.add_rounded, size: 20),
                 label: const Text('Новый плейлист'),
               ),
+              GlassMenuButton<String>(
+                tooltip: 'Сортировка',
+                icon: const Icon(Icons.sort_rounded, size: 20),
+                onSelected: (m) {
+                  ListSort(m, ListSort.defaultDesc(m)).write(app.settings, 'playlists');
+                  save();
+                },
+                itemBuilder: (_) => [
+                  for (final (id, label) in const [
+                    ('name', 'По названию'),
+                    ('count', 'По числу треков'),
+                    ('date', 'По дате создания'),
+                    ('author', 'По автору'),
+                  ])
+                    PopupMenuItem(
+                      value: id,
+                      child: Row(children: [
+                        SizedBox(width: 22, child: sort.mode == id ? Icon(Icons.check_rounded, size: 16, color: C.accent) : null),
+                        Text(label),
+                      ]),
+                    ),
+                ],
+              ),
+              OutlinedButton.icon(
+                onPressed: () {
+                  ListSort(sort.mode, !sort.desc).write(app.settings, 'playlists');
+                  save();
+                },
+                icon: Icon(sort.desc ? Icons.arrow_downward_rounded : Icons.arrow_upward_rounded, size: 16),
+                label: Text(switch (sort.mode) {
+                  'count' => sort.desc ? 'Больше' : 'Меньше',
+                  'date' => sort.desc ? 'Новые' : 'Старые',
+                  _ => sort.desc ? 'Я–А' : 'А–Я',
+                }),
+              ),
+              if (authors.length > 1)
+                GlassMenuButton<String>(
+                  tooltip: 'Чьи плейлисты показывать',
+                  icon: Badge(
+                    isLabelVisible: hidden.isNotEmpty,
+                    smallSize: 8,
+                    child: const Icon(Icons.filter_list_rounded, size: 20),
+                  ),
+                  onSelected: (who) {
+                    if (who == '*all') {
+                      hidden.clear();
+                    } else if (!hidden.remove(who)) {
+                      hidden.add(who);
+                    }
+                    if (hidden.isEmpty) {
+                      app.settings.view.remove('hide.playlists');
+                    } else {
+                      app.settings.view['hide.playlists'] = hidden.join(',');
+                    }
+                    save();
+                  },
+                  itemBuilder: (_) => [
+                    for (final who in authors.toList()..sort((a, b) => lib.firstNameOf(a).compareTo(lib.firstNameOf(b))))
+                      CheckedPopupMenuItem(
+                        value: who,
+                        checked: !hidden.contains(who),
+                        child: Text(who.isEmpty ? 'Без автора' : lib.firstNameOf(who)),
+                      ),
+                    if (hidden.isNotEmpty) ...[
+                      const PopupMenuDivider(),
+                      const PopupMenuItem(value: '*all', child: Text('Показать всех')),
+                    ],
+                  ],
+                ),
               ViewControls(prefs: prefs, onChanged: () => setState(() {})),
             ]),
           ]),

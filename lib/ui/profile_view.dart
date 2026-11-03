@@ -857,18 +857,7 @@ class UserProfilePage extends StatelessWidget {
                   for (final p in lists)
                     _tile(
                       context,
-                      cover: LayoutBuilder(builder: (context, box) {
-                        final tracks = lib.playlistTracks(p.id);
-                        Track? first;
-                        for (final t in tracks) {
-                          if (t.hasCover) {
-                            first = t;
-                            break;
-                          }
-                        }
-                        first ??= tracks.isEmpty ? null : tracks.first;
-                        return CoverImage(track: first, fileId: lib.playlistCover(p.id), label: p.name, size: box.maxWidth, radius: 10);
-                      }),
+                      cover: LayoutBuilder(builder: (context, box) => PlaylistCover(playlist: p, size: box.maxWidth, radius: 10)),
                       title: p.name,
                       subtitle: countTracks(p.items.length),
                       onTap: () => NavScope.of(context).go(Nav('playlist', p.id)),
@@ -991,7 +980,7 @@ class UserTracksPage extends StatelessWidget {
   }
 }
 
-/// «Статистика» в профиле: сколько наслушано всего, за неделю и месяц, график за 30 дней и любимый исполнитель.
+/// «Статистика» в профиле: сколько наслушано всего, за неделю и месяц, график за 14 дней и любимый исполнитель.
 /// Время считается по тому, сколько трек реально прослушан
 class ListenStats extends StatelessWidget {
   final String email;
@@ -1006,22 +995,24 @@ class ListenStats extends StatelessWidget {
     final total = s.listened(email);
     final week = s.listened(email, since: today.subtract(const Duration(days: 6)));
     final month = s.listened(email, since: today.subtract(const Duration(days: 29)));
-    final days = s.listenedByDay(email);
+    // На графике последние 14 дней
+    final days = s.listenedByDay(email, days: 14);
     final top = s.topArtist(email);
     final peak = days.fold<int>(0, (a, d) => math.max(a, d.$2.inMinutes));
     Widget tile(String label, String value, {double? width}) => Container(
           width: width,
-          constraints: width == null ? const BoxConstraints(minWidth: 150) : null,
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          height: width == null ? null : 72,
+          constraints: width == null ? const BoxConstraints(minWidth: 130) : null,
+          padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
           decoration: BoxDecoration(color: C.surface, border: Border.all(color: C.line), borderRadius: BorderRadius.circular(14)),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-            Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: display(22, weight: FontWeight.w700)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
+            Text(value, maxLines: 1, overflow: TextOverflow.ellipsis, style: display(18, weight: FontWeight.w700)),
             const SizedBox(height: 2),
-            Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+            Text(label, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12, height: 1.2)),
           ]),
         );
 
-    Widget tiles({double? width}) => Wrap(spacing: 12, runSpacing: 12, children: [
+    Widget tiles({double? width}) => Wrap(spacing: 8, runSpacing: 8, children: [
           tile('наслушано всего', formatListened(total), width: width),
           tile('за неделю', formatListened(week), width: width),
           tile('за месяц', formatListened(month), width: width),
@@ -1033,7 +1024,7 @@ class ListenStats extends StatelessWidget {
             ),
         ]);
 
-    // По дням за 30 дней: высота столбика — сколько минут слушали
+    // По дням за 14 дней: высота столбика — сколько минут слушали
     Widget chart(double height) => SizedBox(
           height: height,
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -1046,7 +1037,7 @@ class ListenStats extends StatelessWidget {
                       child: Tooltip(
                         message: '${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}: ${formatListened(d)}',
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 1.5),
+                          padding: const EdgeInsets.symmetric(horizontal: 3),
                           child: Container(
                             height: peak == 0 ? 3 : (3 + room * d.inMinutes / peak),
                             decoration: BoxDecoration(
@@ -1062,7 +1053,7 @@ class ListenStats extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             const Row(children: [
-              Text('30 дней назад', style: TextStyle(color: C.faint, fontSize: 11)),
+              Text('14 дней назад', style: TextStyle(color: C.faint, fontSize: 11)),
               Spacer(),
               Text('сегодня', style: TextStyle(color: C.faint, fontSize: 11)),
             ]),
@@ -1072,15 +1063,15 @@ class ListenStats extends StatelessWidget {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const SectionTitle('Статистика'),
       LayoutBuilder(builder: (context, box) {
-        // Широкое окно: плашки в два ряда, график правее них и такой же высоты. Узкое: график под плашками
-        const tileW = 190.0;
-        const tilesW = tileW * 2 + 12;
-        const rowsH = 2 * 72.0 + 12;
-        if (box.maxWidth >= tilesW + 20 + 280) {
+        // Широкое окно: четыре плашки в один ряд и график правее них на том же ряду.
+        // Совсем узкое: плашки остаются рядом друг с другом, а график уходит под них
+        const tileW = 132.0;
+        const tilesW = tileW * 4 + 8 * 3;
+        if (box.maxWidth >= tilesW + 16 + 200) {
           return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SizedBox(width: tilesW, child: tiles(width: tileW)),
-            const SizedBox(width: 20),
-            Expanded(child: chart(rowsH)),
+            const SizedBox(width: 16),
+            Expanded(child: chart(72)),
           ]);
         }
         return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [

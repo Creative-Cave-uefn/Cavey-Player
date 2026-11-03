@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
+import '../core/smooth_position.dart';
 import '../core/player.dart';
 import 'cinema_view.dart';
 import 'shell.dart';
@@ -139,7 +140,7 @@ class PlayerBar extends StatelessWidget {
                   // Правый клик по названию и исполнителю — полное меню трека (без «Выбрать»); обычный клик по ссылке работает как раньше
                   child: GestureDetector(
                     behavior: HitTestBehavior.translucent,
-                    onSecondaryTapUp: (d) => showTrackMenu(context, t, null, d.globalPosition),
+                    onSecondaryTapUp: (d) => showTrackMenu(context, t, null, d.globalPosition, openPlaylist: p.sourcePlaylist),
                     child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
                       // Название ведёт в альбом, как и обложка
                       Links(
@@ -280,6 +281,9 @@ class _SeekGesturesState extends State<_SeekGestures> {
 /// Меняется в «Настройки → Внешний вид»
 final seekEdgeWave = ValueNotifier<bool>(false);
 
+/// Длина волны края (период по вертикали, px): 8 — частая рябь, 40 — плавные длинные изгибы
+final seekWaveLength = ValueNotifier<double>(18);
+
 /// Осветление капсулы по прослушанной части: слева направо до текущего места
 class _Wash extends StatefulWidget {
   final PlayerController player;
@@ -306,7 +310,9 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
     super.didChangeDependencies();
     if (!_init) {
       _init = true;
-      seekEdgeWave.value = Services.of(context).settings.viewOf('seek.edge', 'straight') == 'wave';
+      final st = Services.of(context).settings;
+      seekEdgeWave.value = st.viewOf('seek.edge', 'straight') == 'wave';
+      seekWaveLength.value = st.viewNum('seek.wlen', 18).clamp(8.0, 40.0).toDouble();
       _sync();
     }
   }
@@ -335,17 +341,17 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
       return ListenableBuilder(
-        listenable: Listenable.merge([player.position, _seekPreview, seekEdgeWave]),
+        listenable: Listenable.merge([SmoothPosition.of(player), _seekPreview, seekEdgeWave, seekWaveLength]),
         builder: (context, _) {
           final total = player.duration.inMilliseconds.toDouble();
-          final at = (_seekPreview.value ?? player.position.value).inMilliseconds.toDouble();
+          final at = (_seekPreview.value ?? SmoothPosition.of(player).value).inMilliseconds.toDouble();
           final f = total <= 0 ? 0.0 : (at / total).clamp(0.0, 1.0);
           // Полоса перемотки идёт по прямому участку грани, а осветление — от самого края капсулы
           final x = f <= 0 ? 0.0 : (f >= 1 ? w : _capInset + f * (w - 2 * _capInset));
           return RepaintBoundary(
             child: CustomPaint(
               size: Size(w, box.maxHeight),
-              painter: _WashPainter(x: x, wave: seekEdgeWave.value, flow: _flow),
+              painter: _WashPainter(x: x, wave: seekEdgeWave.value, length: seekWaveLength.value, flow: _flow),
             ),
           );
         },
@@ -358,11 +364,11 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
 class _WashPainter extends CustomPainter {
   final double x;
   final bool wave;
+  final double length;
   final Animation<double> flow;
-  _WashPainter({required this.x, required this.wave, required this.flow}) : super(repaint: flow);
+  _WashPainter({required this.x, required this.wave, required this.length, required this.flow}) : super(repaint: flow);
 
   static const amplitude = 3.0;
-  static const period = 18.0;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -378,7 +384,7 @@ class _WashPainter extends CustomPainter {
     final phase = flow.value * 2 * math.pi;
     final path = Path()..moveTo(0, 0);
     for (var y = 0.0; y <= size.height + 1; y += 1.5) {
-      path.lineTo(x + amplitude * math.sin(y / period * 2 * math.pi - phase), y);
+      path.lineTo(x + amplitude * math.sin(y / length * 2 * math.pi - phase), y);
     }
     path
       ..lineTo(0, size.height)
@@ -387,7 +393,7 @@ class _WashPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_WashPainter old) => old.x != x || old.wave != wave;
+  bool shouldRepaint(_WashPainter old) => old.x != x || old.wave != wave || old.length != length;
 }
 
 /// Маленький пример края для «Настроек»: полоска осветления с прямой или волнистой границей
@@ -428,7 +434,10 @@ class _SeekEdgeSampleState extends State<SeekEdgeSample> with SingleTickerProvid
       height: 40,
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(20), border: Border.all(color: C.line)),
-      child: CustomPaint(painter: _WashPainter(x: 62, wave: widget.wave, flow: _flow)),
+      child: ValueListenableBuilder<double>(
+        valueListenable: seekWaveLength,
+        builder: (context, len, _) => CustomPaint(painter: _WashPainter(x: 62, wave: widget.wave, length: len, flow: _flow)),
+      ),
     );
   }
 }
@@ -507,7 +516,7 @@ class _TopSeekState extends State<_TopSeek> {
               p.seek(Duration(milliseconds: v.round()));
             },
             child: ValueListenableBuilder<Duration>(
-              valueListenable: p.position,
+              valueListenable: SmoothPosition.of(p),
               builder: (context, pos, _) {
                 final total = p.duration.inMilliseconds.toDouble();
                 final value = _drag ?? pos.inMilliseconds.toDouble();
@@ -590,16 +599,18 @@ class _TopSeekState extends State<_TopSeek> {
   }
 }
 
-/// Динамик и ползунок громкости. Колесо мыши над ними меняет громкость: на 5 %, с Shift на 1 %.
-class _VolumeControl extends StatefulWidget {
+/// Колесо мыши над [child] меняет громкость: на 5 %, с Shift на 1 %. Ползунок доезжает до цели короткой анимацией.
+/// [builder] получает функцию, которую надо вызвать, когда человек берётся за ползунок сам
+class VolumeWheel extends StatefulWidget {
   final PlayerController p;
-  const _VolumeControl(this.p);
+  final Widget Function(BuildContext context, VoidCallback stopAnim) builder;
+  const VolumeWheel({super.key, required this.p, required this.builder});
 
   @override
-  State<_VolumeControl> createState() => _VolumeControlState();
+  State<VolumeWheel> createState() => _VolumeWheelState();
 }
 
-class _VolumeControlState extends State<_VolumeControl> with SingleTickerProviderStateMixin {
+class _VolumeWheelState extends State<VolumeWheel> with SingleTickerProviderStateMixin {
   double _acc = 0;
   Timer? _save;
 
@@ -650,18 +661,26 @@ class _VolumeControlState extends State<_VolumeControl> with SingleTickerProvide
   }
 
   @override
+  Widget build(BuildContext context) => Listener(onPointerSignal: _onScroll, child: widget.builder(context, _stopAnim));
+}
+
+/// Динамик и ползунок громкости. Колесо мыши над ними меняет громкость: на 5 %, с Shift на 1 %.
+class _VolumeControl extends StatelessWidget {
+  final PlayerController p;
+  const _VolumeControl(this.p);
+
+  @override
   Widget build(BuildContext context) {
-    final p = widget.p;
-    return Listener(
-      onPointerSignal: _onScroll,
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
+    return VolumeWheel(
+      p: p,
+      builder: (context, stop) => Row(mainAxisSize: MainAxisSize.min, children: [
         // Клик по динамику — выключить звук, ещё клик — вернуть прежнюю громкость
         IconButton(
           tooltip: p.volume == 0 ? 'Включить звук' : 'Выключить звук',
           visualDensity: VisualDensity.compact,
           iconSize: 20,
           onPressed: () {
-            _stopAnim();
+            stop();
             p.toggleMute();
           },
           icon: Icon(
@@ -676,7 +695,7 @@ class _VolumeControlState extends State<_VolumeControl> with SingleTickerProvide
           child: Slider(
             value: p.volume.clamp(0.0, 100.0).toDouble(),
             max: 100,
-            onChangeStart: (_) => _stopAnim(),
+            onChangeStart: (_) => stop(),
             onChanged: (v) => p.setVolume(v),
             onChangeEnd: (v) => p.setVolume(v, save: true),
           ),

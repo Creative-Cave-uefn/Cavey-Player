@@ -198,7 +198,24 @@ class AudioCache extends ChangeNotifier {
     for (final p in settings.offlinePlaylists) {
       ids.addAll(lib.playlistTracks(p).map((t) => t.id));
     }
+    for (final key in settings.offlineAlbums) {
+      final a = lib.album(key);
+      if (a != null) ids.addAll(a.tracks.map((t) => t.id));
+    }
     return ids;
+  }
+
+  bool isAlbumOffline(String key) => settings.offlineAlbums.contains(key);
+
+  Future<void> setAlbumOffline(String key, bool on) async {
+    if (on) {
+      settings.offlineAlbums.add(key);
+    } else {
+      settings.offlineAlbums.remove(key);
+    }
+    await lib.saveSettings();
+    _schedulePinSync();
+    notifyListeners();
   }
 
   bool isPlaylistOffline(String id) => settings.offlinePlaylists.contains(id);

@@ -2,9 +2,12 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 
 import '../app.dart';
+import '../core/app_icon.dart' show recolorLogoPng;
 import '../core/covers.dart';
 import '../core/models.dart';
 import 'shell.dart';
@@ -40,14 +43,50 @@ String formatDuration(Duration d) {
   return h > 0 ? '$h:${m.toString().padLeft(2, '0')}:$ss' : '$m:$ss';
 }
 
-/// Значок приложения (тот же, что у окна и установщика)
-class BrandMark extends StatelessWidget {
+/// Значок приложения (тот же, что у окна и установщика). Метка на нём — в цвете акцента
+class BrandMark extends StatefulWidget {
   final double size;
   const BrandMark({super.key, this.size = 28});
 
   @override
-  Widget build(BuildContext context) => Image.asset('assets/logo.png',
-      width: size, height: size, filterQuality: FilterQuality.medium, semanticLabel: 'Cavey');
+  State<BrandMark> createState() => _BrandMarkState();
+}
+
+class _BrandMarkState extends State<BrandMark> {
+  // Перекрашенные картинки по цвету: считаются один раз и живут до выхода
+  static final Map<int, Uint8List> _cache = {};
+  static final Set<int> _loading = {};
+
+  void _load(int argb) {
+    if (_cache.containsKey(argb) || !_loading.add(argb)) return;
+    () async {
+      try {
+        final png = (await rootBundle.load('assets/logo.png')).buffer.asUint8List();
+        final out = await compute(recolorLogoPng, (png, argb));
+        _cache[argb] = out;
+      } catch (_) {
+        // останется обычный значок
+      } finally {
+        _loading.remove(argb);
+        if (mounted) setState(() {});
+      }
+    }();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final argb = C.accent.value;
+    final plain = Image.asset('assets/logo.png',
+        width: widget.size, height: widget.size, filterQuality: FilterQuality.medium, semanticLabel: 'Cavey');
+    if (argb == C.defaultAccent.value) return plain;
+    final bytes = _cache[argb];
+    if (bytes == null) {
+      _load(argb);
+      return plain;
+    }
+    return Image.memory(bytes,
+        width: widget.size, height: widget.size, filterQuality: FilterQuality.medium, gaplessPlayback: true, semanticLabel: 'Cavey');
+  }
 }
 
 /// Значок и название Cavey
@@ -68,6 +107,46 @@ class Wordmark extends StatelessWidget {
           SizedBox(width: size * 0.45),
           Text('Cavey', maxLines: 1, softWrap: false, overflow: TextOverflow.visible, style: brand(size)),
         ],
+      ),
+    );
+  }
+}
+
+/// Четыре трека с разными обложками для сетки 2×2 на обложке плейлиста без своей картинки.
+/// Берутся первые по порядку треки с разными обложками (своя обложка трека или обложка альбома);
+/// если разных обложек меньше четырёх — пусто, и остаётся одна обложка, как раньше
+List<Track> gridCoverTracks(Iterable<Track> tracks) {
+  final seen = <String>{};
+  final out = <Track>[];
+  for (final t in tracks) {
+    if (!t.hasCover) continue;
+    if (!seen.add(t.customCover ?? t.albumKey)) continue;
+    out.add(t);
+    if (out.length == 4) return out;
+  }
+  return const [];
+}
+
+/// Обложка из четырёх обложек треков, 2×2
+class CoverGrid extends StatelessWidget {
+  final List<Track> tracks;
+  final double size;
+  final double radius;
+  const CoverGrid({super.key, required this.tracks, required this.size, this.radius = 8});
+
+  @override
+  Widget build(BuildContext context) {
+    final half = size / 2;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(radius),
+      child: SizedBox.square(
+        dimension: size,
+        child: Column(children: [
+          for (var r = 0; r < 2; r++)
+            Row(children: [
+              for (var c = 0; c < 2; c++) CoverImage(track: tracks[r * 2 + c], size: half, radius: 0),
+            ]),
+        ]),
       ),
     );
   }

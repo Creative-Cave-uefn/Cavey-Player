@@ -10,7 +10,7 @@ import '../core/log.dart';
 import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
-import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave;
+import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength;
 import 'theme.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
@@ -1063,6 +1063,31 @@ class _SeekEdgeSectionState extends State<_SeekEdgeSection> {
         option('straight', 'Прямая', false),
         option('wave', 'Волна', true),
       ]),
+      const SizedBox(height: 14),
+      // Длина волны: короче — частая рябь, длиннее — плавные изгибы. Работает, когда выбрана волна
+      Opacity(
+        opacity: wave ? 1 : 0.45,
+        child: Row(children: [
+          const SizedBox(width: 110, child: Text('Длина волны', style: TextStyle(color: C.muted, fontSize: 13))),
+          const Text('короче', style: TextStyle(color: C.faint, fontSize: 12)),
+          Expanded(
+            child: ValueListenableBuilder<double>(
+              valueListenable: seekWaveLength,
+              builder: (context, len, _) => Slider(
+                value: len.clamp(8.0, 40.0),
+                min: 8,
+                max: 40,
+                onChanged: wave ? (v) => seekWaveLength.value = v : null,
+                onChangeEnd: (v) {
+                  app.settings.view['seek.wlen'] = v.round().toString();
+                  app.lib.saveSettings();
+                },
+              ),
+            ),
+          ),
+          const Text('длиннее', style: TextStyle(color: C.faint, fontSize: 12)),
+        ]),
+      ),
     ]);
   }
 }

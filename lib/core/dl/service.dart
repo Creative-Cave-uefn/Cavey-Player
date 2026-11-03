@@ -32,6 +32,24 @@ class DownloadJob {
   final List<String> failedNames = [];
   String? playlistId, playlistName;
 
+  /// Когда в задании в последний раз что-то происходило (сообщение загрузчика, прогресс отправки на Диск).
+  /// По нему сторож понимает, что задание зависло
+  DateTime lastActivity = DateTime.now();
+
+  /// Автоматические перезапуски по сторожу (не больше [DownloadService.maxAutoRestarts])
+  int autoRestarts = 0;
+
+  /// Идёт плановый перезапуск (сторож или кнопка «Перезапустить»); сдаваться после зависания
+  bool restartRequested = false, giveUp = false;
+
+  /// Сохранение обложки на Диск не отвечает: остальные треки этого задания сохраняем без своей обложки
+  bool skipCovers = false;
+
+  void touch() => lastActivity = DateTime.now();
+
+  /// Нечего перезапускать у замены аудио и у служебных заданий
+  bool get restartable => replaceTrackId == null && sourceId.isNotEmpty;
+
   DownloadJob(this.input, this.sourceId, this.folderName,
       {this.folderId, this.path = '', this.quiet = false, this.makePlaylist = true,
        this.onTrack, this.replaceTrackId}) : title = input;
@@ -140,6 +158,89 @@ class DownloadService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Сколько задание может молчать, прежде чем сторож его перезапустит
+  static const stallLimit = Duration(minutes: 3);
+  static const maxAutoRestarts = 2;
+
+  static bool isStalled(DateTime last, DateTime now, {Duration limit = stallLimit}) =>
+      now.difference(last) >= limit;
+
+  /// Рвёт связь с загрузчиком у активного задания (процесс и дочерние процессы убиваются);
+  /// цикл в [_pump] увидит [DownloadJob.restartRequested] и запустит задание заново
+  void _interrupt(DownloadJob job) {
+    final s = _activeTransfer;
+    if (s == null || !identical(s.job, job)) return;
+    if (!s.cancelled.isCompleted) s.cancelled.complete();
+    s.socket?.destroy();
+    unawaited(_killTransfer(s));
+  }
+
+  void _checkStall(DownloadJob job) {
+    if (job.state != JobState.running || job.cancelRequested || !job.restartable) return;
+    if (!isStalled(job.lastActivity, DateTime.now())) return;
+    job.touch();
+    if (job.autoRestarts >= maxAutoRestarts) {
+      job.giveUp = true;
+      job.add('Нет прогресса ${stallLimit.inMinutes} мин, автоматические перезапуски закончились. '
+          'Нажмите «Перезапустить», чтобы докачать недостающее.');
+    } else {
+      job.autoRestarts++;
+      job.restartRequested = true;
+      job.add('Нет прогресса ${stallLimit.inMinutes} мин — перезапускаю…');
+    }
+    _interrupt(job);
+    notifyListeners();
+  }
+
+  /// «Перезапустить»: заново ставит в очередь только то, что ещё не скачано.
+  /// Уже загруженные треки загрузчик находит в библиотеке и пропускает
+  void restart(DownloadJob job) {
+    if (!job.restartable) return;
+    switch (job.state) {
+      case JobState.queued:
+        return;
+      case JobState.running:
+        if (job.cancelRequested) return;
+        job.restartRequested = true;
+        job.add('Перезапуск по кнопке: докачиваю только недоделанные треки.');
+        _interrupt(job);
+      case JobState.done:
+      case JobState.failed:
+      case JobState.cancelled:
+        job
+          ..state = JobState.queued
+          ..cancelRequested = false
+          ..restartRequested = false
+          ..giveUp = false
+          ..autoRestarts = 0
+          ..skipCovers = false
+          ..done = 0
+          ..failed = 0
+          ..skipped = 0
+          ..failedNames.clear()
+          ..touch();
+        job.add('Перезапуск: скачиваю только то, чего ещё нет в библиотеке.');
+        unawaited(_pump());
+    }
+    notifyListeners();
+  }
+
+  /// Ждёт [work], но не дольше, чем молчит прогресс: [last] возвращает время последнего движения
+  Future<T> _idleLimit<T>(Future<T> work, DateTime Function() last, String what) {
+    final c = Completer<T>();
+    final timer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!c.isCompleted && isStalled(last(), DateTime.now())) {
+        c.completeError(TimeoutException('$what: нет прогресса ${stallLimit.inMinutes} мин'));
+      }
+    });
+    work.then((v) {
+      if (!c.isCompleted) c.complete(v);
+    }, onError: (Object e, StackTrace st) {
+      if (!c.isCompleted) c.completeError(e, st);
+    });
+    return c.future.whenComplete(timer.cancel);
+  }
+
   Future<void> _killTransfer(_TransferSession session) async {
     final pid = session.pid;
     if (pid == null || session.killSent) return;
@@ -182,22 +283,35 @@ class DownloadService extends ChangeNotifier {
         notifyListeners();
         try {
           Object? value;
-          for (var attempt = 0; attempt < 2; attempt++) {
+          var restarts = 0;
+          while (true) {
+            Timer? watchdog;
             try {
               if (job.cancelRequested) throw StateError('Загрузка отменена');
+              job.restartRequested = false;
+              job.touch();
+              watchdog = Timer.periodic(const Duration(seconds: 15), (_) => _checkStall(job));
               value = await _callModule(job.replaceTrackId == null ? 'download' : 'replace',
                   job: job, onLog: (s) { job.add(s); _notify(); });
               break;
             } catch (e, stack) {
-              if (!job.cancelRequested) {
+              final planned = job.restartRequested && !job.giveUp;
+              if (!job.cancelRequested && !planned) {
                 AppLog.error('Связь с Cavey-Downloader при загрузке', e, stack);
               }
-              if (job.cancelRequested || attempt > 0 || job.replaceTrackId != null ||
-                  !retryableDisconnect(e)) rethrow;
-              job.add('Локальное соединение с загрузчиком оборвалось. '
-                  'Перезапускаю задание один раз; уже добавленные песни будут пропущены.');
+              if (job.cancelRequested || job.replaceTrackId != null || job.giveUp) rethrow;
+              if (planned) {
+                job.add('Запускаю задание заново: уже загруженные песни будут пропущены.');
+              } else {
+                if (restarts >= 1 || !retryableDisconnect(e)) rethrow;
+                restarts++;
+                job.add('Локальное соединение с загрузчиком оборвалось. '
+                    'Перезапускаю задание один раз; уже добавленные песни будут пропущены.');
+              }
               _notify();
               await Future<void>.delayed(const Duration(milliseconds: 700));
+            } finally {
+              watchdog?.cancel();
             }
           }
           job.state = job.cancelRequested ? JobState.cancelled :
@@ -286,7 +400,7 @@ class DownloadService extends ChangeNotifier {
     if (bytes == null || bytes.isEmpty) return;
     try {
       final png = bytes.length > 3 && bytes[0] == 0x89 && bytes[1] == 0x50;
-      final id = await lib.uploadCover(bytes, png ? 'png' : 'jpg');
+      final id = await lib.uploadCover(bytes, png ? 'png' : 'jpg').timeout(const Duration(seconds: 60));
       lib.setMeta({original.id: {'cv': id}});
       await covers?.seed(id, bytes);
     } catch (e) { log('Аудио обновлено, но старую обложку сохранить не удалось: $e'); }
@@ -306,8 +420,16 @@ class DownloadService extends ChangeNotifier {
       case 'upload':
         final f = await _jobFile(call['file']);
         final target = (call['folderId'] as String?) ?? job.target;
-        final t = await lib.uploadOne(f, sourceId: job.sourceId,
-            folderId: target, path: '${call['path'] ?? job.path}');
+        var lastMove = DateTime.now();
+        job.touch();
+        final t = await _idleLimit(
+            lib.uploadOne(f, sourceId: job.sourceId, folderId: target, path: '${call['path'] ?? job.path}',
+                onProgress: (_) {
+              lastMove = DateTime.now();
+              job.touch();
+            }),
+            () => lastMove,
+            'Загрузка на Google Drive');
         job.onTrack?.call(t);
         return t.id;
       case 'enrich':
@@ -350,9 +472,20 @@ class DownloadService extends ChangeNotifier {
                 bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47;
             final jpeg = bytes.length >= 3 && bytes[0] == 0xFF &&
                 bytes[1] == 0xD8 && bytes[2] == 0xFF;
-            if ((png || jpeg) && bytes.length <= 5 * 1024 * 1024) {
+            if (job.skipCovers) {
+              log('Deezer обложка: Google Drive не отвечал на сохранение обложки, трек сохранён без своей обложки.');
+            } else if ((png || jpeg) && bytes.length <= 5 * 1024 * 1024) {
               log('Deezer обложка: изображение проверено, сохраняю в Google Drive.');
-              final coverId = await lib.uploadCover(bytes, png ? 'png' : 'jpg');
+              final String coverId;
+              try {
+                coverId = await lib.uploadCover(bytes, png ? 'png' : 'jpg').timeout(const Duration(seconds: 60));
+              } on TimeoutException {
+                // Раньше сюда упирались все потоки скачивания альбома и задание вставало на третьем треке
+                job.skipCovers = true;
+                log('Deezer обложка: Google Drive не ответил за 60 секунд. Трек сохранён без своей обложки, '
+                    'для остальных треков задания обложки пропускаю.');
+                return true;
+              }
               log('Deezer обложка: файл успешно сохранён в Google Drive.');
               lib.setMeta({id: {'cv': coverId}});
               log('Deezer обложка: привязка к треку добавлена в библиотеку.');
@@ -436,7 +569,7 @@ class DownloadService extends ChangeNotifier {
         final f = await _jobFile(path, image: true);
         final bytes = await f.readAsBytes();
         final png = bytes.length > 3 && bytes[0] == 0x89 && bytes[1] == 0x50;
-        final id = await lib.uploadCover(bytes, png ? 'png' : 'jpg');
+        final id = await lib.uploadCover(bytes, png ? 'png' : 'jpg').timeout(const Duration(seconds: 60));
         final playlistId = '${call['id'] ?? ''}';
         if (playlistId.isEmpty) throw const FormatException('Не указан плейлист.');
         lib.setPlaylistCover(playlistId, id);
@@ -560,6 +693,7 @@ class DownloadService extends ChangeNotifier {
         } catch (e) {
           reply = {'t': 'reply', 'id': call['id'], 'ok': false, 'error': '$e'};
         }
+        job?.touch();
         if (!socketAlive || job?.cancelRequested == true) return;
         try {
           socket!.write('${jsonEncode(reply)}\n');
@@ -582,9 +716,11 @@ class DownloadService extends ChangeNotifier {
         if (msg is! Map) continue;
         switch (msg['t']) {
           case 'log':
+            job?.touch();
             onLog?.call('${msg['text'] ?? ''}');
           case 'progress':
             if (job != null) {
+              job.touch();
               // The downloader's old status must not overwrite Drive progress.
               if (job.replaceTrackId == null || !job.title.startsWith('Google Drive:')) {
                 job.title = '${msg['title'] ?? job.title}';

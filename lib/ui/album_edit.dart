@@ -21,6 +21,9 @@ class HeaderCover extends StatefulWidget {
   final double size;
   final VoidCallback? onEdit;
   final String editTooltip;
+
+  /// Четыре обложки для сетки 2×2 (плейлист без своей картинки)
+  final List<Track> grid;
   const HeaderCover({
     super.key,
     required this.track,
@@ -29,6 +32,7 @@ class HeaderCover extends StatefulWidget {
     this.label,
     this.onEdit,
     this.editTooltip = 'Изменить',
+    this.grid = const [],
   });
 
   @override
@@ -51,7 +55,9 @@ class _HeaderCoverState extends State<HeaderCover> {
           Positioned.fill(
             child: GestureDetector(
               onTap: canView ? () => showCoverViewer(context, track: widget.track, fileId: widget.fileId) : null,
-              child: CoverImage(track: widget.track, fileId: widget.fileId, label: widget.label, size: widget.size, radius: 12),
+              child: widget.grid.length == 4 && widget.fileId == null
+                  ? CoverGrid(tracks: widget.grid, size: widget.size, radius: 12)
+                  : CoverImage(track: widget.track, fileId: widget.fileId, label: widget.label, size: widget.size, radius: 12),
             ),
           ),
           if (widget.onEdit != null)

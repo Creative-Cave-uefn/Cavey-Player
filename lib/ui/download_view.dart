@@ -1,11 +1,13 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/dl/service.dart';
 import 'shell.dart';
 import 'theme.dart';
-import 'widgets.dart';
 
 /// Раздел «Скачать»: ссылка или название → трек на Диске и в библиотеке у всех
 class DownloadPage extends StatefulWidget {
@@ -18,6 +20,7 @@ class DownloadPage extends StatefulWidget {
 class _DownloadPageState extends State<DownloadPage> {
   final _input = TextEditingController();
   String? _target;
+  /// Галочка «Сделать плейлист» хранится в настройках, поэтому не сбрасывается при смене вкладки
   bool _makePlaylist = true;
 
   @override
@@ -27,6 +30,23 @@ class _DownloadPageState extends State<DownloadPage> {
       final dl = Services.of(context).downloads;
       if (dl.toolsVersion.isEmpty) dl.refreshVersion();
     });
+  }
+
+  bool _loaded = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_loaded) return;
+    _loaded = true;
+    _makePlaylist = Services.of(context).settings.viewOf('dl.playlist', '1') != '0';
+  }
+
+  void _setMakePlaylist(bool v) {
+    setState(() => _makePlaylist = v);
+    final app = Services.of(context);
+    app.settings.view['dl.playlist'] = v ? '1' : '0';
+    app.lib.saveSettings();
   }
 
   void _start() {
@@ -139,7 +159,7 @@ class _DownloadPageState extends State<DownloadPage> {
               const SizedBox(height: 6),
               InkWell(
                 borderRadius: BorderRadius.circular(6),
-                onTap: () => setState(() => _makePlaylist = !_makePlaylist),
+                onTap: () => _setMakePlaylist(!_makePlaylist),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -150,7 +170,7 @@ class _DownloadPageState extends State<DownloadPage> {
                         value: _makePlaylist,
                         activeColor: C.accent,
                         checkColor: C.accentInk,
-                        onChanged: (v) => setState(() => _makePlaylist = v ?? true),
+                        onChanged: (v) => _setMakePlaylist(v ?? true),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -186,19 +206,27 @@ class _DownloadPageState extends State<DownloadPage> {
                 TextButton(onPressed: dl.clearFinished, child: const Text('Убрать завершённые')),
             ]),
           const SizedBox(height: 10),
-          for (final j in dl.jobs) _JobCard(job: j),
+          for (final j in dl.jobs) _JobCard(key: ObjectKey(j), job: j),
         ]);
       },
     );
   }
 }
 
-class _JobCard extends StatelessWidget {
+class _JobCard extends StatefulWidget {
   final DownloadJob job;
-  const _JobCard({required this.job});
+  const _JobCard({super.key, required this.job});
+  @override
+  State<_JobCard> createState() => _JobCardState();
+}
+
+class _JobCardState extends State<_JobCard> {
+  late bool _open = widget.job.state == JobState.running;
 
   @override
   Widget build(BuildContext context) {
+    final job = widget.job;
+    final dl = Services.of(context).downloads;
     final (label, color) = switch (job.state) {
       JobState.queued => ('В очереди', C.faint),
       JobState.running => (job.cancelRequested ? 'Останавливаю загрузку…' :
@@ -207,27 +235,51 @@ class _JobCard extends StatelessWidget {
       JobState.failed => ('Не получилось', C.danger),
       JobState.cancelled => ('Отменено: скачано ${job.done}, уже было ${job.skipped}', C.faint),
     };
-    final progress = job.total > 1 ? (job.done + job.failed) / job.total : null;
+    final canStop = (job.state == JobState.queued || job.state == JobState.running) && !job.cancelRequested;
+    // «Перезапустить» докачивает только недоделанное: у зависшего задания, у упавшего и у отменённого
+    final canRestart = job.restartable &&
+        !job.cancelRequested &&
+        (job.state == JobState.running ||
+            job.state == JobState.failed ||
+            job.state == JobState.cancelled ||
+            (job.state == JobState.done && job.failed > 0));
+    // Кнопки справа в одну линию по высоте всей карточки, вместе со стрелкой раскрытия
+    Widget action(String tooltip, IconData icon, Color c, VoidCallback onTap) => IconButton(
+          tooltip: tooltip,
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+          padding: EdgeInsets.zero,
+          icon: Icon(icon, color: c, size: 20),
+          onPressed: onTap,
+        );
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.line)),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
-          initiallyExpanded: job.state == JobState.running,
+          initiallyExpanded: _open,
+          onExpansionChanged: (v) => setState(() => _open = v),
           tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
           childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-          title: Row(children: [
-            Expanded(child: Text(job.title, maxLines: 1, overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w600))),
-            if ((job.state == JobState.queued || job.state == JobState.running) &&
-                !job.cancelRequested)
-              IconButton(
-                tooltip: job.state == JobState.queued ? 'Отменить задание в очереди' : 'Остановить загрузку',
-                icon: const Icon(Icons.cancel_outlined, color: C.danger, size: 20),
-                onPressed: () => Services.of(context).downloads.cancel(job),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (canRestart)
+              action('Перезапустить: докачать только недоделанные треки', Icons.refresh_rounded, C.accent, () => dl.restart(job)),
+            if (canStop)
+              action(job.state == JobState.queued ? 'Отменить задание в очереди' : 'Остановить загрузку',
+                  Icons.cancel_outlined, C.danger, () => dl.cancel(job)),
+            SizedBox.square(
+              dimension: 36,
+              child: Center(
+                child: AnimatedRotation(
+                  turns: _open ? 0.5 : 0,
+                  duration: const Duration(milliseconds: 200),
+                  child: const Icon(Icons.expand_more_rounded, color: C.muted),
+                ),
               ),
+            ),
           ]),
+          title: Text(job.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
           subtitle: Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -237,7 +289,8 @@ class _JobCard extends StatelessWidget {
               ),
               if (job.state == JobState.running) ...[
                 const SizedBox(height: 6),
-                LinearProgressIndicator(value: progress),
+                // Полоса не во всю ширину карточки, а компактно под подписью
+                ConstrainedBox(constraints: const BoxConstraints(maxWidth: 280), child: JobProgressBar(job: job)),
               ],
               if (job.playlistId != null)
                 Padding(
@@ -276,6 +329,67 @@ class _JobCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Значение полосы прогресса: сколько треков готово плюс небольшая «доля текущего». Загрузчик присылает
+/// только целые числа готовых треков, поэтому внутри трека полоса понемногу ползёт вперёд (не дальше 85 % шага),
+/// а когда трек готов — доезжает до следующего шага
+double jobProgressTarget(int finished, int total, Duration sinceChange) {
+  if (total <= 0) return 0;
+  final inside = 0.85 * (1 - math.exp(-sinceChange.inMilliseconds / 20000));
+  return ((finished + (finished < total ? inside : 0)) / total).clamp(0.0, 1.0);
+}
+
+/// Полоса прогресса задания, которая заполняется плавно, а не рывками при каждом готовом треке
+class JobProgressBar extends StatefulWidget {
+  final DownloadJob job;
+  const JobProgressBar({super.key, required this.job});
+  @override
+  State<JobProgressBar> createState() => _JobProgressBarState();
+}
+
+class _JobProgressBarState extends State<JobProgressBar> with SingleTickerProviderStateMixin {
+  late final Ticker _ticker;
+  double _shown = 0;
+  int _finished = -1;
+  DateTime _changed = DateTime.now();
+  Duration _last = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = createTicker(_tick)..start();
+  }
+
+  void _tick(Duration t) {
+    final job = widget.job;
+    final finished = job.done + job.failed;
+    if (finished != _finished) {
+      _finished = finished;
+      _changed = DateTime.now();
+    }
+    final target = jobProgressTarget(finished, job.total, DateTime.now().difference(_changed));
+    final dt = ((t - _last).inMicroseconds / 1e6).clamp(0.0, 0.1);
+    _last = t;
+    // Движемся к цели с плавным замедлением и никогда не пятимся
+    final next = target > _shown ? _shown + (target - _shown) * (1 - math.exp(-dt * 4)) : _shown;
+    if ((next - _shown).abs() > 0.0005) setState(() => _shown = next);
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final job = widget.job;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(3),
+      child: LinearProgressIndicator(value: job.total > 1 ? _shown : null, minHeight: 5),
     );
   }
 }

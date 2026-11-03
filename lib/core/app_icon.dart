@@ -77,6 +77,13 @@ Uint8List accentIco((Uint8List, int) args) {
   ]);
 }
 
+/// Логотип (PNG) с меткой в цвете [argb]: для значка в боковой панели
+Uint8List recolorLogoPng((Uint8List, int) args) {
+  final src = img.decodePng(args.$1);
+  if (src == null) throw Exception('Логотип не прочитался');
+  return Uint8List.fromList(img.encodePng(recolorIcon(src, args.$2)));
+}
+
 class AppIcon {
   /// Значок по умолчанию из сборки
   static const defaultIcon = 'assets/app_icon.ico';

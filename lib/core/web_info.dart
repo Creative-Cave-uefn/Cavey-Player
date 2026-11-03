@@ -42,7 +42,26 @@ class WebAlbum {
   final int tracks; // число треков, если известно
   const WebAlbum(this.id, this.title, this.cover, this.date, this.type, this.artist, this.link, {this.artistId = 0, this.tracks = 0});
 
-  String get year => date.length >= 4 ? date.substring(0, 4) : '';
+  /// Deezer помечает релизы без настоящей даты заглушкой 2999-12-31: такую дату не показываем
+  bool get hasRealDate {
+    final d = released;
+    return d != null && d.year <= DateTime.now().year + 2;
+  }
+
+  String get year => date.length >= 4 && hasRealDate ? date.substring(0, 4) : '';
+
+  /// Дата для сортировки: заглушки уходят в самый низ, а не в начало списка «новые сверху»
+  String get sortDate => hasRealDate ? date : '';
+
+  /// У релиза есть настоящая обложка (у заглушек каталога Deezer адрес обложки без хэша)
+  bool get hasCover => cover.isNotEmpty && !RegExp(r'/images/cover/(?:\d+x\d+[^/]*)?$').hasMatch(cover);
+
+  /// Годится ли релиз для «Новинок»: дата в окне [since, сегодня + 60 дней] и есть обложка
+  bool isFreshRelease(DateTime since, DateTime now) {
+    final d = released;
+    if (d == null || d.isBefore(since) || d.isAfter(now.add(const Duration(days: 60)))) return false;
+    return hasCover;
+  }
   String get typeLabel => switch (type) { 'single' => 'Сингл', 'ep' => 'EP', 'compile' => 'Сборник', _ => 'Альбом' };
   DateTime? get released => DateTime.tryParse(date);
 
@@ -356,7 +375,7 @@ class WebInfoService extends ChangeNotifier {
       for (final x in (j['data'] as List? ?? const []))
         if (x is Map)
           WebAlbum.fromDeezer(x, artist: a.name, artistId: a.id)
-    ]..sort((p, q) => q.date.compareTo(p.date));
+    ]..sort((p, q) => q.sortDate.compareTo(p.sortDate));
     _put(key, [for (final x in list) x.toJson()]);
     return list;
   }
@@ -732,8 +751,7 @@ class WebInfoService extends ChangeNotifier {
               final w = await _search(a.name, false);
               if (w == null) return;
               for (final al in await albums(w)) {
-                final d = al.released;
-                if (d == null || d.isBefore(since)) continue;
+                if (!al.isFreshRelease(since, DateTime.now())) continue;
                 if (!inLibrary(a.key, al)) out.add(NewRelease(a.key, al));
               }
             }()
@@ -769,7 +787,7 @@ class WebInfoService extends ChangeNotifier {
   }
 
   static List<NewRelease> _sorted(List<NewRelease> out) {
-    final list = List.of(out)..sort((a, b) => b.album.date.compareTo(a.album.date));
+    final list = List.of(out)..sort((a, b) => b.album.sortDate.compareTo(a.album.sortDate));
     // Один релиз мог найтись у нескольких соавторов
     final seen = <int>{};
     return [for (final r in list) if (seen.add(r.album.id)) r];

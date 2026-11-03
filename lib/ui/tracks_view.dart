@@ -16,6 +16,7 @@ import 'shell.dart';
 import 'share_dialog.dart';
 import 'album_edit.dart';
 import 'album_missing.dart';
+import 'playlists_view.dart' show PlaylistCover;
 import 'theme.dart';
 import 'wave_view.dart';
 import 'widgets.dart';
@@ -149,7 +150,7 @@ class AlbumPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     return ListenableBuilder(
-      listenable: app.lib,
+      listenable: Listenable.merge([app.lib, app.cache]),
       builder: (context, _) {
         final album = app.lib.album(albumKey);
         if (album == null) {
@@ -183,6 +184,11 @@ class AlbumPage extends StatelessWidget {
           footer: MissingAlbumTracks(album: album),
           onReorder: (track, after) => app.lib.moveAlbumTrack(albumKey, track.id, after?.id),
           actions: [
+            OfflineButton(
+              on: app.cache.isAlbumOffline(albumKey),
+              tracks: album.tracks,
+              onChanged: (v) => app.cache.setAlbumOffline(albumKey, v),
+            ),
             FavButton(
               on: app.lib.isFavAlbum(album),
               what: 'альбом',
@@ -240,6 +246,7 @@ class PlaylistPage extends StatelessWidget {
           cover: coverTrack,
           coverFileId: ownCover,
           coverLabel: p.name,
+          coverGrid: ownCover == null ? gridCoverTracks(tracks) : const [],
           subtitleWidget: Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: [
             const Text('Собирает ', style: TextStyle(color: C.muted, fontSize: 15)),
             if (p.by.isEmpty) const Text('кто-то', style: TextStyle(color: C.muted, fontSize: 15)) else UserLink(p.by),
@@ -320,6 +327,7 @@ class TracksPage extends StatefulWidget {
   /// Загруженная обложка (например, плейлиста): показывается вместо обложки трека
   final String? coverFileId;
   final String? coverLabel;
+  final List<Track> coverGrid;
   final String? playlistId;
   final bool numbered;
   final bool compact;
@@ -356,6 +364,7 @@ class TracksPage extends StatefulWidget {
     this.cover,
     this.coverFileId,
     this.coverLabel,
+    this.coverGrid = const [],
     this.playlistId,
     this.numbered = false,
     this.actions = const [],
@@ -453,7 +462,6 @@ class _TracksPageState extends State<TracksPage> {
   bool get _canReorder => widget.onReorder != null && _sort.isEmpty && _query.trim().isEmpty && !_selecting;
 
   /// Порядок менять нельзя только из-за сортировки или поиска — об этом подсказка над списком
-  bool get _reorderBlocked => widget.onReorder != null && (_sort.isNotEmpty || _query.trim().isNotEmpty);
 
   static bool _typing() {
     final ctx = FocusManager.instance.primaryFocus?.context;
@@ -950,6 +958,7 @@ class _TracksPageState extends State<TracksPage> {
             track: widget.cover,
             fileId: widget.coverFileId,
             label: widget.coverLabel,
+            grid: widget.coverGrid,
             size: widget.compact ? 120 : 176,
             onEdit: widget.onEditCover,
             editTooltip: widget.editCoverTooltip,
@@ -1027,6 +1036,8 @@ class _TracksPageState extends State<TracksPage> {
       listenable: Listenable.merge([app.player, app.cache]),
       builder: (context, _) {
         final currentId = app.player.current?.id;
+        // Галочка — только у треков, сохранённых офлайн: из «Любимого», плейлиста или альбома с кнопкой «Сохранить офлайн»
+        final pinned = app.cache.pinnedIds;
         Widget row(BuildContext context, int i) => TrackRow(
               track: visible[i],
               index: i,
@@ -1034,8 +1045,8 @@ class _TracksPageState extends State<TracksPage> {
               playing: app.player.playing,
               compact: widget.compact,
               playlistId: widget.playlistId,
-              cached: app.cache.has(visible[i].id),
-              onPlay: () => app.player.playTracks(visible, i),
+              cached: pinned.contains(visible[i].id) && app.cache.has(visible[i].id),
+              onPlay: () => app.player.playTracks(visible, i, playlistId: widget.playlistId),
               selecting: _selecting,
               selected: _sel.contains(visible[i].id),
               onSelect: (shift) => _onSelect(visible, i, shift),
@@ -1055,21 +1066,6 @@ class _TracksPageState extends State<TracksPage> {
                 child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
               ),
             ),
-          if (visible.isNotEmpty && _reorderBlocked)
-            SliverPadding(
-              padding: EdgeInsets.fromLTRB(pad, 0, pad, 6),
-              sliver: SliverToBoxAdapter(
-                child: Row(children: [
-                  Icon(Icons.drag_indicator_rounded, size: 14, color: C.faint),
-                  const SizedBox(width: 6),
-                  Text(
-                      _query.trim().isNotEmpty && _sort.isEmpty
-                          ? 'Очистите поиск, чтобы менять порядок треков перетаскиванием'
-                          : 'Сбросьте сортировку и поиск, чтобы менять порядок треков перетаскиванием',
-                      style: TextStyle(color: C.faint, fontSize: 12)),
-                ]),
-              ),
-            ),
           if (visible.isNotEmpty)
             SliverPadding(
               padding: EdgeInsets.fromLTRB(pad - 12, 0, pad - 12, 4),
@@ -1081,11 +1077,23 @@ class _TracksPageState extends State<TracksPage> {
                 ? SliverReorderableList(
                     itemCount: visible.length,
                     itemExtent: 58,
-                    proxyDecorator: (child, i, anim) => Material(
-                      color: C.panelRaised,
-                      elevation: 6,
-                      borderRadius: BorderRadius.circular(8),
-                      child: child,
+                    proxyDecorator: (child, i, anim) => AnimatedBuilder(
+                      animation: anim,
+                      builder: (context, child) {
+                        final k = Curves.easeOut.transform(anim.value);
+                        return Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(10),
+                            boxShadow: [BoxShadow(color: Color.fromRGBO(0, 0, 0, 0.28 * k), blurRadius: 14 * k, offset: Offset(0, 4 * k))],
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            // Лишь слегка осветляем строку: содержимое остаётся видно
+                            child: ColoredBox(color: Color.fromRGBO(255, 255, 255, 0.09 * k), child: child),
+                          ),
+                        );
+                      },
+                      child: Material(type: MaterialType.transparency, child: child),
                     ),
                     onReorder: (from, to) {
                       if (to > from) to--;
@@ -1391,7 +1399,10 @@ class TrackMenu extends StatelessWidget {
   /// Включает групповое выделение с этим треком (пункт «Выбрать»); null — пункта нет
   final VoidCallback? onSelect;
   final bool selected;
-  const TrackMenu({super.key, required this.track, this.playlistId, this.onSelect, this.selected = false});
+
+  /// Плейлист, из которого играет трек: даёт пункт «Перейти в плейлист»
+  final String? openPlaylist;
+  const TrackMenu({super.key, required this.track, this.playlistId, this.onSelect, this.selected = false, this.openPlaylist});
 
   @override
   Widget build(BuildContext context) {
@@ -1399,25 +1410,25 @@ class TrackMenu extends StatelessWidget {
       tooltip: 'Действия',
       icon: const Icon(Icons.more_horiz_rounded, size: 20),
       onSelected: (v) => onTrackMenu(context, v, track, playlistId, onSelect: onSelect),
-      itemBuilder: (ctx) => trackMenuItems(ctx, track, playlistId, canSelect: onSelect != null, selected: selected),
+      itemBuilder: (ctx) => trackMenuItems(ctx, track, playlistId, canSelect: onSelect != null, selected: selected, openPlaylist: openPlaylist),
     );
   }
 }
 
 /// Меню трека по правому клику, в точке клика
 Future<void> showTrackMenu(BuildContext context, Track track, String? playlistId, Offset at,
-    {VoidCallback? onSelect, bool selected = false}) async {
+    {VoidCallback? onSelect, bool selected = false, String? openPlaylist}) async {
   final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
   final v = await showGlassMenu<String>(
     context: context,
     position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
-    items: trackMenuItems(context, track, playlistId, canSelect: onSelect != null, selected: selected),
+    items: trackMenuItems(context, track, playlistId, canSelect: onSelect != null, selected: selected, openPlaylist: openPlaylist),
   );
   if (v != null && context.mounted) await onTrackMenu(context, v, track, playlistId, onSelect: onSelect);
 }
 
 List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, String? playlistId,
-    {bool canSelect = false, bool selected = false}) {
+    {bool canSelect = false, bool selected = false, String? openPlaylist}) {
   final names = track.artists;
   final liked = Services.of(context).lib.isLiked(track.id);
   return [
@@ -1427,12 +1438,13 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
     const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
     if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
     const PopupMenuDivider(),
-    const PopupMenuItem(value: 'album', child: Text('Открыть альбом')),
+    if (openPlaylist != null && Services.of(context).lib.playlist(openPlaylist) != null)
+      PopupMenuItem(value: 'toplaylist:$openPlaylist', child: const Text('Перейти в плейлист')),
+    const PopupMenuItem(value: 'album', child: Text('К альбому')),
     if (names.length == 1)
-      const PopupMenuItem(value: 'artist:0', child: Text('Открыть исполнителя'))
+      const PopupMenuItem(value: 'artist:0', child: Text('К исполнителю'))
     else
-      for (var i = 0; i < names.length && i < 5; i++)
-        PopupMenuItem(value: 'artist:$i', child: Text('Открыть: ${names[i]}', overflow: TextOverflow.ellipsis)),
+      ArtistsMenuEntry(names.take(12).toList()),
     const PopupMenuItem(value: 'copy', child: Text('Копировать название')),
     const PopupMenuItem(value: 'share', child: Text('Поделиться…')),
     const PopupMenuItem(value: 'plays', child: Text('Прослушивания…')),
@@ -1451,6 +1463,10 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
     final i = int.tryParse(v.substring(7)) ?? 0;
     final names = track.artists;
     NavScope.of(context).go(Nav('artist', names[i < names.length ? i : 0].toLowerCase()));
+    return;
+  }
+  if (v.startsWith('toplaylist:')) {
+    NavScope.of(context).go(Nav('playlist', v.substring(11)));
     return;
   }
   switch (v) {
@@ -1512,36 +1528,163 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
   }
 }
 
+/// Пункт «К исполнителю» с раскрывающимся списком всех участников трека
+class ArtistsMenuEntry extends PopupMenuEntry<String> {
+  final List<String> names;
+  const ArtistsMenuEntry(this.names, {super.key});
+
+  @override
+  double get height => 38;
+
+  @override
+  bool represents(String? value) => false;
+
+  @override
+  State<ArtistsMenuEntry> createState() => _ArtistsMenuEntryState();
+}
+
+class _ArtistsMenuEntryState extends State<ArtistsMenuEntry> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget tile({required VoidCallback onTap, required Widget child, double left = 12}) => Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            hoverColor: C.hoverOverlay,
+            onTap: onTap,
+            child: Container(
+              constraints: const BoxConstraints(minHeight: 38),
+              padding: EdgeInsets.only(left: left, right: 12),
+              alignment: Alignment.centerLeft,
+              child: DefaultTextStyle.merge(
+                style: const TextStyle(color: C.text, fontSize: 14),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                child: child,
+              ),
+            ),
+          ),
+        );
+    return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      tile(
+        onTap: () => setState(() => _open = !_open),
+        child: Row(children: [
+          const Expanded(child: Text('К исполнителю')),
+          AnimatedRotation(
+            turns: _open ? 0.25 : 0,
+            duration: const Duration(milliseconds: 160),
+            child: const Icon(Icons.chevron_right_rounded, size: 18, color: C.muted),
+          ),
+        ]),
+      ),
+      AnimatedSize(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        alignment: Alignment.topCenter,
+        child: _open
+            ? Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                for (var i = 0; i < widget.names.length; i++)
+                  tile(
+                    left: 28,
+                    onTap: () => Navigator.of(context).pop('artist:$i'),
+                    child: Text(widget.names[i]),
+                  ),
+              ])
+            : const SizedBox(width: double.infinity),
+      ),
+    ]);
+  }
+}
+
 /// true, если треки добавлены (в существующий или новый плейлист)
 Future<bool> addToPlaylistDialog(BuildContext context, List<String> trackIds) async {
   final app = Services.of(context);
   final lib = app.lib;
+  final lists = lib.visiblePlaylists;
   final choice = await showGlassDialog<String>(
     context: context,
-    builder: (ctx) => SimpleDialog(
-      title: Text('В плейлист', style: display(18)),
-      children: [
-        for (final p in lib.visiblePlaylists)
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx, p.id),
-            child: Row(children: [
-              FriendDot(p.by),
-              const SizedBox(width: 12),
-              Expanded(child: Text(p.name)),
-              if (trackIds.length == 1 && p.items.contains(trackIds.first))
-                const Text('уже там', style: TextStyle(color: C.faint, fontSize: 12)),
+    builder: (ctx) {
+      final size = MediaQuery.sizeOf(ctx);
+      final w = (size.width - 80).clamp(320.0, 720.0);
+      final cols = w >= 600 ? 4 : (w >= 440 ? 3 : 2);
+      Widget tile({required Widget cover, required String title, String? sub, required VoidCallback onTap}) => InkWell(
+            borderRadius: BorderRadius.circular(12),
+            hoverColor: C.hoverOverlay,
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                AspectRatio(aspectRatio: 1, child: cover),
+                const SizedBox(height: 8),
+                Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                if (sub != null) Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12)),
+              ]),
+            ),
+          );
+      return Dialog(
+        backgroundColor: C.glassLight,
+        insetPadding: const EdgeInsets.all(24),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: SizedBox(
+          width: w,
+          height: (size.height - 120).clamp(320.0, 620.0),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 20, 18, 14),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Padding(padding: const EdgeInsets.only(left: 6, bottom: 12), child: Text('В плейлист', style: display(20))),
+              Expanded(
+                child: GridView.builder(
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: cols, childAspectRatio: 0.78, mainAxisSpacing: 4, crossAxisSpacing: 4),
+                  itemCount: lists.length + 1,
+                  itemBuilder: (context, i) {
+                    if (i == 0) {
+                      return tile(
+                        title: 'Новый плейлист',
+                        onTap: () => Navigator.pop(ctx, '+new'),
+                        cover: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(10),
+                            color: C.hoverOverlay,
+                            border: Border.all(color: C.accent.withOpacity(0.5), width: 1.5),
+                          ),
+                          child: Icon(Icons.add_rounded, size: 40, color: C.accent),
+                        ),
+                      );
+                    }
+                    final p = lists[i - 1];
+                    final there = trackIds.length == 1 && p.items.contains(trackIds.first);
+                    return tile(
+                      title: p.name,
+                      sub: p.by.isEmpty ? null : lib.firstNameOf(p.by),
+                      onTap: () => Navigator.pop(ctx, p.id),
+                      cover: LayoutBuilder(
+                        builder: (context, box) => Stack(children: [
+                          PlaylistCover(playlist: p, size: box.maxWidth, radius: 10),
+                          if (there)
+                            Positioned.fill(
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(color: const Color(0x99000000), borderRadius: BorderRadius.circular(10)),
+                                child: const Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                                  Icon(Icons.check_circle_rounded, size: 30, color: Colors.white),
+                                  SizedBox(height: 4),
+                                  Text('уже там', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                ]),
+                              ),
+                            ),
+                        ]),
+                      ),
+                    );
+                  },
+                ),
+              ),
             ]),
           ),
-        SimpleDialogOption(
-          onPressed: () => Navigator.pop(ctx, '+new'),
-          child: Row(children: [
-            Icon(Icons.add_rounded, size: 18, color: C.accent),
-            SizedBox(width: 10),
-            Text('Новый плейлист', style: TextStyle(color: C.accent)),
-          ]),
         ),
-      ],
-    ),
+      );
+    },
   );
   if (choice == null || !context.mounted) return false;
   if (choice == '+new') {
