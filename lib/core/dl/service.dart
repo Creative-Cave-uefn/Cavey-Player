@@ -326,7 +326,7 @@ class DownloadService extends ChangeNotifier {
               _notify();
               // Give disconnected child processes time to release their
               // resources before starting the same large playlist again.
-              await Future<void>.delayed(Duration(milliseconds: 600 * restarts.clamp(1, 5)));
+              await Future<void>.delayed(Duration(milliseconds: 600 * restarts.clamp(1, 5).toInt()));
             } finally {
               watchdog?.cancel();
             }
