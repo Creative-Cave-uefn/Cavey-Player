@@ -242,9 +242,65 @@ class _MobileShellState extends State<MobileShell> {
   /// Нижняя панель свёрнута: при прокрутке вниз остаются кнопка активной вкладки, плеер и поиск
   bool dockCollapsed = false;
   final Set<int> visited = {0};
+
+  /// Чип «Медиатеки»: 0 Обзор, 1 Песни, 2 Альбомы, 3 Исполнители, 4 Плейлисты
   int section = 0;
+
+  /// Чип «Коллекций»: 0 Плейлисты, 1 Мои, 2 Общие
+  int plFilter = 0;
   bool webSearch = false;
   String query = '';
+  final TextEditingController searchCtl = TextEditingController();
+
+  /// Какие вкладки стоят на нижней панели и в каком порядке (настраивается, хранится на телефоне)
+  List<int> hotbar = const [0, 1, 3, 4];
+
+  static const defaultHotbar = [0, 1, 3, 4];
+
+  static const tabMeta = <int, (String, IconData, IconData)>{
+    0: ('Медиатека', Icons.library_music_outlined, Icons.library_music_rounded),
+    1: ('Волна', Icons.waves_rounded, Icons.waves_rounded),
+    3: ('Коллекции', Icons.folder_outlined, Icons.folder_rounded),
+    4: ('Компания', Icons.groups_outlined, Icons.groups_rounded),
+    5: ('Любимое', Icons.favorite_border_rounded, Icons.favorite_rounded),
+    6: ('Скачано', Icons.download_outlined, Icons.download_done_rounded),
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHotbar();
+  }
+
+  @override
+  void dispose() {
+    searchCtl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadHotbar() async {
+    try {
+      final j = await s.store.readJson('hotbar.json');
+      if (j is List) {
+        final v = <int>[for (final x in j) if (x is int && tabMeta.containsKey(x)) x].toSet().take(4).toList();
+        if (v.isNotEmpty && mounted) setState(() => hotbar = v);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> saveHotbar(List<int> v) async {
+    setState(() => hotbar = v);
+    try {
+      await s.store.writeJson('hotbar.json', v);
+    } catch (_) {}
+  }
+
+  void openHotbar() => Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => HotbarSettingsPage(services: s, current: hotbar, onChanged: saveHotbar)));
+
+  void openProfile() => Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => SubPage(services: s, title: 'Профиль и настройки', child: Builder(builder: (_) => more()))));
+
   MobileServices get s => widget.services;
 
   Future<void> refresh() async {
@@ -269,15 +325,27 @@ class _MobileShellState extends State<MobileShell> {
     if (!visited.contains(i)) return const SizedBox.shrink();
     switch (i) {
       case 0:
-        return home();
+        return libraryPage();
       case 1:
         return WaveTab(services: s);
       case 2:
         return search();
       case 3:
-        return library();
+        return collectionsPage();
+      case 4:
+        return CompanyView(services: s, embedded: true);
+      case 5:
+        return Column(children: [
+          pageTitle('Любимое', '${s.library.liked.length} ${plural(s.library.liked.length, 'песня', 'песни', 'песен')}'),
+          const SizedBox(height: 8),
+          Expanded(child: TrackList(services: s, tracks: s.library.liked, onPlay: play, onToast: toast)),
+        ]);
       default:
-        return more();
+        return Column(children: [
+          pageTitle('Скачано', ''),
+          const SizedBox(height: 4),
+          Expanded(child: downloads()),
+        ]);
     }
   }
 
@@ -327,6 +395,7 @@ class _MobileShellState extends State<MobileShell> {
         child: AnimatedBuilder(
         animation: Listenable.merge([s.library, s.player, s.updater, s.cache, s.accounts]),
         builder: (_, __) => Scaffold(
+          extendBody: true,
           body: SafeArea(
             bottom: false,
             child: Column(children: [
@@ -347,7 +416,7 @@ class _MobileShellState extends State<MobileShell> {
                     return false;
                   },
                   child: IndexedStack(index: tab, children: [
-                    for (var i = 0; i < 5; i++) tabPage(i),
+                    for (var i = 0; i < 7; i++) tabPage(i),
                   ]),
                 ),
               ),
@@ -358,17 +427,9 @@ class _MobileShellState extends State<MobileShell> {
         ),
       );
 
-  static const _tabIcons = <int, (IconData, IconData)>{
-    0: (Icons.home_outlined, Icons.home_rounded),
-    1: (Icons.waves_rounded, Icons.waves_rounded),
-    2: (Icons.search_rounded, Icons.search_rounded),
-    3: (Icons.library_music_outlined, Icons.library_music_rounded),
-    4: (Icons.menu_rounded, Icons.menu_rounded),
-  };
-
   Widget roundButton(Widget icon, VoidCallback onTap, {double size = 56, bool on = false}) => Glass(
         radius: size / 2,
-        color: on ? C.accent.withValues(alpha: 0.22) : C.glass,
+        color: on ? const Color(0x663C341E) : const Color(0x9E1A1A24),
         child: InkWell(
           onTap: onTap,
           child: SizedBox(width: size, height: size, child: Center(child: icon)),
@@ -381,10 +442,9 @@ class _MobileShellState extends State<MobileShell> {
     final hasMini = s.player.current != null;
     final Widget body;
     if (dockCollapsed) {
-      final shown = tab == 2 ? 0 : tab;
-      final icons = _tabIcons[shown]!;
+      final shown = tabMeta[tab] ?? tabMeta[hotbar.first]!;
       body = Row(key: const ValueKey('collapsed'), children: [
-        roundButton(Icon(icons.$2, size: 25, color: C.accent), () => setState(() => dockCollapsed = false)),
+        roundButton(Icon(shown.$3, size: 25, color: C.accent), () => setState(() => dockCollapsed = false)),
         const SizedBox(width: 8),
         Expanded(
           child: hasMini
@@ -392,76 +452,77 @@ class _MobileShellState extends State<MobileShell> {
               : const SizedBox(height: 56),
         ),
         const SizedBox(width: 8),
-        roundButton(Icon(Icons.search_rounded, size: 26, color: tab == 2 ? C.accent : C.text), () => selectTab(2), on: tab == 2),
+        roundButton(Icon(Icons.search_rounded, size: 26, color: tab == 2 ? C.accent : const Color(0xD1FFFFFF)), () => selectTab(2), on: tab == 2),
       ]);
     } else {
       body = Column(key: const ValueKey('expanded'), mainAxisSize: MainAxisSize.min, children: [
         if (hasMini) ...[
           MiniPlayer(services: s, margin: EdgeInsets.zero, onOpen: () => showPlayer(context, s)),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
         ],
         Row(children: [
           Expanded(
             child: Glass(
               radius: 32,
-              color: C.glass,
-              child: Row(children: [
-                navItem(0, Icons.home_outlined, Icons.home_rounded, 'Главная'),
-                navItem(1, Icons.waves_rounded, Icons.waves_rounded, 'Волна'),
-                navItem(3, Icons.library_music_outlined, Icons.library_music_rounded, 'Медиатека'),
-                navItem(4, Icons.menu_rounded, Icons.menu_rounded, 'Ещё', badge: s.updater.available != null),
-              ]),
+              color: const Color(0x9E1A1A24),
+              child: SizedBox(
+                height: 64,
+                child: Padding(
+                  padding: const EdgeInsets.all(5),
+                  child: Row(children: [for (final i in hotbar) navItem(i)]),
+                ),
+              ),
             ),
           ),
           const SizedBox(width: 8),
-          roundButton(Icon(Icons.search_rounded, size: 27, color: tab == 2 ? C.accent : C.text), () => selectTab(2), size: 64, on: tab == 2),
+          roundButton(Icon(Icons.search_rounded, size: 27, color: tab == 2 ? C.accent : const Color(0xD1FFFFFF)), () => selectTab(2), size: 64, on: tab == 2),
         ]),
       ]);
     }
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-        child: AnimatedSize(
-          duration: const Duration(milliseconds: 240),
-          curve: Curves.easeOutCubic,
-          alignment: Alignment.bottomCenter,
-          child: AnimatedSwitcher(duration: const Duration(milliseconds: 200), child: body),
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Color(0x000E1122), Color(0xEB0E1122)], stops: [0, 0.7]),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 14, 12, 8),
+          child: AnimatedSize(
+            duration: const Duration(milliseconds: 240),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.bottomCenter,
+            child: AnimatedSwitcher(duration: const Duration(milliseconds: 200), child: body),
+          ),
         ),
       ),
     );
   }
 
-  Widget navItem(int i, IconData icon, IconData active, String label, {bool badge = false}) {
+  Widget navItem(int i) {
+    final m = tabMeta[i]!;
     final on = tab == i;
+    final badge = i == 4 && s.social.notices.isNotEmpty;
     return Expanded(
-      child: InkWell(
-        onTap: () => selectTab(i),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutCubic,
-              width: on ? 58 : 36,
-              height: 30,
-              decoration: BoxDecoration(
-                color: on ? C.accent.withValues(alpha: 0.2) : Colors.transparent,
-                borderRadius: BorderRadius.circular(15),
+      child: GestureDetector(
+        onLongPress: openHotbar,
+        child: InkWell(
+          customBorder: RoundedRectangleBorder(borderRadius: BorderRadius.circular(27)),
+          onTap: () => selectTab(i),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            decoration: BoxDecoration(color: on ? const Color(0x2EFFFFFF) : Colors.transparent, borderRadius: BorderRadius.circular(27)),
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Badge(
+                isLabelVisible: badge,
+                smallSize: 8,
+                backgroundColor: C.accent,
+                child: Icon(on ? m.$3 : m.$2, size: 23, color: on ? C.accent : const Color(0xD1FFFFFF)),
               ),
-              child: Center(
-                child: Badge(
-                  isLabelVisible: badge,
-                  smallSize: 8,
-                  backgroundColor: C.accent,
-                  child: Icon(on ? active : icon, size: 24, color: on ? C.accent : C.muted),
-                ),
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(label,
-                style: TextStyle(fontSize: 11, fontWeight: on ? FontWeight.w600 : FontWeight.w500, color: on ? C.accent : C.muted)),
-          ]),
+              const SizedBox(height: 3),
+              Text(m.$1, maxLines: 1, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: on ? C.accent : const Color(0xD1FFFFFF))),
+            ]),
+          ),
         ),
       ),
     );
@@ -482,133 +543,273 @@ class _MobileShellState extends State<MobileShell> {
     return name.isEmpty || name.contains('@') ? word : '$word, $name';
   }
 
-  Widget home() {
-    final recent = s.library.recent.take(30).toList();
-    final albums = s.library.albums.take(24).toList();
-    final artists = s.library.artists.take(20).toList();
-    final all = s.library.allTracks;
-    final liked = s.library.liked;
-    final offline = s.settings.offlineTracks.length;
-    return RefreshIndicator(
-      color: C.accent,
-      onRefresh: refresh,
-      child: ListView(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 18, 8, 4),
-          child: Row(children: [
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(greeting(), style: display(26)),
-                const SizedBox(height: 2),
-                Text('${all.length} треков в библиотеке', style: const TextStyle(color: C.muted, fontSize: 13)),
-              ]),
+  Widget pageTitle(String title, String sub, {Widget? trailing}) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: display(34)),
+              if (sub.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Text(sub, style: const TextStyle(fontSize: 14.5, color: C.muted))),
+            ]),
+          ),
+          if (trailing != null) trailing,
+        ]),
+      );
+
+  Widget chips(List<String> labels, int selected, ValueChanged<int> onSelect) => SizedBox(
+        height: 40,
+        child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 20), children: [
+          for (var i = 0; i < labels.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Material(
+                color: selected == i ? C.accent : const Color(0x1FFFFFFF),
+                shape: StadiumBorder(side: BorderSide(color: selected == i ? Colors.transparent : const Color(0x2EFFFFFF))),
+                child: InkWell(
+                  customBorder: const StadiumBorder(),
+                  onTap: () => onSelect(i),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Center(
+                      child: Text(labels[i],
+                          style: TextStyle(fontSize: 14, fontWeight: selected == i ? FontWeight.w600 : FontWeight.w500, color: selected == i ? C.accentInk : C.text)),
+                    ),
+                  ),
+                ),
+              ),
             ),
-            IconButton(onPressed: refresh, tooltip: 'Обновить', icon: const Icon(Icons.refresh_rounded, size: 24)),
-          ]),
-        ),
-        const SizedBox(height: 10),
-        if (s.updater.available != null) UpdateBanner(updater: s.updater, onToast: toast),
-        HandoffCard(services: s),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Column(children: [
-            Row(children: [
-              Expanded(
-                  child: ActionTile(
-                      icon: Icons.favorite_rounded,
-                      title: 'Любимые',
-                      subtitle: '${liked.length} треков',
-                      onTap: liked.isEmpty ? null : () => openTracks('Любимые', liked))),
-              const SizedBox(width: 12),
-              Expanded(
-                  child: ActionTile(
-                      icon: Icons.shuffle_rounded,
-                      title: 'Перемешать',
-                      subtitle: 'вся библиотека',
-                      onTap: all.isEmpty
-                          ? null
-                          : () {
-                              if (!s.player.shuffle) s.player.toggleShuffle();
-                              play(all, math.Random().nextInt(all.length));
-                            })),
-            ]),
-            const SizedBox(height: 12),
-            Row(children: [
-              Expanded(
-                  child: ActionTile(
-                      icon: Icons.waves_rounded,
-                      title: 'Моя волна',
-                      subtitle: 'подборка по вкусу',
-                      onTap: all.isEmpty
-                          ? null
-                          : () {
-                              selectTab(1);
-                              s.wave.start();
-                            })),
-              const SizedBox(width: 12),
-              Expanded(
-                  child: ActionTile(
-                      icon: Icons.download_done_rounded,
-                      title: 'Скачано',
-                      subtitle: offline == 0 ? 'пока ничего' : '$offline треков',
-                      onTap: () => setState(() {
-                            tab = 3;
-                            section = 5;
-                            visited.add(3);
-                          }))),
-            ]),
-          ]),
-        ),
-        if (albums.isNotEmpty)
-          SectionTitle('Альбомы', onMore: () => setState(() {
-                tab = 3;
-                section = 2;
-                visited.add(3);
-              })),
-        if (albums.isNotEmpty)
-          SizedBox(
-            height: 204,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              itemCount: albums.length,
-              itemBuilder: (_, i) => AlbumCard(
-                  services: s, album: albums[i], width: 140, onTap: () => openTracks(albums[i].title, albums[i].tracks, cover: albums[i].coverTrack)),
+        ]),
+      );
+
+  /// «Медиатека» как в макете: логотип и профиль, заголовок со счётчиками, чипы разделов
+  Widget libraryPage() {
+    const labels = ['Обзор', 'Песни', 'Альбомы', 'Исполнители', 'Плейлисты'];
+    final lib = s.library;
+    final albums = lib.albums;
+    final artists = lib.artists;
+    final all = lib.allTracks;
+    final me = lib.me ?? '';
+    final playlists = lib.visiblePlaylists;
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+        child: Row(children: [
+          Image.asset('assets/logo.png', width: 32, height: 32),
+          const SizedBox(width: 10),
+          Text('Cavey', style: brand(20)),
+          const Spacer(),
+          GestureDetector(
+            onTap: openProfile,
+            child: Badge(
+              isLabelVisible: s.updater.available != null,
+              smallSize: 10,
+              backgroundColor: C.accent,
+              child: Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: const Color(0x47FFFFFF), width: 2)),
+                child: ClipOval(child: me.isEmpty ? const SizedBox.shrink() : MobileAvatar(services: s, email: me, size: 34)),
+              ),
             ),
           ),
-        if (artists.isNotEmpty)
-          SectionTitle('Исполнители', onMore: () => setState(() {
-                tab = 3;
-                section = 3;
-                visited.add(3);
-              })),
-        if (artists.isNotEmpty)
-          SizedBox(
-            height: 128,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 14),
+        ]),
+      ),
+      pageTitle('Медиатека',
+          '${all.length} ${plural(all.length, 'песня', 'песни', 'песен')} · ${albums.length} ${plural(albums.length, 'альбом', 'альбома', 'альбомов')} · ${artists.length} ${plural(artists.length, 'исполнитель', 'исполнителя', 'исполнителей')}'),
+      const SizedBox(height: 12),
+      chips(labels, section, (i) => setState(() => section = i)),
+      const SizedBox(height: 6),
+      Expanded(
+        child: switch (section) {
+          0 => overview(),
+          1 => TrackList(services: s, tracks: all, onPlay: play, onToast: toast),
+          2 => GridView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 200, mainAxisExtent: 224, crossAxisSpacing: 12),
+              itemCount: albums.length,
+              itemBuilder: (_, i) => AlbumCard(
+                  services: s, album: albums[i], onTap: () => openTracks(albums[i].title, albums[i].tracks, cover: albums[i].coverTrack)),
+            ),
+          3 => ListView.builder(
               itemCount: artists.length,
               itemBuilder: (_, i) {
                 final a = artists[i];
+                return ListTile(
+                  leading: TrackCover(services: s, track: a.coverTrack, size: 56, radius: 28),
+                  title: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text('${a.albums} ${plural(a.albums, 'альбом', 'альбома', 'альбомов')} · ${a.tracks.length} ${plural(a.tracks.length, 'песня', 'песни', 'песен')}',
+                      style: const TextStyle(color: C.muted)),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: Color(0x80FFFFFF)),
+                  onTap: () => openTracks(a.name, a.tracks, cover: a.coverTrack),
+                );
+              }),
+          _ => ListView(padding: const EdgeInsets.fromLTRB(20, 4, 20, 12), children: [
+              if (playlists.isEmpty) const Padding(padding: EdgeInsets.all(30), child: Center(child: Text('Плейлистов пока нет', style: TextStyle(color: C.muted)))),
+              for (final p in playlists) playlistRow(p),
+            ]),
+        },
+      ),
+    ]);
+  }
+
+  Widget overview() {
+    final lib = s.library;
+    final recentAlbums = <Album>[];
+    final seen = <String>{};
+    for (final t in lib.recent) {
+      final a = lib.albumOf(t);
+      if (a != null && seen.add(a.key)) {
+        recentAlbums.add(a);
+        if (recentAlbums.length >= 14) break;
+      }
+    }
+    final albums = lib.albums.take(24).toList();
+    final artists = lib.artists.take(20).toList();
+    final now = s.social.listeningNow;
+    Widget albumCard(Album a) {
+      final year = a.tracks.map((t) => t.year).firstWhere((y) => y.isNotEmpty, orElse: () => '');
+      final meta = [if (year.isNotEmpty) year, '${a.tracks.length} ${plural(a.tracks.length, 'песня', 'песни', 'песен')}'].join(' · ');
+      return SizedBox(
+        width: 128,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => openTracks(a.title, a.tracks, cover: a.coverTrack),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            DecoratedBox(
+              decoration: BoxDecoration(borderRadius: BorderRadius.circular(14), boxShadow: const [BoxShadow(color: Color(0x59000000), blurRadius: 20, offset: Offset(0, 8))]),
+              child: TrackCover(services: s, track: a.coverTrack, size: 128, radius: 14),
+            ),
+            const SizedBox(height: 8),
+            Text(a.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            Text(a.artist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: C.muted)),
+            Text(meta, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Color(0x99FFFFFF))),
+          ]),
+        ),
+      );
+    }
+
+    Widget shelfTitle(String title, {VoidCallback? onMore}) => Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+          child: InkWell(
+            onTap: onMore,
+            child: Row(children: [
+              Text(title, style: display(20)),
+              if (onMore != null) const Icon(Icons.chevron_right_rounded, size: 24, color: C.text),
+            ]),
+          ),
+        );
+
+    return RefreshIndicator(
+      color: C.accent,
+      onRefresh: refresh,
+      child: ListView(padding: const EdgeInsets.only(top: 6), children: [
+        if (s.updater.available != null) UpdateBanner(updater: s.updater, onToast: toast),
+        HandoffCard(services: s),
+        if (now.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+            child: Glass(
+              radius: 20,
+              color: const Color(0x8C1A1A24),
+              child: InkWell(
+                onTap: () => selectTab(4),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  child: Row(children: [
+                    SizedBox(
+                      width: 34 + (math.min(now.length, 2) - 1) * 20.0,
+                      height: 34,
+                      child: Stack(children: [
+                        for (final (i, m) in now.take(2).indexed)
+                          Positioned(
+                            left: i * 20.0,
+                            child: Container(
+                              padding: const EdgeInsets.all(2),
+                              decoration: const BoxDecoration(color: Color(0xFF1B1B26), shape: BoxShape.circle),
+                              child: MobileAvatar(services: s, email: m.email, size: 30),
+                            ),
+                          ),
+                      ]),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(
+                            '${now.take(2).map((m) => lib.firstNameOf(m.email)).join(' и ')} ${now.length > 1 ? 'слушают' : 'слушает'} сейчас',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                        if (now.first.now != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text('${now.first.now!.artist} — ${now.first.now!.title}',
+                                maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5, color: C.muted)),
+                          ),
+                      ]),
+                    ),
+                    Container(width: 8, height: 8, decoration: BoxDecoration(color: C.accent, shape: BoxShape.circle)),
+                    const SizedBox(width: 8),
+                    const Icon(Icons.chevron_right_rounded, size: 22, color: Color(0x80FFFFFF)),
+                  ]),
+                ),
+              ),
+            ),
+          ),
+        if (recentAlbums.isNotEmpty) shelfTitle('Недавно добавленное', onMore: () => setState(() => section = 2)),
+        if (recentAlbums.isNotEmpty)
+          SizedBox(
+            height: 204,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+              itemCount: recentAlbums.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 14),
+              itemBuilder: (_, i) => albumCard(recentAlbums[i]),
+            ),
+          ),
+        if (albums.isNotEmpty) shelfTitle('Альбомы', onMore: () => setState(() => section = 2)),
+        if (albums.isNotEmpty)
+          SizedBox(
+            height: 204,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+              itemCount: albums.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 14),
+              itemBuilder: (_, i) => albumCard(albums[i]),
+            ),
+          ),
+        if (artists.isNotEmpty) shelfTitle('Исполнители', onMore: () => setState(() => section = 3)),
+        if (artists.isNotEmpty)
+          SizedBox(
+            height: 150,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+              itemCount: artists.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 14),
+              itemBuilder: (_, i) {
+                final a = artists[i];
                 return InkWell(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(46),
                   onTap: () => openTracks(a.name, a.tracks, cover: a.coverTrack),
                   child: SizedBox(
                     width: 92,
                     child: Column(children: [
-                      TrackCover(services: s, track: a.coverTrack, size: 76, radius: 38),
-                      const SizedBox(height: 6),
-                      Text(a.name, maxLines: 2, textAlign: TextAlign.center, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                      DecoratedBox(
+                        decoration: const BoxDecoration(shape: BoxShape.circle, boxShadow: [BoxShadow(color: Color(0x59000000), blurRadius: 20, offset: Offset(0, 8))]),
+                        child: TrackCover(services: s, track: a.coverTrack, size: 92, radius: 46),
+                      ),
+                      const SizedBox(height: 7),
+                      Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                      Text('${a.albums} ${plural(a.albums, 'альбом', 'альбома', 'альбомов')}', style: const TextStyle(fontSize: 12, color: Color(0x99FFFFFF))),
                     ]),
                   ),
                 );
               },
             ),
           ),
-        const SectionTitle('Недавно добавленные'),
-        for (var i = 0; i < recent.length; i++) TrackTile(services: s, track: recent[i], onTap: () => play(recent, i), onToast: toast),
-        if (recent.isEmpty)
+        if (lib.allTracks.isEmpty)
           const Padding(
             padding: EdgeInsets.all(32),
             child: Column(children: [
@@ -618,9 +819,129 @@ class _MobileShellState extends State<MobileShell> {
               Text('Потяните вниз, чтобы обновить', style: TextStyle(color: C.faint, fontSize: 12)),
             ]),
           ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
       ]),
     );
+  }
+
+  Widget playlistRow(Playlist p) {
+    final lib = s.library;
+    final me = lib.me ?? '';
+    final tracks = p.items.map((id) => lib.data.tracks[id]).whereType<Track>().toList();
+    final owner = p.by == me ? 'мой' : lib.firstNameOf(p.by);
+    return InkWell(
+      onTap: () => openTracks(p.name, tracks, cover: tracks.isEmpty ? null : tracks.first),
+      child: Container(
+        height: 62,
+        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x12FFFFFF)))),
+        child: Row(children: [
+          tracks.isEmpty
+              ? Container(
+                  width: 50,
+                  height: 50,
+                  decoration: BoxDecoration(color: const Color(0x1FFFFFFF), borderRadius: BorderRadius.circular(9)),
+                  child: const Icon(Icons.queue_music_rounded, color: Color(0x99FFFFFF)))
+              : TrackCover(services: s, track: tracks.first, size: 50, radius: 9),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600)),
+              Text('${tracks.length} ${plural(tracks.length, 'песня', 'песни', 'песен')} · $owner',
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: C.muted)),
+            ]),
+          ),
+          const Icon(Icons.chevron_right_rounded, size: 22, color: Color(0x80FFFFFF)),
+        ]),
+      ),
+    );
+  }
+
+  /// «Коллекции»: любимое, скачанное и плейлисты
+  Widget collectionsPage() {
+    final lib = s.library;
+    final liked = lib.liked;
+    final dl = s.settings.offlineTracks.length;
+    final me = lib.me ?? '';
+    final lists = [for (final p in lib.visiblePlaylists) if (plFilter == 0 || (plFilter == 1 ? p.by == me : p.by != me)) p];
+    Widget hero(IconData icon, Color tint, List<Color> base, String title, String sub, VoidCallback onTap) => Expanded(
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: onTap,
+            child: Container(
+              height: 96,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0x2EFFFFFF)),
+                gradient: LinearGradient(begin: Alignment.topRight, end: Alignment.bottomLeft, colors: base),
+              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Icon(icon, size: 26, color: tint),
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                  Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5, color: C.muted)),
+                ]),
+              ]),
+            ),
+          ),
+        );
+    return ListView(padding: const EdgeInsets.only(bottom: 12), children: [
+      pageTitle('Коллекции', 'Любимое, плейлисты и скачанное',
+          trailing: Glass(
+            radius: 22,
+            color: const Color(0x9E1A1A24),
+            child: InkWell(
+              onTap: newPlaylist,
+              child: SizedBox(width: 44, height: 44, child: Icon(Icons.add_rounded, size: 26, color: C.accent)),
+            ),
+          )),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+        child: Row(children: [
+          hero(Icons.favorite_rounded, C.accent, const [Color(0xFF6B2A55), Color(0xFF2A1230)], 'Любимое',
+              '${liked.length} ${plural(liked.length, 'песня', 'песни', 'песен')}', () => openTracks('Любимое', liked)),
+          const SizedBox(width: 12),
+          hero(Icons.download_done_rounded, const Color(0xFF5FD3B4), const [Color(0xFF1F5A5C), Color(0xFF10222C)], 'Скачано',
+              '$dl ${plural(dl, 'песня', 'песни', 'песен')} · ${formatBytes(s.cache.offlineBytes)}', () => openPage(SubPage(
+                  services: s,
+                  title: 'Скачано',
+                  child: AnimatedBuilder(animation: Listenable.merge([s.cache, s.library]), builder: (_, __) => downloads())))),
+        ]),
+      ),
+      const SizedBox(height: 16),
+      chips(const ['Плейлисты', 'Мои', 'Общие'], plFilter, (i) => setState(() => plFilter = i)),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+          Expanded(child: Text('Плейлисты', style: display(20))),
+          Text('${lists.length} · по дате', style: const TextStyle(fontSize: 13, color: Color(0x99FFFFFF))),
+        ]),
+      ),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+        child: Column(children: [
+          if (lists.isEmpty) const Padding(padding: EdgeInsets.all(30), child: Text('Плейлистов пока нет', style: TextStyle(color: C.muted))),
+          for (final p in lists) playlistRow(p),
+        ]),
+      ),
+    ]);
+  }
+
+  Future<void> newPlaylist() async {
+    final ctl = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (d) => AlertDialog(
+        backgroundColor: C.panel,
+        title: const Text('Новый плейлист'),
+        content: TextField(controller: ctl, autofocus: true, decoration: const InputDecoration(hintText: 'Название')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(d, ctl.text.trim()), child: Text('Создать', style: TextStyle(color: C.accent))),
+        ],
+      ),
+    );
+    if (name != null && name.isNotEmpty) s.library.createPlaylist(name);
   }
 
   void openPage(Widget page) => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
@@ -642,78 +963,180 @@ class _MobileShellState extends State<MobileShell> {
           ),
         );
     return ListView(children: [
-      header('Ещё'),
+      header('Профиль и настройки'),
+      tile(Icons.tune_rounded, 'Панель вкладок', 'Какие вкладки показывать внизу и в каком порядке', openHotbar),
       tile(Icons.new_releases_outlined, 'Новинки', 'Свежие релизы ваших исполнителей', () => openPage(NewReleasesPage(services: s))),
       tile(Icons.account_circle_outlined, 'Моя страница', 'Статистика, любимые треки, плейлисты', () => openPage(UserPage(services: s, email: s.library.me ?? ''))),
       tile(Icons.groups_outlined, 'Компания', 'Друзья, чарт недели, лента, уведомления', () => openPage(CompanyPage(services: s)), dot: unread > 0),
-      tile(Icons.download_done_rounded, 'Скачано', 'Треки на телефоне, доступны без интернета', () => setState(() {
-            tab = 3;
-            section = 5;
-          })),
+      tile(Icons.download_done_rounded, 'Скачано', 'Треки на телефоне, доступны без интернета', () {
+        Navigator.of(context).maybePop();
+        setState(() {
+          tab = 6;
+          visited.add(6);
+        });
+      }),
       tile(Icons.settings_outlined, 'Настройки', 'Аккаунт, обновления, кэш', () => openPage(SubPage(services: s, title: 'Настройки', child: ProfileTab(services: s))),
           dot: s.updater.available != null),
     ]);
   }
 
+  Widget hl(String text, String q, TextStyle base) {
+    final i = q.isEmpty ? -1 : text.toLowerCase().indexOf(q);
+    if (i < 0) return Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: base);
+    return RichText(
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      text: TextSpan(style: base, children: [
+        TextSpan(text: text.substring(0, i)),
+        TextSpan(text: text.substring(i, i + q.length), style: TextStyle(color: C.accent)),
+        TextSpan(text: text.substring(i + q.length)),
+      ]),
+    );
+  }
+
   Widget search() {
     final q = query.trim().toLowerCase();
+    final lib = s.library;
     final tracks = q.isEmpty
         ? <Track>[]
-        : s.library.allTracks
-            .where((t) => t.title.toLowerCase().contains(q) || t.displayArtist.toLowerCase().contains(q) || t.displayAlbum.toLowerCase().contains(q))
-            .toList();
-    final albums = q.isEmpty
-        ? <Album>[]
-        : s.library.albums.where((a) => a.title.toLowerCase().contains(q) || a.artist.toLowerCase().contains(q)).take(12).toList();
-    return Column(children: [
-      header('Поиск'),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
-        child: TextField(
-          onChanged: (v) => setState(() => query = v),
-          decoration: const InputDecoration(prefixIcon: Icon(Icons.search_rounded), hintText: 'Трек, альбом или исполнитель'),
-        ),
-      ),
-      Padding(
-        padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
-        child: Row(children: [
-          for (final (label, web) in const [('Библиотека', false), ('Интернет', true)])
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
-                label: Text(label),
-                selected: webSearch == web,
-                labelStyle: TextStyle(color: webSearch == web ? C.accentInk : C.text, fontWeight: FontWeight.w600),
-                onSelected: (_) => setState(() => webSearch = web),
-              ),
+        : lib.allTracks.where((t) => t.title.toLowerCase().contains(q) || t.displayArtist.toLowerCase().contains(q) || t.displayAlbum.toLowerCase().contains(q)).toList();
+    final albums = q.isEmpty ? <Album>[] : lib.albums.where((a) => a.title.toLowerCase().contains(q) || a.artist.toLowerCase().contains(q)).take(12).toList();
+    final artists = q.isEmpty ? <Artist>[] : lib.artists.where((a) => a.name.toLowerCase().contains(q)).take(6).toList();
+    const rowTitle = TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: C.text);
+    const rowSub = TextStyle(fontSize: 13, color: C.muted);
+    Widget segment(String label, bool on, VoidCallback onTap) => Expanded(
+          child: GestureDetector(
+            onTap: onTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              decoration: BoxDecoration(color: on ? const Color(0x38FFFFFF) : Colors.transparent, borderRadius: BorderRadius.circular(19)),
+              child: Center(child: Text(label, style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: on ? C.text : C.muted))),
             ),
+          ),
+        );
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 14, 12, 0),
+        child: Row(children: [
+          Expanded(
+            child: Container(
+              height: 46,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: const Color(0x4D1A1A24),
+                borderRadius: BorderRadius.circular(23),
+                border: Border.all(color: const Color(0x2EFFFFFF)),
+              ),
+              child: Row(children: [
+                const Icon(Icons.search_rounded, size: 22, color: C.muted),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: searchCtl,
+                    onChanged: (v) => setState(() => query = v),
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w500),
+                    cursorColor: C.accent,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      filled: false,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      hintText: 'Трек, альбом или исполнитель',
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ),
+                ),
+                if (query.isNotEmpty)
+                  GestureDetector(
+                    onTap: () => setState(() {
+                      query = '';
+                      searchCtl.clear();
+                    }),
+                    child: const Icon(Icons.cancel_rounded, size: 22, color: Color(0x80FFFFFF)),
+                  ),
+              ]),
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                query = '';
+                searchCtl.clear();
+              });
+              FocusManager.instance.primaryFocus?.unfocus();
+              selectTab(hotbar.first);
+            },
+            child: const Text('Отмена', style: TextStyle(color: C.text, fontSize: 16, fontWeight: FontWeight.w700)),
+          ),
+        ]),
+      ),
+      Container(
+        height: 46,
+        margin: const EdgeInsets.fromLTRB(20, 12, 20, 6),
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: const Color(0x331A1A24),
+          borderRadius: BorderRadius.circular(23),
+          border: Border.all(color: const Color(0x2EFFFFFF)),
+        ),
+        child: Row(children: [
+          segment('Библиотека', !webSearch, () => setState(() => webSearch = false)),
+          segment('Интернет', webSearch, () => setState(() => webSearch = true)),
         ]),
       ),
       Expanded(
         child: webSearch
             ? WebSearchSection(services: s, query: query)
             : q.isEmpty
-            ? const Center(child: Text('Поиск по общей библиотеке', style: TextStyle(color: C.muted)))
-            : ListView(children: [
-                if (albums.isNotEmpty) ...[
-                  const SectionTitle('Альбомы'),
-                  SizedBox(
-                    height: 204,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      itemCount: albums.length,
-                      itemBuilder: (_, i) => AlbumCard(
-                          services: s, album: albums[i], width: 140, onTap: () => openTracks(albums[i].title, albums[i].tracks, cover: albums[i].coverTrack)),
-                    ),
-                  ),
-                ],
-                if (tracks.isNotEmpty) const SectionTitle('Треки'),
-                for (var i = 0; i < tracks.length && i < 200; i++)
-                  TrackTile(services: s, track: tracks[i], onTap: () => play(tracks, i), onToast: toast),
-                if (tracks.isEmpty && albums.isEmpty)
-                  const Padding(padding: EdgeInsets.all(30), child: Center(child: Text('Ничего не найдено', style: TextStyle(color: C.muted)))),
-              ]),
+                ? const Center(child: Text('Поиск по общей библиотеке', style: TextStyle(color: C.muted)))
+                : ListView(padding: const EdgeInsets.only(bottom: 12), children: [
+                    if (artists.isNotEmpty) ...[
+                      const SectionTitle('Исполнители'),
+                      for (final a in artists)
+                        InkWell(
+                          onTap: () => openTracks(a.name, a.tracks, cover: a.coverTrack),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                            child: Row(children: [
+                              TrackCover(services: s, track: a.coverTrack, size: 56, radius: 28),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  hl(a.name, q, rowTitle.copyWith(fontSize: 17)),
+                                  Text('${a.albums} ${plural(a.albums, 'альбом', 'альбома', 'альбомов')} · ${a.tracks.length} ${plural(a.tracks.length, 'песня', 'песни', 'песен')}', style: rowSub),
+                                ]),
+                              ),
+                              const Icon(Icons.chevron_right_rounded, size: 22, color: Color(0x80FFFFFF)),
+                            ]),
+                          ),
+                        ),
+                    ],
+                    if (albums.isNotEmpty) ...[
+                      const SectionTitle('Альбомы'),
+                      for (final a in albums)
+                        InkWell(
+                          onTap: () => openTracks(a.title, a.tracks, cover: a.coverTrack),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                            child: Row(children: [
+                              TrackCover(services: s, track: a.coverTrack, size: 50, radius: 9),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  hl(a.title, q, rowTitle),
+                                  hl(a.artist, q, rowSub),
+                                ]),
+                              ),
+                            ]),
+                          ),
+                        ),
+                    ],
+                    if (tracks.isNotEmpty) const SectionTitle('Песни'),
+                    for (var i = 0; i < tracks.length && i < 200; i++) TrackTile(services: s, track: tracks[i], onTap: () => play(tracks, i), onToast: toast),
+                    if (tracks.isEmpty && albums.isEmpty && artists.isEmpty)
+                      const Padding(padding: EdgeInsets.all(30), child: Center(child: Text('Ничего не найдено', style: TextStyle(color: C.muted)))),
+                  ]),
       ),
     ]);
   }
@@ -749,75 +1172,175 @@ class _MobileShellState extends State<MobileShell> {
     ]);
   }
 
-  Widget library() {
-    const labels = ['Все', 'Любимые', 'Альбомы', 'Исполнители', 'Плейлисты', 'Скачано'];
-    final albums = s.library.albums;
-    final artists = s.library.artists;
-    final playlists = s.library.visiblePlaylists;
-    return Column(children: [
-      header('Медиатека'),
-      SizedBox(
-        height: 46,
-        child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 14), children: [
-          for (var i = 0; i < labels.length; i++)
+}
+
+String plural(int n, String one, String few, String many) {
+  final m10 = n % 10, m100 = n % 100;
+  if (m10 == 1 && m100 != 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+/// Настройка нижней панели: до четырёх вкладок, порядок меняется перетаскиванием
+class HotbarSettingsPage extends StatefulWidget {
+  const HotbarSettingsPage({super.key, required this.services, required this.current, required this.onChanged});
+  final MobileServices services;
+  final List<int> current;
+  final ValueChanged<List<int>> onChanged;
+  @override
+  State<HotbarSettingsPage> createState() => _HotbarSettingsPageState();
+}
+
+class _HotbarSettingsPageState extends State<HotbarSettingsPage> {
+  late List<int> active = List.of(widget.current);
+  static const maxTabs = 4;
+  static const hints = {5: 'внутри «Коллекций»', 6: 'внутри «Коллекций»'};
+
+  void set(List<int> v) {
+    setState(() => active = v);
+    widget.onChanged(v);
+  }
+
+  Widget iconBox(int id, bool on) => Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(color: on ? const Color(0x1FFFFFFF) : const Color(0x14FFFFFF), borderRadius: BorderRadius.circular(10)),
+        child: Icon(_MobileShellState.tabMeta[id]!.$3, size: 20, color: on ? C.accent : const Color(0xB3FFFFFF)),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final spare = [for (final k in _MobileShellState.tabMeta.keys) if (!active.contains(k)) k];
+    final full = active.length >= maxTabs;
+    return Backdrop(
+      services: widget.services,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          child: ListView(padding: const EdgeInsets.only(bottom: 24), children: [
             Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: ChoiceChip(
-                label: Text(labels[i]),
-                selected: section == i,
-                labelStyle: TextStyle(color: section == i ? C.accentInk : C.text, fontWeight: FontWeight.w600),
-                onSelected: (_) => setState(() => section = i),
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+              child: Row(children: [
+                Expanded(child: Text('Панель вкладок', style: display(28))),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: FilledButton.styleFrom(shape: const StadiumBorder(), minimumSize: const Size(0, 38), padding: const EdgeInsets.symmetric(horizontal: 18)),
+                  child: const Text('Готово', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                ),
+              ]),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 8, 20, 0),
+              child: Text('Выберите до четырёх вкладок и расставьте по порядку. Поиск и плеер на панели всегда на месте.',
+                  style: TextStyle(fontSize: 14, height: 1.35, color: C.muted)),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              child: Row(children: [
+                Expanded(child: Text('В панели', style: display(19))),
+                Text('${active.length} из $maxTabs', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: C.accent)),
+              ]),
+            ),
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              decoration: BoxDecoration(color: const Color(0x331A1A24), borderRadius: BorderRadius.circular(20), border: Border.all(color: const Color(0x2EFFFFFF))),
+              child: ReorderableListView(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                buildDefaultDragHandles: false,
+                proxyDecorator: (child, _, __) => Material(color: Colors.transparent, child: child),
+                onReorder: (from, to) {
+                  if (to > from) to--;
+                  final v = List.of(active);
+                  v.insert(to, v.removeAt(from));
+                  set(v);
+                },
+                children: [
+                  for (final (i, id) in active.indexed)
+                    Container(
+                      key: ValueKey('a$id'),
+                      height: 54,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(border: i == active.length - 1 ? null : const Border(bottom: BorderSide(color: Color(0x12FFFFFF)))),
+                      child: Row(children: [
+                        GestureDetector(
+                          onTap: active.length <= 1 ? null : () => set([for (final x in active) if (x != id) x]),
+                          child: Container(
+                            width: 26,
+                            height: 26,
+                            decoration: BoxDecoration(shape: BoxShape.circle, color: active.length <= 1 ? const Color(0x33FFFFFF) : const Color(0xFFFF8A80)),
+                            child: const Icon(Icons.remove_rounded, size: 16, color: Color(0xFF2B0D0B)),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        iconBox(id, true),
+                        const SizedBox(width: 12),
+                        Expanded(child: Text(_MobileShellState.tabMeta[id]!.$1, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
+                        ReorderableDragStartListener(index: i, child: const SizedBox(width: 28, height: 32, child: Icon(Icons.drag_handle_rounded, size: 22, color: Color(0x80FFFFFF)))),
+                      ]),
+                    ),
+                ],
               ),
             ),
-        ]),
-      ),
-      const SizedBox(height: 6),
-      Expanded(
-        child: switch (section) {
-          0 => TrackList(services: s, tracks: s.library.allTracks, onPlay: play, onToast: toast),
-          1 => TrackList(services: s, tracks: s.library.liked, onPlay: play, onToast: toast),
-          2 => GridView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 200, mainAxisExtent: 224, crossAxisSpacing: 12),
-              itemCount: albums.length,
-              itemBuilder: (_, i) => AlbumCard(
-                  services: s, album: albums[i], onTap: () => openTracks(albums[i].title, albums[i].tracks, cover: albums[i].coverTrack)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+              child: Row(children: [
+                Expanded(child: Text('Можно добавить', style: display(19))),
+                if (full) const Text('панель заполнена', style: TextStyle(fontSize: 13, color: Color(0x99FFFFFF))),
+              ]),
             ),
-          3 => ListView.builder(
-              itemCount: artists.length,
-              itemBuilder: (_, i) {
-                final a = artists[i];
-                return ListTile(
-                  leading: TrackCover(services: s, track: a.coverTrack, size: 52, radius: 26),
-                  title: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text('${a.tracks.length} треков', style: const TextStyle(color: C.muted)),
-                  onTap: () => openTracks(a.name, a.tracks, cover: a.coverTrack),
-                );
-              }),
-          5 => downloads(),
-          _ => playlists.isEmpty
-              ? const Center(child: Text('Плейлистов пока нет', style: TextStyle(color: C.muted)))
-              : ListView.builder(
-                  itemCount: playlists.length,
-                  itemBuilder: (_, i) {
-                    final p = playlists[i];
-                    final tracks = p.items.map((id) => s.library.data.tracks[id]).whereType<Track>().toList();
-                    return ListTile(
-                      leading: tracks.isEmpty
-                          ? Container(
-                              width: 52,
-                              height: 52,
-                              decoration: BoxDecoration(color: C.raised, borderRadius: BorderRadius.circular(10)),
-                              child: const Icon(Icons.queue_music_rounded))
-                          : TrackCover(services: s, track: tracks.first, size: 52),
-                      title: Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-                      subtitle: Text('${tracks.length} треков', style: const TextStyle(color: C.muted)),
-                      onTap: () => openTracks(p.name, tracks, cover: tracks.isEmpty ? null : tracks.first),
-                    );
-                  }),
-        },
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              decoration: BoxDecoration(color: const Color(0x331A1A24), borderRadius: BorderRadius.circular(20), border: Border.all(color: const Color(0x2EFFFFFF))),
+              child: Column(children: [
+                if (spare.isEmpty) const Padding(padding: EdgeInsets.all(16), child: Text('Все вкладки уже на панели', style: TextStyle(color: C.muted))),
+                for (final (i, id) in spare.indexed)
+                  Container(
+                    height: 54,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(border: i == spare.length - 1 ? null : const Border(bottom: BorderSide(color: Color(0x12FFFFFF)))),
+                    child: Row(children: [
+                      GestureDetector(
+                        onTap: full ? null : () => set([...active, id]),
+                        child: Container(
+                          width: 26,
+                          height: 26,
+                          decoration: BoxDecoration(shape: BoxShape.circle, color: full ? const Color(0x1FFFFFFF) : const Color(0x2EFFFFFF)),
+                          child: Icon(Icons.add_rounded, size: 16, color: full ? const Color(0x59FFFFFF) : const Color(0xB3FFFFFF)),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      iconBox(id, false),
+                      const SizedBox(width: 12),
+                      Expanded(child: Text(_MobileShellState.tabMeta[id]!.$1, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Color(0xD9FFFFFF)))),
+                      if (hints[id] != null) Text(hints[id]!, style: const TextStyle(fontSize: 12.5, color: Color(0x99FFFFFF))),
+                    ]),
+                  ),
+              ]),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 12, 24, 0),
+              child: Text('Чтобы добавить вкладку, сначала уберите одну из панели. Вкладки, которых нет на панели, остаются доступны из «Коллекций» и меню профиля.',
+                  style: TextStyle(fontSize: 12.5, height: 1.4, color: C.muted)),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+              child: Center(
+                child: FilledButton.tonal(
+                  onPressed: () => set(List.of(_MobileShellState.defaultHotbar)),
+                  style: FilledButton.styleFrom(shape: const StadiumBorder(), minimumSize: const Size(0, 44), padding: const EdgeInsets.symmetric(horizontal: 22)),
+                  child: const Text('Сбросить по умолчанию', style: TextStyle(fontWeight: FontWeight.w600)),
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 12, 24, 0),
+              child: Center(child: Text('Это окно открывается и долгим нажатием на панель', style: TextStyle(fontSize: 12.5, color: Color(0x99FFFFFF)))),
+            ),
+          ]),
+        ),
       ),
-    ]);
+    );
   }
 }
 
@@ -995,11 +1518,9 @@ class TrackTile extends StatelessWidget {
       onTap: onTap,
       onLongPress: () => menu(context),
       trailing: IconButton(
-        onPressed: () {
-          HapticFeedback.lightImpact();
-          services.library.toggleLike(track.id);
-        },
-        icon: Icon(liked ? Icons.favorite_rounded : Icons.favorite_border_rounded, color: liked ? C.accent : C.faint, size: 22),
+        tooltip: 'Ещё',
+        onPressed: () => menu(context),
+        icon: const Icon(Icons.more_horiz_rounded, color: Color(0xBFFFFFFF), size: 22),
       ),
     );
   }
@@ -1171,105 +1692,308 @@ class CollectionPage extends StatelessWidget {
     playTracks(context, services, tracks, shuffle ? math.Random().nextInt(tracks.length) : 0);
   }
 
+  Album? get _album {
+    if (tracks.isEmpty) return null;
+    final al = services.library.albumOf(tracks.first);
+    return al != null && al.title == title ? al : null;
+  }
+
+  Artist? get _artist => _album != null ? null : services.library.artist(title.toLowerCase());
+
   @override
   Widget build(BuildContext context) {
+    final lib = services.library;
     final c = cover ?? (tracks.isEmpty ? null : tracks.first);
     final width = MediaQuery.sizeOf(context).width;
     final top = MediaQuery.paddingOf(context).top;
-    // Обложка на всю ширину, нижняя часть растворяется; название лежит на переходе
-    final coverH = width;
-    final heroH = coverH - 40 + 78;
-    // Фон под цвет обложки альбома, а не играющего трека
+    // Как в макете: обложка 1,13 ширины, нижняя часть растворяется, название лежит на переходе
+    final coverH = width * 1.13;
+    final heroH = coverH + 42 + 50 + 12;
+    var totalMs = 0;
+    for (final t in tracks) {
+      totalMs += t.durationMs ?? 0;
+    }
+    final artists = {for (final t in tracks) t.albumArtist.isNotEmpty ? t.albumArtist : t.artist};
+    final sub = _album != null && artists.length == 1 && artists.first.isNotEmpty ? artists.first : '';
+    final year = tracks.map((t) => t.year).firstWhere((y) => y.isNotEmpty, orElse: () => '');
+    final meta = [
+      if (year.isNotEmpty) year,
+      '${tracks.length} ${QueueSheet._tracksWord(tracks.length)}',
+      if (totalMs > 0) QueueSheet.span(totalMs),
+    ].join(' · ');
     return Backdrop(
       services: services,
       track: c,
       child: Scaffold(
-      backgroundColor: Colors.transparent,
-      body: AnimatedBuilder(
-        animation: Listenable.merge([services.cache, services.library, services.player]),
-        builder: (context, _) => CustomScrollView(slivers: [
-          SliverToBoxAdapter(
-            child: SizedBox(
-              height: heroH,
-              child: Stack(children: [
-                if (c != null) Positioned(top: 0, left: 0, right: 0, height: coverH, child: FadeCover(services: services, track: c, width: width, height: coverH)),
-                Positioned(
-                  left: 16,
-                  top: top + 8,
-                  child: Glass(
-                    radius: 23,
-                    color: C.glassLight,
-                    child: InkWell(
-                      onTap: () => Navigator.of(context).maybePop(),
-                      child: const SizedBox(width: 46, height: 46, child: Icon(Icons.chevron_left_rounded, size: 30, color: C.text)),
+        backgroundColor: Colors.transparent,
+        body: AnimatedBuilder(
+          animation: Listenable.merge([services.cache, services.library, services.player]),
+          builder: (context, _) {
+            final al = _album;
+            final ar = _artist;
+            final fav = al != null ? lib.isFavAlbum(al) : (ar != null ? lib.isFavArtist(ar.key) : false);
+            return CustomScrollView(slivers: [
+              SliverToBoxAdapter(
+                child: SizedBox(
+                  height: heroH,
+                  child: Stack(children: [
+                    if (c != null) Positioned(top: 0, left: 0, right: 0, height: coverH, child: FadeCover(services: services, track: c, width: width, height: coverH)),
+                    Positioned(
+                      left: 18,
+                      top: top + 6,
+                      child: Glass(
+                        radius: 23,
+                        color: C.glassLight,
+                        child: InkWell(
+                          onTap: () => Navigator.of(context).maybePop(),
+                          child: const SizedBox(width: 46, height: 46, child: Icon(Icons.chevron_left_rounded, size: 30, color: Colors.white)),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-                Positioned(
-                  left: 20,
-                  right: 20,
-                  top: coverH - 40,
-                  child: Column(children: [
-                    Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(26)),
-                    const SizedBox(height: 6),
-                    Text('${tracks.length} треков', style: const TextStyle(color: C.muted, fontSize: 14)),
+                    Positioned(
+                      right: 18,
+                      top: top + 6,
+                      child: Glass(
+                        radius: 23,
+                        color: C.glassLight,
+                        child: SizedBox(
+                          height: 46,
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            const SizedBox(width: 4),
+                            SizedBox(
+                              width: 52,
+                              child: IconButton(
+                                  tooltip: 'Поделиться',
+                                  onPressed: () {
+                                    Clipboard.setData(ClipboardData(text: sub.isEmpty ? title : '$sub — $title'));
+                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Название скопировано')));
+                                  },
+                                  icon: const Icon(Icons.ios_share_rounded, size: 22, color: Colors.white)),
+                            ),
+                            SizedBox(
+                              width: 52,
+                              child: IconButton(
+                                  tooltip: 'Ещё',
+                                  onPressed: () => _more(context),
+                                  icon: const Icon(Icons.more_horiz_rounded, size: 24, color: Colors.white)),
+                            ),
+                            const SizedBox(width: 4),
+                          ]),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 20,
+                      right: 20,
+                      top: coverH - 52,
+                      child: Column(children: [
+                        Text(title, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(26)),
+                        if (sub.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Text(sub,
+                                textAlign: TextAlign.center,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w400, color: Color(0xE0FFFFFF))),
+                          ),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(meta, style: const TextStyle(color: C.muted, fontSize: 13)),
+                        ),
+                      ]),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      top: coverH + 42,
+                      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        _CircleBtn(onTap: tracks.isEmpty ? null : () => play(context, shuffle: true), icon: Icons.shuffle_rounded, tooltip: 'Перемешать'),
+                        const SizedBox(width: 12),
+                        SizedBox(
+                          width: 200,
+                          height: 50,
+                          child: FilledButton.icon(
+                            style: FilledButton.styleFrom(shape: const StadiumBorder(), textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+                            onPressed: tracks.isEmpty ? null : () => play(context),
+                            icon: const Icon(Icons.play_arrow_rounded, size: 26),
+                            label: const Text('Воспроизвести'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        _CircleBtn(
+                          tooltip: 'В любимое',
+                          icon: fav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                          color: fav ? C.accent : C.text,
+                          onTap: al == null && ar == null
+                              ? null
+                              : () {
+                                  HapticFeedback.lightImpact();
+                                  if (al != null) {
+                                    lib.toggleFavAlbum(al);
+                                  } else {
+                                    lib.toggleFavArtist(ar!.key);
+                                  }
+                                },
+                        ),
+                      ]),
+                    ),
                   ]),
                 ),
-              ]),
-            ),
+              ),
+              SliverToBoxAdapter(
+                child: Container(margin: const EdgeInsets.symmetric(horizontal: 18), height: 1, color: const Color(0x1AFFFFFF)),
+              ),
+              SliverList.builder(
+                itemCount: tracks.length,
+                itemBuilder: (_, i) => _AlbumRow(
+                  services: services,
+                  track: tracks[i],
+                  index: i + 1,
+                  onTap: () => playTracks(context, services, tracks, i),
+                  onToast: (m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m))),
+                ),
+              ),
+              const SliverToBoxAdapter(child: SizedBox(height: 120)),
+            ]);
+          },
+        ),
+        bottomNavigationBar: AnimatedBuilder(
+          animation: services.player,
+          builder: (_, __) => services.player.current == null
+              ? const SizedBox.shrink()
+              : SafeArea(top: false, child: MiniPlayer(services: services, onOpen: () => showPlayer(context, services))),
+        ),
+      ),
+    );
+  }
+
+  void _more(BuildContext context) {
+    final p = services.player;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: C.panel,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (sheet) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.playlist_play_rounded),
+            title: const Text('Играть следующим'),
+            onTap: () {
+              for (final t in tracks.reversed) {
+                p.playNext(t);
+              }
+              Navigator.pop(sheet);
+            },
           ),
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
-              child: Column(children: [
-                Row(children: [
-                  Material(
-                    color: C.raised,
-                    shape: const CircleBorder(),
-                    child: InkWell(
-                      customBorder: const CircleBorder(),
-                      onTap: tracks.isEmpty ? null : () => play(context, shuffle: true),
-                      child: const SizedBox(width: 50, height: 50, child: Icon(Icons.shuffle_rounded, size: 23, color: C.text)),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
+          ListTile(
+            leading: const Icon(Icons.queue_music_rounded),
+            title: const Text('В конец очереди'),
+            onTap: () {
+              for (final t in tracks) {
+                p.addToQueue(t);
+              }
+              Navigator.pop(sheet);
+            },
+          ),
+          Padding(padding: const EdgeInsets.fromLTRB(16, 4, 16, 12), child: DownloadButton(services: services, tracks: tracks)),
+        ]),
+      ),
+    );
+  }
+}
+
+class _CircleBtn extends StatelessWidget {
+  const _CircleBtn({required this.onTap, required this.icon, this.tooltip, this.color = C.text});
+  final VoidCallback? onTap;
+  final IconData icon;
+  final String? tooltip;
+  final Color color;
+  @override
+  Widget build(BuildContext context) => Tooltip(
+        message: tooltip ?? '',
+        child: Material(
+          color: const Color(0x1FFFFFFF),
+          shape: const CircleBorder(side: BorderSide(color: Color(0x2EFFFFFF))),
+          child: InkWell(customBorder: const CircleBorder(), onTap: onTap, child: SizedBox(width: 50, height: 50, child: Icon(icon, size: 23, color: color))),
+        ),
+      );
+}
+
+/// Строка трека на странице альбома, как в макете: номер или значок эквалайзера, название, скачивание, «ещё»
+class _AlbumRow extends StatelessWidget {
+  const _AlbumRow({required this.services, required this.track, required this.index, required this.onTap, required this.onToast});
+  final MobileServices services;
+  final Track track;
+  final int index;
+  final VoidCallback onTap;
+  final void Function(String) onToast;
+
+  @override
+  Widget build(BuildContext context) {
+    final playing = services.player.current?.id == track.id;
+    final cache = services.cache;
+    final marked = cache.isTrackOffline(track.id);
+    final ready = marked && cache.has(track.id);
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+        child: SizedBox(
+          height: 48,
+          child: Row(children: [
+            SizedBox(
+              width: 30,
+              child: playing
+                  ? Icon(services.player.playing ? Icons.graphic_eq_rounded : Icons.pause_rounded, size: 20, color: C.accent)
+                  : Text('$index', style: const TextStyle(fontSize: 15, color: Color(0x8CFFFFFF), fontFeatures: [ui.FontFeature.tabularFigures()])),
+            ),
+            Expanded(
+              child: Container(
+                height: 48,
+                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x1AFFFFFF)))),
+                child: Row(children: [
                   Expanded(
-                    child: SizedBox(
-                      height: 50,
-                      child: FilledButton.icon(
-                        style: FilledButton.styleFrom(shape: const StadiumBorder(), textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
-                        onPressed: tracks.isEmpty ? null : () => play(context),
-                        icon: const Icon(Icons.play_arrow_rounded, size: 26),
-                        label: const Text('Воспроизвести'),
+                    child: Text(track.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.w500, color: playing ? C.accent : C.text)),
+                  ),
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {
+                      final on = !marked;
+                      cache.setTracksOffline([track.id], on);
+                      onToast(on ? 'Скачиваем «${track.title}»' : 'Убрано из загрузок');
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+                      child: Container(
+                        width: 20,
+                        height: 20,
+                        decoration: BoxDecoration(shape: BoxShape.circle, color: ready ? C.accent : const Color(0x33FFFFFF)),
+                        child: marked && !ready
+                            ? const Padding(padding: EdgeInsets.all(4), child: CircularProgressIndicator(strokeWidth: 2))
+                            : Icon(ready ? Icons.check_rounded : Icons.arrow_downward_rounded, size: 13, color: ready ? C.accentInk : const Color(0xBFFFFFFF)),
                       ),
                     ),
                   ),
+                  SizedBox(
+                    width: 30,
+                    height: 32,
+                    child: IconButton(
+                        padding: EdgeInsets.zero,
+                        tooltip: 'Ещё',
+                        onPressed: () => showTrackMenu(context, services, track, onToast: onToast),
+                        icon: const Icon(Icons.more_horiz_rounded, size: 22, color: Color(0xBFFFFFFF))),
+                  ),
                 ]),
-                const SizedBox(height: 10),
-                DownloadButton(services: services, tracks: tracks),
-              ]),
+              ),
             ),
-          ),
-          SliverList.builder(
-            itemCount: tracks.length,
-            itemBuilder: (_, i) => TrackTile(
-              services: services,
-              track: tracks[i],
-              index: i + 1,
-              onTap: () => playTracks(context, services, tracks, i),
-              onToast: (m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m))),
-            ),
-          ),
-          const SliverToBoxAdapter(child: SizedBox(height: 12)),
-        ]),
+          ]),
+        ),
       ),
-      bottomNavigationBar: AnimatedBuilder(
-        animation: services.player,
-        builder: (_, __) => services.player.current == null
-            ? const SizedBox.shrink()
-            : SafeArea(top: false, child: MiniPlayer(services: services, onOpen: () => showPlayer(context, services))),
-      ),
-    ));
+    );
   }
 }
 
@@ -1798,8 +2522,9 @@ class _FullPlayerState extends State<FullPlayer> {
       isScrollControlled: true,
       useSafeArea: true,
       backgroundColor: C.panel,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => FractionallySizedBox(heightFactor: 0.8, child: QueueSheet(services: services)),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(38))),
+      clipBehavior: Clip.antiAlias,
+      builder: (_) => FractionallySizedBox(heightFactor: 0.94, child: QueueSheet(services: services)),
     );
   }
 
@@ -2359,37 +3084,179 @@ class _TrackMenu extends StatelessWidget {
 class QueueSheet extends StatelessWidget {
   const QueueSheet({super.key, required this.services});
   final MobileServices services;
+
+  static String span(int ms) {
+    final m = (ms / 60000).round();
+    return m >= 60 ? '${m ~/ 60} ч ${m % 60} мин' : '$m мин';
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
         animation: services.player,
         builder: (_, __) {
           final p = services.player;
           final ids = p.queue;
-          return Column(children: [
-            const SizedBox(height: 10),
-            Container(width: 38, height: 4, decoration: BoxDecoration(color: C.line, borderRadius: BorderRadius.circular(2))),
-            Padding(padding: const EdgeInsets.all(14), child: Text('Очередь · ${ids.length}', style: display(18))),
-            Expanded(
-              child: ListView.builder(
-                itemCount: ids.length,
-                itemBuilder: (_, i) {
-                  final t = services.library.data.tracks[ids[i]];
-                  if (t == null) return const SizedBox.shrink();
-                  final now = i == p.index;
-                  return ListTile(
-                    leading: TrackCover(services: services, track: t, size: 44),
-                    title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: now ? C.accent : C.text, fontWeight: FontWeight.w600)),
-                    subtitle: Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted)),
-                    onTap: () => p.jumpTo(i),
-                  );
-                },
-              ),
+          final cur = p.index >= 0 && p.index < ids.length ? services.library.data.tracks[ids[p.index]] : null;
+          final next = [for (var i = p.index + 1; i < ids.length; i++) i];
+          var totalMs = 0;
+          for (final i in next) {
+            totalMs += services.library.data.tracks[ids[i]]?.durationMs ?? 0;
+          }
+          Widget pill(String text, IconData icon, bool on, VoidCallback onTap) => Expanded(
+                child: Material(
+                  color: C.glassLight,
+                  shape: const StadiumBorder(side: BorderSide(color: Color(0x2EFFFFFF))),
+                  child: InkWell(
+                    customBorder: const StadiumBorder(),
+                    onTap: onTap,
+                    child: SizedBox(
+                      height: 44,
+                      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        Icon(icon, size: 20, color: on ? C.accent : C.text),
+                        const SizedBox(width: 8),
+                        Text(text, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: on ? C.accent : C.text)),
+                      ]),
+                    ),
+                  ),
+                ),
+              );
+          return DecoratedBox(
+            decoration: const BoxDecoration(
+              color: C.bg,
+              gradient: RadialGradient(center: Alignment(0, -1.1), radius: 1.1, colors: [Color(0x66E0527B), Color(0x00E0527B)]),
             ),
-          ]);
+            child: Column(children: [
+              const SizedBox(height: 12),
+              Container(width: 42, height: 5, decoration: BoxDecoration(color: const Color(0x73FFFFFF), borderRadius: BorderRadius.circular(3))),
+              Expanded(
+                child: ReorderableListView.builder(
+                  buildDefaultDragHandles: false,
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+                  itemCount: next.length,
+                  proxyDecorator: (child, _, __) => Material(color: Colors.transparent, child: child),
+                  onReorder: (from, to) {
+                    if (to > from) to--;
+                    p.moveInQueue(next[from], next[to]);
+                  },
+                  header: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 34, 4, 0),
+                      child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                        Expanded(child: Text('Очередь', style: display(32))),
+                        Material(
+                          color: C.glassLight,
+                          shape: const StadiumBorder(side: BorderSide(color: Color(0x2EFFFFFF))),
+                          child: InkWell(
+                            customBorder: const StadiumBorder(),
+                            onTap: () {
+                              for (var i = ids.length - 1; i > p.index; i--) {
+                                p.removeAt(i);
+                              }
+                            },
+                            child: const SizedBox(
+                                height: 36, child: Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Center(child: Text('Очистить', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600))))),
+                          ),
+                        ),
+                      ]),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 14, 4, 0),
+                      child: Row(children: [
+                        pill('Перемешать', Icons.shuffle_rounded, p.shuffle, p.toggleShuffle),
+                        const SizedBox(width: 10),
+                        pill(p.repeat == RepeatSetting.one ? 'Повтор: один' : 'Повтор', p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+                            p.repeat != RepeatSetting.off, p.cycleRepeat),
+                      ]),
+                    ),
+                    if (cur != null) ...[
+                      Padding(padding: const EdgeInsets.fromLTRB(4, 22, 4, 0), child: Text('Сейчас играет', style: display(19))),
+                      Container(
+                        height: 62,
+                        margin: const EdgeInsets.only(top: 10),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        decoration: BoxDecoration(
+                          color: C.accent.withValues(alpha: 0.14),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: C.accent.withValues(alpha: 0.5)),
+                        ),
+                        child: Row(children: [
+                          TrackCover(services: services, track: cur, size: 44, radius: 8),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(cur.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600, color: C.accent)),
+                              Text(cur.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: Color(0xB8FFFFFF))),
+                            ]),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Icon(p.playing ? Icons.graphic_eq_rounded : Icons.pause_rounded, size: 22, color: C.accent),
+                          ),
+                        ]),
+                      ),
+                    ],
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 22, 4, 6),
+                      child: Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+                        Expanded(child: Text('Далее', style: display(19))),
+                        Text(next.isEmpty ? 'пусто' : '${next.length} ${_tracksWord(next.length)}${totalMs > 0 ? ' · ${span(totalMs)}' : ''}',
+                            style: const TextStyle(fontSize: 13, color: Color(0xB8FFFFFF))),
+                      ]),
+                    ),
+                  ]),
+                  itemBuilder: (_, k) {
+                    final qi = next[k];
+                    final t = services.library.data.tracks[ids[qi]];
+                    if (t == null) return SizedBox.shrink(key: ValueKey('q$k${ids[qi]}'));
+                    return InkWell(
+                      key: ValueKey('q${ids[qi]}$qi'),
+                      onTap: () => p.jumpTo(qi),
+                      child: Container(
+                        height: 60,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x12FFFFFF)))),
+                        child: Row(children: [
+                          TrackCover(services: services, track: t, size: 44, radius: 8),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                              Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: Color(0xB8FFFFFF))),
+                            ]),
+                          ),
+                          if ((t.durationMs ?? 0) > 0)
+                            Text(_FullPlayerState.time(Duration(milliseconds: t.durationMs!)), style: const TextStyle(fontSize: 13, color: Color(0x9EFFFFFF))),
+                          SizedBox(
+                            width: 32,
+                            height: 32,
+                            child: IconButton(
+                                padding: EdgeInsets.zero,
+                                tooltip: 'Убрать из очереди',
+                                onPressed: () => p.removeAt(qi),
+                                icon: const Icon(Icons.close_rounded, size: 20, color: Color(0x99FFFFFF))),
+                          ),
+                          ReorderableDragStartListener(
+                            index: k,
+                            child: const SizedBox(width: 28, height: 32, child: Icon(Icons.drag_handle_rounded, size: 22, color: Color(0x8CFFFFFF))),
+                          ),
+                        ]),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ]),
+          );
         },
       );
-}
 
+  static String _tracksWord(int n) {
+    final m10 = n % 10, m100 = n % 100;
+    if (m10 == 1 && m100 != 11) return 'трек';
+    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return 'трека';
+    return 'треков';
+  }
+}
 
 /// «Играет на другом устройстве»: тот же аккаунт слушает на ПК или втором телефоне — можно продолжить здесь,
 /// с того же трека и того же места

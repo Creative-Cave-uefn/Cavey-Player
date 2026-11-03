@@ -109,6 +109,16 @@ class CompanyPage extends StatelessWidget {
   const CompanyPage({super.key, required this.services});
   final MobileServices services;
 
+  @override
+  Widget build(BuildContext context) => SubPage(services: services, title: 'Компания', child: CompanyView(services: services));
+}
+
+/// Содержимое «Компании»: и как отдельная страница, и как вкладка нижней панели (embedded)
+class CompanyView extends StatelessWidget {
+  const CompanyView({super.key, required this.services, this.embedded = false});
+  final MobileServices services;
+  final bool embedded;
+
   void openUser(BuildContext context, String email) =>
       Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => UserPage(services: services, email: email)));
 
@@ -116,10 +126,7 @@ class CompanyPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final social = services.social;
     final lib = services.library;
-    return SubPage(
-      services: services,
-      title: 'Компания',
-      child: AnimatedBuilder(
+    return AnimatedBuilder(
         animation: Listenable.merge([social, lib]),
         builder: (_, __) {
           final people = [for (final e in lib.people) if (e != lib.me) e]..sort((a, b) => lib.nameOf(a).toLowerCase().compareTo(lib.nameOf(b).toLowerCase()));
@@ -129,10 +136,20 @@ class CompanyPage extends StatelessWidget {
           final notices = social.notices.take(20).toList();
           final following = social.following;
           return ListView(padding: const EdgeInsets.only(bottom: 24), children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
-              child: Text('Что слушают друзья, что у вас в чарте и что нового в библиотеке.', style: const TextStyle(color: C.muted, height: 1.4)),
-            ),
+            if (embedded)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Компания', style: display(34)),
+                  const SizedBox(height: 6),
+                  const Text('Что слушают друзья и что нового в библиотеке', style: TextStyle(fontSize: 14.5, color: C.muted)),
+                ]),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+                child: Text('Что слушают друзья, что у вас в чарте и что нового в библиотеке.', style: const TextStyle(color: C.muted, height: 1.4)),
+              ),
             if (following != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
@@ -211,7 +228,6 @@ class CompanyPage extends StatelessWidget {
             for (final e in feed) _FeedRow(services: services, event: e),
           ]);
         },
-      ),
     );
   }
 }
