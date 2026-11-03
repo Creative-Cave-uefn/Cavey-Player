@@ -19,6 +19,7 @@ class DownloadPage extends StatefulWidget {
 
 class _DownloadPageState extends State<DownloadPage> {
   final _input = TextEditingController();
+  final _spotifyClientId = TextEditingController();
   String? _target;
   /// Галочка «Сделать плейлист» хранится в настройках, поэтому не сбрасывается при смене вкладки
   bool _makePlaylist = true;
@@ -29,7 +30,15 @@ class _DownloadPageState extends State<DownloadPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final dl = Services.of(context).downloads;
       if (dl.toolsVersion.isEmpty) dl.refreshVersion();
+      dl.refreshSpotify();
     });
+  }
+
+  @override
+  void dispose() {
+    _input.dispose();
+    _spotifyClientId.dispose();
+    super.dispose();
   }
 
   bool _loaded = false;
@@ -137,6 +146,75 @@ class _DownloadPageState extends State<DownloadPage> {
                   setState(() => app.settings.downloadProvider = value);
                   app.lib.saveSettings();
                 },
+              ),
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: C.raised,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: C.line),
+                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(children: [
+                    const Icon(Icons.account_circle_outlined, color: C.muted, size: 19),
+                    const SizedBox(width: 8),
+                    const Expanded(child: Text('Spotify — вход для импорта плейлистов',
+                        style: TextStyle(fontWeight: FontWeight.w600))),
+                    if (dl.spotifyConnected)
+                      const Icon(Icons.check_circle_outline, color: Color(0xFF7CD3B8), size: 19),
+                  ]),
+                  const SizedBox(height: 8),
+                  Text(
+                    dl.spotifyConnected
+                        ? 'Подключён аккаунт: ${dl.spotifyAccount.isEmpty ? 'Spotify' : dl.spotifyAccount}'
+                        : 'Вход позволяет читать все страницы ваших плейлистов Spotify. '
+                          'У других пользователей Spotify API может показывать только первые 100 записей.',
+                    style: const TextStyle(color: C.muted, fontSize: 13),
+                  ),
+                  if (!dl.spotifyConnected) ...[
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: _spotifyClientId,
+                      decoration: const InputDecoration(
+                        labelText: 'Spotify Client ID (если не встроен в сборку)',
+                        hintText: 'Client ID из Spotify Developer Dashboard',
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 7),
+                    const SelectableText(
+                      'Redirect URI для Spotify App: http://127.0.0.1:43811/callback',
+                      style: TextStyle(color: C.faint, fontSize: 12),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Wrap(spacing: 10, runSpacing: 5, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                    if (dl.spotifyConnected)
+                      OutlinedButton.icon(
+                        onPressed: dl.busy ? null : dl.logoutSpotify,
+                        icon: const Icon(Icons.logout, size: 17),
+                        label: const Text('Выйти из Spotify'),
+                      )
+                    else
+                      FilledButton.tonalIcon(
+                        onPressed: dl.busy ? null : () => dl.loginSpotify(_spotifyClientId.text),
+                        icon: const Icon(Icons.login_rounded, size: 17),
+                        label: const Text('Войти в Spotify'),
+                      ),
+                    if (dl.spotifyBusy)
+                      const SizedBox.square(dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2)),
+                  ]),
+                  if (dl.spotifyMessage.isNotEmpty) ...[
+                    const SizedBox(height: 5),
+                    Text(dl.spotifyMessage, style: const TextStyle(color: C.muted, fontSize: 12)),
+                  ],
+                  if (dl.spotifyError.isNotEmpty) ...[
+                    const SizedBox(height: 5),
+                    Text(dl.spotifyError, style: const TextStyle(color: C.danger, fontSize: 12)),
+                  ],
+                ]),
               ),
               const SizedBox(height: 14),
               Wrap(spacing: 12, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
