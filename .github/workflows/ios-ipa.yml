@@ -76,9 +76,10 @@ jobs:
             echo "::notice::Секрет RELEASES_TOKEN не задан, .ipa только в артефактах сборки"
             exit 0
           fi
-          gh release create "ios-v$APP_VERSION" dist/CaveyPlayer.ipa \
-            --repo "$RELEASES_REPO" --prerelease \
-            --title "iOS $APP_VERSION" --notes "${NOTES:-Cavey Player для iPhone $APP_VERSION}"
+          gh release view "ios-v$APP_VERSION" --repo "$RELEASES_REPO" >/dev/null 2>&1 || \
+            gh release create "ios-v$APP_VERSION" --repo "$RELEASES_REPO" --prerelease \
+              --title "iOS $APP_VERSION" --notes "${NOTES:-Cavey Player для iPhone $APP_VERSION}"
+          gh release upload "ios-v$APP_VERSION" dist/CaveyPlayer.ipa --repo "$RELEASES_REPO" --clobber
           python3 tool/ios/make_source.py dist/CaveyPlayer.ipa
           cp assets/icon.png icon.png
           gh release view ios-source --repo "$RELEASES_REPO" >/dev/null 2>&1 || \
