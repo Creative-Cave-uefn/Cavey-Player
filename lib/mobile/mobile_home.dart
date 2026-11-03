@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -958,60 +959,7 @@ class TrackTile extends StatelessWidget {
   /// Номер в списке. Как на ПК: на месте номера у играющего трека значок эквалайзера (на паузе — пауза)
   final int? index;
 
-  void menu(BuildContext context) {
-    final p = services.player;
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: C.panel,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (sheet) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(
-            leading: TrackCover(services: services, track: track, size: 44),
-            title: Text(track.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text(track.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis),
-          ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.playlist_play_rounded),
-            title: const Text('Играть следующим'),
-            onTap: () {
-              p.playNext(track);
-              Navigator.pop(sheet);
-              onToast?.call('Сыграет следующим');
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.queue_music_rounded),
-            title: const Text('В конец очереди'),
-            onTap: () {
-              p.addToQueue(track);
-              Navigator.pop(sheet);
-              onToast?.call('Добавлено в очередь');
-            },
-          ),
-          ListTile(
-            leading: Icon(services.cache.isTrackOffline(track.id) ? Icons.download_done_rounded : Icons.download_rounded),
-            title: Text(services.cache.isTrackOffline(track.id) ? 'Убрать из загрузок' : 'Скачать на телефон'),
-            onTap: () {
-              final on = !services.cache.isTrackOffline(track.id);
-              services.cache.setTracksOffline([track.id], on);
-              Navigator.pop(sheet);
-              onToast?.call(on ? 'Скачиваем «${track.title}»' : 'Убрано из загрузок');
-            },
-          ),
-          ListTile(
-            leading: Icon(services.library.isLiked(track.id) ? Icons.favorite_border_rounded : Icons.favorite_rounded),
-            title: Text(services.library.isLiked(track.id) ? 'Убрать из любимых' : 'В любимые'),
-            onTap: () {
-              services.library.toggleLike(track.id);
-              Navigator.pop(sheet);
-            },
-          ),
-        ]),
-      ),
-    );
-  }
+  void menu(BuildContext context) => showTrackMenu(context, services, track, onToast: onToast);
 
   @override
   Widget build(BuildContext context) {
@@ -1866,12 +1814,12 @@ class _FullPlayerState extends State<FullPlayer> {
               final t = p.current;
               if (t == null) return const Center(child: Text('Ничего не играет'));
               final size = MediaQuery.sizeOf(context);
-              final heroH = size.height * 0.54;
+              final heroH = size.height * 0.59;
               final topPad = MediaQuery.paddingOf(context).top;
               final heroSpace = math.max(120.0, heroH - topPad - 56 - 78);
               final body = SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  padding: const EdgeInsets.symmetric(horizontal: 30),
                   child: Column(children: [
                     if (lyrics) ...[
                       const SizedBox(height: 22),
@@ -1909,109 +1857,161 @@ class _FullPlayerState extends State<FullPlayer> {
                       const SizedBox(height: 8),
                       Expanded(child: LyricsView(services: services, track: t)),
                     ] else ...[
+                      const Spacer(),
+                      // Название, исполнитель, «любимое» и «ещё» — как в макете
                       Row(children: [
-                        const SizedBox(height: 48),
-                        const Expanded(child: SizedBox.shrink()),
-                        IconButton(
-                            tooltip: 'Текст песни',
-                            onPressed: () => setState(() => lyrics = true),
-                            icon: const Icon(Icons.lyrics_outlined, size: 25, color: C.text)),
-                        IconButton(onPressed: () => queue(context), icon: const Icon(Icons.queue_music_rounded, size: 26, color: C.text)),
-                      ]),
-                      // Место под обложку: она лежит на весь экран позади и растворяется у названия
-                      SizedBox(height: heroSpace),
-                    Row(children: [
-                      Expanded(
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () => goMenu(t),
-                          child: Column(key: _nameKey, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text(t.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(23)),
-                            const SizedBox(height: 4),
-                            Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 15)),
-                          ]),
-                        ),
-                      ),
-                      if (services.wave.active) ...[
-                        IconButton(onPressed: services.wave.dislike, tooltip: 'Не нравится', icon: const Icon(Icons.thumb_down_alt_outlined, color: C.muted, size: 24)),
-                        IconButton(
-                            onPressed: services.wave.upvote,
-                            tooltip: 'Нравится в волне',
-                            icon: Icon(services.wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
-                                color: services.wave.isUpvoted(t.id) ? C.accent : C.muted, size: 24)),
-                      ],
-                      IconButton(
-                        tooltip: services.cache.isTrackOffline(t.id) ? 'Убрать из загрузок' : 'Скачать на телефон',
-                        onPressed: () => services.cache.setTracksOffline([t.id], !services.cache.isTrackOffline(t.id)),
-                        icon: Icon(
-                            services.cache.isTrackOffline(t.id)
-                                ? (services.cache.has(t.id) ? Icons.download_done_rounded : Icons.downloading_rounded)
-                                : Icons.download_rounded,
-                            color: services.cache.isTrackOffline(t.id) ? C.accent : C.muted,
-                            size: 26),
-                      ),
-                      IconButton(
-                        onPressed: () => services.library.toggleLike(t.id),
-                        icon: Icon(services.library.isLiked(t.id) ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                            color: services.library.isLiked(t.id) ? C.accent : C.muted, size: 28),
-                      ),
-                    ]),
-                    const SizedBox(height: 10),
-                    ValueListenableBuilder<Duration>(
-                      valueListenable: p.position,
-                      builder: (_, position, __) {
-                        final max = p.duration.inMilliseconds.toDouble();
-                        final value = max <= 0 ? 0.0 : position.inMilliseconds.toDouble().clamp(0.0, max).toDouble();
-                        return Column(children: [
-                          SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              trackHeight: 4,
-                              activeTrackColor: C.accent,
-                              inactiveTrackColor: C.raised,
-                              thumbColor: C.accent,
-                              overlayShape: SliderComponentShape.noOverlay,
-                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                            ),
-                            child: Slider(
-                                value: value,
-                                max: max <= 0 ? 1 : max,
-                                onChanged: max <= 0 ? null : (v) => p.seek(Duration(milliseconds: v.round()))),
-                          ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 6),
-                            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                              Text(time(position), style: const TextStyle(color: C.muted, fontSize: 12)),
-                              Text(time(p.duration), style: const TextStyle(color: C.muted, fontSize: 12)),
+                        Expanded(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () => goMenu(t),
+                            child: Column(key: _nameKey, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(t.title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w600, letterSpacing: -0.3, color: Colors.white)),
+                              const SizedBox(height: 2),
+                              Text(t.displayArtist,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w400, color: Color(0x9EFFFFFF))),
                             ]),
                           ),
-                        ]);
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                      IconButton(
-                          onPressed: p.toggleShuffle,
-                          icon: Icon(Icons.shuffle_rounded, size: 26, color: p.shuffle ? C.accent : C.muted)),
-                      IconButton(onPressed: p.previous, icon: const Icon(Icons.skip_previous_rounded, size: 42, color: C.text)),
-                      Material(
-                        color: C.accent,
-                        shape: const CircleBorder(),
-                        child: InkWell(
-                          customBorder: const CircleBorder(),
-                          onTap: p.toggle,
-                          child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Icon(p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 40, color: C.accentInk)),
                         ),
+                        if (services.wave.active) ...[
+                          const SizedBox(width: 8),
+                          _RoundBtn(
+                              onTap: services.wave.dislike,
+                              icon: const Icon(Icons.thumb_down_alt_outlined, size: 21, color: Colors.white)),
+                          const SizedBox(width: 8),
+                          _RoundBtn(
+                              onTap: services.wave.upvote,
+                              icon: Icon(services.wave.isUpvoted(t.id) ? Icons.thumb_up_alt_rounded : Icons.thumb_up_alt_outlined,
+                                  size: 21, color: services.wave.isUpvoted(t.id) ? C.accent : Colors.white)),
+                        ],
+                        const SizedBox(width: 12),
+                        _RoundBtn(
+                            onTap: () {
+                              HapticFeedback.lightImpact();
+                              services.library.toggleLike(t.id);
+                            },
+                            icon: Icon(services.library.isLiked(t.id) ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                                size: 22, color: services.library.isLiked(t.id) ? C.accent : Colors.white)),
+                        const SizedBox(width: 12),
+                        _RoundBtn(
+                            onTap: () => showTrackMenu(context, services, t, onToast: (m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)))),
+                            icon: const Icon(Icons.more_horiz_rounded, size: 24, color: Colors.white)),
+                      ]),
+                      const SizedBox(height: 22),
+                      ValueListenableBuilder<Duration>(
+                        valueListenable: p.position,
+                        builder: (_, position, __) {
+                          final max = p.duration.inMilliseconds.toDouble();
+                          final value = max <= 0 ? 0.0 : position.inMilliseconds.toDouble().clamp(0.0, max).toDouble();
+                          final ms = t.durationMs ?? p.duration.inMilliseconds;
+                          final kbps = ms > 0 && t.size > 0 ? (t.size * 8 / ms).round() : 0;
+                          return Column(children: [
+                            _FlatBar(
+                              value: max <= 0 ? 0 : value / max,
+                              onChanged: max <= 0 ? null : (v) => p.seek(Duration(milliseconds: (v * max).round())),
+                            ),
+                            const SizedBox(height: 9),
+                            Stack(alignment: Alignment.center, children: [
+                              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                                Text(time(position), style: const TextStyle(color: Color(0x8CFFFFFF), fontSize: 12.5, fontWeight: FontWeight.w500)),
+                                Text('−${time(p.duration - position < Duration.zero ? Duration.zero : p.duration - position)}',
+                                    style: const TextStyle(color: Color(0x8CFFFFFF), fontSize: 12.5, fontWeight: FontWeight.w500)),
+                              ]),
+                              if (kbps > 0)
+                                Text('$kbps кбит/с', style: const TextStyle(color: Color(0x99FFFFFF), fontSize: 12.5, fontWeight: FontWeight.w600)),
+                            ]),
+                          ]);
+                        },
                       ),
-                      IconButton(onPressed: p.next, icon: const Icon(Icons.skip_next_rounded, size: 42, color: C.text)),
-                      IconButton(
-                          onPressed: p.cycleRepeat,
-                          icon: Icon(p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
-                              size: 26, color: p.repeat == RepeatSetting.off ? C.muted : C.accent)),
-                    ]),
-                      const Spacer(),
-                      const SizedBox(height: 18),
+                      const SizedBox(height: 21),
+                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                        SizedBox(
+                          width: 64,
+                          height: 64,
+                          child: IconButton(
+                              padding: EdgeInsets.zero,
+                              onPressed: p.previous,
+                              icon: const Icon(Icons.fast_rewind_rounded, size: 48, color: Colors.white)),
+                        ),
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: C.accent,
+                            boxShadow: [BoxShadow(color: C.accent.withValues(alpha: 0.28), blurRadius: 30, offset: const Offset(0, 12))],
+                          ),
+                          child: Material(
+                            color: Colors.transparent,
+                            shape: const CircleBorder(),
+                            child: InkWell(
+                              customBorder: const CircleBorder(),
+                              onTap: p.toggle,
+                              child: SizedBox(
+                                  width: 82,
+                                  height: 82,
+                                  child: Icon(p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 46, color: C.accentInk)),
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 64,
+                          height: 64,
+                          child: IconButton(
+                              padding: EdgeInsets.zero,
+                              onPressed: p.next,
+                              icon: const Icon(Icons.fast_forward_rounded, size: 48, color: Colors.white)),
+                        ),
+                      ]),
+                      const SizedBox(height: 36),
+                      Row(children: [
+                        const Icon(Icons.volume_mute_rounded, size: 20, color: Color(0x99FFFFFF)),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _FlatBar(
+                            value: (p.volume / 100).clamp(0.0, 1.0),
+                            onChanged: (v) => p.setVolume(v * 100, save: true),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        const Icon(Icons.volume_up_rounded, size: 24, color: Color(0x99FFFFFF)),
+                      ]),
+                      const SizedBox(height: 20),
+                      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                        SizedBox(
+                          width: 50,
+                          height: 50,
+                          child: IconButton(
+                              tooltip: 'Текст песни',
+                              onPressed: () => setState(() => lyrics = true),
+                              icon: const Icon(Icons.lyrics_outlined, size: 26, color: Color(0xBFFFFFFF))),
+                        ),
+                        const _OutputPill(),
+                        SizedBox(
+                          width: 50,
+                          height: 50,
+                          child: Stack(alignment: Alignment.center, children: [
+                            IconButton(
+                                tooltip: 'Очередь',
+                                onPressed: () => queue(context),
+                                icon: const Icon(Icons.queue_music_rounded, size: 26, color: Color(0xBFFFFFFF))),
+                            Positioned(
+                              right: 2,
+                              top: -2,
+                              child: Container(
+                                width: 20,
+                                height: 20,
+                                decoration: const BoxDecoration(shape: BoxShape.circle, color: Color(0x33FFFFFF)),
+                                child: Icon(p.repeat == RepeatSetting.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+                                    size: 12, color: p.repeat == RepeatSetting.off ? const Color(0x99FFFFFF) : C.accent),
+                              ),
+                            ),
+                          ]),
+                        ),
+                      ]),
+                      const SizedBox(height: 8),
                     ],
                   ]),
                 ),
@@ -2060,6 +2060,300 @@ class _FullPlayerState extends State<FullPlayer> {
           ),
         ),
       );
+}
+
+/// Круглая стеклянная кнопка плеера (44 px)
+class _RoundBtn extends StatelessWidget {
+  const _RoundBtn({required this.onTap, required this.icon});
+  final VoidCallback onTap;
+  final Widget icon;
+  @override
+  Widget build(BuildContext context) => Material(
+        color: const Color(0x24FFFFFF),
+        shape: const CircleBorder(),
+        child: InkWell(customBorder: const CircleBorder(), onTap: onTap, child: SizedBox(width: 44, height: 44, child: Center(child: icon))),
+      );
+}
+
+/// Плоский ползунок из макета: 6 px, без бегунка, белый на светлом фоне
+class _FlatBar extends StatelessWidget {
+  const _FlatBar({required this.value, required this.onChanged});
+  final double value;
+  final ValueChanged<double>? onChanged;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: 22,
+        child: SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: 6,
+            activeTrackColor: const Color(0xB8FFFFFF),
+            inactiveTrackColor: const Color(0x33FFFFFF),
+            disabledActiveTrackColor: const Color(0xB8FFFFFF),
+            disabledInactiveTrackColor: const Color(0x33FFFFFF),
+            thumbShape: SliderComponentShape.noThumb,
+            overlayShape: SliderComponentShape.noOverlay,
+            trackShape: const RoundedRectSliderTrackShape(),
+          ),
+          child: Slider(value: value.clamp(0.0, 1.0), onChanged: onChanged),
+        ),
+      );
+}
+
+/// Куда сейчас идёт звук: наушники, колонка или динамик телефона
+class _OutputPill extends StatefulWidget {
+  const _OutputPill();
+  @override
+  State<_OutputPill> createState() => _OutputPillState();
+}
+
+class _OutputPillState extends State<_OutputPill> {
+  String name = 'Телефон';
+  bool external = false;
+  StreamSubscription<void>? sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _read();
+    AudioSession.instance.then((s) {
+      if (!mounted) return;
+      sub = s.devicesChangedEventStream.listen((_) => _read());
+    }).catchError((_) {});
+  }
+
+  @override
+  void dispose() {
+    sub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _read() async {
+    try {
+      final s = await AudioSession.instance;
+      final out = (await s.getDevices(includeInputs: false)).where((d) => d.isOutput).toList();
+      AudioDevice? ext;
+      for (final d in out) {
+        final k = d.type.toString().toLowerCase();
+        if (!k.contains('builtin')) {
+          ext = d;
+          break;
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        external = ext != null;
+        name = ext != null && ext.name.trim().isNotEmpty ? ext.name.trim() : 'Телефон';
+      });
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) => Container(
+        height: 40,
+        constraints: const BoxConstraints(maxWidth: 190),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(color: const Color(0x1FFFFFFF), borderRadius: BorderRadius.circular(20)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(external ? Icons.headphones_rounded : Icons.smartphone_rounded, size: 18, color: C.accent),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(name,
+                maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: Color(0xE0FFFFFF))),
+          ),
+        ]),
+      );
+}
+
+/// Меню трека как в макете: размытый фон, строка с треком, быстрые действия и список
+Future<void> showTrackMenu(BuildContext context, MobileServices services, Track track, {void Function(String)? onToast}) {
+  final nav = Navigator.of(context, rootNavigator: true);
+  return showGeneralDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: 'Закрыть',
+    barrierColor: Colors.transparent,
+    transitionDuration: const Duration(milliseconds: 180),
+    pageBuilder: (ctx, _, __) => _TrackMenu(services: services, track: track, onToast: onToast, nav: nav),
+    transitionBuilder: (_, a, __, child) => FadeTransition(opacity: a, child: child),
+  );
+}
+
+class _TrackMenu extends StatelessWidget {
+  const _TrackMenu({required this.services, required this.track, required this.nav, this.onToast});
+  final MobileServices services;
+  final Track track;
+  final NavigatorState nav;
+  final void Function(String)? onToast;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = services.player;
+    final lib = services.library;
+    void close() => Navigator.of(context).pop();
+    Future<void> openCollection(String title, List<Track> tracks, Track? cover) async {
+      close();
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      nav.push(MaterialPageRoute<void>(builder: (_) => CollectionPage(services: services, title: title, tracks: tracks, cover: cover)));
+    }
+
+    Widget item(IconData icon, String text, VoidCallback onTap, {Color color = C.text}) => InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: onTap,
+          child: SizedBox(
+            height: 46,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(children: [
+                Icon(icon, size: 22, color: color),
+                const SizedBox(width: 14),
+                Expanded(child: Text(text, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: color))),
+              ]),
+            ),
+          ),
+        );
+    Widget quick(IconData icon, String text, VoidCallback onTap, {Color color = C.text}) => Expanded(
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(0, 12, 0, 10),
+              child: Column(children: [
+                Icon(icon, size: 24, color: color),
+                const SizedBox(height: 6),
+                Text(text, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: color)),
+              ]),
+            ),
+          ),
+        );
+    const sep = Padding(padding: EdgeInsets.symmetric(horizontal: 12, vertical: 5), child: Divider(height: 1, thickness: 1, color: Color(0x24FFFFFF)));
+
+    final liked = lib.isLiked(track.id);
+    final offline = services.cache.isTrackOffline(track.id);
+    final album = lib.albumOf(track);
+    final artist = track.artists.isEmpty ? null : lib.artist(track.artists.first.toLowerCase());
+
+    return Material(
+      type: MaterialType.transparency,
+      child: Stack(children: [
+        Positioned.fill(
+          child: GestureDetector(
+            onTap: close,
+            child: BackdropFilter(
+              filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+              child: const ColoredBox(color: Color(0x800A0A18)),
+            ),
+          ),
+        ),
+        SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Container(
+                  height: 58,
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0x29FFFFFF),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0x42FFFFFF)),
+                    boxShadow: const [BoxShadow(color: Color(0x73000000), blurRadius: 34, offset: Offset(0, 14))],
+                  ),
+                  child: Row(children: [
+                    TrackCover(services: services, track: track, size: 40, radius: 7),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(track.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600)),
+                        Text('${track.displayArtist}${track.album.isEmpty ? '' : ' · ${track.album}'}',
+                            maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, color: Color(0xBFFFFFFF))),
+                      ]),
+                    ),
+                    if ((track.durationMs ?? 0) > 0)
+                      Text(_FullPlayerState.time(Duration(milliseconds: track.durationMs!)), style: const TextStyle(fontSize: 13.5, color: Color(0xB8FFFFFF))),
+                  ]),
+                ),
+                const SizedBox(height: 14),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(26),
+                  child: BackdropFilter(
+                    filter: ui.ImageFilter.blur(sigmaX: 34, sigmaY: 34),
+                    child: Container(
+                      width: 318,
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xB31E1E28),
+                        borderRadius: BorderRadius.circular(26),
+                        border: Border.all(color: const Color(0x33FFFFFF)),
+                      ),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        Row(children: [
+                          quick(liked ? Icons.favorite_rounded : Icons.favorite_border_rounded, liked ? 'В любимом' : 'В любимое', () {
+                            lib.toggleLike(track.id);
+                            close();
+                          }, color: liked ? C.accent : C.text),
+                          quick(offline ? Icons.download_done_rounded : Icons.download_rounded, 'Офлайн', () {
+                            final on = !offline;
+                            services.cache.setTracksOffline([track.id], on);
+                            close();
+                            onToast?.call(on ? 'Скачиваем «${track.title}»' : 'Убрано из загрузок');
+                          }, color: offline ? C.accent : C.text),
+                          quick(Icons.ios_share_rounded, 'Поделиться', () {
+                            Clipboard.setData(ClipboardData(text: '${track.displayArtist} — ${track.title}'));
+                            close();
+                            onToast?.call('Название скопировано');
+                          }),
+                        ]),
+                        sep,
+                        item(Icons.playlist_play_rounded, 'Играть следующим', () {
+                          p.playNext(track);
+                          close();
+                          onToast?.call('Сыграет следующим');
+                        }),
+                        item(Icons.queue_music_rounded, 'В конец очереди', () {
+                          p.addToQueue(track);
+                          close();
+                          onToast?.call('Добавлено в очередь');
+                        }),
+                        item(Icons.playlist_add_rounded, 'Добавить в плейлист', () async {
+                          final lists = lib.visiblePlaylists;
+                          close();
+                          if (lists.isEmpty) {
+                            onToast?.call('Плейлистов пока нет');
+                            return;
+                          }
+                          final ctx = nav.context;
+                          final pick = await showModalBottomSheet<Playlist>(
+                            context: ctx,
+                            backgroundColor: C.panel,
+                            shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+                            builder: (sheet) => SafeArea(
+                              child: ListView(shrinkWrap: true, children: [
+                                const Padding(padding: EdgeInsets.all(16), child: Text('В плейлист', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+                                for (final pl in lists)
+                                  ListTile(title: Text(pl.name, maxLines: 1, overflow: TextOverflow.ellipsis), onTap: () => Navigator.pop(sheet, pl)),
+                              ]),
+                            ),
+                          );
+                          if (pick != null) {
+                            lib.addToPlaylist(pick.id, [track.id]);
+                            onToast?.call('Добавлено в «${pick.name}»');
+                          }
+                        }),
+                        if (album != null && track.album.isNotEmpty)
+                          item(Icons.album_rounded, 'Открыть альбом', () => openCollection(album.title, album.tracks, album.coverTrack)),
+                        if (artist != null)
+                          item(Icons.mic_external_on_rounded, 'Страница исполнителя', () => openCollection(artist.name, artist.tracks, artist.coverTrack)),
+                      ]),
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
 }
 
 class QueueSheet extends StatelessWidget {
