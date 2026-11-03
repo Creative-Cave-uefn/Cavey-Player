@@ -22,9 +22,15 @@ const mobileWebClientId = String.fromEnvironment('GOOGLE_WEB_CLIENT_ID');
 /// Client secret для такого клиента не нужен. Если не задан — прежний вход через Google Play Services.
 const mobileAndroidClientId = String.fromEnvironment('GOOGLE_ANDROID_CLIENT_ID');
 
+/// То же для iPhone: OAuth Client ID типа «iOS» (Bundle ID app.cavey.cavePlayer). На iOS вход идёт только через браузер.
+const mobileIosClientId = String.fromEnvironment('GOOGLE_IOS_CLIENT_ID');
+
+/// Client ID той платформы, на которой запущено приложение
+String get mobileNativeClientId => Platform.isIOS ? mobileIosClientId : mobileAndroidClientId;
+
 /// Схема возврата в приложение: обратная запись Client ID
 String get _redirectUri {
-  final base = mobileAndroidClientId.replaceAll('.apps.googleusercontent.com', '');
+  final base = mobileNativeClientId.replaceAll('.apps.googleusercontent.com', '');
   return 'com.googleusercontent.apps.$base:/oauth2redirect';
 }
 
@@ -43,9 +49,9 @@ class MobileAccountManager extends AccountManager {
   bool _initialized = false;
 
   @override
-  bool get configured => mobileWebClientId.isNotEmpty || mobileAndroidClientId.isNotEmpty;
+  bool get configured => Platform.isIOS ? mobileIosClientId.isNotEmpty : (mobileWebClientId.isNotEmpty || mobileAndroidClientId.isNotEmpty);
 
-  bool get _useBrowserFlow => mobileAndroidClientId.isNotEmpty;
+  bool get _useBrowserFlow => mobileNativeClientId.isNotEmpty;
 
   static const _authChannel = MethodChannel('cavey/auth');
   final http.Client _web = http.Client();
@@ -54,7 +60,7 @@ class MobileAccountManager extends AccountManager {
 
   Future<void> _init() async {
     if (_initialized) return;
-    if (!Platform.isAndroid) throw AuthException('Эта точка входа предназначена для Android');
+    if (!Platform.isAndroid) throw AuthException('Эта точка входа предназначена для Android. На iPhone нужен GOOGLE_IOS_CLIENT_ID при сборке');
     if (!configured) {
       throw AuthException('Не задан GOOGLE_WEB_CLIENT_ID при сборке APK');
     }
@@ -166,7 +172,7 @@ class MobileAccountManager extends AccountManager {
     });
     try {
       final url = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
-        'client_id': mobileAndroidClientId,
+        'client_id': mobileNativeClientId,
         'redirect_uri': _redirectUri,
         'response_type': 'code',
         'scope': AccountManager.scopes.join(' '),
@@ -189,7 +195,7 @@ class MobileAccountManager extends AccountManager {
       }
       final tok = await _post({
         'code': q['code']!,
-        'client_id': mobileAndroidClientId,
+        'client_id': mobileNativeClientId,
         'redirect_uri': _redirectUri,
         'grant_type': 'authorization_code',
         'code_verifier': verifier,
@@ -241,7 +247,7 @@ class MobileAccountManager extends AccountManager {
     for (var i = 0; i < 3; i++) {
       try {
         final tok = await _post({
-          'client_id': mobileAndroidClientId,
+          'client_id': mobileNativeClientId,
           'refresh_token': a.refreshToken,
           'grant_type': 'refresh_token',
         });

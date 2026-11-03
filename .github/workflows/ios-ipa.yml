@@ -1,0 +1,91 @@
+name: iOS
+
+# Неподписанный .ipa для SideStore/AltStore: подпись ставится на телефоне личным Apple ID,
+# платный аккаунт Apple для этой сборки не нужен.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ios/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      APP_VERSION: 1.0.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.27.4
+          cache: true
+
+      - name: Подготовить проект iOS
+        env:
+          GOOGLE_IOS_CLIENT_ID: ${{ secrets.GOOGLE_IOS_CLIENT_ID }}
+        run: bash tool/setup_ios.sh
+
+      - name: Проверка кода
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings lib/mobile_main.dart lib/mobile
+
+      - name: Собрать приложение
+        env:
+          GOOGLE_IOS_CLIENT_ID: ${{ secrets.GOOGLE_IOS_CLIENT_ID }}
+          BUILD_CHANNEL: ${{ github.ref_name }}
+        run: |
+          flutter build ios --release --no-codesign --target lib/mobile_main.dart \
+            --build-name "$APP_VERSION" --build-number "${{ github.run_number }}" \
+            --dart-define=GOOGLE_IOS_CLIENT_ID="$GOOGLE_IOS_CLIENT_ID" \
+            --dart-define=APP_VERSION="$APP_VERSION" \
+            --dart-define=BUILD_CHANNEL="$BUILD_CHANNEL"
+
+      - name: Упаковать .ipa
+        run: |
+          mkdir -p dist Payload
+          cp -R build/ios/iphoneos/Runner.app Payload/
+          zip -qry dist/CaveyPlayer.ipa Payload
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: CaveyPlayer-ios-${{ env.APP_VERSION }}
+          path: dist/CaveyPlayer.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      # Релиз ios-v<версия> и источник ios-source (apps.json) для SideStore:
+      # друг добавляет в SideStore ссылку на apps.json и получает обновления
+      - name: Опубликовать в релизы
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          NOTES: ${{ github.event.head_commit.message }}
+          RELEASES_REPO: Creative-Cave-uefn/cave-player-releases
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::Секрет RELEASES_TOKEN не задан, .ipa только в артефактах сборки"
+            exit 0
+          fi
+          gh release create "ios-v$APP_VERSION" dist/CaveyPlayer.ipa \
+            --repo "$RELEASES_REPO" --prerelease \
+            --title "iOS $APP_VERSION" --notes "${NOTES:-Cavey Player для iPhone $APP_VERSION}"
+          python3 tool/ios/make_source.py dist/CaveyPlayer.ipa
+          cp assets/icon.png icon.png
+          gh release view ios-source --repo "$RELEASES_REPO" >/dev/null 2>&1 || \
+            gh release create ios-source --repo "$RELEASES_REPO" --prerelease \
+              --title "Источник для SideStore" --notes "Служебный релиз: apps.json и иконка"
+          gh release upload ios-source apps.json icon.png --repo "$RELEASES_REPO" --clobber
+          gh release list --repo "$RELEASES_REPO" --limit 200 --json tagName --jq '.[].tagName' \
+            | grep -E '^ios-v[0-9.]+$' | sort -V | head -n -3 \
+            | while read -r tag; do gh release delete "$tag" --repo "$RELEASES_REPO" --cleanup-tag --yes || true; done
+          echo "::notice::Источник: https://github.com/$RELEASES_REPO/releases/download/ios-source/apps.json"
