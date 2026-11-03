@@ -828,6 +828,8 @@ class DownloadService extends ChangeNotifier {
           case 'progress':
             if (job != null) {
               job.touch();
+              // Liveness messages are not track progress. Skip UI rebuilds.
+              if (msg['heartbeat'] == true) break;
               // The downloader's old status must not overwrite Drive progress.
               if (job.replaceTrackId == null || !job.title.startsWith('Google Drive:')) {
                 job.title = '${msg['title'] ?? job.title}';
