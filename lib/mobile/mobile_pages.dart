@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../core/library.dart';
@@ -94,35 +96,76 @@ class WaveTab extends StatelessWidget {
         final t = p.current;
         final top = wave.topArtists(8);
         return ListView(padding: const EdgeInsets.only(bottom: 24), children: [
-          pageHeader('Моя волна'),
-          const SizedBox(height: 18),
-          Center(
-            child: GestureDetector(
-              onTap: () async {
-                if (active && p.playing) {
-                  await p.toggle();
-                } else if (active) {
-                  await p.toggle();
-                } else {
-                  await wave.start();
-                }
-              },
-              child: Container(
-                width: 132,
-                height: 132,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: C.accent,
-                  boxShadow: [BoxShadow(color: C.accent.withValues(alpha: 0.45), blurRadius: 44, spreadRadius: 2)],
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+            child: Row(children: [
+              const SizedBox(width: 42),
+              Expanded(child: Center(child: Text('Моя волна', style: display(22, color: C.muted)))),
+              Glass(
+                radius: 21,
+                color: const Color(0x9E1A1A24),
+                child: InkWell(
+                  onTap: () => _settings(context, wave),
+                  child: SizedBox(
+                    width: 42,
+                    height: 42,
+                    child: Stack(alignment: Alignment.center, children: [
+                      const Icon(Icons.tune_rounded, size: 22, color: C.text),
+                      Positioned(top: 8, right: 8, child: Container(width: 8, height: 8, decoration: BoxDecoration(color: C.accent, shape: BoxShape.circle))),
+                    ]),
+                  ),
                 ),
-                child: Icon(active && p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 70, color: C.accentInk),
               ),
+            ]),
+          ),
+          const SizedBox(height: 20),
+          Center(
+            child: SizedBox(
+              width: 248,
+              height: 248,
+              child: Stack(alignment: Alignment.center, children: [
+                Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(colors: [C.accent.withValues(alpha: 0.26), C.accent.withValues(alpha: 0)], stops: const [0, 0.68]),
+                  ),
+                ),
+                Container(
+                  width: 196,
+                  height: 196,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0x12FFFFFF),
+                    border: Border.all(color: const Color(0x38FFFFFF)),
+                  ),
+                  child: ClipOval(child: CustomPaint(painter: _WavePainter())),
+                ),
+                GestureDetector(
+                  onTap: () async {
+                    if (active) {
+                      await p.toggle();
+                    } else {
+                      await wave.start();
+                    }
+                  },
+                  child: Container(
+                    width: 84,
+                    height: 84,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: C.accent,
+                      boxShadow: [BoxShadow(color: C.accent.withValues(alpha: 0.35), blurRadius: 30, offset: const Offset(0, 10))],
+                    ),
+                    child: Icon(active && p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 46, color: C.accentInk),
+                  ),
+                ),
+              ]),
             ),
           ),
-          const SizedBox(height: 18),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28),
-            child: Text(wave.mode.hint, textAlign: TextAlign.center, style: const TextStyle(color: C.muted, height: 1.4)),
+            padding: const EdgeInsets.fromLTRB(36, 0, 36, 0),
+            child: Text('Бесконечный поток из вашей библиотеки: волна подстраивается под то, что вы дослушиваете и пропускаете',
+                textAlign: TextAlign.center, style: const TextStyle(color: C.muted, height: 1.4, fontSize: 14)),
           ),
           if (active && t != null) ...[
             const SizedBox(height: 18),
@@ -154,49 +197,40 @@ class WaveTab extends StatelessWidget {
               ),
             ),
           ],
-          const SectionTitle('Характер'),
-          SizedBox(
-            height: 44,
-            child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 14), children: [
-              for (final m in WaveMode.values)
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: ChoiceChip(
-                    label: Text(m.title),
-                    selected: wave.mode == m,
-                    labelStyle: TextStyle(color: wave.mode == m ? C.accentInk : C.text, fontWeight: FontWeight.w600),
-                    onSelected: (_) => wave.setMode(m),
-                  ),
-                ),
-            ]),
-          ),
-          const SectionTitle('Настроение'),
-          SizedBox(
-            height: 44,
-            child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 14), children: [
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
-                  label: const Text('Любое'),
-                  selected: wave.mood == null,
-                  labelStyle: TextStyle(color: wave.mood == null ? C.accentInk : C.text, fontWeight: FontWeight.w600),
-                  onSelected: (_) => wave.setMood(null),
-                ),
-              ),
-              for (final m in waveMoods)
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: ChoiceChip(
-                    label: Text(m.title),
-                    selected: wave.mood == m.id,
-                    labelStyle: TextStyle(color: wave.mood == m.id ? C.accentInk : C.text, fontWeight: FontWeight.w600),
-                    onSelected: (_) {
-                      wave.setMood(m.id);
-                      wave.start();
+          Padding(padding: const EdgeInsets.fromLTRB(20, 22, 20, 0), child: Text('Под настроение', style: display(21))),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+            child: GridView.count(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisCount: 2,
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+              mainAxisExtent: 70,
+              children: [
+                for (final (i, m) in waveMoods.indexed)
+                  InkWell(
+                    borderRadius: BorderRadius.circular(18),
+                    onTap: () {
+                      wave.setMood(wave.mood == m.id ? null : m.id);
+                      if (wave.mood != null) wave.start();
                     },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: wave.mood == m.id ? C.accent : const Color(0x2EFFFFFF)),
+                        color: const Color(0x12FFFFFF),
+                        gradient: RadialGradient(center: Alignment.topLeft, radius: 1.3, colors: [_moodColors[i % _moodColors.length].withValues(alpha: 0.34), Colors.transparent]),
+                      ),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                        Icon(_moodIcons[i % _moodIcons.length], size: 20, color: _moodColors[i % _moodColors.length]),
+                        Text(m.title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                      ]),
+                    ),
                   ),
-                ),
-            ]),
+              ],
+            ),
           ),
           if (top.isNotEmpty) ...[
             const SectionTitle('Ваши исполнители'),
@@ -222,6 +256,77 @@ class WaveTab extends StatelessWidget {
       },
     );
   }
+}
+
+const _moodColors = [Color(0xFFFF9A4A), Color(0xFF5FD3B4), Color(0xFF7FA2FF), Color(0xFFFF7FB2), Color(0xFFA08CFF), Color(0xFF8FDB6A)];
+const _moodIcons = [Icons.bolt_rounded, Icons.south_rounded, Icons.water_drop_outlined, Icons.favorite_border_rounded, Icons.nightlight_outlined, Icons.gps_fixed_rounded];
+
+/// Волнистые линии внутри круга «Моей волны»
+class _WavePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width, h = size.height;
+    final shader = const LinearGradient(colors: [Color(0xFF8AB4FF), Color(0xFFF2C14E), Color(0xFFFF8A80)]).createShader(Offset.zero & size);
+    for (var k = 0; k < 4; k++) {
+      final path = Path();
+      final y0 = h * (0.34 + k * 0.1);
+      for (var x = 0.0; x <= w; x += 3) {
+        final y = y0 + math.sin(x / w * math.pi * 3 + k * 0.9) * (12 + k * 2);
+        if (x == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
+      }
+      canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..shader = shader
+            ..color = Colors.white.withValues(alpha: 0.7 - k * 0.1));
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WavePainter old) => false;
+}
+
+void _settings(BuildContext context, dynamic wave) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: C.panel,
+    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+    builder: (sheet) => SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Характер волны', style: display(19)),
+          const SizedBox(height: 12),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final m in WaveMode.values)
+              ChoiceChip(
+                label: Text(m.title),
+                selected: wave.mode == m,
+                labelStyle: TextStyle(color: wave.mode == m ? C.accentInk : C.text, fontWeight: FontWeight.w600),
+                onSelected: (_) {
+                  wave.setMode(m);
+                  Navigator.pop(sheet);
+                },
+              ),
+          ]),
+          const SizedBox(height: 14),
+          TextButton(
+            onPressed: () {
+              wave.setMood(null);
+              Navigator.pop(sheet);
+            },
+            child: Text('Сбросить настроение', style: TextStyle(color: C.accent)),
+          ),
+        ]),
+      ),
+    ),
+  );
 }
 
 // ───────────────────────────── Поиск в интернете ─────────────────────────────

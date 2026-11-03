@@ -2382,7 +2382,7 @@ class MiniPlayer extends StatelessWidget {
     final t = p.current;
     if (t == null) return const SizedBox.shrink();
     final h = compact ? 56.0 : 60.0;
-    final coverW = compact ? 84.0 : 104.0;
+    final coverW = compact ? 88.0 : 108.0;
     return Glass(
       radius: 30,
       color: C.glass,
@@ -2437,17 +2437,27 @@ class MiniPlayer extends StatelessWidget {
               ),
             ),
             Row(children: [
-              SizedBox(width: coverW - 24),
+              SizedBox(width: coverW - 26),
               Expanded(
                 child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15.5)),
+                  Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16, color: Colors.white)),
                   const SizedBox(height: 1),
-                  Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, color: C.muted)),
+                  Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, color: Color(0xB8FFFFFF))),
                 ]),
               ),
-              IconButton(onPressed: p.toggle, icon: Icon(p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 30, color: C.text)),
-              if (!compact) IconButton(onPressed: p.next, icon: const Icon(Icons.skip_next_rounded, size: 30, color: C.text)),
-              SizedBox(width: compact ? 6 : 4),
+              SizedBox(
+                  width: 46,
+                  height: 46,
+                  child: IconButton(
+                      padding: EdgeInsets.zero,
+                      onPressed: p.toggle,
+                      icon: Icon(p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 30, color: Colors.white))),
+              if (!compact)
+                SizedBox(
+                    width: 46,
+                    height: 46,
+                    child: IconButton(padding: EdgeInsets.zero, onPressed: p.next, icon: const Icon(Icons.fast_forward_rounded, size: 32, color: Colors.white))),
+              SizedBox(width: compact ? 8 : 10),
             ]),
             Positioned(
               left: 26,
@@ -2572,12 +2582,15 @@ class _FullPlayerState extends State<FullPlayer> {
                             ]),
                           ),
                         ),
-                        IconButton(
-                          onPressed: () => services.library.toggleLike(t.id),
-                          icon: Icon(services.library.isLiked(t.id) ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                              color: services.library.isLiked(t.id) ? C.accent : C.text, size: 26),
-                        ),
-                        IconButton(onPressed: () => queue(context), icon: const Icon(Icons.queue_music_rounded, size: 26, color: C.text)),
+                        const SizedBox(width: 8),
+                        _RoundBtn(
+                            onTap: () => services.library.toggleLike(t.id),
+                            icon: Icon(services.library.isLiked(t.id) ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                                size: 21, color: services.library.isLiked(t.id) ? C.accent : Colors.white)),
+                        const SizedBox(width: 8),
+                        _RoundBtn(
+                            onTap: () => showTrackMenu(context, services, t, onToast: (m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)))),
+                            icon: const Icon(Icons.more_horiz_rounded, size: 22, color: Colors.white)),
                       ]),
                       const SizedBox(height: 8),
                       Expanded(child: LyricsView(services: services, track: t)),

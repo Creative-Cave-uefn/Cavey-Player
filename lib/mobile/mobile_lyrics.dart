@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
@@ -186,8 +187,9 @@ class _Line extends StatelessWidget {
         final dist = synced ? (now - index).abs() : 0;
         final base = TextStyle(
           fontSize: 30,
-          height: 1.22,
-          fontWeight: FontWeight.w800,
+          height: 1.18,
+          letterSpacing: -0.5,
+          fontWeight: FontWeight.w700,
           color: !synced ? C.text : (active ? C.text : (past ? C.text.withValues(alpha: 0.32) : C.text.withValues(alpha: dist <= 2 ? 0.45 : 0.3))),
         );
         final words = line.words;
@@ -204,11 +206,16 @@ class _Line extends StatelessWidget {
             style: base,
             child: Text(line.text),
           );
+          // Как в макете: чем дальше строка от текущей, тем сильнее она размыта
+          if (synced && dist > 0 && dist <= 5) {
+            final sigma = const [0.0, 1.5, 2.5, 4.0, 6.0, 8.0][dist];
+            text = ImageFiltered(imageFilter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma, tileMode: TileMode.decal), child: text);
+          }
         }
         return InkWell(
           onTap: onTap,
           borderRadius: BorderRadius.circular(10),
-          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7), child: text),
+          child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 13), child: text),
         );
       },
     );
