@@ -814,6 +814,9 @@ class DownloadService extends ChangeNotifier {
 
       void transportFailed(Object e, StackTrace stack) {
         AppLog.error('Ошибка очереди IPC-ответов', e, stack);
+        if (!socketAlive) return;
+        onLog?.call('IPC: ошибка обработки запроса: ${e.runtimeType}. '
+            'Соединение закрыто для безопасного восстановления задания.');
         socketAlive = false;
         socket?.destroy();
       }
@@ -875,6 +878,9 @@ class DownloadService extends ChangeNotifier {
             if (msg['ok'] != true) throw StateError('${msg['error'] ?? 'Не удалось выполнить задание'}');
             return msg['value'] ?? true;
         }
+      }
+      if (!receivedEnd && job?.cancelRequested != true) {
+        onLog?.call('IPC: сокет закрыт до получения финального ответа загрузчика.');
       }
       throw StateError('Модуль отключился до завершения задания.');
     } catch (e) {
