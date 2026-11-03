@@ -278,6 +278,7 @@ jobs:
           CAVE_DEEZER_ARL_DEFAULT: ${{ secrets.CAVE_DEEZER_ARL }}
           CAVE_SOULSEEK_USERNAME_DEFAULT: ${{ secrets.CAVE_SOULSEEK_USERNAME }}
           CAVE_SOULSEEK_PASSWORD_DEFAULT: ${{ secrets.CAVE_SOULSEEK_PASSWORD }}
+          CAVE_SPOTIFY_CLIENT_ID_DEFAULT: ${{ secrets.CAVE_SPOTIFY_CLIENT_ID }}
         run: |
           Push-Location .cave-downloader-module
           try {
@@ -287,7 +288,8 @@ jobs:
               "--define=APP_VERSION=3.0.${{ github.run_number }}" `
               "--define=CAVE_DEEZER_ARL_DEFAULT=$env:CAVE_DEEZER_ARL_DEFAULT" `
               "--define=CAVE_SOULSEEK_USERNAME_DEFAULT=$env:CAVE_SOULSEEK_USERNAME_DEFAULT" `
-              "--define=CAVE_SOULSEEK_PASSWORD_DEFAULT=$env:CAVE_SOULSEEK_PASSWORD_DEFAULT"
+              "--define=CAVE_SOULSEEK_PASSWORD_DEFAULT=$env:CAVE_SOULSEEK_PASSWORD_DEFAULT" `
+            "--define=CAVE_SPOTIFY_CLIENT_ID_DEFAULT=$env:CAVE_SPOTIFY_CLIENT_ID_DEFAULT"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Copy-Item cave-downloader-windows-x64.exe ../build/windows/x64/runner/Release/ -Force
           } finally { Pop-Location }
