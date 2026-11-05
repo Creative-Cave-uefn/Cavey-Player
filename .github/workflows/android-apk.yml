@@ -1,0 +1,58 @@
+name: Android MVP APK
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - feature/android-mvp
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Create Android runner
+        run: bash tool/setup_android.sh
+      - name: Analyze mobile code
+        run: flutter analyze lib/mobile_main.dart lib/mobile
+      - name: Validate Google OAuth configuration
+        env:
+          GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
+        run: |
+          if [ -z "$GOOGLE_WEB_CLIENT_ID" ]; then
+            echo '::error::Missing Actions secret GOOGLE_WEB_CLIENT_ID. Create it in Settings > Secrets and variables > Actions.'
+            exit 1
+          fi
+          echo 'Google Web Client ID is configured for this APK build.'
+      - name: Build Android debug APK
+        env:
+          GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
+        run: |
+          flutter build apk --debug --target lib/mobile_main.dart \
+            --dart-define=GOOGLE_WEB_CLIENT_ID="$GOOGLE_WEB_CLIENT_ID"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cavey-android-mvp
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Show APK signing fingerprint
+        continue-on-error: true
+        run: |
+          APK="build/app/outputs/flutter-apk/app-debug.apk"
+          TOOL="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          if [ -n "$TOOL" ]; then
+            "$TOOL" verify --print-certs "$APK" | grep -E "SHA-1|SHA-256" || true
+          else
+            echo "apksigner unavailable; APK has already been uploaded"
+          fi
