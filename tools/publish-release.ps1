@@ -29,7 +29,12 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 
 # ---------- 1. Подготовка ----------
 Say 'Проверяю репозиторий'
-if (& git status --porcelain) { Fail 'В папке есть незакоммиченные изменения. Закоммитьте или уберите их и запустите снова.' }
+# Неотслеживаемые файлы (build-log.txt, dist) не мешают; важны только изменения в файлах репозитория
+$dirty = @(& git status --porcelain --untracked-files=no)
+if ($dirty.Count -gt 0) {
+    Write-Host ($dirty -join "`n")
+    Fail 'Выше — изменённые файлы репозитория. Закоммитьте или откатите их (git checkout -- <файл>) и запустите снова.'
+}
 & gh auth status 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'gh не авторизован. Выполните: gh auth login' }
 GitOk fetch origin
