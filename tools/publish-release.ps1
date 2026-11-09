@@ -22,7 +22,7 @@ $ReleasesRepo = 'Creative-Cave-uefn/cave-player-releases'
 
 function Say([string]$t) { Write-Host ""; Write-Host "== $t" -ForegroundColor Cyan }
 function Fail([string]$t) { Write-Host ""; Write-Host "ОШИБКА: $t" -ForegroundColor Red; exit 1 }
-function Git { & git @args; if ($LASTEXITCODE -ne 0) { Fail "git $($args -join ' ') завершился с ошибкой" } }
+function GitOk { & git @args; if ($LASTEXITCODE -ne 0) { Fail "git $($args -join ' ') завершился с ошибкой" } }
 function Ask([string]$q) { (Read-Host "$q (y/n)") -match '^[yYдД]' }
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
@@ -32,14 +32,14 @@ Say 'Проверяю репозиторий'
 if (& git status --porcelain) { Fail 'В папке есть незакоммиченные изменения. Закоммитьте или уберите их и запустите снова.' }
 & gh auth status 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'gh не авторизован. Выполните: gh auth login' }
-Git fetch origin
+GitOk fetch origin
 
 # ---------- 2. Слияние ----------
 Say "Вливаю $Branch в main"
-Git checkout $Branch
-Git pull --ff-only
-Git checkout main
-Git pull --ff-only
+GitOk checkout $Branch
+GitOk pull --ff-only
+GitOk checkout main
+GitOk pull --ff-only
 & git merge --no-ff $Branch -m "Бета 9: влита ветка $Branch"
 if ($LASTEXITCODE -ne 0) {
     & git merge --abort 2>$null
@@ -71,7 +71,7 @@ if (-not (Ask "Запушить main и собрать релиз v$Version с �
 
 # ---------- 4. Пуш main ----------
 Say 'Пушу main'
-Git push origin main
+GitOk push origin main
 
 # ---------- 5. Сборка ----------
 Say 'Собираю установщик и portable-архив (это несколько минут)'
