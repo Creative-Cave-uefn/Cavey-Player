@@ -13,7 +13,6 @@ import 'package:http/http.dart' as http;
 import 'library.dart';
 import 'log.dart';
 import 'search_rank.dart';
-import 'models.dart';
 
 class WebArtist {
   final int id;

@@ -53,7 +53,7 @@ class JamSnapshot {
 
   /// Где сейчас должна быть позиция трека, если действие было [at], а сейчас [nowMs]
   Duration positionAt(int nowMs) {
-    final ms = playing ? posMs + math.max(0, nowMs - at) : posMs;
+    final ms = playing ? posMs + math.max<int>(0, nowMs - at) : posMs;
     return Duration(milliseconds: ms);
   }
 
@@ -93,7 +93,7 @@ bool jamNeedsSeek(Duration local, Duration target, {Duration tolerance = const D
 
 /// Джем-сессия: несколько человек слушают одну очередь и управляют ей вместе.
 /// Действия идут по быстрому каналу ntfy, а копия последнего снимка каждого участника лежит на Google Диске
-/// (файл jam-<id>-<почта>.json): так всё работает и без ntfy, только медленнее.
+/// (файл `jam-<id>-<почта>.json`): так всё работает и без ntfy, только медленнее.
 class JamController extends ChangeNotifier {
   final LibraryController lib;
   final DriveApi drive;
@@ -114,7 +114,6 @@ class JamController extends ChangeNotifier {
   DateTime _quietUntil = DateTime.fromMillisecondsSinceEpoch(0);
 
   NtfyChannel? _ntfy;
-  String? _ntfyTopic;
   Timer? _tick;
   Timer? _driveWrite;
   DateTime _lastDrivePoll = DateTime.fromMillisecondsSinceEpoch(0);
@@ -157,7 +156,6 @@ class JamController extends ChangeNotifier {
       final folder = await lib.dataFolder();
       final topic = NtfyChannel.topicFor(folder);
       if (_ntfy != null) return;
-      _ntfyTopic = topic;
       _ntfy = NtfyChannel(
         server: server.endsWith('/') ? server.substring(0, server.length - 1) : server,
         topic: topic,
@@ -183,7 +181,7 @@ class JamController extends ChangeNotifier {
     final m = me;
     if (m == null) return;
     unawaited(ensureChannel());
-    unawaited(_ntfy?.send({'t': 'wake', 'from': m}) ?? Future.value(false));
+    unawaited(_ntfy?.send({'t': 'wake', 'from': m}));
   }
 
   void _onMessage(Map<String, dynamic> msg) {
@@ -258,7 +256,7 @@ class JamController extends ChangeNotifier {
     player.feeder = null;
     _afterJoin();
     await ensureChannel();
-    unawaited(_ntfy?.send({'t': 'hello', 'jam': id, 'who': m, 'ask': true}) ?? Future.value(false));
+    unawaited(_ntfy?.send({'t': 'hello', 'jam': id, 'who': m, 'ask': true}));
     unawaited(_pollDrive(force: true));
   }
 
@@ -330,7 +328,7 @@ class JamController extends ChangeNotifier {
     _resolved[n.id] = 'Принят(а)';
     _admitted.add('$id|${n.from}');
     notifyListeners();
-    unawaited(_ntfy?.send({'t': 'admit', 'jam': id, 'who': n.from, 'from': me}) ?? Future.value(false));
+    unawaited(_ntfy?.send({'t': 'admit', 'jam': id, 'who': n.from, 'from': me}));
     await social.emitEvent({'k': 'jaminv', 'jam': id, 'to': [n.from], 're': true});
   }
 
@@ -379,7 +377,7 @@ class JamController extends ChangeNotifier {
   }
 
   void _publish(JamSnapshot s, {bool driveToo = true}) {
-    unawaited(_ntfy?.send({'t': 'snap', 'from': s.by, 's': s.toJson()}) ?? Future.value(false));
+    unawaited(_ntfy?.send({'t': 'snap', 'from': s.by, 's': s.toJson()}));
     if (driveToo) _scheduleDriveWrite();
   }
 

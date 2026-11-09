@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:media_kit/media_kit.dart' show Media, NativePlayer, Player;
+import 'package:media_kit/media_kit.dart' show Media, Player;
 
 import 'audio_cache.dart';
 import 'automix.dart';

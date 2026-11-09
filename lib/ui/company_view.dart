@@ -291,6 +291,8 @@ class _NoticeBell extends StatefulWidget {
 }
 
 class _NoticeBellState extends State<_NoticeBell> {
+  final _menu = MenuController();
+
   /// Что считать прочитанным: всё, что старше последнего открытия колокольчика
   DateTime? _seen(AppServices app) => DateTime.tryParse(app.settings.bellSeen ?? '');
 
@@ -301,6 +303,7 @@ class _NoticeBellState extends State<_NoticeBell> {
     final unread = seen == null ? 0 : widget.notices.where((n) => n.at.isAfter(seen)).length;
     final lit = unread > 0;
     return MenuAnchor(
+      controller: _menu,
       style: MenuStyle(
         backgroundColor: const WidgetStatePropertyAll(C.panel),
         side: const WidgetStatePropertyAll(BorderSide(color: C.line)),
@@ -331,7 +334,7 @@ class _NoticeBellState extends State<_NoticeBell> {
                 : ListView(
                     padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
                     shrinkWrap: true,
-                    children: [for (final n in widget.notices) _NoticeRow(notice: n)],
+                    children: [for (final n in widget.notices) _NoticeRow(notice: n, closeMenu: _menu.close)],
                   ),
           ),
         ),
@@ -360,7 +363,9 @@ class _NoticeBellState extends State<_NoticeBell> {
 
 class _NoticeRow extends StatelessWidget {
   final Notice notice;
-  const _NoticeRow({required this.notice});
+  /// Закрывает окошко уведомлений (нужно при переходе на другую страницу)
+  final VoidCallback closeMenu;
+  const _NoticeRow({required this.notice, required this.closeMenu});
 
   /// Ссылка внутри строки: подчёркивается при наведении и перехватывает нажатие у всей строки
   Widget _link(String text, VoidCallback onTap) => _HoverLink(text: text, onTap: onTap);
@@ -377,7 +382,6 @@ class _NoticeRow extends StatelessWidget {
       NoticeKind.jamInvite => Icons.headphones_rounded,
       NoticeKind.jamRequest => Icons.person_add_alt_1_rounded,
     };
-    void closeMenu() => MenuController.maybeOf(context)?.close();
     void toUser() {
       closeMenu();
       NavScope.of(context).go(Nav('user', notice.from));
