@@ -794,9 +794,15 @@ class _SoundPanelState extends State<_SoundPanel> {
 
   @override
   Widget build(BuildContext context) {
+    // В джеме переход задаёт организатор: панель следит за джемом и блокирует свои настройки перехода
+    return ListenableBuilder(listenable: widget.app.jam, builder: (context, _) => _content(context));
+  }
+
+  Widget _content(BuildContext context) {
     final app = widget.app;
     final p = app.player;
-    final sec = app.settings.crossfadeSec;
+    final locked = p.jamXfSec != null;
+    final sec = locked ? p.crossfadeSecNow : app.settings.crossfadeSec;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 4, 12, 10),
       child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -828,9 +834,9 @@ class _SoundPanelState extends State<_SoundPanel> {
         _PanelRow(
           title: 'Плавный переход',
           help: 'Конец трека затихает, а следующий в это время нарастает. Не работает, если вы сами переключили трек, '
-              'перемотали в конец, а также на коротких треках. В джем-сессии переход включается у каждого по его настройке и других не затрагивает.',
+              'перемотали в конец, а также на коротких треках. В джем-сессии переход задаёт организатор: включён у него — включён у всех, выключен — выключен у всех.',
           value: sec > 0,
-          onChanged: (v) {
+          onChanged: locked ? null : (v) {
             // Выключая, запоминаем длину, чтобы при включении вернуть прежнюю
             if (v) {
               app.settings.crossfadeSec = int.tryParse(app.settings.viewOf('xf.last', '5')) ?? 5;
@@ -842,6 +848,11 @@ class _SoundPanelState extends State<_SoundPanel> {
             setState(() {});
           },
         ),
+        if (locked)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text('В джеме: по настройке организатора', style: TextStyle(color: C.accent, fontSize: 12.5)),
+          ),
         _reveal(
           sec > 0,
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -852,7 +863,7 @@ class _SoundPanelState extends State<_SoundPanel> {
                   min: 1,
                   max: 10,
                   divisions: 9,
-                  onChanged: (v) => setState(() => app.settings.crossfadeSec = v.round()),
+                  onChanged: locked ? null : (v) => setState(() => app.settings.crossfadeSec = v.round()),
                   onChangeEnd: (_) => app.lib.saveSettings(),
                 ),
               ),
@@ -864,7 +875,7 @@ class _SoundPanelState extends State<_SoundPanel> {
                   'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
                   'Ползунок задаёт самый длинный переход.',
               value: p.smartMix,
-              onChanged: (v) {
+              onChanged: locked ? null : (v) {
                 app.settings.view['mix.smart'] = v ? '1' : '0';
                 app.lib.saveSettings();
                 setState(() {});
@@ -882,7 +893,7 @@ class _SoundPanelState extends State<_SoundPanel> {
 class _PanelRow extends StatelessWidget {
   final String title, help;
   final bool value;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged;
   const _PanelRow({required this.title, required this.help, required this.value, required this.onChanged});
 
   @override

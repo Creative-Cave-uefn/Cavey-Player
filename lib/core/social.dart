@@ -75,6 +75,9 @@ class Member {
   /// Джем-сессия, в которой человек сейчас, и её участники (чтобы можно было попроситься)
   String? jamId;
   List<String> jamMembers = const [];
+
+  /// Организатор этого джема (почта)
+  String? jamHost;
   Member(this.email, this.name, this.updated, this.now, this.events, this.plays,
       [this.version = '', Map<String, int>? totals, Map<String, Map<String, int>>? time, Map<String, int>? timeTotals])
       : totals = totals ?? playTotalsFrom(plays),
@@ -92,6 +95,9 @@ class Member {
 
   /// Сейчас в джем-сессии: статус свежий (участники джема обновляют его каждые 30 с, даже на паузе)
   bool get inJam => jamId != null && nowSynced.difference(updated) < const Duration(seconds: 100);
+
+  /// Остальные участники джема этого человека (без него)
+  List<String> get jamOthers => [for (final e in jamMembers) if (e != email) e];
 
   /// Недавно был, но на паузе
   bool get recent => now != null && nowSynced.difference(updated) < const Duration(minutes: 15);
@@ -134,6 +140,8 @@ class Member {
     if (jam is Map && jam['id'] != null) {
       result.jamId = '${jam['id']}';
       result.jamMembers = [for (final x in (jam['m'] as List? ?? const [])) '$x'];
+      final h = '${jam['h'] ?? ''}';
+      result.jamHost = h.isEmpty ? null : h;
     }
     return result;
   }

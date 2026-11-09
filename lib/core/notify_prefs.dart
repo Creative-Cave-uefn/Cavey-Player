@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:media_kit/media_kit.dart';
 
 import 'log.dart';
+import 'notices.dart';
 import 'store.dart';
 
 /// Настройки уведомлений и автозапуска. Лежат в `settings.view` (только на этом компьютере).
@@ -23,6 +24,23 @@ extension NotifyPrefs on Settings {
 
   /// Свой звук: путь к файлу; пусто — встроенный мягкий сигнал
   String get notifyFile => viewOf('ntf.file', '');
+
+  /// Строка таблицы настроек, к которой относится уведомление: лайки и добавления в плейлист — «Лайк на загруженный трек»,
+  /// запрос на вход в джем — вместе с приглашением
+  static String noticeGroup(NoticeKind k) => switch (k) {
+        NoticeKind.like || NoticeKind.addToPlaylist => 'like',
+        NoticeKind.share => 'share',
+        NoticeKind.jamInvite || NoticeKind.jamRequest => 'jam',
+      };
+
+  /// Включён ли у этого вида уведомлений [what] — `snd` (звук) или `pop` (карточка и уведомление Windows)
+  bool noticeFlag(String group, String what) => viewOf('ntf.$group.$what', '1') == '1';
+
+  /// Играть ли звук для уведомления такого вида: общий звук включён и в таблице стоит галочка
+  bool soundFor(NoticeKind k) => notifyOn && notifySound && noticeFlag(noticeGroup(k), 'snd');
+
+  /// Показывать ли карточку (в плеере и в Windows) для уведомления такого вида. В колокольчике оно остаётся в любом случае
+  bool popupFor(NoticeKind k) => notifyOn && noticeFlag(noticeGroup(k), 'pop');
 
   /// Автозапуск с Windows: off, show (с открытым окном) или tray (сразу в трей)
   String get autostartMode {

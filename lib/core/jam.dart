@@ -14,7 +14,7 @@ import 'player.dart';
 import 'social.dart';
 
 /// Сколько треков очереди помещаем в одно сообщение джема: у быстрого канала лимит 4 КБ
-const jamQueueWindow = 85;
+const jamQueueWindow = 80;
 
 /// Общее состояние джем-сессии: очередь, текущий трек, пауза и позиция.
 /// Это «регистр с последней записью»: любое действие участника создаёт полный снимок,
@@ -33,6 +33,17 @@ class JamSnapshot {
 
   /// Позиция трека на момент [at], мс
   final int posMs;
+
+  /// Кто добавил каждый трек очереди (почта, параллельно [queue]); пусто — неизвестно
+  final List<String> adders;
+
+  /// Организатор джема и когда он назначен (по часам Диска): у кого отметка новее, тот и прав
+  final String? host;
+  final int hostAt;
+
+  /// Настройки плавного перехода организатора: секунды (0 — выключен) и умный переход. Только в снимках самого организатора
+  final int? xf;
+  final bool? smart;
   const JamSnapshot({
     required this.jam,
     required this.by,
@@ -41,6 +52,11 @@ class JamSnapshot {
     required this.index,
     required this.playing,
     required this.posMs,
+    this.adders = const [],
+    this.host,
+    this.hostAt = 0,
+    this.xf,
+    this.smart,
   });
 
   /// Свежее ли этот снимок, чем [other]: по времени, при равенстве — по почте, чтобы все выбрали одно и то же
@@ -58,12 +74,54 @@ class JamSnapshot {
     return Duration(milliseconds: ms);
   }
 
-  Map<String, dynamic> toJson() => {'jam': jam, 'by': by, 'at': at, 'q': queue, 'i': index, 'p': playing, 'pos': posMs};
+  Map<String, dynamic> toJson() {
+    final j = <String, dynamic>{'jam': jam, 'by': by, 'at': at, 'q': queue, 'i': index, 'p': playing, 'pos': posMs};
+    // Кто добавил трек: список разных людей и по одному знаку на трек (номер человека в 36-ричной записи, «-» — неизвестно).
+    // Так очередь в 80 треков занимает считанные байты, а лимит быстрого канала — 4 КБ
+    if (adders.length == queue.length && adders.any((a) => a.isNotEmpty)) {
+      final names = <String>[];
+      final sb = StringBuffer();
+      for (final a in adders) {
+        if (a.isEmpty) {
+          sb.write('-');
+          continue;
+        }
+        var i = names.indexOf(a);
+        if (i < 0) {
+          names.add(a);
+          i = names.length - 1;
+        }
+        sb.write(i < 36 ? i.toRadixString(36) : '-');
+      }
+      j['w'] = sb.toString();
+      j['wl'] = names;
+    }
+    if (host != null) {
+      j['h'] = host;
+      j['ha'] = hostAt;
+    }
+    if (xf != null) j['xf'] = xf;
+    if (smart != null) j['sm'] = smart;
+    return j;
+  }
 
   static JamSnapshot? fromJson(Object? j) {
     if (j is! Map) return null;
     final q = j['q'];
     if (q is! List || j['jam'] == null || j['by'] == null) return null;
+    var adders = const <String>[];
+    final w = j['w'], wl = j['wl'];
+    if (w is String && wl is List && w.length == q.length) {
+      final names = [for (final x in wl) '$x'];
+      adders = [
+        for (var i = 0; i < w.length; i++)
+          () {
+            final k = int.tryParse(w[i], radix: 36);
+            return k != null && k < names.length ? names[k] : '';
+          }()
+      ];
+    }
+    final h = j['h'];
     return JamSnapshot(
       jam: '${j['jam']}',
       by: '${j['by']}',
@@ -72,6 +130,11 @@ class JamSnapshot {
       index: (j['i'] as num?)?.toInt() ?? -1,
       playing: j['p'] == true,
       posMs: (j['pos'] as num?)?.toInt() ?? 0,
+      adders: adders,
+      host: h == null || '$h'.isEmpty ? null : '$h',
+      hostAt: (j['ha'] as num?)?.toInt() ?? 0,
+      xf: (j['xf'] as num?)?.toInt(),
+      smart: j['sm'] is bool ? j['sm'] as bool : null,
     );
   }
 
@@ -99,6 +162,13 @@ Duration? jamMeasureLead(Duration local, Duration target, {Duration cap = const 
   final lead = local - target;
   if (lead < const Duration(milliseconds: -700) || lead > cap) return null;
   return lead.isNegative ? Duration.zero : lead;
+}
+
+/// Кто организатор: назначенный, пока он в джеме; иначе первый по алфавиту из участников (все считают одинаково)
+String? jamPickHost(String? host, List<String> participants) {
+  if (host != null && participants.contains(host)) return host;
+  if (participants.isEmpty) return host;
+  return ([...participants]..sort()).first;
 }
 
 /// Джем-сессия: несколько человек слушают одну очередь и управляют ей вместе.
@@ -139,6 +209,31 @@ class JamController extends ChangeNotifier {
   /// Кого уже приняли в чужой джем (jam|почта)
   final Set<String> _admitted = {};
 
+  /// Организатор джема: тот, кто его создал; ему можно передать лидерство. Организатор задаёт всем плавный переход,
+  /// решает, кого исключить, и показан в панели сессии
+  String? host;
+
+  /// Когда назначен организатор (по часам Диска). Пока 0 — это лишь догадка по приглашению, настоящая отметка придёт от него
+  int _hostAt = 0;
+
+  /// Настройки плавного перехода организатора, как их последний раз прислал он сам
+  int? _hostXf;
+  bool? _hostSm;
+  String _lastXfSent = '';
+  String _lastSig = '';
+
+  /// Когда я вошёл в этот джем (по часам Диска): старые записи об исключении мне не страшны
+  int _joinedAt = 0;
+
+  /// Исключённые организатором: почта → когда. Их сообщения и статус какое-то время не учитываем
+  final Map<String, DateTime> _kicked = {};
+
+  /// Из каких джемов меня исключили: id → когда. Старое приглашение в такой джем не принимается
+  final Map<String, DateTime> _banned = {};
+
+  /// Кто добавил трек в очередь джема: id трека → почта
+  final Map<String, String> _adders = {};
+
   String? get me => lib.me;
   bool get active => jamId != null;
   bool get fastChannel => _ntfy?.online ?? false;
@@ -158,9 +253,146 @@ class JamController extends ChangeNotifier {
         if (mem.jamId == id && mem.inJam) set.add(mem.email);
       }
     }
+    // Исключённых организатором не показываем, пока их старые признаки жизни не остыли
+    set.removeWhere((e) => e != m && _isKicked(e));
     final list = set.toList()..sort();
     if (m != null && list.remove(m)) list.insert(0, m);
     return list;
+  }
+
+  bool _isKicked(String email) {
+    final t = _kicked[email];
+    return t != null && DateTime.now().difference(t) < const Duration(minutes: 3);
+  }
+
+  /// Кто сейчас организатор. Если назначенного давно не слышно, организатором становится первый по алфавиту из оставшихся:
+  /// все считают одинаково, поэтому спорить не о чем
+  String? get effectiveHost => jamPickHost(host, participants);
+
+  bool get iAmHost => active && me != null && effectiveHost == me;
+
+  /// Кто добавил трек в очередь джема (почта); null — неизвестно или джема нет
+  String? adderOf(String trackId) => active ? _adders[trackId] : null;
+
+  int get _myXf => lib.settings.crossfadeSec.clamp(0, 10).toInt();
+  bool get _mySmart => lib.settings.viewOf('mix.smart', '1') == '1';
+
+  int _nextAt() {
+    var at = serverNow;
+    if (at <= _lastAt) at = _lastAt + 1;
+    _lastAt = at;
+    return at;
+  }
+
+  /// Моя запись состояния с моим именем, организатором, кто что добавил и (у организатора) настройками перехода
+  JamSnapshot _snap({required List<String> queue, required int index, required bool playing, required int posMs, required int at}) {
+    final mine = iAmHost;
+    return JamSnapshot(
+      jam: jamId!,
+      by: me!,
+      at: at,
+      queue: queue,
+      index: index,
+      playing: playing,
+      posMs: posMs,
+      adders: [for (final id in queue) _adders.putIfAbsent(id, () => me!)],
+      host: _hostAt > 0 ? host : null,
+      hostAt: _hostAt,
+      xf: mine ? _myXf : null,
+      smart: mine ? _mySmart : null,
+    );
+  }
+
+  /// Состояние, как оно есть у всех, с новым временем: нужно, когда поменялось не состояние, а организатор
+  void _republish() {
+    final st = state;
+    if (st == null || me == null) return;
+    final at = _nextAt();
+    _local(_snap(queue: st.queue, index: st.index, playing: st.playing, posMs: st.positionAt(at).inMilliseconds, at: at));
+  }
+
+  // ---------- организатор и настройки ----------
+
+  void _learnHost(String? h, int at) {
+    if (h == null || h.isEmpty) return;
+    final cur = host;
+    final newer = cur == null || at > _hostAt || (at == _hostAt && h != cur && h.compareTo(cur) > 0);
+    if (!newer) return;
+    host = h;
+    _hostAt = at;
+    if (h != cur) {
+      // Организатор сменился: он сам скоро пришлёт свои настройки; новый организатор сообщает их сразу
+      if (h == me) unawaited(_sendHello());
+      _applyHostSettings();
+      social.touchStatus();
+      notifyListeners();
+    }
+  }
+
+  void _learnSettings(int xf, bool? sm) {
+    _hostXf = xf.clamp(0, 10).toInt();
+    _hostSm = sm;
+    _applyHostSettings();
+    notifyListeners();
+  }
+
+  /// Плавный переход в джеме задаёт организатор: включён у него — включён у всех, выключен — выключен у всех
+  void _applyHostSettings() {
+    final use = active && !iAmHost && _hostXf != null;
+    player.jamXfSec = use ? _hostXf : null;
+    player.jamSmart = use ? _hostSm : null;
+  }
+
+  /// Приветствие участникам: что я жив, кто организатор и (если это я) как настроен плавный переход
+  Future<void> _sendHello({bool ask = false}) async {
+    final m = me, id = jamId;
+    if (m == null || id == null) return;
+    final msg = <String, dynamic>{'t': 'hello', 'jam': id, 'who': m, 'from': m};
+    if (ask) msg['ask'] = true;
+    if (_hostAt > 0 && host != null) {
+      msg['h'] = host;
+      msg['ha'] = _hostAt;
+    }
+    if (iAmHost) {
+      msg['xf'] = _myXf;
+      msg['sm'] = _mySmart;
+      _lastXfSent = '$_myXf|$_mySmart';
+    }
+    await _ntfy?.send(msg);
+  }
+
+  /// Передать лидерство участнику [who]. Может только организатор
+  Future<void> makeHost(String who) async {
+    if (!iAmHost || who == me || !participants.contains(who)) return;
+    host = who;
+    _hostAt = math.max(_nextAt(), _hostAt + 1);
+    _applyHostSettings();
+    _republish();
+    unawaited(_sendHello());
+    unawaited(_writeDriveFile());
+    social.touchStatus();
+    notifyListeners();
+  }
+
+  /// Исключить участника [who] из джема. Может только организатор
+  Future<void> kick(String who) async {
+    final id = jamId, m = me;
+    if (id == null || m == null || !iAmHost || who == m) return;
+    _kicked[who] = DateTime.now();
+    _seen.remove(who);
+    unawaited(_ntfy?.send({'t': 'kick', 'jam': id, 'who': who, 'from': m}));
+    // Если быстрого канала нет, исключённый узнает из моего файла на Диске
+    unawaited(_writeDriveFile());
+    notifyListeners();
+    social.touchStatus();
+  }
+
+  Future<void> _gotKicked() async {
+    final id = jamId;
+    if (id == null) return;
+    _banned[id] = DateTime.now();
+    await leave();
+    lib.messages.add('Организатор исключил вас из джема');
   }
 
   int get serverNow => Member.nowSynced.millisecondsSinceEpoch;
@@ -215,15 +447,32 @@ class JamController extends ChangeNotifier {
         social.wake();
       case 'snap':
         final s = JamSnapshot.fromJson(msg['s']);
-        if (s == null || s.jam != jamId) return;
+        if (s == null || s.jam != jamId || _isKicked(s.by)) return;
         _seen[s.by] = DateTime.now();
         _adopt(s);
       case 'hello':
-        if (msg['jam'] != jamId) return;
+        if (msg['jam'] != jamId || _isKicked(from)) return;
         _seen[from] = DateTime.now();
+        _learnHost('${msg['h'] ?? ''}', (msg['ha'] as num?)?.toInt() ?? 0);
+        // Настройки перехода принимаем только от организатора
+        if (from == host && msg['xf'] is num) _learnSettings((msg['xf'] as num).toInt(), msg['sm'] is bool ? msg['sm'] as bool : null);
         notifyListeners();
-        // Отвечает автор последнего действия: остальные молчат, чтобы не слать одно и то же
-        if (msg['ask'] == true && state?.by == m) _publish(state!, driveToo: false);
+        if (msg['ask'] == true) {
+          // Отвечает автор последнего действия: остальные молчат, чтобы не слать одно и то же
+          if (state?.by == m) _publish(state!, driveToo: false);
+          // Организатор сразу говорит о себе: новичок узнаёт, кто он и как настроен переход
+          if (iAmHost) unawaited(_sendHello());
+        }
+      case 'kick':
+        if (msg['jam'] != jamId || from != host) return;
+        final who = '${msg['who']}';
+        if (who == m) {
+          unawaited(_gotKicked());
+        } else {
+          _kicked[who] = DateTime.now();
+          _seen.remove(who);
+          notifyListeners();
+        }
       case 'leave':
         if (msg['jam'] != jamId) return;
         _seen.remove(from);
@@ -246,7 +495,11 @@ class JamController extends ChangeNotifier {
     final m = me;
     if (m == null || emails.isEmpty) return;
     if (!active) _create();
-    await social.emitEvent({'k': 'jaminv', 'jam': jamId, 'to': emails});
+    // Позвали заново — исключение снимается
+    for (final e in emails) {
+      _kicked.remove(e);
+    }
+    await social.emitEvent({'k': 'jaminv', 'jam': jamId, 'to': emails, 'host': effectiveHost ?? m});
   }
 
   void _create() {
@@ -256,6 +509,14 @@ class JamController extends ChangeNotifier {
       ..clear()
       ..[m] = DateTime.now();
     state = null;
+    host = m;
+    _hostAt = _nextAt();
+    _hostXf = null;
+    _hostSm = null;
+    _joinedAt = serverNow;
+    _kicked.clear();
+    _adders.clear();
+    _applyHostSettings();
     player.feeder = null; // в джеме «Моя волна» не работает: очередь общая
     final snap = _fromPlayer(forceTrackStart: false);
     state = snap;
@@ -264,7 +525,7 @@ class JamController extends ChangeNotifier {
   }
 
   /// Войти в джем по приглашению
-  Future<void> join(String id, String from) async {
+  Future<void> join(String id, String from, {String? host}) async {
     final m = me;
     if (m == null) return;
     if (jamId != null && jamId != id) await leave();
@@ -274,10 +535,21 @@ class JamController extends ChangeNotifier {
       ..[m] = DateTime.now()
       ..[from] = DateTime.now();
     state = null;
+    // Организатора называет приглашение; если не назвало — считаем им пригласившего, настоящая отметка придёт от организатора
+    this.host = host ?? from;
+    // Организатор, названный в приглашении, скорее всего в джеме: сразу считаем его участником, пока он сам не откликнулся
+    if (host != null && host != m) _seen[host] = DateTime.now();
+    _hostAt = 0;
+    _hostXf = null;
+    _hostSm = null;
+    _joinedAt = serverNow;
+    _kicked.clear();
+    _adders.clear();
+    _applyHostSettings();
     player.feeder = null;
     _afterJoin();
     await ensureChannel();
-    unawaited(_ntfy?.send({'t': 'hello', 'jam': id, 'who': m, 'ask': true}));
+    unawaited(_sendHello(ask: true));
     unawaited(_pollDrive(force: true));
   }
 
@@ -290,8 +562,25 @@ class JamController extends ChangeNotifier {
   Future<void> leave() async {
     final id = jamId, m = me;
     if (id == null) return;
+    // Организатор уходит — лидерство переходит к первому по алфавиту из оставшихся (все считают так же)
+    if (m != null && iAmHost) {
+      final others = participants.where((e) => e != m).toList()..sort();
+      if (others.isNotEmpty) {
+        host = others.first;
+        _hostAt = math.max(_nextAt(), _hostAt + 1);
+        _republish();
+      }
+    }
     jamId = null;
     state = null;
+    host = null;
+    _hostAt = 0;
+    _hostXf = null;
+    _hostSm = null;
+    _kicked.clear();
+    _adders.clear();
+    player.jamXfSec = null;
+    player.jamSmart = null;
     _seen.clear();
     _driveWrite?.cancel();
     _advanceTimer?.cancel();
@@ -328,6 +617,8 @@ class JamController extends ChangeNotifier {
     if (!n.isJam) return null;
     final done = _resolved[n.id];
     if (done != null) return done;
+    final ban = n.jam == null ? null : _banned[n.jam!];
+    if (n.kind == NoticeKind.jamInvite && ban != null && !n.at.isAfter(ban)) return 'Вас исключили из этого джема';
     if (n.expired(DateTime.now())) return n.kind == NoticeKind.jamInvite ? 'Приглашение устарело' : 'Запрос устарел';
     if (n.kind == NoticeKind.jamInvite) return jamId == n.jam ? 'Вы в джеме' : null;
     // Запрос на вход: принять могут только участники
@@ -343,7 +634,7 @@ class JamController extends ChangeNotifier {
     if (n.kind == NoticeKind.jamInvite) {
       _resolved[n.id] = 'Вы в джеме';
       notifyListeners();
-      await join(id, n.from);
+      await join(id, n.from, host: n.host);
       return;
     }
     // Принять запрос: человеку уходит приглашение-ответ, остальные видят, что уже принят
@@ -351,7 +642,7 @@ class JamController extends ChangeNotifier {
     _admitted.add('$id|${n.from}');
     notifyListeners();
     unawaited(_ntfy?.send({'t': 'admit', 'jam': id, 'who': n.from, 'from': me}));
-    await social.emitEvent({'k': 'jaminv', 'jam': id, 'to': [n.from], 're': true});
+    await social.emitEvent({'k': 'jaminv', 'jam': id, 'to': [n.from], 're': true, 'host': effectiveHost ?? me});
   }
 
   void declineNotice(Notice n) {
@@ -372,17 +663,13 @@ class JamController extends ChangeNotifier {
   /// Мой снимок по тому, что сейчас в плеере
   JamSnapshot _fromPlayer({bool forceTrackStart = false, bool? playing}) {
     final (q, i) = jamWindow(player.queue, player.index);
-    var at = serverNow;
-    if (at <= _lastAt) at = _lastAt + 1;
-    _lastAt = at;
-    return JamSnapshot(
-      jam: jamId!,
-      by: me!,
-      at: at,
+    final at = _nextAt();
+    return _snap(
       queue: q,
       index: i,
       playing: playing ?? player.playing,
       posMs: forceTrackStart ? 0 : math.max<int>(0, player.position.value.inMilliseconds - _myLead().inMilliseconds),
+      at: at,
     );
   }
 
@@ -412,10 +699,7 @@ class JamController extends ChangeNotifier {
       if (player.current?.id != id) return;
       if (state?.trackId == id) return; // кто-то уже перевёл джем на этот трек
       final (q, i) = jamWindow(player.queue, player.index);
-      var at = serverNow;
-      if (at <= _lastAt) at = _lastAt + 1;
-      _lastAt = at;
-      _local(JamSnapshot(jam: jamId!, by: me!, at: at, queue: q, index: i, playing: player.playing, posMs: 0));
+      _local(_snap(queue: q, index: i, playing: player.playing, posMs: 0, at: _nextAt()));
     });
   }
 
@@ -432,7 +716,19 @@ class JamController extends ChangeNotifier {
     final now = DateTime.now();
     if (m != null && now.difference(_lastHello) >= const Duration(seconds: 20)) {
       _lastHello = now;
-      unawaited(_ntfy?.send({'t': 'hello', 'jam': jamId, 'who': m, 'from': m}));
+      unawaited(_sendHello());
+    }
+    // Организатор поменял плавный переход у себя — остальные узнают сразу, а не через двадцать секунд
+    if (iAmHost && _lastXfSent != '$_myXf|$_mySmart') {
+      _lastHello = now;
+      unawaited(_sendHello());
+    }
+    _applyHostSettings();
+    // Состав джема или организатор изменились — обновляем статус, чтобы друзья видели, кто в джеме
+    final sig = '${participants.join(',')}|${effectiveHost ?? ''}';
+    if (sig != _lastSig) {
+      _lastSig = sig;
+      social.touchStatus();
     }
     if (now.difference(_lastPresenceWrite) >= const Duration(seconds: 60)) {
       _lastPresenceWrite = now;
@@ -457,7 +753,23 @@ class JamController extends ChangeNotifier {
     final id = jamId, m = me;
     if (id == null || m == null || !lib.hasHub) return;
     final mine = state != null && state!.by == m ? state : null;
-    final body = jsonEncode({'jam': id, 'who': m, 'seen': serverNow, 'snap': mine?.toJson()});
+    final amHost = iAmHost;
+    final body = jsonEncode({
+      'jam': id,
+      'who': m,
+      'seen': serverNow,
+      'snap': mine?.toJson(),
+      if (_hostAt > 0 && host != null) ...{'host': host, 'ha': _hostAt},
+      // Настройки перехода и исключённые: так их получит и тот, у кого нет быстрого канала
+      if (amHost) ...{
+        'xf': _myXf,
+        'sm': _mySmart,
+        'kick': {
+          for (final e in _kicked.entries)
+            if (DateTime.now().difference(e.value) < const Duration(minutes: 3)) e.key: serverNow - DateTime.now().difference(e.value).inMilliseconds
+        },
+      },
+    });
     try {
       final folder = await lib.dataFolder();
       await lib.withHub((email) async {
@@ -488,7 +800,7 @@ class JamController extends ChangeNotifier {
       for (final f in files) {
         if (f.isFolder || !f.name.startsWith(prefix) || !f.name.endsWith('.json')) continue;
         final who = f.name.substring(prefix.length, f.name.length - 5);
-        if (who == me) continue;
+        if (who == me || _isKicked(who)) continue;
         if (!force && _fileModified[f.id] == f.modifiedTime) continue;
         _fileModified[f.id] = f.modifiedTime;
         final bytes = await lib.withHub((email) => drive.download(email, f.id));
@@ -497,6 +809,29 @@ class JamController extends ChangeNotifier {
         final seenAt = (j['seen'] as num?)?.toInt() ?? 0;
         // Файл давно не обновлялся — участник уже ушёл
         if (serverNow - seenAt < 180000) _seen[who] = DateTime.now();
+        final h = j['host'];
+        if (h is String) _learnHost(h, (j['ha'] as num?)?.toInt() ?? 0);
+        // Настройки перехода и исключения читаем только из файла организатора
+        if (who == host) {
+          if (j['xf'] is num) _learnSettings((j['xf'] as num).toInt(), j['sm'] is bool ? j['sm'] as bool : null);
+          final kl = j['kick'];
+          if (kl is Map) {
+            for (final e in kl.entries) {
+              final target = '${e.key}';
+              final at = (e.value as num?)?.toInt() ?? 0;
+              if (target == me) {
+                // Старая запись, сделанная до моего входа, не в счёт
+                if (at > _joinedAt) {
+                  unawaited(_gotKicked());
+                  return;
+                }
+              } else if (!_isKicked(target)) {
+                _kicked[target] = DateTime.now();
+                _seen.remove(target);
+              }
+            }
+          }
+        }
         final s = JamSnapshot.fromJson(j['snap']);
         if (s != null && s.jam == id && serverNow - s.at < 6 * 3600 * 1000) _adopt(s);
       }
@@ -510,11 +845,28 @@ class JamController extends ChangeNotifier {
 
   /// Принимаем чужой снимок, если он свежее нашего, и приводим плеер в соответствие
   void _adopt(JamSnapshot s) {
+    // Организатор и «кто добавил» учитываем из любого снимка, даже если он не новее нашего
+    _learnHost(s.host, s.hostAt);
+    if (s.by == host && s.xf != null) _learnSettings(s.xf!, s.smart);
+    _learnAdders(s, newer: s.newerThan(state));
     if (!s.newerThan(state)) return;
     state = s;
     if (s.at > _lastAt) _lastAt = s.at;
     unawaited(_applyToPlayer(s));
     notifyListeners();
+  }
+
+  void _learnAdders(JamSnapshot s, {required bool newer}) {
+    for (var i = 0; i < s.queue.length && i < s.adders.length; i++) {
+      final a = s.adders[i];
+      if (a.isEmpty) continue;
+      if (newer || !_adders.containsKey(s.queue[i])) _adders[s.queue[i]] = a;
+    }
+    // Старые записи (трека давно нет в очереди) не копим
+    if (_adders.length > 600) {
+      final keep = player.queue.toSet()..addAll(s.queue);
+      _adders.removeWhere((id, _) => !keep.contains(id));
+    }
   }
 
   Future<void> _applyToPlayer(JamSnapshot s) async {
@@ -600,18 +952,8 @@ class JamController extends ChangeNotifier {
     // Мой плавный переход уже начал следующий трек, а общий ещё прежний: не публикую «смену трека», только паузу
     if (_localAhead(st)) {
       if (player.playing != st.playing) {
-        var at = serverNow;
-        if (at <= _lastAt) at = _lastAt + 1;
-        _lastAt = at;
-        _local(JamSnapshot(
-          jam: st.jam,
-          by: me!,
-          at: at,
-          queue: st.queue,
-          index: st.index,
-          playing: player.playing,
-          posMs: st.positionAt(at).inMilliseconds,
-        ));
+        final at = _nextAt();
+        _local(_snap(queue: st.queue, index: st.index, playing: player.playing, posMs: st.positionAt(at).inMilliseconds, at: at));
       }
       return;
     }
@@ -672,16 +1014,7 @@ class JamController extends ChangeNotifier {
       _local(_fromPlayer(playing: false));
       return true;
     }
-    final next = JamSnapshot(
-      jam: jamId!,
-      by: me!,
-      at: math.max(serverNow, _lastAt + 1),
-      queue: ids,
-      index: idx + 1,
-      playing: true,
-      posMs: 0,
-    );
-    _lastAt = next.at;
+    final next = _snap(queue: ids, index: idx + 1, playing: true, posMs: 0, at: _nextAt());
     state = next;
     _publish(next);
     unawaited(_applyToPlayer(next));

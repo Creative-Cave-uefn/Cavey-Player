@@ -12,6 +12,7 @@ import '../core/autostart.dart';
 import '../core/log.dart';
 import '../core/notices.dart';
 import '../core/notify_prefs.dart';
+import '../core/store.dart' show Settings;
 import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
@@ -202,7 +203,7 @@ class _AccountsPageState extends State<AccountsPage> {
           ],
         ];
         final List<Widget> page = switch (tab) {
-          'playback' => const [_PlaybackSection(), gap, _TraySection(), gap, _KaraokeSection()],
+          'playback' => const [_PlaybackSection(), gap, _KaraokeSection()],
           'look' => const [_AccentSection(), gap, _SeekEdgeSection(), gap, _LookSection()],
           'account' => [
               ...accountsBlock,
@@ -227,7 +228,7 @@ class _AccountsPageState extends State<AccountsPage> {
             ],
           'notify' => const [_NotifySection()],
           'debug' => const [_DebugSection()],
-          _ => const [_UpdatesSection(), gap, _AutostartSection()],
+          _ => const [_UpdatesSection(), gap, _AppWorkSection()],
         };
         return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Padding(
@@ -326,14 +327,14 @@ class _DebugSection extends StatelessWidget {
   }
 }
 
-/// «Автозапуск приложения»: вместе с Windows, с открытым окном или сразу в трее
-class _AutostartSection extends StatefulWidget {
-  const _AutostartSection();
+/// «Работа приложения»: автозапуск с Windows (выпадающий список), сворачивание в трей и медиаклавиши
+class _AppWorkSection extends StatefulWidget {
+  const _AppWorkSection();
   @override
-  State<_AutostartSection> createState() => _AutostartSectionState();
+  State<_AppWorkSection> createState() => _AppWorkSectionState();
 }
 
-class _AutostartSectionState extends State<_AutostartSection> {
+class _AppWorkSectionState extends State<_AppWorkSection> {
   Future<void> _set(String mode) async {
     final app = Services.of(context);
     setState(() => app.settings.view['autostart'] = mode);
@@ -344,74 +345,57 @@ class _AutostartSectionState extends State<_AutostartSection> {
 
   @override
   Widget build(BuildContext context) {
-    if (!Platform.isWindows) return const SizedBox.shrink();
     final app = Services.of(context);
     final mode = app.settings.autostartMode;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Запуск', style: display(20)),
+      Text('Работа приложения', style: display(20)),
       const SizedBox(height: 10),
-      SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        value: mode != 'off',
-        title: const Text('Автозапуск приложения'),
-        subtitle: const Text(
-          'Cavey запускается сам, когда вы входите в Windows. Отключить можно и в «Диспетчере задач», на вкладке «Автозагрузка».',
-          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
-        ),
-        onChanged: (v) => _set(v ? 'show' : 'off'),
-      ),
-      AnimatedSize(
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-        alignment: Alignment.topCenter,
-        child: mode == 'off'
-            ? const SizedBox(width: double.infinity)
-            : Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Wrap(spacing: 10, runSpacing: 10, children: [
-                  _ModeChip(label: 'С открытым окном', selected: mode == 'show', onTap: () => _set('show')),
-                  _ModeChip(label: 'Сразу в трей', selected: mode == 'tray', onTap: () => _set('tray')),
-                ]),
+      if (Platform.isWindows) ...[
+        Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+          const Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Автозапуск', style: TextStyle(fontSize: 16)),
+              SizedBox(height: 4),
+              Text(
+                'Cavey запускается сам, когда вы входите в Windows. Отключить можно и в «Диспетчере задач», на вкладке «Автозагрузка».',
+                style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
               ),
-      ),
-      if (mode == 'tray')
-        const Padding(
-          padding: EdgeInsets.only(top: 8),
-          child: Text(
-            'Окно не показывается, Cavey ждёт значком у часов. Открыть — нажатием на значок. Если значок в трее не запустился, окно останется на экране.',
-            style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+            ]),
           ),
-        ),
+          const SizedBox(width: 16),
+          Container(
+            height: 42,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(color: C.raised, border: Border.all(color: C.line), borderRadius: BorderRadius.circular(10)),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: mode,
+                dropdownColor: C.panel,
+                borderRadius: BorderRadius.circular(12),
+                items: const [
+                  DropdownMenuItem(value: 'off', child: Text('Отключен')),
+                  DropdownMenuItem(value: 'tray', child: Text('Включен - в трее')),
+                  DropdownMenuItem(value: 'show', child: Text('Включен - окно')),
+                ],
+                onChanged: (v) {
+                  if (v != null && v != mode) _set(v);
+                },
+              ),
+            ),
+          ),
+        ]),
+        if (mode == 'tray')
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text(
+              'Окно не показывается, Cavey ждёт значком у часов. Открыть — нажатием на значок. Если значок в трее не запустился, окно останется на экране.',
+              style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+            ),
+          ),
+        const SizedBox(height: 10),
+      ],
+      const _TraySwitches(),
     ]);
-  }
-}
-
-class _ModeChip extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  const _ModeChip({required this.label, required this.selected, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          height: 36,
-          padding: const EdgeInsets.symmetric(horizontal: 18),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: selected ? C.accent : Colors.transparent,
-            border: Border.all(color: selected ? C.accent : C.line),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: selected ? C.accentInk : C.text)),
-        ),
-      ),
-    );
   }
 }
 
@@ -443,6 +427,63 @@ class _NotifySectionState extends State<_NotifySection> {
     final me = app.lib.me ?? '';
     noticePreviewing = true;
     app.social.noticeStream.add(Notice(NoticeKind.like, me, DateTime.now(), tracks.isEmpty ? const [] : [tracks.first.id]));
+  }
+
+  /// Таблица: по строке на вид уведомления, справа галочки «Звук» и «Уведомление»
+  Widget _kindsTable(Settings st, bool on) {
+    const rows = <(String, String, String?)>[
+      ('like', 'Лайк на загруженный трек', 'Так же — добавление вашего трека в плейлист'),
+      ('share', 'Поделились треком', null),
+      ('jam', 'Пригласили в джем', 'Так же — просьба войти в ваш джем'),
+    ];
+    Widget head(String t) => SizedBox(
+          width: 112,
+          child: Center(child: Text(t, style: const TextStyle(color: C.muted, fontSize: 13, fontWeight: FontWeight.w600))),
+        );
+    Widget cell(String group, String what, bool enabled) => SizedBox(
+          width: 112,
+          child: Center(
+            child: Checkbox(
+              value: st.noticeFlag(group, what),
+              onChanged: enabled
+                  ? (v) async {
+                      setState(() => st.view['ntf.$group.$what'] = v == true ? '1' : '0');
+                      await _save();
+                    }
+                  : null,
+            ),
+          ),
+        );
+    return Opacity(
+      opacity: on ? 1 : 0.45,
+      child: IgnorePointer(
+        ignoring: !on,
+        child: Container(
+          decoration: BoxDecoration(color: C.surface, border: Border.all(color: C.line), borderRadius: BorderRadius.circular(14)),
+          padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+          child: Column(children: [
+            Row(children: [const Expanded(child: SizedBox.shrink()), head('Звук'), head('Уведомление')]),
+            for (final (i, (group, label, hint)) in rows.indexed) ...[
+              if (i > 0) const Divider(height: 1, color: C.line),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(children: [
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(label, style: const TextStyle(fontSize: 15)),
+                      if (hint != null) Text(hint, style: const TextStyle(color: C.faint, fontSize: 12)),
+                    ]),
+                  ),
+                  // Звук ещё и общим выключателем «Звук уведомления» ниже
+                  cell(group, 'snd', st.notifySound),
+                  cell(group, 'pop', true),
+                ]),
+              ),
+            ],
+          ]),
+        ),
+      ),
+    );
   }
 
   @override
@@ -485,6 +526,15 @@ class _NotifySectionState extends State<_NotifySection> {
               }
             : null,
       ),
+      const SizedBox(height: 18),
+      Text('Какие уведомления', style: display(20)),
+      const SizedBox(height: 6),
+      const Text(
+        'Для каждого вида отдельно: играть ли звук и показывать ли уведомление (в плеере и в Windows). В колокольчике на вкладке «Компания» они остаются всегда.',
+        style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+      ),
+      const SizedBox(height: 12),
+      _kindsTable(st, on),
       const SizedBox(height: 18),
       Text('Звук', style: display(20)),
       const SizedBox(height: 10),
@@ -1027,15 +1077,33 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final sec = app.settings.crossfadeSec;
+    // В джеме плавный переход задаёт организатор: пока я участник, мои настройки не действуют и ниже не меняются
+    return ListenableBuilder(listenable: app.jam, builder: (context, _) => _content(app));
+  }
+
+  Widget _content(AppServices app) {
+    final locked = app.player.jamXfSec != null;
+    final sec = locked ? app.player.crossfadeSecNow : app.settings.crossfadeSec;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text('Плавный переход', style: display(20)),
       const SizedBox(height: 6),
       const Text(
         'Конец трека затихает, а следующий в это время нарастает. Не работает, если вы сами переключили трек, '
-        'перемотали в конец, а также на коротких треках. В джем-сессии переход включается у каждого по его настройке и других не затрагивает.',
+        'перемотали в конец, а также на коротких треках. В джем-сессии переход задаёт организатор: включён у него — включён у всех, выключен — выключен у всех.',
         style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
       ),
+      if (locked)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Row(children: [
+            Icon(Icons.headphones_rounded, size: 16, color: C.accent),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text('Сейчас вы в джеме: переход ${sec == 0 ? 'выключен' : '$sec с'} по настройке организатора. Ваши настройки вернутся, когда выйдете из джема.',
+                  style: TextStyle(color: C.accent, fontSize: 13, height: 1.4)),
+            ),
+          ]),
+        ),
       const SizedBox(height: 4),
       Row(children: [
         Expanded(
@@ -1045,7 +1113,7 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
             max: 10,
             divisions: 10,
             label: sec == 0 ? 'Выключено' : '$sec с',
-            onChanged: (v) => setState(() => app.settings.crossfadeSec = v.round()),
+            onChanged: locked ? null : (v) => setState(() => app.settings.crossfadeSec = v.round()),
             onChangeEnd: (_) => app.lib.saveSettings(),
           ),
         ),
@@ -1087,7 +1155,7 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         value: app.player.smartMix,
-        onChanged: sec == 0
+        onChanged: sec == 0 || locked
             ? null
             : (v) {
                 setState(() => app.settings.view['mix.smart'] = v ? '1' : '0');
@@ -1489,19 +1557,18 @@ class _LookSectionState extends State<_LookSection> {
   }
 }
 
-class _TraySection extends StatefulWidget {
-  const _TraySection();
+/// Сворачивание в трей при закрытии окна и медиаклавиши: идут в «Работе приложения»
+class _TraySwitches extends StatefulWidget {
+  const _TraySwitches();
   @override
-  State<_TraySection> createState() => _TraySectionState();
+  State<_TraySwitches> createState() => _TraySwitchesState();
 }
 
-class _TraySectionState extends State<_TraySection> {
+class _TraySwitchesState extends State<_TraySwitches> {
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text('Работа в фоне', style: display(20)),
-      const SizedBox(height: 10),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         value: app.settings.trayOnClose,

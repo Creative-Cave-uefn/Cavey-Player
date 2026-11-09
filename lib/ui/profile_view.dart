@@ -792,7 +792,9 @@ class UserProfilePage extends StatelessWidget {
         final lists = [for (final p in lib.visiblePlaylists) if (p.by == email) p];
         final m = app.social.members[email];
         String? subtitle;
-        if (m != null && m.live && m.now != null) {
+        if (m != null && m.inJam) {
+          subtitle = 'Сейчас ${jamStatusText(app, m)}';
+        } else if (m != null && m.live && m.now != null) {
           subtitle = 'Сейчас слушает: ${m.now!.title} — ${m.now!.artist}';
         } else if (email == lib.me) {
           subtitle = 'Это ваша страница';

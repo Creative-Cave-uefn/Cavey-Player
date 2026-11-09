@@ -155,7 +155,7 @@ class AppServices {
     final jam = JamController(lib, drive, player, social,
         serverUrl: () => settings.viewOf('ntfy', '1') == '0' ? '' : settings.viewOf('ntfy.server', 'https://ntfy.sh'));
     player.jamActive = () => jam.active;
-    social.jamInfo = () => jam.active ? {'id': jam.jamId, 'm': jam.participants} : null;
+    social.jamInfo = () => jam.active ? {'id': jam.jamId, 'm': jam.participants, 'h': jam.effectiveHost} : null;
     social.onFreshNotice = jam.onFreshNotice;
     jam.start();
     player.onUserAction = () {

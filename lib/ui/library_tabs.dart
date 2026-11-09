@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import '../app.dart';
 import 'shell.dart';
 import 'theme.dart';
+import 'widgets.dart';
 
 /// Вкладки «Медиатеки»: заголовок остаётся на месте, меняется только содержимое под ним
 const libraryTabs = <(String, Nav)>[
@@ -44,7 +46,26 @@ class LibraryTabsPage extends StatelessWidget {
         padding: EdgeInsets.fromLTRB(pad, 18, pad, 0),
         child: Text('Медиатека', style: display(compact ? 30 : 36, weight: FontWeight.w700)),
       ),
-      const SizedBox(height: 12),
+      // Сколько в библиотеке: сразу под заголовком, а ниже уже вкладки
+      Padding(
+        padding: EdgeInsets.fromLTRB(pad, 8, pad, 0),
+        child: ListenableBuilder(
+          listenable: Services.of(context).lib,
+          builder: (context, _) {
+            final lib = Services.of(context).lib;
+            final tracks = lib.allTracks;
+            if (tracks.isEmpty) return const SizedBox.shrink();
+            final albums = lib.albums.length;
+            final artists = lib.artists.length;
+            return Text(
+              '${countTracks(tracks.length)} · $albums ${plural(albums, 'альбом', 'альбома', 'альбомов')} · '
+              '$artists ${plural(artists, 'исполнитель', 'исполнителя', 'исполнителей')}',
+              style: const TextStyle(color: C.muted, fontSize: 15),
+            );
+          },
+        ),
+      ),
+      const SizedBox(height: 14),
       SizedBox(
         height: 38,
         child: ListView(

@@ -61,8 +61,13 @@ class _NoticeTowerState extends State<NoticeTower> {
     final preview = noticePreviewing;
     noticePreviewing = false;
     if (!preview && !st.notifyOn) return;
+    // В «Настройках» для каждого вида уведомлений отдельно выбирается, играть ли звук и показывать ли карточку.
+    // В колокольчике на вкладке «Компания» уведомление остаётся в любом случае
+    final sound = preview || st.soundFor(n.kind);
+    final popup = preview || st.popupFor(n.kind);
     // Звук: слышно, даже если окно далеко или спрятано
-    unawaited(NotifySound.play(st, force: preview));
+    if (sound) unawaited(NotifySound.play(st, force: preview));
+    if (!popup) return;
     // Окно спрятано в трей, свёрнуто или не в фокусе — своё окошко уведомления поверх остальных окон
     if (st.notifySystem && (preview || await windowIsHidden())) {
       unawaited(_systemToast(app, n));
@@ -99,7 +104,9 @@ class _NoticeTowerState extends State<NoticeTower> {
       }
     }
     final shown = nick.trim().isEmpty ? n.from : nick.trim();
-    final ok = await showToastWindow(ToastSpec(
+    // Приглашение в джем и запрос на вход можно принять или отклонить прямо в окошке
+    final answerable = n.isJam && app.jam.noticeState(n) == null;
+    final result = await showToastWindow(ToastSpec(
       title: nick,
       text: body,
       letter: shown.characters.first.toUpperCase(),
@@ -111,8 +118,20 @@ class _NoticeTowerState extends State<NoticeTower> {
       muted: C.muted,
       letterBg: friendColor(n.from),
       letterInk: C.accentInk,
+      buttons: answerable,
+      seconds: answerable ? 20 : 8,
     ));
-    if (!ok) await desktopToast(body, title: nick);
+    switch (result) {
+      case ToastResult.failed:
+        await desktopToast(body, title: nick);
+      case ToastResult.accepted:
+        unawaited(app.jam.acceptNotice(n));
+      case ToastResult.declined:
+        app.jam.declineNotice(n);
+      case ToastResult.closed:
+      case ToastResult.opened:
+        break;
+    }
   }
 
   void _close(_Card c) {
@@ -231,22 +250,24 @@ class _NoticeCard extends StatelessWidget {
       note: n.note,
       onClose: onClose,
       actions: [
-        if (n.kind == NoticeKind.jamInvite)
-          TextButton(
-            onPressed: () {
-              app.jam.acceptNotice(n);
-              onClose();
-            },
-            child: const Text('Войти'),
-          ),
-        if (n.kind == NoticeKind.jamRequest)
-          TextButton(
+        // Приглашение в джем и запрос на вход: «Принять» и «Отклонить»
+        if (n.isJam) ...[
+          FilledButton(
+            style: FilledButton.styleFrom(visualDensity: VisualDensity.compact, padding: const EdgeInsets.symmetric(horizontal: 14)),
             onPressed: () {
               app.jam.acceptNotice(n);
               onClose();
             },
             child: const Text('Принять'),
           ),
+          TextButton(
+            onPressed: () {
+              app.jam.declineNotice(n);
+              onClose();
+            },
+            child: const Text('Отклонить'),
+          ),
+        ],
         if (track != null)
           TextButton.icon(
             onPressed: () {

@@ -6,6 +6,7 @@ import '../app.dart';
 import '../core/notices.dart';
 import '../core/social.dart';
 import 'glass_popup.dart';
+import 'jam_panel.dart';
 import 'shell.dart';
 import 'profile_view.dart';
 import 'tracks_view.dart' show Links, LinkPart, trackLinks, TrackMenu, showTrackMenu;
@@ -121,6 +122,14 @@ Future<void> jamTogether(AppServices app, String email) async {
   app.lib.messages.add('Приглашение в джем отправлено: $name');
 }
 
+/// «В джеме с Аней и Борей»: статус человека, который сидит в джем-сессии
+String jamStatusText(AppServices app, Member m) {
+  final others = [for (final e in m.jamOthers) app.lib.firstNameOf(e)];
+  if (others.isEmpty) return 'в джеме';
+  if (others.length <= 2) return 'в джеме с ${others.join(' и ')}';
+  return 'в джеме с ${others.first}, ${others[1]} и ещё ${others.length - 2}';
+}
+
 class _ListenerCard extends StatelessWidget {
   final Member member;
   const _ListenerCard({required this.member});
@@ -171,8 +180,8 @@ class _ListenerCard extends StatelessWidget {
                 child: Text(member.name.isEmpty ? member.email : member.name,
                     overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
               ),
-              Text(member.live ? 'слушает' : 'на паузе',
-                  style: TextStyle(color: member.live ? C.accent : C.faint, fontSize: 12, fontWeight: FontWeight.w600)),
+              Text(member.inJam ? 'в джеме' : (member.live ? 'слушает' : 'на паузе'),
+                  style: TextStyle(color: member.live || member.inJam ? C.accent : C.faint, fontSize: 12, fontWeight: FontWeight.w600)),
             ]),
           ),
         ),
@@ -943,36 +952,54 @@ class JamStrip extends StatelessWidget {
     final people = jam.participants;
     if (compact) {
       return Tooltip(
-        message: 'Джем: ${people.length} · выйти',
-        child: IconButton(onPressed: jam.leave, icon: Icon(Icons.headphones_rounded, color: C.accent)),
+        message: 'Джем: ${people.length} · открыть',
+        child: IconButton(onPressed: () => showJamPanel(context), icon: Icon(Icons.headphones_rounded, color: C.accent)),
       );
     }
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 10, 4),
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 4),
       child: Row(children: [
-        Tooltip(message: 'Джем · ${people.length}', child: Icon(Icons.headphones_rounded, size: 16, color: C.accent)),
-        const SizedBox(width: 8),
-        SizedBox(
-          height: 20,
-          width: (20 + (people.length.clamp(1, 4) - 1) * 12).toDouble(),
-          child: Stack(children: [
-            for (var i = 0; i < people.length && i < 4; i++)
-              Positioned(left: i * 12.0, child: Avatar(key: ValueKey('jam-${people[i]}'), email: people[i], name: app.lib.firstNameOf(people[i]), size: 20)),
-          ]),
+        // Значок и аватарки открывают панель джема: кто в нём, организатор, передать лидерство или исключить
+        Expanded(
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Tooltip(
+              message: 'Джем · ${people.length}: нажмите, чтобы открыть',
+              child: InkWell(
+                borderRadius: BorderRadius.circular(10),
+                onTap: () => showJamPanel(context),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.headphones_rounded, size: 16, color: C.accent),
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      height: 20,
+                      width: (20 + (people.length.clamp(1, 4) - 1) * 12).toDouble(),
+                      child: Stack(children: [
+                        for (var i = 0; i < people.length && i < 4; i++)
+                          Positioned(left: i * 12.0, child: Avatar(key: ValueKey('jam-${people[i]}'), email: people[i], name: app.lib.firstNameOf(people[i]), size: 20)),
+                      ]),
+                    ),
+                  ]),
+                ),
+              ),
+            ),
+          ),
         ),
-        const Spacer(),
         IconButton(
           tooltip: 'Пригласить в джем',
           visualDensity: VisualDensity.compact,
           icon: Icon(Icons.person_add_alt_1_rounded, size: 18, color: C.accent),
-          onPressed: () => _invite(context),
+          onPressed: () => invite(context),
         ),
         TextButton(onPressed: jam.leave, child: const Text('Выйти')),
       ]),
     );
   }
 
-  Future<void> _invite(BuildContext context) async {
+  /// Окно «Позвать в джем»: друзья, которых ещё нет в джеме. Зовёт и из панели джема
+  static Future<void> invite(BuildContext context) async {
     final app = Services.of(context);
     final inJam = app.jam.participants.toSet();
     final candidates = [for (final m in app.social.friends) if (!inJam.contains(m.email)) m];
@@ -1053,7 +1080,10 @@ class _PersonCard extends StatelessWidget {
     final m = app.social.members[email];
     final name = lib.nameOf(email);
     final String status;
-    if (m != null && m.live && m.now != null) {
+    if (m != null && m.inJam) {
+      // Сидит в джеме: статус про джем, а не про последний трек, который остался на паузе
+      status = jamStatusText(app, m);
+    } else if (m != null && m.live && m.now != null) {
       status = 'слушает: ${m.now!.title}';
     } else if (m != null && m.recent) {
       status = 'на паузе';
@@ -1062,7 +1092,7 @@ class _PersonCard extends StatelessWidget {
     } else {
       status = uploads == 0 ? 'ещё не заходил(а)' : '';
     }
-    final live = m?.live ?? false;
+    final live = (m?.live ?? false) || (m?.inJam ?? false);
     return SizedBox(
       width: 250,
       child: Material(

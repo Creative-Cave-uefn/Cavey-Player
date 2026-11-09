@@ -23,7 +23,11 @@ class Notice {
 
   /// Приглашение — ответ на мой запрос: войти сразу, без подтверждения
   final bool reply;
-  const Notice(this.kind, this.from, this.at, this.trackIds, {this.playlist, this.note, this.jam, this.reply = false});
+
+  /// Организатор джема (почта), если приглашавший знает его
+  final String? host;
+  const Notice(this.kind, this.from, this.at, this.trackIds,
+      {this.playlist, this.note, this.jam, this.reply = false, this.host});
 
   bool get isJam => kind == NoticeKind.jamInvite || kind == NoticeKind.jamRequest;
 
@@ -71,7 +75,9 @@ List<Notice> collectNotices({
         // Приглашение в джем: только свежее и только мне
         final to = [for (final x in (d['to'] as List? ?? const [])) '$x'];
         if (to.contains(me) && d['jam'] != null) {
-          out.add(Notice(NoticeKind.jamInvite, email, at, const [], jam: '${d['jam']}', reply: d['re'] == true));
+          final h = '${d['host'] ?? ''}';
+          out.add(Notice(NoticeKind.jamInvite, email, at, const [],
+              jam: '${d['jam']}', reply: d['re'] == true, host: h.isEmpty ? null : h));
         }
       case 'jamreq':
         // Запрос «попроситься в джем» приходит всем участникам

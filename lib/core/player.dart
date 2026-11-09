@@ -575,7 +575,15 @@ class PlayerController extends ChangeNotifier {
   /// Умный переход: профили звука треков и темп трека (если известен)
   MixAnalyzer? mixer;
   double? Function(Track t)? tempoOf;
-  bool get smartMix => settings.viewOf('mix.smart', '1') == '1';
+  bool get smartMix => jamSmart ?? settings.viewOf('mix.smart', '1') == '1';
+
+  /// Джем: настройки плавного перехода организатора (секунды, 0 — выключен; умный переход). null — действуют мои.
+  /// Организатор задаёт переход всем: включил у себя — включается у остальных, выключил — выключается
+  int? jamXfSec;
+  bool? jamSmart;
+
+  /// Длина плавного перехода сейчас: в джеме — у организатора, иначе моя настройка
+  int get crossfadeSecNow => jamXfSec ?? settings.crossfadeSec;
 
   /// План умного перехода с текущего трека на следующий; null — профили ещё не готовы, переход обычный
   MixPlan? _smartPlan() {
@@ -585,13 +593,13 @@ class PlayerController extends ChangeNotifier {
     if (a == null || b == null) return null;
     // Профиль от другого файла (трек заменили) — не доверяем
     if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
-    return MixPlan.make(a, b, maxSec: settings.crossfadeSec.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur));
+    return MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur));
   }
 
   /// Профили звука текущего и следующего трека — считаем заранее, пока трек играет
   void _prepareMix() {
     final m = mixer;
-    final needMix = smartMix && settings.crossfadeSec > 0;
+    final needMix = smartMix && crossfadeSecNow > 0;
     if (m == null || !(needMix || normalize)) return;
     final cur = current;
     if (cur != null) {
@@ -716,14 +724,14 @@ class PlayerController extends ChangeNotifier {
     final prev = _prevPos;
     _prevPos = d;
     if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
-    if (settings.crossfadeSec <= 0 || _autoNextIndex() == null) return;
+    if (crossfadeSecNow <= 0 || _autoNextIndex() == null) return;
     // Профили смотрим только ближе к концу трека — не на каждом тике позиции
     final plan = duration - d < const Duration(seconds: 60) ? _smartPlan() : null;
     _maybePrepare(d, plan);
     final step = d - prev;
     final due = plan != null
         ? d >= plan.start && prev < plan.start && step >= Duration.zero && step < const Duration(seconds: 2)
-        : crossfadeDue(seconds: settings.crossfadeSec, duration: duration, position: d, previous: prev);
+        : crossfadeDue(seconds: crossfadeSecNow, duration: duration, position: d, previous: prev);
     if (!due) return;
     unawaited(_startCrossfade(plan));
   }
@@ -733,9 +741,9 @@ class PlayerController extends ChangeNotifier {
     if (_preparing || _fading || _preparedId != null) return;
     final ni = _autoNextIndex();
     if (ni == null) return;
-    final lead = Duration(seconds: prepareLeadSec) + (plan?.length ?? Duration(seconds: settings.crossfadeSec));
-    final startAt = plan?.start ?? (duration - Duration(seconds: settings.crossfadeSec));
-    if (duration < Duration(seconds: settings.crossfadeSec * 2) || startAt - d > lead) return;
+    final lead = Duration(seconds: prepareLeadSec) + (plan?.length ?? Duration(seconds: crossfadeSecNow));
+    final startAt = plan?.start ?? (duration - Duration(seconds: crossfadeSecNow));
+    if (duration < Duration(seconds: crossfadeSecNow * 2) || startAt - d > lead) return;
     final t = lib.data.tracks[queue[ni]];
     if (t == null) return;
     _preparing = true;
@@ -774,7 +782,7 @@ class PlayerController extends ChangeNotifier {
     if (nextTrack == null) return;
     _fading = true;
     final seq = ++_openSeq;
-    final lengthWanted = plan?.length.inMilliseconds ?? settings.crossfadeSec.clamp(1, 10).toInt() * 1000;
+    final lengthWanted = plan?.length.inMilliseconds ?? crossfadeSecNow.clamp(1, 10).toInt() * 1000;
     final lengthMs0 = lengthWanted;
     // С выравниванием громкости оба трека уже приведены к одному уровню — свою подгонку перехода не добавляем
     final match = normalize ? 1.0 : (plan?.inGain ?? 1.0);
