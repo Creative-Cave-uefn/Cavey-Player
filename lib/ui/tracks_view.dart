@@ -856,35 +856,19 @@ class _TracksPageState extends State<TracksPage> {
     }
 
     // Поле поиска одной высоты с кнопками рядом
-    Widget searchBox(String hint, {double width = 300}) => SizedBox(
+    Widget searchBox(String hint, {double width = 300}) => RowSearchField(
+          controller: _search,
+          focusNode: _searchFocus,
+          hint: hint,
           width: width,
-          height: 48,
-          child: TextField(
-            controller: _search,
-            focusNode: _searchFocus,
-            onChanged: (v) => setState(() => _query = v),
-            maxLines: 1,
-            textAlignVertical: TextAlignVertical.center,
-            decoration: InputDecoration(
-              // Высота как у кнопок рядом; текст и подсказка строго в одну строку
-              constraints: const BoxConstraints.tightFor(height: 48),
-              hintText: hint,
-              hintMaxLines: 1,
-              prefixIcon: const Icon(Icons.search_rounded, size: 18),
-              suffixIcon: _query.isEmpty
-                  ? null
-                  : IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 16),
-                      onPressed: () => setState(() {
-                        _search.clear();
-                        _query = '';
-                      }),
-                    ),
-            ),
-          ),
+          onChanged: (v) => setState(() => _query = v),
+          onClear: () => setState(() {
+            _search.clear();
+            _query = '';
+          }),
         );
 
-    Widget buttons(WrapAlignment align, {Widget? leading}) => Wrap(
+    Widget buttons(WrapAlignment align, {Widget? leading}) => uniformControls(context, Wrap(
           spacing: 12,
           runSpacing: 10,
           alignment: align,
@@ -913,7 +897,7 @@ class _TracksPageState extends State<TracksPage> {
             ),
             ...widget.actions,
           ],
-        );
+        ));
 
     final hero = widget.heroColor;
     final left = widget.heroLeft;

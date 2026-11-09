@@ -84,6 +84,10 @@ class PlayerBar extends StatelessWidget {
                 : IconButton(
                     tooltip: p.playing ? 'Пауза' : 'Играть',
                     onPressed: t == null ? null : p.toggle,
+                    // Без внутренних отступов: иконка 36 + отступы по 8 не помещались в 48 и сдвигались от центра круга
+                    padding: EdgeInsets.zero,
+                    alignment: Alignment.center,
+                    constraints: const BoxConstraints.tightFor(width: 48, height: 48),
                     icon: Icon(p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 36, color: ink),
                   ),
           ),
@@ -707,7 +711,7 @@ class _VolumeControl extends StatelessWidget {
           builder: (btn) => GestureDetector(
             onSecondaryTap: () {
               stop();
-              showGlassPopover(context: btn, width: 300, above: true, gap: 36, builder: (_) => _NormPanel(p));
+              showGlassPopover(context: btn, width: 330, above: true, gap: 36, builder: (ctx) => _SoundPanel(Services.of(ctx)));
             },
             child: IconButton(
               tooltip: p.volume == 0 ? 'Включить звук (ПКМ — ровная громкость)' : 'Выключить звук (ПКМ — ровная громкость)',
@@ -742,35 +746,56 @@ class _VolumeControl extends StatelessWidget {
 }
 
 
-/// Окошко ровной громкости по правой кнопке на динамике: переключатель и уровень
-class _NormPanel extends StatefulWidget {
-  final PlayerController p;
-  const _NormPanel(this.p);
+/// Окошко звука по правой кнопке на динамике: ровная громкость и плавный переход с настройками.
+/// Описания функций спрятаны под значок «?» рядом с названием
+class _SoundPanel extends StatefulWidget {
+  final AppServices app;
+  const _SoundPanel(this.app);
   @override
-  State<_NormPanel> createState() => _NormPanelState();
+  State<_SoundPanel> createState() => _SoundPanelState();
 }
 
-class _NormPanelState extends State<_NormPanel> {
+class _SoundPanelState extends State<_SoundPanel> {
+  /// Плавное появление и скрытие блока настроек
+  Widget _reveal(bool show, Widget child) => AnimatedSize(
+        duration: const Duration(milliseconds: 240),
+        curve: Curves.easeOutCubic,
+        alignment: Alignment.topCenter,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 200),
+          switchInCurve: Curves.easeOut,
+          switchOutCurve: Curves.easeIn,
+          layoutBuilder: (current, previous) => Stack(alignment: Alignment.topCenter, children: [...previous, if (current != null) current]),
+          child: show
+              ? KeyedSubtree(key: const ValueKey('on'), child: child)
+              : const SizedBox(key: ValueKey('off'), width: double.infinity),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
-    final p = widget.p;
+    final app = widget.app;
+    final p = app.player;
+    final sec = app.settings.crossfadeSec;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 12, 8),
+      padding: const EdgeInsets.fromLTRB(16, 4, 12, 10),
       child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Expanded(child: Text('Ровная громкость', style: TextStyle(fontWeight: FontWeight.w600))),
-          Switch(
-            value: p.normalize,
-            onChanged: (v) async {
-              await p.setNormalize(v);
-              if (mounted) setState(() {});
-            },
-          ),
-        ]),
-        if (p.normalize)
+        _PanelRow(
+          title: 'Ровная громкость',
+          help: 'Тихие треки подтягиваются, громкие приглушаются, чтобы громкость не прыгала от песни к песне. '
+              'Звук трека разбирается один раз в фоне. Если ползунок громкости почти на максимуме, поднять тихий трек можно лишь до предела.',
+          value: p.normalize,
+          onChanged: (v) async {
+            await p.setNormalize(v);
+            if (mounted) setState(() {});
+          },
+        ),
+        _reveal(
+          p.normalize,
           Padding(
-            padding: const EdgeInsets.only(top: 4, bottom: 4),
+            padding: const EdgeInsets.only(top: 4, bottom: 6),
             child: NormLevelPicker(
+              appear: true,
               value: p.normLevel,
               onChanged: (v) async {
                 await p.setNormLevel(v);
@@ -778,9 +803,115 @@ class _NormPanelState extends State<_NormPanel> {
               },
             ),
           ),
-        const SizedBox(height: 4),
-        const Text('Тихие треки подтягиваются, громкие приглушаются', style: TextStyle(color: C.faint, fontSize: 12, height: 1.3)),
+        ),
+        const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Divider(height: 1, color: C.line)),
+        _PanelRow(
+          title: 'Плавный переход',
+          help: 'Конец трека затихает, а следующий в это время нарастает. Не работает, если вы сами переключили трек, '
+              'перемотали в конец или слушаете в джем-сессии, а также на коротких треках.',
+          value: sec > 0,
+          onChanged: (v) {
+            // Выключая, запоминаем длину, чтобы при включении вернуть прежнюю
+            if (v) {
+              app.settings.crossfadeSec = int.tryParse(app.settings.viewOf('xf.last', '5')) ?? 5;
+            } else {
+              app.settings.view['xf.last'] = '${sec.clamp(1, 10)}';
+              app.settings.crossfadeSec = 0;
+            }
+            app.lib.saveSettings();
+            setState(() {});
+          },
+        ),
+        _reveal(
+          sec > 0,
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(
+                child: Slider(
+                  value: sec.clamp(1, 10).toDouble(),
+                  min: 1,
+                  max: 10,
+                  divisions: 9,
+                  onChanged: (v) => setState(() => app.settings.crossfadeSec = v.round()),
+                  onChangeEnd: (_) => app.lib.saveSettings(),
+                ),
+              ),
+              SizedBox(width: 40, child: Text('$sec с', textAlign: TextAlign.right, style: const TextStyle(color: C.muted, fontSize: 13))),
+            ]),
+            _PanelRow(
+              title: 'Умный переход',
+              help: 'Как Automix в Spotify: переход начинается там, где песня на самом деле затихает, тишина в начале следующей '
+                  'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
+                  'Ползунок задаёт самый длинный переход.',
+              value: p.smartMix,
+              onChanged: (v) {
+                app.settings.view['mix.smart'] = v ? '1' : '0';
+                app.lib.saveSettings();
+                setState(() {});
+              },
+            ),
+          ]),
+        ),
       ]),
     );
+  }
+}
+
+/// Строка настройки: название, значок «?» с раскрывающимся описанием и переключатель
+class _PanelRow extends StatefulWidget {
+  final String title, help;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  const _PanelRow({required this.title, required this.help, required this.value, required this.onChanged});
+  @override
+  State<_PanelRow> createState() => _PanelRowState();
+}
+
+class _PanelRowState extends State<_PanelRow> {
+  bool _help = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      SizedBox(
+        height: 44,
+        child: Row(children: [
+          Flexible(child: Text(widget.title, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600))),
+          const SizedBox(width: 8),
+          MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => setState(() => _help = !_help),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                width: 18,
+                height: 18,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _help ? C.accent : Colors.transparent,
+                  border: Border.all(color: _help ? C.accent : C.faint, width: 1.3),
+                ),
+                child: Text('?', style: TextStyle(fontSize: 11, height: 1, fontWeight: FontWeight.w700, color: _help ? C.accentInk : C.muted)),
+              ),
+            ),
+          ),
+          const Spacer(),
+          Switch(value: widget.value, onChanged: widget.onChanged),
+        ]),
+      ),
+      AnimatedSize(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        alignment: Alignment.topCenter,
+        child: _help
+            ? Padding(
+                padding: const EdgeInsets.only(right: 8, bottom: 8),
+                child: Text(widget.help, style: const TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+              )
+            : const SizedBox(width: double.infinity),
+      ),
+    ]);
   }
 }

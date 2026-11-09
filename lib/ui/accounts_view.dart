@@ -202,6 +202,8 @@ class _AccountsPageState extends State<AccountsPage> {
               gap,
               const _DiscordSection(),
               gap,
+              const _FastMessagesSection(),
+              gap,
               const LibrarySection(parts: {'invite'}),
               ...keyBlock,
             ],
@@ -842,7 +844,22 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
         ),
       ),
-      const SizedBox(height: 18),
+    ]);
+  }
+}
+
+/// Быстрый канал сообщений для джем-сессий и уведомлений (ntfy)
+class _FastMessagesSection extends StatefulWidget {
+  const _FastMessagesSection();
+  @override
+  State<_FastMessagesSection> createState() => _FastMessagesSectionState();
+}
+
+class _FastMessagesSectionState extends State<_FastMessagesSection> {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text('Быстрые сообщения', style: display(20)),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,

@@ -90,6 +90,9 @@ class Member {
   /// Слушает прямо сейчас
   bool get live => now != null && now!.playing && nowSynced.difference(updated) < const Duration(seconds: 100);
 
+  /// Сейчас в джем-сессии: статус свежий (участники джема обновляют его каждые 30 с, даже на паузе)
+  bool get inJam => jamId != null && nowSynced.difference(updated) < const Duration(seconds: 100);
+
   /// Недавно был, но на паузе
   bool get recent => now != null && nowSynced.difference(updated) < const Duration(minutes: 15);
 
@@ -254,7 +257,7 @@ class SocialController extends ChangeNotifier {
     _resume = _ResumeWatcher(() => unawaited(poll()));
     WidgetsBinding.instance.addObserver(_resume!);
     _heartbeat = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (player.playing) _markDirty();
+      if (player.playing || jamInfo?.call() != null) _markDirty();
     });
     unawaited(poll());
   }

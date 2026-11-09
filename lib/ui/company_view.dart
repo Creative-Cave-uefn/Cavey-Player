@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/notices.dart';
 import '../core/social.dart';
+import 'glass_popup.dart';
 import 'shell.dart';
 import 'profile_view.dart';
 import 'tracks_view.dart' show Links, LinkPart, trackLinks, TrackMenu, showTrackMenu;
@@ -594,9 +595,11 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
     return ListenableBuilder(
       listenable: Listenable.merge([social, app.jam]),
       builder: (context, _) {
-        final live = social.friends.where((m) => m.live).toList();
         final jam = app.jam;
-        if (live.isEmpty && !jam.active) return const SizedBox.shrink();
+        // Те, кто в джеме, показываются отдельной карточкой джема, а не в общем списке «слушают»
+        final live = social.friends.where((m) => m.live && !m.inJam).toList();
+        final jamGroups = otherJams(app);
+        if (live.isEmpty && !jam.active && jamGroups.isEmpty) return const SizedBox.shrink();
         return MouseRegion(
           onEnter: (_) => setState(() => _open = true),
           onExit: (_) => setState(() => _open = false),
@@ -618,6 +621,7 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
                   : const SizedBox(width: double.infinity),
             ),
             if (jam.active) JamStrip(compact: compact),
+            for (final g in jamGroups) JamGroupCard(key: ValueKey('jg-${g.id}'), group: g, compact: compact),
             Padding(
               padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 10, compact ? 0 : 16, 10),
               child: Row(mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
@@ -641,6 +645,159 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
         );
       },
     );
+  }
+}
+
+/// Чужой джем, который виден в «Сейчас слушают»
+class JamGroup {
+  final String id;
+  final List<Member> members; // те, у кого свежий статус с этим джемом
+  final List<String> people; // все участники по их спискам, без меня
+  JamGroup(this.id, this.members, this.people);
+}
+
+/// Джемы, в которых я не участвую: по свежим статусам людей, сгруппированные по номеру джема
+List<JamGroup> otherJams(AppServices app) {
+  final mine = app.jam.jamId;
+  final byId = <String, List<Member>>{};
+  for (final m in app.social.friends) {
+    final id = m.jamId;
+    if (id == null || id == mine || !m.inJam) continue;
+    byId.putIfAbsent(id, () => []).add(m);
+  }
+  final me = app.lib.me;
+  return [
+    for (final e in byId.entries)
+      JamGroup(e.key, e.value, {
+        for (final m in e.value) ...[m.email, ...m.jamMembers],
+      }.where((x) => x.isNotEmpty && x != me).toList()),
+  ];
+}
+
+/// Карточка чужого джема: аватарки участников и кнопка «Присоединиться к джему». Если я уже в своём джеме, кнопка —
+/// «Пригласить к своему джему» со списком: все участники этого джема или кто-то один
+class JamGroupCard extends StatelessWidget {
+  final JamGroup group;
+  final bool compact;
+  const JamGroupCard({super.key, required this.group, required this.compact});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final jam = app.jam;
+    final people = group.people;
+    if (compact) {
+      return Tooltip(
+        message: 'Джем · ${people.length}: ${jam.active ? 'пригласить к своему' : 'присоединиться'}',
+        child: IconButton(
+          onPressed: jam.active ? null : () => _join(context),
+          icon: Icon(Icons.headphones_rounded, color: C.accent),
+        ),
+      );
+    }
+    final names = [for (final e in people) app.lib.firstNameOf(e)].join(', ');
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: C.accent.withValues(alpha: 0.10),
+          border: Border.all(color: C.accent.withValues(alpha: 0.35)),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Icon(Icons.headphones_rounded, size: 16, color: C.accent),
+              const SizedBox(width: 8),
+              Expanded(child: Text('Джем · ${people.length}', style: TextStyle(color: C.accent, fontSize: 13, fontWeight: FontWeight.w600))),
+            ]),
+            const SizedBox(height: 10),
+            SizedBox(
+              height: 28,
+              width: double.infinity,
+              child: Stack(children: [
+                for (var i = 0; i < people.length && i < 6; i++)
+                  Positioned(
+                    left: i * 20.0,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: C.panel, width: 2)),
+                      child: Avatar(key: ValueKey('jg-${group.id}-${people[i]}'), email: people[i], name: app.lib.firstNameOf(people[i]), size: 28),
+                    ),
+                  ),
+                if (people.length > 6)
+                  Positioned(left: 6 * 20.0 + 6, top: 6, child: Text('+${people.length - 6}', style: const TextStyle(color: C.muted, fontSize: 12))),
+              ]),
+            ),
+            const SizedBox(height: 8),
+            Text(names, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12, height: 1.3)),
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: jam.active
+                  ? Builder(
+                      builder: (btn) => OutlinedButton.icon(
+                        onPressed: () => _inviteMenu(btn),
+                        icon: const Icon(Icons.person_add_alt_1_rounded, size: 16),
+                        label: const Text('Пригласить к своему джему', overflow: TextOverflow.ellipsis),
+                      ),
+                    )
+                  : FilledButton(onPressed: () => _join(context), child: const Text('Присоединиться к джему')),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _join(BuildContext context) async {
+    final app = Services.of(context);
+    await app.jam.requestJoin(group.members.first);
+    app.lib.messages.add('Запрос в джем отправлен');
+  }
+
+  Future<void> _inviteMenu(BuildContext btn) async {
+    final app = Services.of(btn);
+    final already = app.jam.participants.toSet();
+    final candidates = [for (final e in group.people) if (!already.contains(e)) e];
+    if (candidates.isEmpty) {
+      app.lib.messages.add('Все из этого джема уже в вашем');
+      return;
+    }
+    final box = btn.findRenderObject() as RenderBox;
+    final overlay = Navigator.of(btn).overlay!.context.findRenderObject() as RenderBox;
+    final rect = Rect.fromPoints(
+      box.localToGlobal(box.size.bottomLeft(Offset.zero), ancestor: overlay),
+      box.localToGlobal(box.size.bottomRight(Offset.zero), ancestor: overlay),
+    );
+    final v = await showGlassMenu<String>(
+      context: btn,
+      position: RelativeRect.fromRect(rect, Offset.zero & overlay.size),
+      items: [
+        if (candidates.length > 1)
+          PopupMenuItem(
+            value: '*',
+            child: Row(children: [
+              const Icon(Icons.groups_rounded, size: 18),
+              const SizedBox(width: 10),
+              Text('Всех участников (${candidates.length})'),
+            ]),
+          ),
+        for (final e in candidates)
+          PopupMenuItem(
+            value: e,
+            child: Row(children: [
+              Avatar(email: e, name: app.lib.firstNameOf(e), size: 22),
+              const SizedBox(width: 10),
+              Flexible(child: Text(app.lib.firstNameOf(e), overflow: TextOverflow.ellipsis)),
+            ]),
+          ),
+      ],
+    );
+    if (v == null) return;
+    final list = v == '*' ? candidates : [v];
+    await app.jam.invite(list);
+    app.lib.messages.add(list.length == 1 ? 'Приглашение в джем отправлено: ${app.lib.firstNameOf(list.first)}' : 'Приглашения в джем отправлены: ${list.length}');
   }
 }
 
