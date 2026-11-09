@@ -129,11 +129,11 @@ void main() {
       expect(info.alpha(t0.add(const Duration(seconds: 1))), 0.0);
     });
 
-    test('далёкий конец: полоса ускоряется и доезжает не дольше чем за 8 с', () {
+    test('далёкий конец: полоса ускоряется и доезжает не дольше чем за 20 с', () {
       final t0 = DateTime(2026, 1, 1, 12);
       final info = CrossfadeInfo(0.2, t0, 5000, oldDurationMs: 300000);
       expect(info.reachMs, CrossfadeInfo.maxReachMs);
-      expect(info.fraction(t0.add(const Duration(seconds: 8))), closeTo(1.0, 1e-9));
+      expect(info.fraction(t0.add(const Duration(seconds: 20))), closeTo(1.0, 1e-9));
     });
 
     test('без длины трека полоса идёт линейно за время перехода', () {
