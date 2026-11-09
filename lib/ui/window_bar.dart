@@ -208,9 +208,11 @@ class _BarIconState extends State<_BarIcon> {
   Widget build(BuildContext context) {
     final on = widget.onTap != null;
     final color = !on ? C.line : (widget.active ? C.accent : (_hover ? C.text : C.muted));
-    return Tooltip(
-      message: widget.tooltip,
-      waitDuration: const Duration(milliseconds: 600),
+    // Без Tooltip: шапка стоит выше навигатора приложения, у неё нет своего Overlay, и через 0,6 с наведения подсказка
+    // падала с ошибкой, а в сборке без отладки на её месте появлялась серая плашка. Для чтения с экрана подпись остаётся
+    return Semantics(
+      button: true,
+      label: widget.tooltip,
       child: MouseRegion(
         cursor: on ? SystemMouseCursors.click : MouseCursor.defer,
         onEnter: (_) => setState(() => _hover = true),

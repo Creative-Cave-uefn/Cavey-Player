@@ -193,6 +193,31 @@ class _MenuLayout extends SingleChildLayoutDelegate {
   bool shouldRelayout(_MenuLayout old) => old.position != position;
 }
 
+/// Окошко над якорем: по его центру, нижний край на [gap] выше верха якоря; у краёв окна сдвигается внутрь
+class _AboveLayout extends SingleChildLayoutDelegate {
+  final RelativeRect position;
+  final Size screen;
+  final double gap;
+  _AboveLayout(this.position, this.screen, this.gap);
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) => BoxConstraints.loose(constraints.biggest);
+
+  @override
+  Offset getPositionForChild(Size size, Size child) {
+    const m = 8.0;
+    final anchorLeft = position.left;
+    final anchorRight = size.width - position.right;
+    final anchorTop = position.top;
+    final x = (anchorLeft + anchorRight) / 2 - child.width / 2;
+    final y = anchorTop - gap - child.height;
+    return Offset(x.clamp(m, size.width - child.width - m).toDouble(), y.clamp(m, size.height - child.height - m).toDouble());
+  }
+
+  @override
+  bool shouldRelayout(_AboveLayout old) => old.position != position || old.gap != gap;
+}
+
 /// Кнопка «…» со стеклянным меню — замена PopupMenuButton
 class GlassMenuButton<T> extends StatelessWidget {
   final String? tooltip;
@@ -222,7 +247,15 @@ class GlassMenuButton<T> extends StatelessWidget {
 
 /// Стеклянное окошко у кнопки, которое не закрывается от нажатий внутри: только от нажатия снаружи или Esc.
 /// Содержимое само перестраивается (builder вызывается один раз), поэтому меняться может и размер окошка
-Future<void> showGlassPopover({required BuildContext context, required WidgetBuilder builder, double width = 240}) {
+///
+/// [above]: окошко открывается над якорем, по его центру, на [gap] выше (например, над плеером внизу окна)
+Future<void> showGlassPopover({
+  required BuildContext context,
+  required WidgetBuilder builder,
+  double width = 240,
+  bool above = false,
+  double gap = 0,
+}) {
   final box = context.findRenderObject() as RenderBox;
   final overlay = Navigator.of(context).overlay!.context.findRenderObject() as RenderBox;
   final rect = Rect.fromPoints(
@@ -233,6 +266,8 @@ Future<void> showGlassPopover({required BuildContext context, required WidgetBui
     position: RelativeRect.fromRect(rect, Offset.zero & overlay.size),
     builder: builder,
     width: width,
+    above: above,
+    gap: gap,
   ));
 }
 
@@ -240,7 +275,9 @@ class _GlassPopoverRoute extends PopupRoute<void> {
   final RelativeRect position;
   final WidgetBuilder builder;
   final double width;
-  _GlassPopoverRoute({required this.position, required this.builder, required this.width});
+  final bool above;
+  final double gap;
+  _GlassPopoverRoute({required this.position, required this.builder, required this.width, this.above = false, this.gap = 0});
 
   @override
   Color? get barrierColor => null;
@@ -255,11 +292,11 @@ class _GlassPopoverRoute extends PopupRoute<void> {
   Widget buildPage(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation) {
     final size = MediaQuery.sizeOf(context);
     return CustomSingleChildLayout(
-      delegate: _MenuLayout(position, size),
+      delegate: above ? _AboveLayout(position, size, gap) : _MenuLayout(position, size),
       child: FadeTransition(
         opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
         child: ScaleTransition(
-          alignment: Alignment.topLeft,
+          alignment: above ? Alignment.bottomCenter : Alignment.topLeft,
           scale: Tween(begin: 0.96, end: 1.0).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic)),
           child: SizedBox(
             width: width,

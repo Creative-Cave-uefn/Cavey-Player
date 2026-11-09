@@ -600,8 +600,10 @@ class PlayerController extends ChangeNotifier {
         _ => -16.0,
       };
 
-  /// Поправка в дБ: подтянуть тихий трек и приглушить громкий, но не больше −12 дБ и +4 дБ
-  static double normGainDb(double trackDb, double targetDb) => (targetDb - trackDb).clamp(-12.0, 4.0).toDouble();
+  /// Поправка в дБ: подтянуть тихий трек и приглушить громкий, но не больше −12 дБ и +12 дБ.
+  /// Тихие записи (например, спокойный эмбиент около −23 LUFS) нужно поднимать на 8–10 дБ; предел подъёма задаёт ещё и
+  /// ползунок громкости: выше 100 % громкость не уходит
+  static double normGainDb(double trackDb, double targetDb) => (targetDb - trackDb).clamp(-12.0, 12.0).toDouble();
 
   /// Во сколько раз меняется амплитуда при поправке [db]
   static double dbToFactor(double db) => math.pow(10, db / 20).toDouble();

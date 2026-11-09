@@ -56,8 +56,10 @@ void main() {
   });
 
   group('Ровная громкость', () {
-    test('поправка в пределах −12…+4 дБ', () {
-      expect(PlayerController.normGainDb(-30, -16), 4);
+    test('поправка в пределах −12…+12 дБ', () {
+      expect(PlayerController.normGainDb(-40, -16), 12);
+      // Тихий трек из жизни: громкость по шкале анализатора −26,5 дБ при цели «Обычно» поднимается почти на 10 дБ
+      expect(PlayerController.normGainDb(-26.5, PlayerController.normTargetDb('normal')), closeTo(10.5, 1e-9));
       expect(PlayerController.normGainDb(-5, -16), -11);
       expect(PlayerController.normGainDb(0, -16), -12);
       expect(PlayerController.normGainDb(-16, -16), 0);

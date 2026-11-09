@@ -707,7 +707,7 @@ class _VolumeControl extends StatelessWidget {
           builder: (btn) => GestureDetector(
             onSecondaryTap: () {
               stop();
-              showGlassPopover(context: btn, width: 300, builder: (_) => _NormPanel(p));
+              showGlassPopover(context: btn, width: 300, above: true, gap: 36, builder: (_) => _NormPanel(p));
             },
             child: IconButton(
               tooltip: p.volume == 0 ? 'Включить звук (ПКМ — ровная громкость)' : 'Выключить звук (ПКМ — ровная громкость)',

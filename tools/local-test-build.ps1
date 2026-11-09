@@ -24,6 +24,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# git и gh отдают текст в UTF-8, а консоль Windows читает его как cp866: русские названия коммитов превращались в «инопланетные» символы
+try {
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8
+    $OutputEncoding = [Text.Encoding]::UTF8
+} catch { }
 $PlayerRepo = 'Creative-Cave-uefn/Cavey-Player'
 $ReleasesRepo = 'Creative-Cave-uefn/cave-player-releases'
 

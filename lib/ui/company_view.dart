@@ -282,7 +282,7 @@ int unreadNotices(AppServices app) {
   return app.social.notices.where((n) => n.at.isAfter(seen)).length;
 }
 
-/// Колокольчик с уведомлениями «Вам»: загорается зелёным, пока есть непрочитанные; по нажатию раскрывается окошко
+/// Колокольчик с уведомлениями «Вам»: цвета акцента и красная точка, пока есть непрочитанные; по нажатию раскрывается окошко
 class _NoticeBell extends StatefulWidget {
   final List<Notice> notices;
   const _NoticeBell({required this.notices});
@@ -344,7 +344,7 @@ class _NoticeBellState extends State<_NoticeBell> {
         onPressed: () => controller.isOpen ? controller.close() : controller.open(),
         icon: Stack(clipBehavior: Clip.none, children: [
           Icon(lit ? Icons.notifications_active_rounded : Icons.notifications_none_rounded,
-              color: lit ? const Color(0xFF5BD68B) : C.muted),
+              color: lit ? C.accent : C.muted),
           if (lit)
             Positioned(
               right: -2,
@@ -352,7 +352,7 @@ class _NoticeBellState extends State<_NoticeBell> {
               child: Container(
                 width: 9,
                 height: 9,
-                decoration: BoxDecoration(color: const Color(0xFF5BD68B), shape: BoxShape.circle, border: Border.all(color: C.bg, width: 1.5)),
+                decoration: BoxDecoration(color: const Color(0xFFFF4D4D), shape: BoxShape.circle, border: Border.all(color: C.bg, width: 1.5)),
               ),
             ),
         ]),
