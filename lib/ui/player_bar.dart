@@ -809,7 +809,7 @@ class _SoundPanelState extends State<_SoundPanel> {
       padding: const EdgeInsets.fromLTRB(16, 4, 12, 10),
       child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
         _PanelRow(
-          title: 'Ровная громкость',
+          title: 'Выравнивание громкости',
           help: 'Тихие треки подтягиваются, громкие приглушаются, чтобы громкость не прыгала от песни к песне. '
               'Звук трека разбирается один раз в фоне. Если ползунок громкости почти на максимуме, поднять тихий трек можно лишь до предела.',
           value: p.normalize,

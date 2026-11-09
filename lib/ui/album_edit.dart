@@ -44,6 +44,20 @@ class HeaderCover extends StatefulWidget {
 class _HeaderCoverState extends State<HeaderCover> {
   bool _hover = false;
 
+  /// Пока обложка «улетела» на весь экран, на месте её нет: в шапке она появится, когда вернётся
+  bool _flying = false;
+
+  Future<void> _view() async {
+    final box = context.findRenderObject() as RenderBox?;
+    final from = box != null && box.hasSize ? box.localToGlobal(Offset.zero) & box.size : null;
+    setState(() => _flying = true);
+    try {
+      await showCoverViewer(context, track: widget.track, fileId: widget.fileId, from: from, fromRadius: 12);
+    } finally {
+      if (mounted) setState(() => _flying = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final canView = widget.track != null || widget.fileId != null;
@@ -56,10 +70,13 @@ class _HeaderCoverState extends State<HeaderCover> {
         child: Stack(children: [
           Positioned.fill(
             child: GestureDetector(
-              onTap: canView ? () => showCoverViewer(context, track: widget.track, fileId: widget.fileId) : null,
-              child: widget.grid.length == 4 && widget.fileId == null
-                  ? CoverGrid(tracks: widget.grid, size: widget.size, radius: 12)
-                  : CoverImage(track: widget.track, fileId: widget.fileId, label: widget.label, size: widget.size, radius: 12),
+              onTap: canView ? _view : null,
+              child: Opacity(
+                opacity: _flying ? 0 : 1,
+                child: widget.grid.length == 4 && widget.fileId == null
+                    ? CoverGrid(tracks: widget.grid, size: widget.size, radius: 12)
+                    : CoverImage(track: widget.track, fileId: widget.fileId, label: widget.label, size: widget.size, radius: 12),
+              ),
             ),
           ),
           if (widget.onEdit != null)
@@ -97,7 +114,7 @@ class _HeaderCoverState extends State<HeaderCover> {
 
 /// Обложка на весь экран: колесо или ползунок под ней — масштаб, зажатая левая кнопка — двигать.
 /// Пока картинка не приближена, она слегка наклоняется в сторону курсора. Закрывается по Esc или клику по пустому месту
-Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId}) {
+Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId, Rect? from, double fromRadius = 0}) {
   final covers = Services.of(context).covers;
   final Future<Uint8List?> bytes = (fileId != null
           ? covers.forFile(fileId)
@@ -110,9 +127,11 @@ Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId
     barrierDismissible: true,
     barrierLabel: 'Закрыть',
     barrierColor: Colors.black.withValues(alpha: 0.86),
-    transitionDuration: const Duration(milliseconds: 110),
-    pageBuilder: (ctx, _, __) => _CoverViewer(bytes: bytes, fallback: _fallbackCover(context, track, fileId)),
-    transitionBuilder: (ctx, a, _, child) => FadeTransition(opacity: a, child: child),
+    // Обложка вылетает из шапки в центр и так же возвращается; фон темнеет вместе с ней
+    transitionDuration: const Duration(milliseconds: 340),
+    pageBuilder: (ctx, anim, __) =>
+        _CoverViewer(bytes: bytes, fallback: _fallbackCover(context, track, fileId), anim: anim, from: from, fromRadius: fromRadius),
+    transitionBuilder: (ctx, a, _, child) => child,
   );
 }
 
@@ -125,7 +144,12 @@ Widget? _fallbackCover(BuildContext context, Track? track, String? fileId) {
 class _CoverViewer extends StatefulWidget {
   final Future<Uint8List?> bytes;
   final Widget? fallback;
-  const _CoverViewer({required this.bytes, this.fallback});
+
+  /// Ход открытия 0…1 (при закрытии идёт обратно), откуда вылетает обложка (на экране) и её скругление там
+  final Animation<double> anim;
+  final Rect? from;
+  final double fromRadius;
+  const _CoverViewer({required this.bytes, this.fallback, required this.anim, this.from, this.fromRadius = 0});
 
   @override
   State<_CoverViewer> createState() => _CoverViewerState();
@@ -186,10 +210,51 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
     if (!_ticker.isActive) _ticker.start();
   }
 
+  Curve get _curve => Curves.easeInOutCubic;
+
+  /// Вылет из шапки в центр и обратно: обложка плавно растёт от размера и места в шапке до полного.
+  /// Без известного места (нет исходного прямоугольника) — просто плавное появление
+  Widget _fly(Offset center, double side, Widget child) {
+    final from = widget.from;
+    return AnimatedBuilder(
+      animation: widget.anim,
+      child: child,
+      builder: (context, c) {
+        final t = _curve.transform(widget.anim.value.clamp(0.0, 1.0));
+        if (from == null || from.width <= 0) {
+          return Opacity(opacity: t, child: Transform.scale(scale: 0.94 + 0.06 * t, child: c));
+        }
+        final k = from.width / side;
+        return Transform.translate(
+          offset: (from.center - center) * (1 - t),
+          child: Transform.scale(scale: k + (1 - k) * t, child: c),
+        );
+      },
+    );
+  }
+
+  /// Скругление у обложки в шапке плавно уходит, пока она растёт на весь экран
+  Widget _clipped(double side, Widget picture) {
+    final from = widget.from;
+    final box = SizedBox.square(dimension: side, child: picture);
+    if (from == null || from.width <= 0 || widget.fromRadius <= 0) return box;
+    final k = from.width / side;
+    return AnimatedBuilder(
+      animation: widget.anim,
+      child: box,
+      builder: (context, c) {
+        final t = _curve.transform(widget.anim.value.clamp(0.0, 1.0));
+        return ClipRRect(borderRadius: BorderRadius.circular(widget.fromRadius / k * (1 - t)), child: c);
+      },
+    );
+  }
+
   Widget _controls() {
     // Ползунок логарифмический: каждый шаг даёт одинаковое «во сколько раз» ближе
     final t = math.log(_scale) / math.log(_maxScale);
-    return Column(mainAxisSize: MainAxisSize.min, children: [
+    return FadeTransition(
+      opacity: CurvedAnimation(parent: widget.anim, curve: const Interval(0.5, 1)),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
       Row(mainAxisSize: MainAxisSize.min, children: [
         const Icon(Icons.search_rounded, size: 20, color: Colors.white70),
         SizedBox(
@@ -204,7 +269,7 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
         ),
       ]),
       const Text('Щелкните по пустому месту на экране для выхода', style: TextStyle(color: Colors.white38, fontSize: 12.5)),
-    ]);
+    ]));
   }
 
   @override
@@ -275,13 +340,16 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
                           },
                           child: SizedBox.expand(
                             child: Center(
-                              child: Transform(
+                              child: _fly(
+                                center,
+                                side,
+                                Transform(
                                 alignment: Alignment.center,
                                 transform: Matrix4.identity()
                                   ..setEntry(3, 2, 0.0011)
-                                  // Край, к которому подведён курсор, чуть уходит вглубь, противоположный выходит вперёд
-                                  ..rotateX(-ay)
-                                  ..rotateY(ax)
+                                  // Обложка прогибается под курсором: край, к которому он подведён, уходит вглубь
+                                  ..rotateX(ay)
+                                  ..rotateY(-ax)
                                   ..translate(_pan.dx, _pan.dy)
                                   ..scale(_scale),
                                 child: DecoratedBox(
@@ -290,12 +358,13 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
                                       BoxShadow(
                                         color: Colors.black.withValues(alpha: 0.35),
                                         blurRadius: 40,
-                                        offset: Offset(-_tilt.dx * 14, 14 - _tilt.dy * 10),
+                                        offset: Offset(_tilt.dx * 14, 14 + _tilt.dy * 10),
                                       ),
                                     ],
                                   ),
-                                  child: SizedBox.square(dimension: side, child: picture),
+                                  child: _clipped(side, picture),
                                 ),
+                              ),
                               ),
                             ),
                           ),
