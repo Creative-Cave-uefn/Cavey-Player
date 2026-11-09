@@ -38,16 +38,42 @@ class WaveMood {
   final String id;
   final String title;
   final List<String> tags;
-  const WaveMood(this.id, this.title, this.tags);
+
+  /// «Антитеги»: если они есть у исполнителя или песни, под это настроение она не подходит
+  /// (саундтрек к игре на романтику, тяжёлый метал на спокойное и т. п.)
+  final List<String> anti;
+  const WaveMood(this.id, this.title, this.tags, [this.anti = const []]);
+
+  /// Оценка по тегам (тег → вес 0..1): плюс за теги настроения, минус за антитеги.
+  /// Теги слабее 0,1 — шум (у любого исполнителя найдётся «love» с парой голосов), их не считаем.
+  /// Больше 0 — подходит, 0 — теги есть, но про другое, меньше 0 — явно не то
+  double raw(Map<String, double> have) {
+    double sum(List<String> list) {
+      var v = 0.0;
+      for (final t in list) {
+        final w = have[t] ?? 0;
+        if (w >= 0.1) v += w;
+      }
+      return v;
+    }
+
+    return (sum(tags) - sum(anti)) * 1.5;
+  }
 }
 
 const waveMoods = [
-  WaveMood('energy', 'Бодрое', ['energetic', 'upbeat', 'workout', 'party', 'dance', 'hype', 'gym', 'driving', 'drum and bass']),
-  WaveMood('calm', 'Спокойное', ['chill', 'chillout', 'calm', 'relax', 'relaxing', 'mellow', 'ambient', 'downtempo', 'lo-fi', 'lofi']),
-  WaveMood('sad', 'Грустное', ['sad', 'melancholic', 'melancholy', 'depressive', 'emotional', 'heartbreak', 'sadcore', 'depressing']),
-  WaveMood('love', 'Романтичное', ['romantic', 'love', 'sensual', 'sexy', 'love songs', 'r&b', 'rnb']),
-  WaveMood('dark', 'Мрачное', ['dark', 'gloomy', 'atmospheric', 'darkwave', 'phonk', 'witch house', 'post-punk']),
-  WaveMood('focus', 'Для фокуса', ['instrumental', 'focus', 'study', 'concentration', 'beats', 'instrumental hip-hop', 'post-rock']),
+  WaveMood('energy', 'Бодрое', ['energetic', 'upbeat', 'workout', 'party', 'dance', 'hype', 'gym', 'driving', 'drum and bass'],
+      ['sleep', 'lullaby', 'slowcore', 'sad', 'sadcore', 'ambient']),
+  WaveMood('calm', 'Спокойное', ['chill', 'chillout', 'calm', 'relax', 'relaxing', 'mellow', 'ambient', 'downtempo', 'lo-fi', 'lofi'],
+      ['metal', 'death metal', 'hardcore', 'screamo', 'hardstyle', 'noise', 'drum and bass', 'punk']),
+  WaveMood('sad', 'Грустное', ['sad', 'melancholic', 'melancholy', 'depressive', 'emotional', 'heartbreak', 'sadcore', 'depressing'],
+      ['party', 'dance', 'happy', 'upbeat', 'funny', 'comedy']),
+  WaveMood('love', 'Романтичное', ['romantic', 'love', 'sensual', 'sexy', 'love songs', 'r&b', 'rnb'],
+      ['soundtrack', 'ost', 'video game music', 'game', 'anime', 'chiptune', 'metal', 'death metal', 'hardcore', 'punk', 'noise', 'screamo']),
+  WaveMood('dark', 'Мрачное', ['dark', 'gloomy', 'atmospheric', 'darkwave', 'phonk', 'witch house', 'post-punk'],
+      ['happy', 'cute', 'kawaii', 'children', 'party', 'upbeat']),
+  WaveMood('focus', 'Для фокуса', ['instrumental', 'focus', 'study', 'concentration', 'beats', 'instrumental hip-hop', 'post-rock'],
+      ['party', 'metal', 'screamo', 'hardcore', 'noise']),
 ];
 
 WaveMood? moodById(String? id) => waveMoods.where((m) => m.id == id).firstOrNull;
@@ -827,25 +853,21 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     final byArtist = <String, double>{};
     // Теги ещё не загрузились (или Last.fm их не знает) — ни поощряем, ни наказываем. Раньше здесь был 0,
     // и пока теги приходили, волна крутила только тех нескольких исполнителей, у кого они уже были
-    const unknown = 0.3;
+    // Неизвестный — заметно хуже подходящего, но лучше «теги есть, и они про другое». Раньше здесь было 0,3,
+    // и исполнители без тегов (саундтреки, игровая музыка) обгоняли известных, но не подходящих под настроение
+    const unknown = 0.12;
     double fit(String key) => byArtist.putIfAbsent(key, () {
           final tags = _tags[key];
           if (tags == null || tags.isEmpty) return unknown;
-          var v = 0.0;
-          for (final t in m.tags) {
-            v += tags[t] ?? 0;
-          }
-          return min(1.0, v * 1.5);
+          return m.raw(tags).clamp(0.0, 1.0).toDouble();
         });
     double fitTrack(Track t) {
-      // Д5: теги самой песни точнее; если их нет — теги исполнителя
+      // Д5: теги самой песни точнее; если по ним нет ни плюса, ни минуса — теги исполнителя
       final own = _trackTags[t.id];
       if (own != null && own.isNotEmpty) {
-        var v = 0.0;
-        for (final tag in m.tags) {
-          v += own[tag] ?? 0;
-        }
-        return min(1.0, v * 1.5);
+        final r = m.raw(own);
+        if (r > 0) return min(1.0, r);
+        if (r < 0) return 0; // сама песня помечена как «не то»
       }
       return t.artists.map((a) => fit(a.toLowerCase())).fold<double>(0, (a, b) => a > b ? a : b);
     }
@@ -1493,6 +1515,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     } else {
       _why.add('Last.fm недоступен${lastfm.status.isEmpty ? '' : ' (${lastfm.status})'}');
     }
+    // Deezer про настроение ничего не знает: под настроение его «радио» только портит подбор
+    if (mood != null) return null;
     return _findFreshDeezer();
   }
 
@@ -1533,8 +1557,11 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     }
     final m = moodById(mood);
     if (m != null) {
-      final tag = m.tags[Random().nextInt(min(4, m.tags.length))];
-      vote(await lastfm.tagTracks(tag), 0.9);
+      // Под настроение: песни с его тегами весят заметно больше «похожих на играющее»
+      final pool = List.of(m.tags)..shuffle();
+      for (final tag in pool.take(2)) {
+        vote(await lastfm.tagTracks(tag), 1.4);
+      }
     }
     if (score.isEmpty) {
       _why.add('Last.fm: похожих треков не вернул (последний ответ: ${lastfm.status.isEmpty ? 'без ошибок' : lastfm.status})');
@@ -1578,7 +1605,34 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       return null;
     }
     cands.sort((a, b) => b.$2.compareTo(a.$2));
-    final top = cands.take(8).toList();
+    var top = cands.take(8).toList();
+    if (m != null) {
+      // Новинку проверяем по тегам исполнителя: не подходящих под настроение не качаем,
+      // иначе один саундтрек тянет за собой «похожие» и настроение теряется
+      final shortlist = cands.take(14).toList();
+      final fitted = <(LfmItem, double)>[];
+      var offMood = 0;
+      for (final (i, w) in shortlist) {
+        List<LfmItem>? got;
+        if (!lastfm.paused) got = await lastfm.artistTags(i.artist, urgent: true);
+        if (got == null || got.isEmpty) {
+          fitted.add((i, w * 0.4)); // теги неизвестны — не поощряем и не отсекаем
+          continue;
+        }
+        final r = m.raw({for (final x in got) x.artist: x.match});
+        if (r <= 0) {
+          offMood++;
+          continue;
+        }
+        fitted.add((i, w * (0.5 + 2 * min(1.0, r))));
+      }
+      if (fitted.isEmpty) {
+        _why.add('под настроение «${m.title}» не подошёл никто из ${shortlist.length} кандидатов (отсеяно по тегам: $offMood)');
+        return null;
+      }
+      fitted.sort((a, b) => b.$2.compareTo(a.$2));
+      top = fitted.take(8).toList();
+    }
     // До трёх попыток: раньше первый же интро/скит/часовой микс обрывал поиск целиком,
     // а тот же кандидат мог выпасть снова на следующем заходе
     for (var attempt = 0; attempt < 3 && top.isNotEmpty; attempt++) {

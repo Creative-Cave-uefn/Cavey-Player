@@ -134,4 +134,32 @@ void main() {
     expect(back.dislikedMeta.containsKey('x'), isTrue);
     expect(back.skipsOf('y', ''), 2);
   });
+
+  group('оценка настроения по тегам', () {
+    final love = moodById('love')!;
+
+    test('игровой саундтрек не подходит под романтику, даже если у него есть тег love', () {
+      // Реальный случай: «Sonic OST» в романтичной волне
+      expect(love.raw({'soundtrack': 0.9, 'video game music': 0.8, 'love': 0.3}), lessThan(0));
+    });
+
+    test('настоящая романтика получает высокую оценку', () {
+      expect(love.raw({'romantic': 0.6, 'love songs': 0.5, 'r&b': 0.3}), greaterThan(1));
+    });
+
+    test('слабые теги (меньше 0,1) считаются шумом', () {
+      expect(love.raw({'love': 0.05, 'sexy': 0.04}), 0);
+    });
+
+    test('теги про другое дают ноль: это не минус, но и не плюс', () {
+      expect(love.raw({'rock': 0.9, 'indie': 0.7}), 0);
+    });
+
+    test('у каждого настроения есть антитеги, и они не пересекаются с его собственными тегами', () {
+      for (final m in waveMoods) {
+        expect(m.anti, isNotEmpty, reason: m.id);
+        expect(m.anti.toSet().intersection(m.tags.toSet()), isEmpty, reason: m.id);
+      }
+    });
+  });
 }

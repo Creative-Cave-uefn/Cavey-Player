@@ -463,8 +463,8 @@ class LastFm {
 
   /// Теги исполнителя (жанры и настроения): в [artist] — название тега, [match] — вес от 0 до 1.
   /// `null` — Last.fm не ответил; пустой список — ответил, что тегов нет. Запрос фоновый
-  Future<List<LfmItem>?> artistTags(String artist) =>
-      _get('tags:${artist.toLowerCase()}', {'method': 'artist.gettoptags', 'artist': artist}, _tags, prio: 0);
+  Future<List<LfmItem>?> artistTags(String artist, {bool urgent = false}) =>
+      _get('tags:${artist.toLowerCase()}', {'method': 'artist.gettoptags', 'artist': artist}, _tags, prio: urgent ? 1 : 0);
 
   /// Теги конкретной песни (Д5): точнее, чем теги исполнителя. `null` — Last.fm не ответил. Запрос фоновый
   Future<List<LfmItem>?> trackTags(String artist, String title) => _get(
