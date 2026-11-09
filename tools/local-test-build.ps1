@@ -8,6 +8,7 @@
 #
 # Параметры:
 #   -SkipChecks     не гонять flutter analyze и flutter test (быстрее, но ошибки вылезут уже при сборке)
+#   -Stable         стабильная сборка с main (канал пустой, как в CI); сам ничего не публикует. Его вызывает tools\publish-release.ps1
 #   -NoPublish      только собрать, на GitHub ничего не выкладывать (файлы будут в папке dist)
 #   -Downloader     путь к cave-downloader-windows-x64.exe (по умолчанию берётся из установленной Cavey)
 #   -GoogleClientId / -GoogleClientSecret   ключи Google (или переменные окружения GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).
@@ -17,6 +18,7 @@
 param(
     [switch]$SkipChecks,
     [switch]$NoPublish,
+    [switch]$Stable,
     [string]$Downloader = '',
     [string]$GoogleClientId = $env:GOOGLE_CLIENT_ID,
     [string]$GoogleClientSecret = $env:GOOGLE_CLIENT_SECRET,
@@ -109,7 +111,7 @@ if ($LASTEXITCODE -ne 0) {
 Say 'Определяю ветку и версию'
 $branch = Capture 'git' @('rev-parse', '--abbrev-ref', 'HEAD')
 if (-not $branch -or $branch -eq 'HEAD') { Fail 'Не удалось определить ветку. Перейдите на нужную: git checkout feature/beta-9' }
-if ($branch -eq 'main' -or $branch -eq 'beta') {
+if (($branch -eq 'main' -or $branch -eq 'beta') -and -not $Stable) {
     Fail "Ветка $branch — это обычные релизы для всех. Тестовые сборки делаются только с других веток."
 }
 $dirty = Capture 'git' @('status', '--porcelain', '--untracked-files=no')
@@ -192,7 +194,7 @@ if (-not $SkipChecks) {
 Say 'Собираю приложение (первый раз это долго, 5–15 минут)'
 $defines = @(
     "--dart-define=APP_VERSION=$Version",
-    "--dart-define=BUILD_CHANNEL=$branch",
+    "--dart-define=BUILD_CHANNEL=$(if ($Stable) { '' } else { $branch })",
     '--dart-define=BUILD_BETA=false',
     "--dart-define=CAVE_LIBRARY_ID=$($vars['CAVE_LIBRARY_ID'])",
     "--dart-define=DISCORD_CLIENT_ID=$($vars['DISCORD_CLIENT_ID'])",
@@ -249,7 +251,7 @@ Write-Host ""
 Write-Host "Готово. Файлы лежат в: $(Join-Path $root 'dist')" -ForegroundColor Green
 
 # ---------- 9. Публикация ----------
-if ($NoPublish) {
+if ($NoPublish -or $Stable) {
     Write-Host 'Публикация пропущена (-NoPublish). Можно запустить dist\CavePlayer-Setup.exe прямо так.'
     exit 0
 }

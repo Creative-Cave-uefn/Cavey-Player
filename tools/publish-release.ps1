@@ -80,7 +80,7 @@ GitOk push origin main
 
 # ---------- 5. Сборка ----------
 Say 'Собираю установщик и portable-архив (это несколько минут)'
-$args2 = @('-ExecutionPolicy', 'Bypass', '-File', 'tools\local-test-build.ps1', '-NoPublish', '-Version', $Version)
+$args2 = @('-ExecutionPolicy', 'Bypass', '-File', 'tools\local-test-build.ps1', '-Stable', '-Version', $Version)
 if ($SkipChecks) { $args2 += '-SkipChecks' }
 & powershell @args2
 if ($LASTEXITCODE -ne 0) { Fail 'Сборка не удалась, релиз не создан. main уже запушен; подробности в build-log.txt' }
