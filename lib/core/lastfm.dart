@@ -483,7 +483,9 @@ class LastFm {
       return hit.$2;
     }
     if (paused) return null;
-    return _inflight[key] ??= _fetch(q, key, parse, prio).whenComplete(() => _inflight.remove(key));
+    return _inflight[key] ??= _fetch(q, key, parse, prio).whenComplete(() {
+      _inflight.remove(key); // блок, а не «=>»: иначе колбэк вернёт сам future и тот будет ждать сам себя
+    });
   }
 
   Future<List<LfmItem>?> _fetch(Map<String, String> q, String key, List<LfmItem> Function(Map) parse, int prio) {
