@@ -873,13 +873,17 @@ class _PanelRow extends StatelessWidget {
         Flexible(child: Padding(padding: const EdgeInsets.symmetric(vertical: 6), child: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)))),
         const SizedBox(width: 8),
         Tooltip(
-          message: help,
+          // Ширину облачка ограничиваем сами: у Tooltip в Flutter 3.27 нет параметра constraints
+          richMessage: WidgetSpan(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 280),
+              child: Text(help, style: const TextStyle(color: C.text, fontSize: 12.5, height: 1.4)),
+            ),
+          ),
           // Облачко появляется почти сразу и держится, пока курсор над значком
           waitDuration: const Duration(milliseconds: 120),
           showDuration: const Duration(seconds: 30),
-          constraints: const BoxConstraints(maxWidth: 280),
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          textStyle: const TextStyle(color: C.text, fontSize: 12.5, height: 1.4),
           preferBelow: false,
           child: MouseRegion(
             cursor: SystemMouseCursors.help,

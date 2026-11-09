@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
-import 'download_view.dart';
 import 'profile_view.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
