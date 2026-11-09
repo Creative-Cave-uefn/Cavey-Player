@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/desktop_notify.dart';
 import '../core/notices.dart';
+import '../core/notify_prefs.dart';
+import 'widgets.dart';
 import 'theme.dart';
 import 'glass_popup.dart';
 
@@ -16,6 +18,10 @@ class NoticeTower extends StatefulWidget {
   @override
   State<NoticeTower> createState() => _NoticeTowerState();
 }
+
+/// Следующее уведомление — пример из «Настроек»: настоящая карточка, звук и (если включено) уведомление Windows,
+/// даже когда уведомления выключены
+bool noticePreviewing = false;
 
 class _Card {
   final Notice notice;
@@ -46,11 +52,17 @@ class _NoticeTowerState extends State<NoticeTower> {
 
   Future<void> _onNotice(Notice n) async {
     final app = Services.of(context);
+    final st = app.settings;
+    final preview = noticePreviewing;
+    noticePreviewing = false;
+    if (!preview && !st.notifyOn) return;
     final text = app.social.noticeLine(n);
-    // Окно спрятано в трей или свёрнуто — вместо башенки уведомление Windows
-    if (await windowIsHidden()) {
+    // Мягкий звук: слышно, даже если окно далеко или спрятано
+    unawaited(NotifySound.play(st, force: preview));
+    // Окно спрятано в трей, свёрнуто или не в фокусе — уведомление Windows, чтобы заметить его вне плеера
+    if (st.notifySystem && (preview || await windowIsHidden())) {
       unawaited(desktopToast(text));
-      return;
+      if (!preview) return;
     }
     if (!mounted) return;
     final card = _Card(n, text);
@@ -91,6 +103,63 @@ class _NoticeTowerState extends State<NoticeTower> {
   }
 }
 
+/// Карточка уведомления: круглый значок слева, жирный заголовок, текст цветом акцента и крестик — как у Telegram.
+/// Одна и та же в правом нижнем углу плеера и в предпросмотре «Настроек»
+class ToastCard extends StatelessWidget {
+  final String title;
+  final String text;
+  final String? note;
+
+  /// Кнопки под текстом (например «Войти»)
+  final List<Widget> actions;
+  final VoidCallback? onClose;
+  const ToastCard({super.key, required this.title, required this.text, this.note, this.actions = const [], this.onClose});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      type: MaterialType.transparency,
+      child: Container(
+        width: 360,
+        padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
+        decoration: BoxDecoration(
+          color: C.panel,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: C.line),
+          boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 18, offset: Offset(0, 6))],
+        ),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          ClipOval(child: BrandMark(size: 48)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 1),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: C.text)),
+                const SizedBox(height: 3),
+                Text(text, maxLines: 3, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 14, height: 1.35, color: C.accent)),
+                if (note != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text('«$note»', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12.5)),
+                  ),
+                if (actions.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Wrap(spacing: 4, runSpacing: 2, children: actions)),
+              ]),
+            ),
+          ),
+          if (onClose != null)
+            IconButton(
+              tooltip: 'Закрыть',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.close_rounded, size: 18, color: C.faint),
+              onPressed: onClose,
+            ),
+        ]),
+      ),
+    );
+  }
+}
+
 class _NoticeCard extends StatelessWidget {
   final _Card card;
   final VoidCallback onClose;
@@ -101,68 +170,38 @@ class _NoticeCard extends StatelessWidget {
     final app = Services.of(context);
     final n = card.notice;
     final track = n.trackIds.isEmpty ? null : app.lib.data.tracks[app.lib.data.resolve(n.trackIds.first)];
-    final icon = switch (n.kind) {
-      NoticeKind.jamInvite => Icons.headphones_rounded,
-      NoticeKind.jamRequest => Icons.person_add_alt_1_rounded,
-      NoticeKind.like => Icons.favorite_rounded,
-      NoticeKind.addToPlaylist => Icons.playlist_add_rounded,
-      NoticeKind.share => Icons.share_rounded,
-    };
-    return Material(
-      type: MaterialType.transparency,
-      child: SizedBox(
-        width: 340,
-        child: GlassPanel(
-        radius: 16,
-        padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
-        child: Row(children: [
-          Icon(icon, size: 18, color: C.accent),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-              Text(card.text, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, height: 1.35)),
-              if (n.note != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text('«${n.note}»', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12.5)),
-                ),
-            ]),
+    return ToastCard(
+      title: 'Cavey',
+      text: card.text,
+      note: n.note,
+      onClose: onClose,
+      actions: [
+        if (n.kind == NoticeKind.jamInvite)
+          TextButton(
+            onPressed: () {
+              app.jam.acceptNotice(n);
+              onClose();
+            },
+            child: const Text('Войти'),
           ),
-          if (n.kind == NoticeKind.jamInvite)
-            TextButton(
-              onPressed: () {
-                app.jam.acceptNotice(n);
-                onClose();
-              },
-              child: const Text('Войти'),
-            ),
-          if (n.kind == NoticeKind.jamRequest)
-            TextButton(
-              onPressed: () {
-                app.jam.acceptNotice(n);
-                onClose();
-              },
-              child: const Text('Принять'),
-            ),
-          if (track != null)
-            IconButton(
-              tooltip: 'Слушать',
-              visualDensity: VisualDensity.compact,
-              icon: Icon(Icons.play_arrow_rounded, color: C.accent),
-              onPressed: () {
-                app.player.playTracks([track], 0);
-                onClose();
-              },
-            ),
-          IconButton(
-            tooltip: 'Закрыть',
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.close_rounded, size: 16, color: C.faint),
-            onPressed: onClose,
+        if (n.kind == NoticeKind.jamRequest)
+          TextButton(
+            onPressed: () {
+              app.jam.acceptNotice(n);
+              onClose();
+            },
+            child: const Text('Принять'),
           ),
-        ]),
-      ),
-      ),
+        if (track != null)
+          TextButton.icon(
+            onPressed: () {
+              app.player.playTracks([track], 0);
+              onClose();
+            },
+            icon: Icon(Icons.play_arrow_rounded, size: 18, color: C.accent),
+            label: const Text('Слушать'),
+          ),
+      ],
     );
   }
 }

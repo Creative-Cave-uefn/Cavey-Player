@@ -1,12 +1,17 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
 import '../config.dart';
+import '../core/autostart.dart';
 import '../core/log.dart';
+import '../core/notices.dart';
+import '../core/notify_prefs.dart';
 import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
@@ -14,6 +19,7 @@ import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength, seek
 import 'theme.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
+import 'notice_tower.dart' show ToastCard, noticePreviewing;
 
 /// Вкладки настроек: id для ссылок (Nav('accounts', id)) и подпись
 const settingsTabs = <(String, String)>[
@@ -21,6 +27,7 @@ const settingsTabs = <(String, String)>[
   ('playback', 'Воспроизведение'),
   ('look', 'Внешний вид'),
   ('account', 'Аккаунт'),
+  ('notify', 'Уведомления'),
   ('library', 'Библиотека'),
   ('debug', 'Отладка'),
 ];
@@ -218,8 +225,9 @@ class _AccountsPageState extends State<AccountsPage> {
               gap,
               LibrarySection(parts: {'leave'}),
             ],
+          'notify' => const [_NotifySection()],
           'debug' => const [_DebugSection()],
-          _ => const [_UpdatesSection()],
+          _ => const [_UpdatesSection(), gap, _AutostartSection()],
         };
         return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Padding(
@@ -314,6 +322,248 @@ class _DebugSection extends StatelessWidget {
       LibraryDebug(),
       SizedBox(height: 32),
       _LogSection(),
+    ]);
+  }
+}
+
+/// «Автозапуск приложения»: вместе с Windows, с открытым окном или сразу в трее
+class _AutostartSection extends StatefulWidget {
+  const _AutostartSection();
+  @override
+  State<_AutostartSection> createState() => _AutostartSectionState();
+}
+
+class _AutostartSectionState extends State<_AutostartSection> {
+  Future<void> _set(String mode) async {
+    final app = Services.of(context);
+    setState(() => app.settings.view['autostart'] = mode);
+    await app.lib.saveSettings();
+    final ok = await Autostart.apply(mode);
+    if (!ok && mode != 'off') app.lib.messages.add('Не получилось включить автозапуск. Подробности в журнале (Отладка).');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!Platform.isWindows) return const SizedBox.shrink();
+    final app = Services.of(context);
+    final mode = app.settings.autostartMode;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Запуск', style: display(20)),
+      const SizedBox(height: 10),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: mode != 'off',
+        title: const Text('Автозапуск приложения'),
+        subtitle: const Text(
+          'Cavey запускается сам, когда вы входите в Windows. Отключить можно и в «Диспетчере задач», на вкладке «Автозагрузка».',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+        ),
+        onChanged: (v) => _set(v ? 'show' : 'off'),
+      ),
+      AnimatedSize(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        alignment: Alignment.topCenter,
+        child: mode == 'off'
+            ? const SizedBox(width: double.infinity)
+            : Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Wrap(spacing: 10, runSpacing: 10, children: [
+                  _ModeChip(label: 'С открытым окном', selected: mode == 'show', onTap: () => _set('show')),
+                  _ModeChip(label: 'Сразу в трей', selected: mode == 'tray', onTap: () => _set('tray')),
+                ]),
+              ),
+      ),
+      if (mode == 'tray')
+        const Padding(
+          padding: EdgeInsets.only(top: 8),
+          child: Text(
+            'Окно не показывается, Cavey ждёт значком у часов. Открыть — нажатием на значок. Если значок в трее не запустился, окно останется на экране.',
+            style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+          ),
+        ),
+    ]);
+  }
+}
+
+class _ModeChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _ModeChip({required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          height: 36,
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? C.accent : Colors.transparent,
+            border: Border.all(color: selected ? C.accent : C.line),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: selected ? C.accentInk : C.text)),
+        ),
+      ),
+    );
+  }
+}
+
+/// Вкладка «Уведомления»: показ, звук (громкость, свой файл, прослушивание), Windows и предпросмотр карточки
+class _NotifySection extends StatefulWidget {
+  const _NotifySection();
+  @override
+  State<_NotifySection> createState() => _NotifySectionState();
+}
+
+class _NotifySectionState extends State<_NotifySection> {
+  Future<void> _save() => Services.of(context).lib.saveSettings();
+
+  Future<void> _pickSound() async {
+    final app = Services.of(context);
+    final f = await openFile(acceptedTypeGroups: const [
+      XTypeGroup(label: 'Звук', extensions: ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac', 'opus']),
+    ]);
+    if (f == null || !mounted) return;
+    setState(() => app.settings.view['ntf.file'] = f.path);
+    await _save();
+    unawaited(NotifySound.play(app.settings, force: true));
+  }
+
+  /// Показывает настоящее уведомление: карточка в плеере, звук и (если включено) уведомление Windows
+  void _preview() {
+    final app = Services.of(context);
+    final tracks = app.lib.allTracks;
+    final me = app.lib.me ?? '';
+    noticePreviewing = true;
+    app.social.noticeStream.add(Notice(NoticeKind.like, me, DateTime.now(), tracks.isEmpty ? const [] : [tracks.first.id]));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final st = app.settings;
+    final on = st.notifyOn;
+    final soundOn = on && st.notifySound;
+    final custom = st.notifyFile;
+    final customName = custom.isEmpty ? null : custom.split(RegExp(r'[\\/]')).last;
+    final me = app.lib.me == null ? 'Друг' : app.lib.firstNameOf(app.lib.me!);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Уведомления', style: display(20)),
+      const SizedBox(height: 10),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: on,
+        title: const Text('Показывать уведомления'),
+        subtitle: const Text(
+          'Друзья добавили ваш трек в любимое или плейлист, поделились треком, зовут в джем. Всё равно остаётся в колокольчике на вкладке «Компания».',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+        ),
+        onChanged: (v) async {
+          setState(() => st.view['ntf.on'] = v ? '1' : '0');
+          await _save();
+        },
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: st.notifySystem,
+        title: const Text('Уведомления Windows'),
+        subtitle: const Text(
+          'Когда окно свёрнуто, спрятано в трей или вы в другой программе, уведомление приходит и в Windows, чтобы заметить его вне плеера.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+        ),
+        onChanged: on
+            ? (v) async {
+                setState(() => st.view['ntf.sys'] = v ? '1' : '0');
+                await _save();
+              }
+            : null,
+      ),
+      const SizedBox(height: 18),
+      Text('Звук', style: display(20)),
+      const SizedBox(height: 10),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: st.notifySound,
+        title: const Text('Звук уведомления'),
+        subtitle: const Text('Короткий мягкий сигнал при каждом новом уведомлении.', style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+        onChanged: on
+            ? (v) async {
+                setState(() => st.view['ntf.sound'] = v ? '1' : '0');
+                await _save();
+              }
+            : null,
+      ),
+      Opacity(
+        opacity: soundOn ? 1 : 0.45,
+        child: IgnorePointer(
+          ignoring: !soundOn,
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              const SizedBox(width: 120, child: Text('Громкость')),
+              Expanded(
+                child: Slider(
+                  value: st.notifyVolume.toDouble(),
+                  min: 0,
+                  max: 100,
+                  divisions: 20,
+                  onChanged: (v) => setState(() => st.view['ntf.vol'] = '${v.round()}'),
+                  onChangeEnd: (_) => _save(),
+                ),
+              ),
+              SizedBox(width: 48, child: Text('${st.notifyVolume}%', textAlign: TextAlign.right, style: const TextStyle(color: C.muted, fontSize: 13))),
+            ]),
+            const SizedBox(height: 6),
+            Text(customName == null ? 'Сейчас: стандартный сигнал' : 'Сейчас: $customName',
+                maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+            const SizedBox(height: 10),
+            Wrap(spacing: 10, runSpacing: 10, children: [
+              OutlinedButton.icon(
+                onPressed: () => NotifySound.play(st, force: true),
+                icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                label: const Text('Прослушать'),
+              ),
+              OutlinedButton.icon(
+                onPressed: _pickSound,
+                icon: const Icon(Icons.audio_file_rounded, size: 18),
+                label: const Text('Выбрать свой звук'),
+              ),
+              if (customName != null)
+                TextButton(
+                  onPressed: () async {
+                    setState(() => st.view.remove('ntf.file'));
+                    await _save();
+                  },
+                  child: const Text('Вернуть стандартный'),
+                ),
+            ]),
+          ]),
+        ),
+      ),
+      const SizedBox(height: 28),
+      Text('Как выглядит уведомление', style: display(20)),
+      const SizedBox(height: 12),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: ToastCard(title: 'Cavey', text: '$me добавил(а) «Название трека» в любимое', onClose: () {}),
+      ),
+      const SizedBox(height: 12),
+      FilledButton.icon(
+        onPressed: _preview,
+        icon: const Icon(Icons.notifications_active_rounded, size: 18),
+        label: const Text('Показать пример'),
+      ),
+      const SizedBox(height: 8),
+      const Text(
+        'Пример приходит так же, как настоящее: карточка в плеере, звук и уведомление Windows (если окно не в фокусе).',
+        style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+      ),
     ]);
   }
 }

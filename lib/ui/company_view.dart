@@ -189,10 +189,10 @@ class _ListenerCard extends StatelessWidget {
           ),
         ]),
         const SizedBox(height: 12),
-        Row(children: [
+        // Wrap, а не Row: в узкой панели кнопка не вылезает за рамку, а переносится на вторую строку
+        Wrap(spacing: 8, runSpacing: 6, alignment: WrapAlignment.spaceBetween, crossAxisAlignment: WrapCrossAlignment.center, children: [
           if (track != null)
             TextButton(onPressed: () => app.player.playTracks([track], 0), child: const Text('Включить у себя')),
-          const Spacer(),
           following
               ? TextButton(onPressed: () => jamTogether(app, member.email), child: Text(jb.label))
               : FilledButton(
@@ -375,7 +375,8 @@ class _NoticeRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final lib = app.lib;
-    final track = lib.data.tracks[lib.data.resolve(notice.trackIds.first)];
+    // У приглашений и просьб в джем треков нет: без проверки .first падало, и вся панель в сборке без отладки становилась серой
+    final track = notice.trackIds.isEmpty ? null : lib.data.tracks[lib.data.resolve(notice.trackIds.first)];
     final icon = switch (notice.kind) {
       NoticeKind.like => Icons.favorite_rounded,
       NoticeKind.addToPlaylist => Icons.playlist_add_rounded,

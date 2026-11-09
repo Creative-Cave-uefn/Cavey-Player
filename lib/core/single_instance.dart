@@ -36,7 +36,7 @@ const _asfwAny = 0xFFFFFFFF;
 int _showEvent = 0;
 
 /// true — мы первая копия и можно запускаться. false — уже есть другая, ей послан сигнал показаться, надо выходить.
-bool claimSingleInstance({String? link}) {
+bool claimSingleInstance({String? link, bool quiet = false}) {
   if (!Platform.isWindows) return true;
   try {
     final k32 = DynamicLibrary.open('kernel32.dll');
@@ -47,7 +47,8 @@ bool claimSingleInstance({String? link}) {
       if (open(_synchronize, 0, name) != 0) {
         // Ссылка на трек (caveplayer://…) от второй копии уходит первой через файл
         if (link != null) leavePendingLink(link);
-        _signalRunning(k32);
+        // Автозапуск «в трей»: если Cavey уже запущена, окно ей показывать не нужно
+        if (!quiet) _signalRunning(k32);
         return false;
       }
       // Ручку намеренно не закрываем: мьютекс живёт, пока жива программа

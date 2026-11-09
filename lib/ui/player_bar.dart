@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
 import '../app.dart';
@@ -301,7 +302,7 @@ class _Wash extends StatefulWidget {
   State<_Wash> createState() => _WashState();
 }
 
-class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
+class _WashState extends State<_Wash> with TickerProviderStateMixin {
   // Волна медленно течёт по вертикали; один оборот — две секунды
   late final AnimationController _flow = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
   bool _init = false;
@@ -311,6 +312,23 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
     super.initState();
     widget.player.addListener(_sync);
     seekEdgeWave.addListener(_sync);
+    widget.player.fadeInfo.addListener(_syncTail);
+  }
+
+  // Пока идёт хвост полосы (доезжает и растворяется), перерисовываем каждый кадр, даже если музыка не играет
+  Ticker? _tailTick;
+
+  void _syncTail() {
+    final on = widget.player.fadeInfo.value != null;
+    if (on && _tailTick == null) {
+      _tailTick = createTicker((_) {
+        if (mounted) setState(() {});
+      })..start();
+    } else if (!on && _tailTick != null) {
+      _tailTick!.dispose();
+      _tailTick = null;
+      if (mounted) setState(() {});
+    }
   }
 
   @override
@@ -329,6 +347,8 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
   void dispose() {
     widget.player.removeListener(_sync);
     seekEdgeWave.removeListener(_sync);
+    widget.player.fadeInfo.removeListener(_syncTail);
+    _tailTick?.dispose();
     _flow.dispose();
     super.dispose();
   }
@@ -363,7 +383,7 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
           if (info != null) {
             final now = DateTime.now();
             fadeX = xOf(info.fraction(now));
-            fadeAlpha = 1 - info.progress(now);
+            fadeAlpha = info.alpha(now);
           }
           return RepaintBoundary(
             child: CustomPaint(

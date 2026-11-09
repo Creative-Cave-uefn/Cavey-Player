@@ -30,6 +30,8 @@ import 'core/social.dart';
 import 'core/store.dart';
 import 'core/single_instance.dart';
 import 'core/taskbar.dart';
+import 'core/autostart.dart';
+import 'core/notify_prefs.dart';
 import 'core/tray.dart';
 import 'core/tray_cleanup.dart';
 import 'core/media_keys.dart';
@@ -194,6 +196,8 @@ class AppServices {
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
+    // Автозапуск: заново записываем команду, если программу переустановили в другую папку
+    if (settings.autostartMode != 'off') unawaited(Autostart.apply(settings.autostartMode));
     // Значок в цвете акцента: в трее и у окна — сразу при запуске
     unawaited(app.collectIconResult().then((_) => app.refreshAppIcon()));
     // Значки, оставшиеся от закрытых принудительно прошлых версий, Проводник выбрасывает, когда над ними «проведут курсор»

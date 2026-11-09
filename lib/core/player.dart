@@ -17,11 +17,20 @@ import 'stream_proxy.dart';
 
 enum RepeatSetting { off, all, one }
 
-/// Идёт плавный переход: на какой доле длины шёл уходящий трек, когда переход начался, и сколько он длится.
-/// По этому полоса осветления старого трека доезжает до края и гаснет, пока у нового растёт своя
+/// Хвост полосы осветления после смены трека: полоса уходящего трека доезжает до края с прежней скоростью
+/// (при плавном переходе) и растворяется, пока у нового растёт своя. Нужен и без плавного перехода:
+/// при обычной смене трека полоса просто растворяется на месте
 class CrossfadeInfo {
+  /// Сколько растворяется полоса, когда доехала до края, мс
+  static const dissolveMs = 700;
+
+  /// Дольше этого полоса до края не едет: если до конца трека далеко, ускоряется
+  static const maxReachMs = 8000;
+
   final double fromFraction;
   final DateTime started;
+
+  /// Длина плавного перехода, мс; 0 — полоса не движется, только растворяется
   final int lengthMs;
 
   /// Длина уходящего трека, мс: по ней полоса продолжает идти с той же скоростью, что и весь трек
@@ -29,15 +38,30 @@ class CrossfadeInfo {
   const CrossfadeInfo(this.fromFraction, this.started, this.lengthMs, {this.oldDurationMs = 0});
 
   /// Ход перехода 0…1
-  double progress(DateTime now) => (now.difference(started).inMilliseconds / lengthMs).clamp(0.0, 1.0);
+  double progress(DateTime now) => lengthMs <= 0 ? 1.0 : (now.difference(started).inMilliseconds / lengthMs).clamp(0.0, 1.0);
+
+  /// За сколько полоса доезжает до края
+  int get reachMs {
+    if (oldDurationMs > 0) return ((1 - fromFraction) * oldDurationMs).round().clamp(0, maxReachMs).toInt();
+    return lengthMs;
+  }
+
+  /// Сколько всего живёт хвост: дорога до края и растворение
+  int get totalMs => reachMs + dissolveMs;
 
   /// Где полоса уходящего трека: идёт дальше с прежней скоростью до самого края (без разгона и остановки)
   double fraction(DateTime now) {
-    final ms = now.difference(started).inMilliseconds;
-    final f = oldDurationMs > 0
-        ? fromFraction + ms / oldDurationMs
-        : fromFraction + (1 - fromFraction) * progress(now);
-    return f.clamp(0.0, 1.0).toDouble();
+    final reach = reachMs;
+    if (reach <= 0) return fromFraction.clamp(0.0, 1.0).toDouble();
+    final k = (now.difference(started).inMilliseconds / reach).clamp(0.0, 1.0);
+    return (fromFraction + (1 - fromFraction) * k).clamp(0.0, 1.0).toDouble();
+  }
+
+  /// Прозрачность полосы: полная, пока едет, потом растворяется
+  double alpha(DateTime now) {
+    final ms = now.difference(started).inMilliseconds - reachMs;
+    if (ms <= 0) return 1.0;
+    return (1 - ms / dissolveMs).clamp(0.0, 1.0).toDouble();
   }
 }
 
@@ -804,7 +828,7 @@ class PlayerController extends ChangeNotifier {
       _normOut = _normIn;
       _normIn = _normFactorFor(nextTrack.id);
       _applyVolume();
-      fadeInfo.value = CrossfadeInfo(oldFraction, DateTime.now(), lengthMs, oldDurationMs: oldDurationMs);
+      _startTail(CrossfadeInfo(oldFraction, DateTime.now(), lengthMs, oldDurationMs: oldDurationMs));
       notifyListeners();
       unawaited(_whenReady(seq, nextTrack));
       _preloadNext();
@@ -829,11 +853,25 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
+  Timer? _tailTimer;
+
+  /// Следующая смена трека — оттого, что прошлый доиграл до конца
+  bool _autoEnd = false;
+
+  /// Запускает хвост полосы осветления и убирает его, когда он растворится
+  void _startTail(CrossfadeInfo info) {
+    _tailTimer?.cancel();
+    fadeInfo.value = info;
+    _tailTimer = Timer(Duration(milliseconds: info.totalMs + 80), () {
+      _tailTimer = null;
+      fadeInfo.value = null;
+    });
+  }
+
   /// Завершает переход: уходящий трек останавливается, у нового обычная громкость
   void _endFade({bool stopIncoming = false}) {
     _fadeTimer?.cancel();
     _fadeTimer = null;
-    fadeInfo.value = null;
     _preparedId = null;
     final wasFading = _fading;
     _fading = false;
@@ -876,6 +914,15 @@ class PlayerController extends ChangeNotifier {
     final t = current;
     if (t == null) return;
     final seq = ++_openSeq;
+    // Обычная смена трека без плавного перехода: полоса старого трека растворяется
+    // (дослушанный до конца — сразу, переключённый вручную — на месте)
+    final natural = _autoEnd;
+    _autoEnd = false;
+    if (at == null && duration > Duration.zero && (natural || position.value > Duration.zero) && !_fading) {
+      // Трек дошёл до конца сам: что бы ни показала позиция в последний миг, полоса стоит на краю
+      final f = natural ? 1.0 : (position.value.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0).toDouble();
+      _startTail(CrossfadeInfo(f, DateTime.now(), 0));
+    }
     _endFade();
     _dropPrepared();
     _normTimer?.cancel();
@@ -974,6 +1021,7 @@ class PlayerController extends ChangeNotifier {
     // Даём плееру закончить старый трек, иначе его пауза может догнать новый
     Future<void>.delayed(const Duration(milliseconds: 60), () {
       if (repeat == RepeatSetting.one) {
+        _autoEnd = true;
         unawaited(_open());
       } else {
         unawaited(next(auto: true));
@@ -984,11 +1032,13 @@ class PlayerController extends ChangeNotifier {
   Future<void> next({bool auto = false}) async {
     if (queue.isEmpty) return;
     _reportHeard(skipped: !auto);
+    _autoEnd = auto;
     if (index + 1 < queue.length) {
       index++;
     } else if (repeat == RepeatSetting.all) {
       index = 0;
     } else {
+      _autoEnd = false;
       if (!auto && _resumeAt == null) await _p.seek(duration);
       return;
     }
@@ -1133,6 +1183,7 @@ class PlayerController extends ChangeNotifier {
     _saveDebounce?.cancel();
     _hoverTimer?.cancel();
     _fadeTimer?.cancel();
+    _tailTimer?.cancel();
     _p.dispose();
     _q?.dispose();
     unawaited(_proxy.close());

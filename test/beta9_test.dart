@@ -108,6 +108,34 @@ void main() {
       expect(at(15), 1.0);
     });
 
+    test('хвост полосы: доезжает до края, потом растворяется', () {
+      final t0 = DateTime(2026, 1, 1, 12);
+      // Переход короткий (4 с), а до конца трека ещё 10 с: полоса всё равно доезжает, а не пропадает на полпути
+      final info = CrossfadeInfo(0.9, t0, 4000, oldDurationMs: 100000);
+      expect(info.reachMs, 10000);
+      expect(info.alpha(t0.add(const Duration(seconds: 5))), 1.0);
+      expect(info.fraction(t0.add(const Duration(seconds: 10))), closeTo(1.0, 1e-9));
+      expect(info.alpha(t0.add(const Duration(milliseconds: 10350))), closeTo(0.5, 1e-9));
+      expect(info.alpha(t0.add(const Duration(seconds: 11))), 0.0);
+      expect(info.totalMs, 10000 + CrossfadeInfo.dissolveMs);
+    });
+
+    test('без плавного перехода полоса растворяется на месте', () {
+      final t0 = DateTime(2026, 1, 1, 12);
+      final info = CrossfadeInfo(0.4, t0, 0);
+      expect(info.fraction(t0.add(const Duration(seconds: 1))), 0.4);
+      expect(info.alpha(t0), 1.0);
+      expect(info.alpha(t0.add(const Duration(milliseconds: 350))), closeTo(0.5, 1e-9));
+      expect(info.alpha(t0.add(const Duration(seconds: 1))), 0.0);
+    });
+
+    test('далёкий конец: полоса ускоряется и доезжает не дольше чем за 8 с', () {
+      final t0 = DateTime(2026, 1, 1, 12);
+      final info = CrossfadeInfo(0.2, t0, 5000, oldDurationMs: 300000);
+      expect(info.reachMs, CrossfadeInfo.maxReachMs);
+      expect(info.fraction(t0.add(const Duration(seconds: 8))), closeTo(1.0, 1e-9));
+    });
+
     test('без длины трека полоса идёт линейно за время перехода', () {
       final t0 = DateTime(2026, 1, 1, 12);
       final info = CrossfadeInfo(0.8, t0, 4000);
