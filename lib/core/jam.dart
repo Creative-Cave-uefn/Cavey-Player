@@ -128,6 +128,8 @@ class JamController extends ChangeNotifier {
   Timer? _driveWrite;
   DateTime _lastDrivePoll = DateTime.fromMillisecondsSinceEpoch(0);
   bool _polling = false;
+  DateTime _lastHello = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastPresenceWrite = DateTime.fromMillisecondsSinceEpoch(0);
   String? _myFileId;
   final Map<String, String> _fileModified = {};
 
@@ -141,14 +143,22 @@ class JamController extends ChangeNotifier {
   bool get active => jamId != null;
   bool get fastChannel => _ntfy?.online ?? false;
 
-  /// Участники джема, включая меня: те, от кого было что-то за последние три минуты
+  /// Участники джема, включая меня: те, от кого было что-то за последние три минуты, и те, кто сам указал этот джем
+  /// в своём статусе (так организатор виден и тем, кто вошёл по приглашению, даже если в джеме давно никто ничего не делал)
   List<String> get participants {
     final now = DateTime.now();
     final m = me;
-    final list = [
+    final set = <String>{
       for (final e in _seen.entries)
-        if (e.key == m || now.difference(e.value) < const Duration(minutes: 3)) e.key
-    ]..sort();
+        if (e.key == m || now.difference(e.value) < const Duration(minutes: 3)) e.key,
+    };
+    final id = jamId;
+    if (id != null) {
+      for (final mem in social.members.values) {
+        if (mem.jamId == id && mem.inJam) set.add(mem.email);
+      }
+    }
+    final list = set.toList()..sort();
     if (m != null && list.remove(m)) list.insert(0, m);
     return list;
   }
@@ -418,6 +428,16 @@ class JamController extends ChangeNotifier {
     // Быстрый канал работает — Диск лишь страховка (раз в 10 с), иначе опрашиваем часто
     final gap = fastChannel ? const Duration(seconds: 10) : const Duration(milliseconds: 1400);
     if (DateTime.now().difference(_lastDrivePoll) >= gap) unawaited(_pollDrive());
+    // Признаки жизни: без них остальные через три минуты тишины считают, что я вышел (так пропадал организатор у вошедших)
+    final now = DateTime.now();
+    if (m != null && now.difference(_lastHello) >= const Duration(seconds: 20)) {
+      _lastHello = now;
+      unawaited(_ntfy?.send({'t': 'hello', 'jam': jamId, 'who': m, 'from': m}));
+    }
+    if (now.difference(_lastPresenceWrite) >= const Duration(seconds: 60)) {
+      _lastPresenceWrite = now;
+      unawaited(_writeDriveFile());
+    }
     notifyListeners();
   }
 

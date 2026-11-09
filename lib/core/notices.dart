@@ -112,3 +112,9 @@ String noticeText(Notice n, {required String who, required String Function(Strin
       return '$who поделился(ась): ${label(first)}';
   }
 }
+
+/// Текст уведомления без имени (имя стоит в заголовке карточки): «Добавил(а) «Трек» в любимое»
+String noticeBodyText(Notice n, {required String Function(String id) title, required String Function(String id) label}) {
+  final t = noticeText(n, who: '', title: title, label: label).trim();
+  return t.isEmpty ? t : '${t[0].toUpperCase()}${t.substring(1)}';
+}

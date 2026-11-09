@@ -251,7 +251,10 @@ class SocialController extends ChangeNotifier {
       // Е5: музыка не играет и окно скрыто — опрашиваем раз в минуту
       final st = WidgetsBinding.instance.lifecycleState;
       final hidden = st == AppLifecycleState.hidden || st == AppLifecycleState.paused;
-      if (hidden && !player.playing && DateTime.now().difference(lastPoll ?? DateTime(2000)) < const Duration(seconds: 60)) return;
+      // Уведомления включены — свёрнутое окно опрашиваем раз в 15 секунд, чтобы уведомление (звук и окошко) пришло вовремя,
+      // даже если человек в игре; без уведомлений хватает минуты
+      final gap = Duration(seconds: lib.settings.viewOf('ntf.on', '1') == '1' ? 15 : 60);
+      if (hidden && !player.playing && DateTime.now().difference(lastPoll ?? DateTime(2000)) < gap) return;
       unawaited(poll());
     });
     _resume = _ResumeWatcher(() => unawaited(poll()));
@@ -666,6 +669,16 @@ class SocialController extends ChangeNotifier {
       noticeStream.add(n);
     }
   }
+
+  /// Текст уведомления без имени: имя стоит в заголовке карточки («добавил(а) «Трек» в любимое»)
+  String noticeBody(Notice n) => noticeBodyText(
+        n,
+        title: (id) => lib.data.tracks[lib.data.resolve(id)]?.title ?? 'трек',
+        label: (id) {
+          final t = lib.data.tracks[lib.data.resolve(id)];
+          return t == null ? 'трек' : '${t.title} — ${t.displayArtist}';
+        },
+      );
 
   /// Текст уведомления для показа
   String noticeLine(Notice n) => noticeText(

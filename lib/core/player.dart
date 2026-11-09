@@ -174,6 +174,7 @@ class PlayerController extends ChangeNotifier {
     _subs.clear();
     _subs.add(p.stream.position.listen((d) {
       if (_resumeAt == null) position.value = d;
+      if (d > Duration.zero && duration > Duration.zero) _lastFrac = (d.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0).toDouble();
       _maybeCrossfade(d);
     }));
     _subs.add(p.stream.duration.listen((d) {
@@ -882,6 +883,9 @@ class PlayerController extends ChangeNotifier {
 
   Timer? _tailTimer;
 
+  /// До какой доли трека дошла полоса перед концом: в конце плеер может сбросить позицию, а полоса не должна прыгать
+  double _lastFrac = 0;
+
   /// Следующая смена трека — оттого, что прошлый доиграл до конца
   bool _autoEnd = false;
 
@@ -948,10 +952,15 @@ class PlayerController extends ChangeNotifier {
     final natural = _autoEnd;
     _autoEnd = false;
     if (at == null && duration > Duration.zero && (natural || position.value > Duration.zero) && !_fading) {
-      // Трек дошёл до конца сам: что бы ни показала позиция в последний миг, полоса стоит на краю
-      final f = natural ? 1.0 : (position.value.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0).toDouble();
-      _startTail(CrossfadeInfo(f, DateTime.now(), 0));
+      // Дошёл до конца сам: полоса стояла на последней показанной доле (если позицию сбросили — на краю) и плавно
+      // доезжает до края, а потом растворяется. Переключили вручную — растворяется там, где была
+      final f = natural
+          ? (_lastFrac > 0.5 ? _lastFrac : 1.0)
+          : (position.value.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0).toDouble();
+      final run = natural && f < 0.995 ? 450 : 0;
+      _startTail(CrossfadeInfo(f, DateTime.now(), run));
     }
+    _lastFrac = 0;
     _endFade();
     _dropPrepared();
     _normTimer?.cancel();

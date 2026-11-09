@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -6,6 +7,7 @@ import '../app.dart';
 import '../core/desktop_notify.dart';
 import '../core/notices.dart';
 import '../core/notify_prefs.dart';
+import '../core/toast_window.dart';
 import 'widgets.dart';
 import 'theme.dart';
 import 'glass_popup.dart';
@@ -27,6 +29,9 @@ class _Card {
   final Notice notice;
   final String text;
   Timer? timer;
+
+  /// Карточка уезжает вправо; после анимации её убирают из списка
+  bool leaving = false;
   _Card(this.notice, this.text);
 }
 
@@ -56,16 +61,15 @@ class _NoticeTowerState extends State<NoticeTower> {
     final preview = noticePreviewing;
     noticePreviewing = false;
     if (!preview && !st.notifyOn) return;
-    final text = app.social.noticeLine(n);
-    // Мягкий звук: слышно, даже если окно далеко или спрятано
+    // Звук: слышно, даже если окно далеко или спрятано
     unawaited(NotifySound.play(st, force: preview));
-    // Окно спрятано в трей, свёрнуто или не в фокусе — уведомление Windows, чтобы заметить его вне плеера
+    // Окно спрятано в трей, свёрнуто или не в фокусе — своё окошко уведомления поверх остальных окон
     if (st.notifySystem && (preview || await windowIsHidden())) {
-      unawaited(desktopToast(text));
+      unawaited(_systemToast(app, n));
       if (!preview) return;
     }
     if (!mounted) return;
-    final card = _Card(n, text);
+    final card = _Card(n, app.social.noticeBody(n));
     card.timer = Timer(const Duration(seconds: 12), () => _close(card));
     setState(() {
       _cards.add(card);
@@ -75,9 +79,51 @@ class _NoticeTowerState extends State<NoticeTower> {
     });
   }
 
+  /// Окошко уведомления вне плеера: ник, аватарка человека и текст. Не вышло — обычное уведомление Windows
+  Future<void> _systemToast(AppServices app, Notice n) async {
+    final lib = app.lib;
+    final nick = lib.firstNameOf(n.from);
+    final body = app.social.noticeBody(n);
+    String? avatar;
+    final fileId = lib.profileAvatar(n.from);
+    if (fileId != null) {
+      try {
+        final bytes = await app.covers.forFile(fileId, px: 128);
+        if (bytes != null && bytes.isNotEmpty) {
+          final f = File('${Directory.systemTemp.path}${Platform.pathSeparator}cavey_toast_av_${n.from.hashCode.abs()}.png');
+          await f.writeAsBytes(bytes, flush: true);
+          avatar = f.path;
+        }
+      } catch (_) {
+        // без аватарки: останется кружок с буквой
+      }
+    }
+    final shown = nick.trim().isEmpty ? n.from : nick.trim();
+    final ok = await showToastWindow(ToastSpec(
+      title: nick,
+      text: body,
+      letter: shown.characters.first.toUpperCase(),
+      avatarPath: avatar,
+      bg: C.panel,
+      line: C.line,
+      accent: C.accent,
+      fg: C.text,
+      muted: C.muted,
+      letterBg: friendColor(n.from),
+      letterInk: C.accentInk,
+    ));
+    if (!ok) await desktopToast(body, title: nick);
+  }
+
   void _close(_Card c) {
+    if (c.leaving) return;
     c.timer?.cancel();
-    if (mounted) setState(() => _cards.remove(c));
+    if (!mounted) return;
+    // Сначала уезжает вправо, потом убирается из стопки
+    setState(() => c.leaving = true);
+    Timer(const Duration(milliseconds: 320), () {
+      if (mounted) setState(() => _cards.remove(c));
+    });
   }
 
   @override
@@ -94,7 +140,11 @@ class _NoticeTowerState extends State<NoticeTower> {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             for (final c in _cards.reversed)
-              Padding(padding: const EdgeInsets.only(bottom: 8), child: _NoticeCard(card: c, onClose: () => _close(c))),
+              Padding(
+                key: ObjectKey(c),
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _SlideIn(leaving: c.leaving, child: _NoticeCard(card: c, onClose: () => _close(c))),
+              ),
             if (saving) _SaveCloud(error: err),
           ],
         );
@@ -103,17 +153,21 @@ class _NoticeTowerState extends State<NoticeTower> {
   }
 }
 
-/// Карточка уведомления: круглый значок слева, жирный заголовок, текст цветом акцента и крестик — как у Telegram.
+/// Карточка уведомления: круглая аватарка человека слева, жирный заголовок, текст цветом акцента и крестик — как у Telegram.
 /// Одна и та же в правом нижнем углу плеера и в предпросмотре «Настроек»
 class ToastCard extends StatelessWidget {
+  /// Ник человека
   final String title;
   final String text;
   final String? note;
 
+  /// Аватарка человека, с которым связано уведомление (круглая, 48 на 48)
+  final Widget leading;
+
   /// Кнопки под текстом (например «Войти»)
   final List<Widget> actions;
   final VoidCallback? onClose;
-  const ToastCard({super.key, required this.title, required this.text, this.note, this.actions = const [], this.onClose});
+  const ToastCard({super.key, required this.title, required this.text, required this.leading, this.note, this.actions = const [], this.onClose});
 
   @override
   Widget build(BuildContext context) {
@@ -129,7 +183,7 @@ class ToastCard extends StatelessWidget {
           boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 18, offset: Offset(0, 6))],
         ),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          ClipOval(child: BrandMark(size: 48)),
+          SizedBox.square(dimension: 48, child: leading),
           const SizedBox(width: 14),
           Expanded(
             child: Padding(
@@ -171,7 +225,8 @@ class _NoticeCard extends StatelessWidget {
     final n = card.notice;
     final track = n.trackIds.isEmpty ? null : app.lib.data.tracks[app.lib.data.resolve(n.trackIds.first)];
     return ToastCard(
-      title: 'Cavey',
+      title: app.lib.firstNameOf(n.from),
+      leading: Avatar(email: n.from, name: app.lib.firstNameOf(n.from), size: 48),
       text: card.text,
       note: n.note,
       onClose: onClose,
@@ -202,6 +257,44 @@ class _NoticeCard extends StatelessWidget {
             label: const Text('Слушать'),
           ),
       ],
+    );
+  }
+}
+
+/// Карточка выезжает из-за правого края окна и уезжает обратно, когда [leaving]
+class _SlideIn extends StatefulWidget {
+  final bool leaving;
+  final Widget child;
+  const _SlideIn({required this.leaving, required this.child});
+
+  @override
+  State<_SlideIn> createState() => _SlideInState();
+}
+
+class _SlideInState extends State<_SlideIn> {
+  bool _shown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Первый кадр — за краем, следующий — на месте: так выезд виден
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _shown = true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final on = _shown && !widget.leaving;
+    return AnimatedSlide(
+      offset: on ? Offset.zero : const Offset(1.15, 0),
+      duration: Duration(milliseconds: widget.leaving ? 280 : 360),
+      curve: widget.leaving ? Curves.easeInCubic : Curves.easeOutCubic,
+      child: AnimatedOpacity(
+        opacity: on ? 1 : 0,
+        duration: Duration(milliseconds: widget.leaving ? 240 : 260),
+        child: widget.child,
+      ),
     );
   }
 }

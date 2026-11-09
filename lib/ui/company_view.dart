@@ -601,6 +601,13 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
         final live = social.friends.where((m) => m.live && !m.inJam).toList();
         final jamGroups = otherJams(app);
         if (live.isEmpty && !jam.active && jamGroups.isEmpty) return const SizedBox.shrink();
+        // В счётчике и на аватарках — все, кто слушает: и по одному, и в джемах (чужих и моём)
+        final me = app.lib.me;
+        final everyone = <String>{
+          for (final m in live) m.email,
+          for (final g in jamGroups) ...g.people,
+          if (jam.active) ...jam.participants,
+        }.where((e) => e != me).toList();
         return MouseRegion(
           onEnter: (_) => setState(() => _open = true),
           onExit: (_) => setState(() => _open = false),
@@ -630,14 +637,16 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
                   const Expanded(child: Text('Сейчас слушают', style: TextStyle(color: C.muted, fontSize: 13))),
                   SizedBox(
                     height: 20,
-                    width: (20 + (live.length.clamp(0, 3) - 1).clamp(0, 2) * 12).toDouble(),
+                    width: (20 + (everyone.length.clamp(0, 3) - 1).clamp(0, 2) * 12).toDouble(),
                     child: Stack(children: [
-                      for (var i = 0; i < live.length && i < 3; i++)
-                        Positioned(left: i * 12.0, child: Avatar(key: ValueKey('hd-${live[i].email}'), email: live[i].email, name: live[i].name, size: 20)),
+                      for (var i = 0; i < everyone.length && i < 3; i++)
+                        Positioned(
+                            left: i * 12.0,
+                            child: Avatar(key: ValueKey('hd-${everyone[i]}'), email: everyone[i], name: app.lib.firstNameOf(everyone[i]), size: 20)),
                     ]),
                   ),
                   const SizedBox(width: 8),
-                  Text('${live.length}', style: const TextStyle(color: C.faint, fontSize: 12)),
+                  Text('${everyone.length}', style: const TextStyle(color: C.faint, fontSize: 12)),
                 ] else
                   const Icon(Icons.headphones_rounded, size: 18, color: C.muted),
               ]),
@@ -941,7 +950,7 @@ class JamStrip extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 10, 4),
       child: Row(children: [
-        Icon(Icons.headphones_rounded, size: 16, color: C.accent),
+        Tooltip(message: 'Джем · ${people.length}', child: Icon(Icons.headphones_rounded, size: 16, color: C.accent)),
         const SizedBox(width: 8),
         SizedBox(
           height: 20,
@@ -951,8 +960,7 @@ class JamStrip extends StatelessWidget {
               Positioned(left: i * 12.0, child: Avatar(key: ValueKey('jam-${people[i]}'), email: people[i], name: app.lib.firstNameOf(people[i]), size: 20)),
           ]),
         ),
-        const SizedBox(width: 8),
-        Expanded(child: Text('Джем · ${people.length}', overflow: TextOverflow.ellipsis, style: TextStyle(color: C.accent, fontSize: 13))),
+        const Spacer(),
         IconButton(
           tooltip: 'Пригласить в джем',
           visualDensity: VisualDensity.compact,

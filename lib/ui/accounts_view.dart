@@ -551,7 +551,14 @@ class _NotifySectionState extends State<_NotifySection> {
       const SizedBox(height: 12),
       Align(
         alignment: Alignment.centerLeft,
-        child: ToastCard(title: 'Cavey', text: '$me добавил(а) «Название трека» в любимое', onClose: () {}),
+        child: ToastCard(
+          title: me,
+          leading: app.lib.me == null
+              ? ClipOval(child: BrandMark(size: 48))
+              : Avatar(email: app.lib.me!, name: me, size: 48),
+          text: 'Добавил(а) «Название трека» в любимое',
+          onClose: () {},
+        ),
       ),
       const SizedBox(height: 12),
       FilledButton.icon(
