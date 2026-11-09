@@ -84,11 +84,7 @@ void main() {
   });
 
   test('лимит запросов (29) — короткая пауза, ответ не запоминается', () async {
-    var calls = 0;
-    final l = _lfm((r) async {
-      calls++;
-      return _json('{"error":29,"message":"rate limit"}');
-    });
+    final l = _lfm((r) async => _json('{"error":29,"message":"rate limit"}'));
     expect(await l.artistTags('Air'), isNull);
     expect(l.paused, isTrue);
     expect(l.pauseLeft, greaterThan(const Duration(seconds: 20)));

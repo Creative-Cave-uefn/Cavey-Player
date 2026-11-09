@@ -1428,6 +1428,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       }
       // Ждём конца задания, чтобы не ставить в очередь загрузчика десяток треков разом
       Timer? patience;
+      // finish и check ссылаются друг на друга; в Dart локальная функция до своего объявления не видна,
+      // поэтому check объявлена переменной заранее
+      late final void Function() check;
       void finish() {
         downloads.removeListener(check);
         patience?.cancel();
@@ -1450,9 +1453,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         _save();
       }
 
-      void check() {
+      check = () {
         if (job.state == JobState.done || job.state == JobState.failed || job.state == JobState.cancelled) finish();
-      }
+      };
 
       downloads.addListener(check);
       patience = Timer(_jobPatience, () {
