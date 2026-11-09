@@ -908,7 +908,7 @@ class _Sidebar extends StatelessWidget {
             // Сколько места нужно, чтобы верх и низ панели стояли на месте, а прокручивались только плейлисты.
             // Оценка с запасом; если места меньше, прокручивается вся панель целиком
             final live = app.social.friends.where((m) => m.live).length;
-            final need = 864 + (live > 0 ? 44 : 0) + (app.social.following != null ? 36 : 0);
+            final need = 864 + (live > 0 ? 44 : 0) + (app.jam.active ? 36 : 0);
             if (box.maxHeight >= need) {
               return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 ...head,

@@ -100,8 +100,10 @@ class _NoticeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final n = card.notice;
-    final track = app.lib.data.tracks[app.lib.data.resolve(n.trackIds.first)];
+    final track = n.trackIds.isEmpty ? null : app.lib.data.tracks[app.lib.data.resolve(n.trackIds.first)];
     final icon = switch (n.kind) {
+      NoticeKind.jamInvite => Icons.headphones_rounded,
+      NoticeKind.jamRequest => Icons.person_add_alt_1_rounded,
       NoticeKind.like => Icons.favorite_rounded,
       NoticeKind.addToPlaylist => Icons.playlist_add_rounded,
       NoticeKind.share => Icons.share_rounded,
@@ -126,6 +128,22 @@ class _NoticeCard extends StatelessWidget {
                 ),
             ]),
           ),
+          if (n.kind == NoticeKind.jamInvite)
+            TextButton(
+              onPressed: () {
+                app.jam.acceptNotice(n);
+                onClose();
+              },
+              child: const Text('Войти'),
+            ),
+          if (n.kind == NoticeKind.jamRequest)
+            TextButton(
+              onPressed: () {
+                app.jam.acceptNotice(n);
+                onClose();
+              },
+              child: const Text('Принять'),
+            ),
           if (track != null)
             IconButton(
               tooltip: 'Слушать',

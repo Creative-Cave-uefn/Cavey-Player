@@ -39,12 +39,7 @@ class CompanyPage extends StatelessWidget {
         final chart = social.chart();
         final feed = social.feed;
         final notices = social.notices.take(20).toList();
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
-          Text('Компания', style: display(36, weight: FontWeight.w700)),
-          const SizedBox(height: 10),
-          const Text('Что слушают друзья, что у вас в чарте и что нового в библиотеке.',
-              style: TextStyle(color: C.muted, fontSize: 15)),
-          const SizedBox(height: 32),
+        return ListView(padding: EdgeInsets.fromLTRB(pad, 28, pad, 40), children: [
           Row(children: [
             Expanded(child: Text('Участники', style: display(20))),
             _NoticeBell(notices: notices),
@@ -97,6 +92,34 @@ class CompanyPage extends StatelessWidget {
   }
 }
 
+/// «Слушать вместе» теперь про джем-сессию: человека зовут в общую очередь, а не заставляют повторять за собой.
+/// Подпись и действие зависят от того, где мы оба сейчас
+({String label, IconData icon, bool inJam}) jamButton(AppServices app, String email) {
+  final jam = app.jam;
+  if (jam.active && jam.participants.contains(email)) return (label: 'В джеме · выйти', icon: Icons.headphones_rounded, inJam: true);
+  if (jam.active) return (label: 'Позвать в джем', icon: Icons.person_add_alt_1_rounded, inJam: false);
+  final m = app.social.members[email];
+  if (m?.jamId != null) return (label: 'Попроситься в джем', icon: Icons.login_rounded, inJam: false);
+  return (label: 'Слушать вместе', icon: Icons.headphones_rounded, inJam: false);
+}
+
+Future<void> jamTogether(AppServices app, String email) async {
+  final jam = app.jam;
+  final name = app.lib.firstNameOf(email);
+  if (jam.active && jam.participants.contains(email)) {
+    await jam.leave();
+    return;
+  }
+  final m = app.social.members[email];
+  if (!jam.active && m?.jamId != null) {
+    await jam.requestJoin(m!);
+    app.lib.messages.add('Запрос в джем отправлен: $name');
+    return;
+  }
+  await jam.invite([email]);
+  app.lib.messages.add('Приглашение в джем отправлено: $name');
+}
+
 class _ListenerCard extends StatelessWidget {
   final Member member;
   const _ListenerCard({required this.member});
@@ -106,7 +129,8 @@ class _ListenerCard extends StatelessWidget {
     final app = Services.of(context);
     final now = member.now!;
     final track = app.lib.data.tracks[now.trackId];
-    final following = app.social.following == member.email;
+    final jb = jamButton(app, member.email);
+    final following = jb.inJam;
     // Карточка в цвет обложки трека: свечение из угла поверх стекла, имя — на тёмной плашке, чтобы не сливалось
     return FutureBuilder<Color?>(
       future: track == null ? null : trackTint(app, track),
@@ -168,14 +192,13 @@ class _ListenerCard extends StatelessWidget {
           if (track != null)
             TextButton(onPressed: () => app.player.playTracks([track], 0), child: const Text('Включить у себя')),
           const Spacer(),
-          if (track != null)
-            following
-                ? TextButton(onPressed: app.social.stopFollowing, child: const Text('Перестать'))
-                : FilledButton(
-                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10)),
-                    onPressed: () => app.social.follow(member.email),
-                    child: const Text('Слушать вместе'),
-                  ),
+          following
+              ? TextButton(onPressed: () => jamTogether(app, member.email), child: Text(jb.label))
+              : FilledButton(
+                  style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10)),
+                  onPressed: () => jamTogether(app, member.email),
+                  child: Text(jb.label),
+                ),
         ]),
       ]),
     );
@@ -339,40 +362,141 @@ class _NoticeRow extends StatelessWidget {
   final Notice notice;
   const _NoticeRow({required this.notice});
 
+  /// Ссылка внутри строки: подчёркивается при наведении и перехватывает нажатие у всей строки
+  Widget _link(String text, VoidCallback onTap) => _HoverLink(text: text, onTap: onTap);
+
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
-    final track = app.lib.data.tracks[app.lib.data.resolve(notice.trackIds.first)];
+    final lib = app.lib;
+    final track = lib.data.tracks[lib.data.resolve(notice.trackIds.first)];
     final icon = switch (notice.kind) {
       NoticeKind.like => Icons.favorite_rounded,
       NoticeKind.addToPlaylist => Icons.playlist_add_rounded,
       NoticeKind.share => Icons.share_rounded,
+      NoticeKind.jamInvite => Icons.headphones_rounded,
+      NoticeKind.jamRequest => Icons.person_add_alt_1_rounded,
     };
+    void closeMenu() => MenuController.maybeOf(context)?.close();
+    void toUser() {
+      closeMenu();
+      NavScope.of(context).go(Nav('user', notice.from));
+    }
+
+    void toAlbum() {
+      if (track == null) return;
+      closeMenu();
+      NavScope.of(context).go(Nav('album', track.albumKey));
+    }
+
+    final who = _link(lib.firstNameOf(notice.from), toUser);
+    final title = track == null ? const Text('трек') : _link('«${track.title}»', toAlbum);
+    const plain = TextStyle(height: 1.35);
+    Widget line(List<Widget> parts) => Wrap(crossAxisAlignment: WrapCrossAlignment.center, children: parts);
+    Widget t(String s) => Text(s, style: plain);
+    final Widget body = switch (notice.kind) {
+      NoticeKind.like => line([who, t(' добавил(а) '), title, t(' в любимое')]),
+      NoticeKind.addToPlaylist => notice.trackIds.length == 1
+          ? line([who, t(' добавил(а) '), title, t(notice.playlist == null ? ' в плейлист' : ' в плейлист «${notice.playlist}»')])
+          : line([who, t(' добавил(а) ваших треков: ${notice.trackIds.length} ${notice.playlist == null ? 'в плейлист' : 'в плейлист «${notice.playlist}»'}')]),
+      NoticeKind.share => line([who, t(' поделился(ась): '), title, t(track == null ? '' : ' — ${track.displayArtist}')]),
+      NoticeKind.jamInvite => line([who, t(' зовёт в джем')]),
+      NoticeKind.jamRequest => line([who, t(' просится в джем')]),
+    };
+    final isJam = notice.kind == NoticeKind.jamInvite || notice.kind == NoticeKind.jamRequest;
     return InkWell(
       borderRadius: BorderRadius.circular(8),
-      onTap: track == null ? null : () => NavScope.of(context).go(Nav('album', track.albumKey)),
+      // Нажатие на строку включает трек; окно уведомлений остаётся открытым
+      onTap: isJam || track == null ? null : () => app.player.playTracks([track], 0),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
         child: Row(children: [
-          Icon(icon, size: 18, color: friendColor(notice.from)),
-          const SizedBox(width: 14),
+          // Значок события и маленький аватар человека в правом нижнем углу
+          SizedBox(
+            width: 34,
+            height: 30,
+            child: Stack(clipBehavior: Clip.none, children: [
+              Positioned(left: 2, top: 2, child: Icon(icon, size: 22, color: friendColor(notice.from))),
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(1.5),
+                  decoration: const BoxDecoration(color: C.panel, shape: BoxShape.circle),
+                  child: Avatar(email: notice.from, name: lib.firstNameOf(notice.from), size: 15),
+                ),
+              ),
+            ]),
+          ),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(app.social.noticeLine(notice), style: const TextStyle(height: 1.35)),
+              body,
               if (notice.note != null) Text('«${notice.note}»', style: const TextStyle(color: C.muted, fontSize: 13)),
+              if (isJam) _JamNoticeActions(notice: notice),
             ]),
           ),
           const SizedBox(width: 12),
           Text(timeAgo(notice.at), style: const TextStyle(color: C.faint, fontSize: 12)),
-          if (track != null)
-            IconButton(
-              tooltip: 'Слушать',
-              visualDensity: VisualDensity.compact,
-              icon: Icon(Icons.play_arrow_rounded, color: C.accent),
-              onPressed: () => app.player.playTracks([track], 0),
-            ),
         ]),
       ),
+    );
+  }
+}
+
+class _HoverLink extends StatefulWidget {
+  final String text;
+  final VoidCallback onTap;
+  const _HoverLink({required this.text, required this.onTap});
+  @override
+  State<_HoverLink> createState() => _HoverLinkState();
+}
+
+class _HoverLinkState extends State<_HoverLink> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap,
+          child: Text(widget.text,
+              style: TextStyle(height: 1.35, fontWeight: FontWeight.w600, decoration: _hover ? TextDecoration.underline : TextDecoration.none)),
+        ),
+      );
+}
+
+/// Кнопки «Присоединиться» и «Отклонить» у приглашения в джем и запроса на вход
+class _JamNoticeActions extends StatelessWidget {
+  final Notice notice;
+  const _JamNoticeActions({required this.notice});
+
+  @override
+  Widget build(BuildContext context) {
+    final jam = Services.of(context).jam;
+    final invite = notice.kind == NoticeKind.jamInvite;
+    return ListenableBuilder(
+      listenable: jam,
+      builder: (context, _) {
+        final state = jam.noticeState(notice);
+        if (state != null) {
+          return Padding(padding: const EdgeInsets.only(top: 4), child: Text(state, style: const TextStyle(color: C.faint, fontSize: 12)));
+        }
+        return Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Row(children: [
+            FilledButton(
+              style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+              onPressed: () => jam.acceptNotice(notice),
+              child: Text(invite ? 'Присоединиться' : 'Принять'),
+            ),
+            const SizedBox(width: 8),
+            TextButton(onPressed: () => jam.declineNotice(notice), child: const Text('Отклонить')),
+          ]),
+        );
+      },
     );
   }
 }
@@ -464,11 +588,11 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
     final social = app.social;
     final compact = widget.compact;
     return ListenableBuilder(
-      listenable: social,
+      listenable: Listenable.merge([social, app.jam]),
       builder: (context, _) {
         final live = social.friends.where((m) => m.live).toList();
-        final followed = social.following;
-        if (live.isEmpty && followed == null) return const SizedBox.shrink();
+        final jam = app.jam;
+        if (live.isEmpty && !jam.active) return const SizedBox.shrink();
         return MouseRegion(
           onEnter: (_) => setState(() => _open = true),
           onExit: (_) => setState(() => _open = false),
@@ -489,19 +613,7 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
                     )
                   : const SizedBox(width: double.infinity),
             ),
-            if (followed != null && !compact)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 10, 4),
-                child: Row(children: [
-                  Icon(Icons.headphones_rounded, size: 16, color: C.accent),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text('Вместе с ${app.lib.firstNameOf(followed)}',
-                        overflow: TextOverflow.ellipsis, style: TextStyle(color: C.accent, fontSize: 13)),
-                  ),
-                  TextButton(onPressed: social.stopFollowing, child: const Text('Выйти')),
-                ]),
-              ),
+            if (jam.active) JamStrip(compact: compact),
             Padding(
               padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 10, compact ? 0 : 16, 10),
               child: Row(mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
@@ -547,7 +659,7 @@ class _ListenerTileState extends State<_ListenerTile> {
     final app = Services.of(context);
     final m = widget.member;
     final compact = widget.compact;
-    final together = app.social.following == m.email;
+    final together = app.jam.active && app.jam.participants.contains(m.email);
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
@@ -612,11 +724,10 @@ class ListenActions extends StatelessWidget {
         final now = m?.now;
         if (m == null || now == null || !m.live) return const SizedBox.shrink();
         final track = app.lib.data.tracks[now.trackId];
-        final together = app.social.following == email;
-        void toggleTogether() => together ? app.social.stopFollowing() : app.social.follow(email);
+        final jb = jamButton(app, email);
+        void toggleTogether() => unawaited(jamTogether(app, email));
         void playOwn() {
           if (track == null) return;
-          app.social.stopFollowing();
           app.player.playTracks([track], 0);
         }
 
@@ -630,23 +741,14 @@ class ListenActions extends StatelessWidget {
                 ),
               );
           return Row(mainAxisSize: MainAxisSize.min, children: [
-            icon(Icons.headphones_rounded, together ? 'Перестать слушать вместе' : 'Слушать вместе', track == null ? null : toggleTogether,
-                on: together),
+            icon(jb.icon, jb.label, toggleTogether, on: jb.inJam),
             icon(Icons.play_arrow_rounded, 'Включить у себя', track == null ? null : playOwn),
           ]);
         }
         return Wrap(spacing: 10, runSpacing: 10, alignment: WrapAlignment.center, children: [
-          together
-              ? OutlinedButton.icon(
-                  onPressed: toggleTogether,
-                  icon: const Icon(Icons.headphones_rounded, size: 18),
-                  label: const Text('Перестать слушать вместе'),
-                )
-              : FilledButton.icon(
-                  onPressed: track == null ? null : toggleTogether,
-                  icon: const Icon(Icons.headphones_rounded, size: 18),
-                  label: const Text('Слушать вместе'),
-                ),
+          jb.inJam
+              ? OutlinedButton.icon(onPressed: toggleTogether, icon: Icon(jb.icon, size: 18), label: Text(jb.label))
+              : FilledButton.icon(onPressed: toggleTogether, icon: Icon(jb.icon, size: 18), label: Text(jb.label)),
           OutlinedButton.icon(
             onPressed: track == null ? null : playOwn,
             icon: const Icon(Icons.play_arrow_rounded, size: 18),
@@ -655,6 +757,91 @@ class ListenActions extends StatelessWidget {
         ]);
       },
     );
+  }
+}
+
+/// Плашка джема над «Сейчас слушают»: кто в джеме, «Пригласить» и «Выйти»
+class JamStrip extends StatelessWidget {
+  final bool compact;
+  const JamStrip({super.key, required this.compact});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final jam = app.jam;
+    final people = jam.participants;
+    if (compact) {
+      return Tooltip(
+        message: 'Джем: ${people.length} · выйти',
+        child: IconButton(onPressed: jam.leave, icon: Icon(Icons.headphones_rounded, color: C.accent)),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 10, 4),
+      child: Row(children: [
+        Icon(Icons.headphones_rounded, size: 16, color: C.accent),
+        const SizedBox(width: 8),
+        SizedBox(
+          height: 20,
+          width: (20 + (people.length.clamp(1, 4) - 1) * 12).toDouble(),
+          child: Stack(children: [
+            for (var i = 0; i < people.length && i < 4; i++)
+              Positioned(left: i * 12.0, child: Avatar(key: ValueKey('jam-${people[i]}'), email: people[i], name: app.lib.firstNameOf(people[i]), size: 20)),
+          ]),
+        ),
+        const SizedBox(width: 8),
+        Expanded(child: Text('Джем · ${people.length}', overflow: TextOverflow.ellipsis, style: TextStyle(color: C.accent, fontSize: 13))),
+        IconButton(
+          tooltip: 'Пригласить в джем',
+          visualDensity: VisualDensity.compact,
+          icon: Icon(Icons.person_add_alt_1_rounded, size: 18, color: C.accent),
+          onPressed: () => _invite(context),
+        ),
+        TextButton(onPressed: jam.leave, child: const Text('Выйти')),
+      ]),
+    );
+  }
+
+  Future<void> _invite(BuildContext context) async {
+    final app = Services.of(context);
+    final inJam = app.jam.participants.toSet();
+    final candidates = [for (final m in app.social.friends) if (!inJam.contains(m.email)) m];
+    if (candidates.isEmpty) {
+      app.lib.messages.add('Позвать некого: все из компании уже в джеме');
+      return;
+    }
+    final picked = <String>{};
+    final result = await showDialog<List<String>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          title: const Text('Позвать в джем'),
+          content: SizedBox(
+            width: 340,
+            child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                for (final m in candidates)
+                  CheckboxListTile(
+                    value: picked.contains(m.email),
+                    onChanged: (v) => setS(() => v == true ? picked.add(m.email) : picked.remove(m.email)),
+                    secondary: Avatar(email: m.email, name: m.name, size: 28),
+                    title: Text(app.lib.firstNameOf(m.email)),
+                    subtitle: m.live ? const Text('слушает сейчас') : null,
+                  ),
+              ]),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+            FilledButton(onPressed: picked.isEmpty ? null : () => Navigator.pop(ctx, picked.toList()), child: const Text('Позвать')),
+          ],
+        ),
+      ),
+    );
+    if (result != null && result.isNotEmpty) {
+      await app.jam.invite(result);
+      app.lib.messages.add('Приглашение в джем отправлено');
+    }
   }
 }
 

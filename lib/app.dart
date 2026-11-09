@@ -19,6 +19,7 @@ import 'core/discord.dart';
 import 'core/dl/service.dart';
 import 'core/dl/tools.dart';
 import 'core/drive.dart';
+import 'core/jam.dart';
 import 'core/library.dart';
 import 'core/lyric_sources.dart';
 import 'core/perf.dart';
@@ -56,6 +57,7 @@ class AppServices {
   final AudioCache cache;
   final LyricsService lyrics;
   final SocialController social;
+  final JamController jam;
   final DiscordPresence discord;
   final DownloadService downloads;
   final TrayController tray;
@@ -73,7 +75,7 @@ class AppServices {
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
 
-  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.discord, this.downloads, this.tray, this.keysBuiltIn);
+  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.jam, this.discord, this.downloads, this.tray, this.keysBuiltIn);
 
   static Future<AppServices> create() async {
     final store = await AppStore.open();
@@ -148,7 +150,12 @@ class AppServices {
         );
     player.addListener(showInDiscord);
     // Слушаем вместе с другом: переходы идут по его трекам, плавный переход мешал бы синхронизации
-    player.crossfadeBlocked = () => social.following != null;
+    final jam = JamController(lib, drive, player, social,
+        serverUrl: () => settings.viewOf('ntfy', '1') == '0' ? '' : settings.viewOf('ntfy.server', 'https://ntfy.sh'));
+    player.crossfadeBlocked = () => jam.active;
+    social.jamInfo = () => jam.active ? {'id': jam.jamId, 'm': jam.participants} : null;
+    social.onFreshNotice = jam.onFreshNotice;
+    jam.start();
     player.onUserAction = () {
       social.onUserAction();
       showInDiscord();
@@ -168,7 +175,7 @@ class AppServices {
       },
     );
     app = AppServices._(
-        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
+        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, jam, discord, downloads, tray, builtIn);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
@@ -281,6 +288,9 @@ class AppServices {
         await applyExeIcon(relaunch: false);
       } catch (_) {}
     }
+    try {
+      await jam.shutdown();
+    } catch (_) {}
     try {
       await player.flushSession();
       await wave.flush();

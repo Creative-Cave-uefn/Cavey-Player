@@ -1020,7 +1020,7 @@ class ListenStats extends StatelessWidget {
             InkWell(
               borderRadius: BorderRadius.circular(14),
               onTap: () => NavScope.of(context).go(Nav('artist', top.toLowerCase())),
-              child: tile('любимый исполнитель месяца', top, width: width),
+              child: tile('любимый исполнитель месяца', top, width: width == null ? null : width * 2 + 0),
             ),
         ]);
 
@@ -1037,7 +1037,7 @@ class ListenStats extends StatelessWidget {
                       child: Tooltip(
                         message: '${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}: ${formatListened(d)}',
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 3),
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
                           child: Container(
                             height: peak == 0 ? 3 : (3 + room * d.inMinutes / peak),
                             decoration: BoxDecoration(
@@ -1065,9 +1065,10 @@ class ListenStats extends StatelessWidget {
       LayoutBuilder(builder: (context, box) {
         // Широкое окно: четыре плашки в один ряд и график правее них на том же ряду.
         // Совсем узкое: плашки остаются рядом друг с другом, а график уходит под них
+        // Плитка «Любимый исполнитель» вдвое шире остальных, график сжимается под оставшееся место
         const tileW = 132.0;
-        const tilesW = tileW * 4 + 8 * 3;
-        if (box.maxWidth >= tilesW + 16 + 200) {
+        final tilesW = tileW * (top == null ? 3 : 5) + 8 * (top == null ? 2 : 3);
+        if (box.maxWidth >= tilesW + 16 + 160) {
           return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SizedBox(width: tilesW, child: tiles(width: tileW)),
             const SizedBox(width: 16),

@@ -754,7 +754,24 @@ class PlayerController extends ChangeNotifier {
     onTrackReady?.call(t, d);
   }
 
+  /// Джем-сессия: трек доиграл — решает джем, а не плеер. true — плеер сам ничего не переключает
+  bool Function()? jamOnEnded;
+
+  /// Джем задаёт очередь, текущий трек, паузу и позицию
+  Future<void> jamSet(List<String> ids, int idx, {required bool play, required Duration at}) async {
+    if (ids.isEmpty || idx < 0 || idx >= ids.length) return;
+    feeder = null;
+    sourcePlaylist = null;
+    queue = List.of(ids);
+    _origin = List.of(ids);
+    userAhead = 0;
+    _index = idx;
+    _queueChanged();
+    await _open(at: at > const Duration(milliseconds: 300) ? at : null, play: play);
+  }
+
   void _onCompleted() {
+    if (jamOnEnded?.call() ?? false) return;
     // Даём плееру закончить старый трек, иначе его пауза может догнать новый
     Future<void>.delayed(const Duration(milliseconds: 60), () {
       if (repeat == RepeatSetting.one) {
