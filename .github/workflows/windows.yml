@@ -345,6 +345,8 @@ jobs:
           $range = if ($LASTEXITCODE -eq 0 -and $prev) { "$prev..HEAD" } else { "HEAD~20..HEAD" }
           $subjects = @(git log --no-merges --format="%s" $range | Where-Object { $_ -and $_ -notmatch '^(Merge|Слияние)' } | Select-Object -Unique -First 40)
           $text = ($subjects | ForEach-Object { "• $_" }) -join "`n"
+          # Если в репозитории лежит готовый текст версии (docs/RELEASE_NOTES.txt), он главнее списка заголовков коммитов
+          if (Test-Path 'docs/RELEASE_NOTES.txt') { $text = (Get-Content 'docs/RELEASE_NOTES.txt' -Raw -Encoding utf8).Trim() }
           if (-not $text) { $text = "Cavey $env:APP_VERSION" }
           "RELEASE_NOTES<<EOF_NOTES`n$text`nEOF_NOTES" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
