@@ -39,6 +39,18 @@ class NtfyChannel {
   /// Сервер отказал по лимиту: до этого времени ничего не отправляем, всё идёт через Диск
   DateTime? _limitedUntil;
 
+  /// Можно ли сейчас отправлять: связь есть и сервер не ограничил нас по лимиту
+  bool get canSend {
+    final limited = _limitedUntil;
+    return online && (limited == null || !DateTime.now().isBefore(limited));
+  }
+
+  /// Сервер ограничил отправку (лимит сообщений в сутки у бесплатного ntfy)
+  bool get limited {
+    final l = _limitedUntil;
+    return l != null && DateTime.now().isBefore(l);
+  }
+
   void start() {
     _stopped = false;
     unawaited(_loop());

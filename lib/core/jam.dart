@@ -710,14 +710,11 @@ class JamController extends ChangeNotifier {
     final m = me;
     if (m != null) _seen[m] = DateTime.now();
     // Быстрый канал работает — Диск лишь страховка (раз в 10 с), иначе опрашиваем часто
-    final gap = fastChannel ? const Duration(seconds: 10) : const Duration(milliseconds: 1400);
+    final gap = (_ntfy?.canSend ?? false) ? const Duration(seconds: 10) : const Duration(milliseconds: 1200);
     if (DateTime.now().difference(_lastDrivePoll) >= gap) unawaited(_pollDrive());
-    // Признаки жизни: без них остальные через три минуты тишины считают, что я вышел (так пропадал организатор у вошедших)
+    // Признаки жизни идут через файл на Диске (раз в минуту): сообщения быстрого канала ограничены сервером в сутки,
+    // и частые «я здесь» выбирали лимит, после чего джем шёл через Диск с задержкой
     final now = DateTime.now();
-    if (m != null && now.difference(_lastHello) >= const Duration(seconds: 20)) {
-      _lastHello = now;
-      unawaited(_sendHello());
-    }
     // Организатор поменял плавный переход у себя — остальные узнают сразу, а не через двадцать секунд
     if (iAmHost && _lastXfSent != '$_myXf|$_mySmart') {
       _lastHello = now;
@@ -738,13 +735,39 @@ class JamController extends ChangeNotifier {
   }
 
   void _publish(JamSnapshot s, {bool driveToo = true}) {
-    unawaited(_ntfy?.send({'t': 'snap', 'from': s.by, 's': s.toJson()}));
+    final ch = _ntfy;
+    // Быстрый канал недоступен (нет связи, лимит сервера, слишком длинное сообщение): остальным нужен Диск, причём сразу
+    if (ch == null || !ch.canSend) {
+      if (driveToo) _scheduleDriveWrite(urgent: true);
+      return;
+    }
+    unawaited(ch.send({'t': 'snap', 'from': s.by, 's': s.toJson()}).then((ok) {
+      if (!ok && driveToo && active) _scheduleDriveWrite(urgent: true);
+    }));
     if (driveToo) _scheduleDriveWrite();
   }
 
-  void _scheduleDriveWrite() {
-    if (_driveWrite?.isActive ?? false) return;
-    _driveWrite = Timer(Duration(milliseconds: fastChannel ? 2500 : 500), () => unawaited(_writeDriveFile()));
+  void _scheduleDriveWrite({bool urgent = false}) {
+    // Срочная запись обгоняет отложенную: пока быстрый канал не подвёл, Диск лишь страховка
+    if (_driveWrite?.isActive ?? false) {
+      if (!urgent || _driveUrgent) return;
+      _driveWrite!.cancel();
+    }
+    _driveUrgent = urgent;
+    _driveWrite = Timer(Duration(milliseconds: urgent ? 120 : (fastChannel ? 2500 : 500)), () {
+      _driveUrgent = false;
+      unawaited(_writeDriveFile());
+    });
+  }
+
+  bool _driveUrgent = false;
+
+  /// Как сейчас доходят действия до остальных: быстрым каналом, через Диск или канал ограничен сервером
+  String get linkState {
+    final ch = _ntfy;
+    if (ch == null || !ch.online) return 'через Диск (медленнее)';
+    if (ch.limited) return 'через Диск: быстрый сервер ограничил число сообщений';
+    return 'быстрая';
   }
 
   String get _fileName => 'jam-$jamId-${me ?? ''}.json';
@@ -871,11 +894,17 @@ class JamController extends ChangeNotifier {
 
   Future<void> _applyToPlayer(JamSnapshot s) async {
     if (_applying) {
-      // Предыдущее применение ещё идёт: после него применим самое свежее состояние
-      _applyAgain = true;
-      return;
+      // Предыдущее применение ещё идёт: после него применим самое свежее состояние.
+      // Но если оно зависло (плеер не открыл трек), оно не должно навсегда лишать меня права что-то менять в джеме
+      final stuck = DateTime.now().difference(_applyStarted) > const Duration(seconds: 20);
+      if (!stuck) {
+        _applyAgain = true;
+        return;
+      }
+      AppLog.warn('Джем: применение состояния зависло, начинаю заново');
     }
     _applying = true;
+    _applyStarted = DateTime.now();
     try {
       do {
         _applyAgain = false;
@@ -918,7 +947,15 @@ class JamController extends ChangeNotifier {
         final target = snap.positionAt(serverNow);
         final (ids, idx) = jamWindow(player.queue, player.index);
         if (!snap.sameQueueAs(ids, idx)) {
-          await player.jamSet(snap.queue, snap.index, play: snap.playing, at: target);
+          if (player.current?.id == snap.trackId) {
+            // Тот же трек, поменялась только очередь (кто-то добавил или убрал трек): музыку не перезапускаем
+            player.jamSetQueueOnly(snap.queue, snap.index);
+            if (jamNeedsSeek(player.position.value, target)) await player.seek(target);
+            if (snap.playing && !player.playing) await player.play();
+            if (!snap.playing && player.playing) await player.pause();
+          } else {
+            await player.jamSet(snap.queue, snap.index, play: snap.playing, at: target).timeout(const Duration(seconds: 25));
+          }
         } else {
           if (jamNeedsSeek(player.position.value, target)) await player.seek(target);
           if (snap.playing && !player.playing) await player.play();
@@ -935,6 +972,7 @@ class JamController extends ChangeNotifier {
   }
 
   bool _applyAgain = false;
+  DateTime _applyStarted = DateTime.fromMillisecondsSinceEpoch(0);
 
   // ---------- что делает человек у себя ----------
 

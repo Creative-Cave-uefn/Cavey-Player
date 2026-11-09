@@ -108,24 +108,35 @@ void main() {
       expect(at(15), 1.0);
     });
 
-    test('хвост полосы: доезжает до края, потом растворяется', () {
+    test('хвост полосы: сразу начинает бледнеть, доезжает до края и растворяется', () {
       final t0 = DateTime(2026, 1, 1, 12);
       // Переход короткий (4 с), а до конца трека ещё 10 с: полоса всё равно доезжает, а не пропадает на полпути
       final info = CrossfadeInfo(0.9, t0, 4000, oldDurationMs: 100000);
       expect(info.reachMs, 10000);
-      expect(info.alpha(t0.add(const Duration(seconds: 5))), 1.0);
+      expect(info.alpha(t0), 1.0);
+      // Затухание идёт всё время пути, без скачка
+      expect(info.alpha(t0.add(const Duration(seconds: 5))), closeTo(1 - 0.65 * 0.5, 1e-9));
       expect(info.fraction(t0.add(const Duration(seconds: 10))), closeTo(1.0, 1e-9));
-      expect(info.alpha(t0.add(const Duration(milliseconds: 10350))), closeTo(0.5, 1e-9));
-      expect(info.alpha(t0.add(const Duration(seconds: 11))), 0.0);
+      expect(info.alpha(t0.add(const Duration(seconds: 10))), closeTo(CrossfadeInfo.alphaAtEdge, 1e-9));
+      expect(info.alpha(t0.add(const Duration(milliseconds: 10450))), closeTo(CrossfadeInfo.alphaAtEdge * 0.5, 1e-9));
+      expect(info.alpha(t0.add(const Duration(seconds: 12))), 0.0);
       expect(info.totalMs, 10000 + CrossfadeInfo.dissolveMs);
+      // Яркость нигде не растёт и не прыгает: соседние кадры отличаются мало
+      var prev = 1.0;
+      for (var ms = 0; ms <= 11000; ms += 16) {
+        final a = info.alpha(t0.add(Duration(milliseconds: ms)));
+        expect(a, lessThanOrEqualTo(prev + 1e-12));
+        expect(prev - a, lessThan(0.02));
+        prev = a;
+      }
     });
 
-    test('без плавного перехода полоса растворяется на месте', () {
+    test('без плавного перехода полоса плавно гаснет на месте', () {
       final t0 = DateTime(2026, 1, 1, 12);
       final info = CrossfadeInfo(0.4, t0, 0);
       expect(info.fraction(t0.add(const Duration(seconds: 1))), 0.4);
       expect(info.alpha(t0), 1.0);
-      expect(info.alpha(t0.add(const Duration(milliseconds: 350))), closeTo(0.5, 1e-9));
+      expect(info.alpha(t0.add(const Duration(milliseconds: 450))), closeTo(0.5, 1e-9));
       expect(info.alpha(t0.add(const Duration(seconds: 1))), 0.0);
     });
 

@@ -84,6 +84,7 @@ class _JamPanel extends StatelessWidget {
                       host == null ? '—' : (host == me ? 'вы' : app.lib.firstNameOf(host)),
                     ),
                     _Info('Участников', '${people.length}'),
+                    _Info('Связь', jam.linkState),
                     _Info(
                       'Плавный переход',
                       sec > 0 ? '$sec ${plural(sec, 'секунда', 'секунды', 'секунд')}' : 'выключен',

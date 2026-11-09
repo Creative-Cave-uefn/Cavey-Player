@@ -21,8 +21,12 @@ enum RepeatSetting { off, all, one }
 /// (при плавном переходе) и растворяется, пока у нового растёт своя. Нужен и без плавного перехода:
 /// при обычной смене трека полоса просто растворяется на месте
 class CrossfadeInfo {
-  /// Сколько растворяется полоса, когда доехала до края, мс
-  static const dissolveMs = 700;
+  /// Сколько растворяется остаток полосы, когда она доехала до края, мс
+  static const dissolveMs = 900;
+
+  /// Насколько полоса бледнеет, пока едет: к приезду на край остаётся эта доля яркости, дальше она растворяется.
+  /// Затухание идёт всё время, поэтому не видно «резкого» исчезновения у края
+  static const alphaAtEdge = 0.35;
 
   /// Дольше этого полоса до края не едет: если до конца трека далеко, ускоряется.
   /// С запасом больше обычного остатка при «умном» переходе, чтобы скорость оставалась прежней
@@ -58,11 +62,14 @@ class CrossfadeInfo {
     return (fromFraction + (1 - fromFraction) * k).clamp(0.0, 1.0).toDouble();
   }
 
-  /// Прозрачность полосы: полная, пока едет, потом растворяется
+  /// Прозрачность полосы: с самого начала плавно бледнеет, пока едет к краю, а у края растворяется до нуля.
+  /// Без движения (переключили трек вручную) полоса просто плавно гаснет на месте
   double alpha(DateTime now) {
-    final ms = now.difference(started).inMilliseconds - reachMs;
-    if (ms <= 0) return 1.0;
-    return (1 - ms / dissolveMs).clamp(0.0, 1.0).toDouble();
+    final t = now.difference(started).inMilliseconds;
+    final reach = reachMs;
+    final atEdge = reach > 0 ? alphaAtEdge : 1.0;
+    if (t < reach) return 1 - (1 - alphaAtEdge) * (t / reach);
+    return (atEdge * (1 - (t - reach) / dissolveMs)).clamp(0.0, 1.0).toDouble();
   }
 }
 
@@ -1060,6 +1067,19 @@ class PlayerController extends ChangeNotifier {
     _index = idx;
     _queueChanged();
     await _open(at: at > const Duration(milliseconds: 300) ? at : null, play: play);
+  }
+
+  /// Джем поменял только очередь, а текущий трек тот же: список обновляется, музыка играет дальше без перезапуска
+  void jamSetQueueOnly(List<String> ids, int idx) {
+    if (ids.isEmpty || idx < 0 || idx >= ids.length) return;
+    feeder = null;
+    sourcePlaylist = null;
+    queue = List.of(ids);
+    _origin = List.of(ids);
+    userAhead = 0;
+    _index = idx;
+    _dropPrepared();
+    _queueChanged();
   }
 
   void _onCompleted() {

@@ -1231,7 +1231,8 @@ class _SideRow extends StatelessWidget {
                 child: Text(entry.label,
                     overflow: TextOverflow.ellipsis, style: TextStyle(color: color, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
               ),
-              if (entry.owner != null) FriendDot(entry.owner!, size: 7),
+              // Точка присутствия — только у чужих плейлистов: у собственных она ничего не говорит
+              if (entry.owner != null && entry.owner!.isNotEmpty && entry.owner != Services.of(context).lib.me) FriendDot(entry.owner!, size: 7),
               const SizedBox(width: 4),
             ],
           ],
