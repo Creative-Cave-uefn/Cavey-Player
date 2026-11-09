@@ -476,8 +476,12 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         }
         final tg = j['artistTags'];
         if (tg is Map) {
+          // До версии 2 любой сбой Last.fm (таймаут, 5xx) записывался как «тегов нет». Отличить такие записи
+          // от настоящих нельзя, поэтому один раз выбрасываем все пустые — спросим заново
+          final fixed = j['tagsV'] == 2;
           tg.forEach((k, v) {
-            if (v is Map) w._tags['$k'] = v.map((t, x) => MapEntry('$t', (x as num?)?.toDouble() ?? 0));
+            if (v is! Map || (!fixed && v.isEmpty)) return;
+            w._tags['$k'] = v.map((t, x) => MapEntry('$t', (x as num?)?.toDouble() ?? 0));
           });
         }
         w._day = '${j['day'] ?? ''}';
@@ -644,9 +648,12 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     final m = moodById(mood);
     if (m == null) return null;
     final byArtist = <String, double>{};
+    // Теги ещё не загрузились (или Last.fm их не знает) — ни поощряем, ни наказываем. Раньше здесь был 0,
+    // и пока теги приходили, волна крутила только тех нескольких исполнителей, у кого они уже были
+    const unknown = 0.3;
     double fit(String key) => byArtist.putIfAbsent(key, () {
           final tags = _tags[key];
-          if (tags == null) return 0;
+          if (tags == null || tags.isEmpty) return unknown;
           var v = 0.0;
           for (final t in m.tags) {
             v += tags[t] ?? 0;
@@ -691,31 +698,57 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       // Д5: теги ближайших песен очереди (не больше 12 за раз)
       var asked = 0;
       for (final t in [if (player.current != null) player.current!, ...player.upcoming.take(11)]) {
-        if (mood == null || asked >= 12) break;
+        if (mood == null || asked >= 12 || lastfm.paused || !lastfm.available) break;
         if (!_trackTagsAsked.add(t.id)) continue;
         asked++;
         final tags = await lastfm.trackTags(t.artists.first, t.title);
+        if (tags == null) {
+          _trackTagsAsked.remove(t.id); // Last.fm не ответил — спросим в следующий раз
+          continue;
+        }
         if (tags.isNotEmpty) _trackTags[t.id] = {for (final x in tags) x.artist: x.match};
       }
       var n = 0;
       for (final a in todo) {
-        if (mood == null) break;
+        if (mood == null || !lastfm.available) break;
         final tags = await lastfm.artistTags(a.name);
+        if (tags == null) {
+          // Last.fm не ответил. «Тегов нет» не записываем: это отравило бы кеш насовсем.
+          // Если он ушёл на паузу — выходим и вернёмся, когда пауза кончится
+          if (lastfm.paused) break;
+          continue;
+        }
         _tags[a.key] = {for (final t in tags) t.artist: t.match};
         tagsKnown++;
-        if (++n % 10 == 0) {
-          notifyListeners();
+        if (++n % 3 == 0) notifyListeners(); // счётчик на странице волны двигается, а не «висит»
+        if (n % 10 == 0) {
           _save();
           if (active) player.refillFeed(keep: (id) => trials.containsKey(id));
         }
       }
-    } catch (_) {
+    } catch (e) {
+      AppLog.warn('Моя волна: теги настроения', e);
     } finally {
       _tagging = false;
       _save();
       notifyListeners();
+      _retryTagsLater();
     }
   }
+
+  Timer? _tagRetry;
+
+  /// Last.fm ушёл на паузу посреди загрузки тегов — продолжаем, когда пауза закончится
+  void _retryTagsLater() {
+    _tagRetry?.cancel();
+    if (mood == null || !lastfm.available || !lastfm.paused) return;
+    _tagRetry = Timer(lastfm.pauseLeft + const Duration(seconds: 2), () {
+      if (mood != null) unawaited(_loadTags());
+    });
+  }
+
+  /// Что не так с Last.fm, если не так (для страницы волны); пусто — всё в порядке
+  String get lastfmStatus => lastfm.status;
 
   // ---------- почему этот трек ----------
 
@@ -1165,20 +1198,41 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     final every = _every;
     // Д15: держим 1–2 новинки про запас и качаем до двух треков параллельно
     if (!discover || !active || every == null || _pending >= 2) return;
+    // После пустого поиска или серии неудачных загрузок не долбим Last.fm и загрузчик на каждом треке
+    if (DateTime.now().isBefore(_discoverPausedUntil)) return;
     if (!force && _stockIds.length + _pending >= _stockTarget) return;
     if (downloadedToday >= dailyLimit || _targetSource == null || !lib.hasHub) return;
     unawaited(_discoverOne());
   }
 
+  /// До какого времени новинки не ищем (после пустого поиска или нескольких неудач подряд)
+  DateTime _discoverPausedUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Сколько загрузок новинок подряд не принесли трек
+  int _failStreak = 0;
+
+  /// Дольше этого задание загрузчика не ждём: слот освобождается, даже если оно «зависло»
+  static const _jobPatience = Duration(minutes: 10);
+
   Future<void> _discoverOne() async {
     _pending++;
+    // Слот возвращаем ровно один раз, что бы ни случилось. Раньше состояние «отменено» его не возвращало,
+    // и после двух отменённых заданий новинки не качались до перезапуска плеера
+    var released = false;
+    void release() {
+      if (released) return;
+      released = true;
+      _pending--;
+    }
+
     _status('Ищу новое для волны…');
     try {
-      final pick = await _findFresh();
+      final pick = await _findFresh().timeout(const Duration(seconds: 60), onTimeout: () => null);
       if (pick == null) {
-        AppLog.info('Моя волна: нового для скачивания не нашлось');
+        AppLog.info('Моя волна: нового для скачивания не нашлось${lastfm.status.isEmpty ? '' : ' (${lastfm.status})'}');
+        _discoverPausedUntil = DateTime.now().add(const Duration(minutes: 2));
         _status('');
-        _pending--;
+        release();
         return;
       }
       final src = _targetSource!;
@@ -1190,25 +1244,47 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         _onDownloaded(t, pick);
       });
       if (job == null) {
-        _pending--;
+        _status('');
+        release();
         return;
       }
       // Ждём конца задания, чтобы не ставить в очередь загрузчика десяток треков разом
-      void check() {
-        if (job.state == JobState.done || job.state == JobState.failed) {
-          downloads.removeListener(check);
-          _pending--;
-          if (!got) {
-            _rejected.add(pick.key); // не скачался или уже был — в следующий раз ищем другой
+      Timer? patience;
+      void finish() {
+        downloads.removeListener(check);
+        patience?.cancel();
+        release();
+        if (got) {
+          _failStreak = 0;
+        } else {
+          _rejected.add(pick.key); // не скачался или уже был — в следующий раз ищем другой
+          final why = job.log.isEmpty ? '' : ' — ${job.log.last}';
+          AppLog.warn('Моя волна: не удалось скачать «${pick.title}» (${pick.artist}), задание: ${job.state.name}$why');
+          if (++_failStreak >= 3) {
+            // Загрузчик, похоже, не работает: не крутим бесконечный цикл поиск → неудача
+            _failStreak = 0;
+            _discoverPausedUntil = DateTime.now().add(const Duration(minutes: 10));
+            _status('Новое не скачивается: загрузчик не справляется (подробности в журнале). Повторю через 10 минут');
+          } else {
             _status('');
           }
-          _save();
         }
+        _save();
+      }
+
+      void check() {
+        if (job.state == JobState.done || job.state == JobState.failed || job.state == JobState.cancelled) finish();
       }
 
       downloads.addListener(check);
+      patience = Timer(_jobPatience, () {
+        if (released) return;
+        AppLog.warn('Моя волна: загрузка «${pick.title}» не закончилась за ${_jobPatience.inMinutes} минут, перестаю ждать');
+        finish();
+      });
+      check(); // вдруг задание уже закончилось
     } catch (e) {
-      _pending--;
+      release();
       _status('');
       AppLog.warn('Моя волна: новинка', e);
     }
@@ -1292,18 +1368,37 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     });
     if (cands.isEmpty) return null;
     cands.sort((a, b) => b.$2.compareTo(a.$2));
-    final pick = _weighted(cands.take(8).toList());
-    // Ссылку берём из Deezer: так загрузчик возьмёт точные теги и обложку
-    try {
-      final r = await web.search('${pick.artist} ${pick.title}');
+    final top = cands.take(8).toList();
+    // До трёх попыток: раньше первый же интро/скит/часовой микс обрывал поиск целиком,
+    // а тот же кандидат мог выпасть снова на следующем заходе
+    for (var attempt = 0; attempt < 3 && top.isNotEmpty; attempt++) {
+      final pick = _weighted(top);
+      top.removeWhere((c) => identical(c.$1, pick));
       final want = LibraryController.dupKey(pick.artist, pick.title);
-      for (final t in r.tracks) {
-        if (LibraryController.dupKey(t.artist, t.title) != want) continue;
-        if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) return null; // интро, скиты, миксы
-        if (t.link.isNotEmpty) return _Fresh(pick.artist, pick.title, t.link);
+      String? link;
+      var odd = false;
+      // Ссылку берём из Deezer: так загрузчик возьмёт точные теги и обложку
+      try {
+        final r = await web.search('${pick.artist} ${pick.title}');
+        for (final t in r.tracks) {
+          if (LibraryController.dupKey(t.artist, t.title) != want) continue;
+          if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) {
+            odd = true; // интро, скиты, миксы
+            break;
+          }
+          if (t.link.isNotEmpty) {
+            link = t.link;
+            break;
+          }
+        }
+      } catch (_) {}
+      if (odd) {
+        _rejected.add(want);
+        continue;
       }
-    } catch (_) {}
-    return _Fresh(pick.artist, pick.title, null);
+      return _Fresh(pick.artist, pick.title, link);
+    }
+    return null;
   }
 
   static T _weighted<T>(List<(T, double)> list) {
@@ -1500,6 +1595,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         'mood': mood,
         'dailyLimit': dailyLimit,
         'custom': custom,
+        'tagsV': 2,
         'artistTags': _tags.map((k, v) => MapEntry(k, v.map((t, x) => MapEntry(t, double.parse(x.toStringAsFixed(2)))))),
         'trials': [for (final t in trials.values) t.toJson()],
         'rejected': _rejected.toList(),
@@ -1517,6 +1613,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     social.removeListener(_markInputsDirty);
     _sweepTimer?.cancel();
     _saveTimer?.cancel();
+    _tagRetry?.cancel();
     super.dispose();
   }
 }

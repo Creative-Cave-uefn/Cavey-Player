@@ -861,6 +861,10 @@ class _Tune extends StatelessWidget {
         const SizedBox(height: 8),
         Text('Узнаю настроение исполнителей в Last.fm: ${wave.tagsKnown} из ${wave.tagsTotal}',
             style: const TextStyle(color: C.faint, fontSize: 12)),
+        if (wave.lastfmStatus.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(wave.lastfmStatus, style: const TextStyle(color: C.faint, fontSize: 12)),
+        ],
       ],
       const SizedBox(height: 22),
       Row(children: [
