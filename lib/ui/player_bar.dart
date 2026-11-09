@@ -382,7 +382,9 @@ class _WashState extends State<_Wash> with TickerProviderStateMixin {
           double fadeX = 0, fadeAlpha = 0;
           if (info != null) {
             final now = DateTime.now();
-            fadeX = xOf(info.fraction(now));
+            // Без особого случая «1 → край окна»: он давал прыжок на ширину скругления; полоса идёт по тому же пути, что слайдер
+            final tf = info.fraction(now);
+            fadeX = tf <= 0 ? 0.0 : _capInset + tf * (w - 2 * _capInset);
             fadeAlpha = info.alpha(now);
           }
           return RepaintBoundary(

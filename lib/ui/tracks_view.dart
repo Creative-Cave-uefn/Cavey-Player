@@ -47,7 +47,8 @@ class AllTracksPage extends StatelessWidget {
         final albums = lib.albums.length;
         return TracksPage(
           title: title,
-          subtitle: tracks.isEmpty
+          // В «Медиатеке» итог уже написан под заголовком раздела
+          subtitle: tracks.isEmpty || LibraryFrame.on(context)
               ? null
               : '${countTracks(tracks.length)} в $albums ${plural(albums, 'альбоме', 'альбомах', 'альбомах')}',
           tracks: tracks,

@@ -21,16 +21,8 @@ enum RepeatSetting { off, all, one }
 /// (при плавном переходе) и растворяется, пока у нового растёт своя. Нужен и без плавного перехода:
 /// при обычной смене трека полоса просто растворяется на месте
 class CrossfadeInfo {
-  /// Сколько растворяется остаток полосы, когда она доехала до края, мс
-  static const dissolveMs = 900;
-
-  /// Насколько полоса бледнеет, пока едет: к приезду на край остаётся эта доля яркости, дальше она растворяется.
-  /// Затухание идёт всё время, поэтому не видно «резкого» исчезновения у края
-  static const alphaAtEdge = 0.35;
-
-  /// Дольше этого полоса до края не едет: если до конца трека далеко, ускоряется.
-  /// С запасом больше обычного остатка при «умном» переходе, чтобы скорость оставалась прежней
-  static const maxReachMs = 20000;
+  /// Быстрее полоса не гаснет: даже без движения она растворяется не резче, чем за это время, мс
+  static const minFadeMs = 900;
 
   final double fromFraction;
   final DateTime started;
@@ -45,31 +37,40 @@ class CrossfadeInfo {
   /// Ход перехода 0…1
   double progress(DateTime now) => lengthMs <= 0 ? 1.0 : (now.difference(started).inMilliseconds / lengthMs).clamp(0.0, 1.0);
 
-  /// За сколько полоса доезжает до края
+  /// За сколько полоса дошла бы до края, если бы шла с прежней скоростью (с ограничением самим переходом не связано)
   int get reachMs {
-    if (oldDurationMs > 0) return ((1 - fromFraction) * oldDurationMs).round().clamp(0, maxReachMs).toInt();
+    if (oldDurationMs > 0) return ((1 - fromFraction) * oldDurationMs).round().clamp(0, 1 << 30).toInt();
     return lengthMs;
   }
 
-  /// Сколько всего живёт хвост: дорога до края и растворение
-  int get totalMs => reachMs + dissolveMs;
-
-  /// Где полоса уходящего трека: идёт дальше с прежней скоростью до самого края (без разгона и остановки)
-  double fraction(DateTime now) {
+  /// Сколько растворяется полоса: время перехода, но не дольше, чем ей оставалось бы идти до края.
+  /// Полностью растворяется ещё в пути, поэтому у края ей нечего «допрыгивать»
+  int get fadeMs {
+    final limit = lengthMs > 0 ? lengthMs : minFadeMs;
     final reach = reachMs;
-    if (reach <= 0) return fromFraction.clamp(0.0, 1.0).toDouble();
-    final k = (now.difference(started).inMilliseconds / reach).clamp(0.0, 1.0);
-    return (fromFraction + (1 - fromFraction) * k).clamp(0.0, 1.0).toDouble();
+    final t = reach > 0 && reach < limit ? reach : limit;
+    return t < minFadeMs ? minFadeMs : t;
   }
 
-  /// Прозрачность полосы: с самого начала плавно бледнеет, пока едет к краю, а у края растворяется до нуля.
-  /// Без движения (переключили трек вручную) полоса просто плавно гаснет на месте
+  /// Сколько всего живёт хвост
+  int get totalMs => fadeMs;
+
+  /// Скорость полосы, долей ширины в миллисекунду: та же, с какой слайдер шёл весь трек
+  double get _speed {
+    if (oldDurationMs > 0) return 1 / oldDurationMs;
+    return lengthMs > 0 ? (1 - fromFraction) / lengthMs : 0.0;
+  }
+
+  /// Где полоса уходящего трека: идёт дальше с прежней скоростью, без разгона, остановки и прыжка к краю
+  double fraction(DateTime now) {
+    final t = now.difference(started).inMilliseconds;
+    return (fromFraction + _speed * t).clamp(0.0, 1.0).toDouble();
+  }
+
+  /// Прозрачность полосы: ровно гаснет от полной до нуля за [fadeMs]
   double alpha(DateTime now) {
     final t = now.difference(started).inMilliseconds;
-    final reach = reachMs;
-    final atEdge = reach > 0 ? alphaAtEdge : 1.0;
-    if (t < reach) return 1 - (1 - alphaAtEdge) * (t / reach);
-    return (atEdge * (1 - (t - reach) / dissolveMs)).clamp(0.0, 1.0).toDouble();
+    return (1 - t / fadeMs).clamp(0.0, 1.0).toDouble();
   }
 }
 

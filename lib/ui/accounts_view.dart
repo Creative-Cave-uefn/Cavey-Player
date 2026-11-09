@@ -353,11 +353,7 @@ class _AppWorkSectionState extends State<_AppWorkSection> {
       if (Platform.isWindows) ...[
         Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
           const Expanded(
-            child: HintTitle(
-              'Автозапуск',
-              'Cavey запускается сам, когда вы входите в Windows. Отключить можно и в «Диспетчере задач», на вкладке «Автозагрузка». '
-              'Режим «в трее»: окно не показывается, Cavey ждёт значком у часов (открыть — нажатием на значок); если значок не запустился, окно останется на экране.',
-            ),
+            child: HintTitle('Автозапуск', null),
           ),
           const SizedBox(width: 16),
           GlassSelect<String>(
@@ -440,14 +436,14 @@ class _NotifySectionState extends State<_NotifySection> {
           padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
           child: Column(children: [
             Row(children: [const Expanded(child: SizedBox.shrink()), head('Звук'), head('Уведомление')]),
-            for (final (i, (group, label, hint)) in rows.indexed) ...[
+            for (final (i, (group, label, _)) in rows.indexed) ...[
               if (i > 0) const Divider(height: 1, color: C.line),
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 4),
                 child: Row(children: [
                   Expanded(
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      HintTitle(label, hint, size: 15),
+                      HintTitle(label, null, size: 15),
                     ]),
                   ),
                   // Звук ещё и общим выключателем «Звук уведомления» ниже
@@ -476,7 +472,6 @@ class _NotifySectionState extends State<_NotifySection> {
         contentPadding: EdgeInsets.zero,
         value: on,
         title: 'Показывать уведомления',
-        hint: 'Друзья добавили ваш трек в любимое или плейлист, поделились треком, зовут в джем. Всё равно остаётся в колокольчике на вкладке «Компания».',
         onChanged: (v) async {
           setState(() => st.view['ntf.on'] = v ? '1' : '0');
           await _save();
@@ -486,7 +481,6 @@ class _NotifySectionState extends State<_NotifySection> {
         contentPadding: EdgeInsets.zero,
         value: st.notifySystem,
         title: 'Уведомления Windows',
-        hint: 'Когда окно свёрнуто, спрятано в трей или вы в другой программе, уведомление приходит и в Windows, чтобы заметить его вне плеера.',
         onChanged: on
             ? (v) async {
                 setState(() => st.view['ntf.sys'] = v ? '1' : '0');
@@ -495,7 +489,7 @@ class _NotifySectionState extends State<_NotifySection> {
             : null,
       ),
       const SizedBox(height: 18),
-      HintHeading('Какие уведомления', 'Для каждого вида отдельно: играть ли звук и показывать ли уведомление (в плеере и в Windows). В колокольчике на вкладке «Компания» они остаются всегда.'),
+      const HintHeading('Какие уведомления', null),
       const SizedBox(height: 12),
       _kindsTable(st, on),
       const SizedBox(height: 18),
@@ -505,7 +499,6 @@ class _NotifySectionState extends State<_NotifySection> {
         contentPadding: EdgeInsets.zero,
         value: st.notifySound,
         title: 'Звук уведомления',
-        hint: 'Короткий мягкий сигнал при каждом новом уведомлении.',
         onChanged: on
             ? (v) async {
                 setState(() => st.view['ntf.sound'] = v ? '1' : '0');
@@ -1037,8 +1030,7 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
     final locked = app.player.jamXfSec != null;
     final sec = locked ? app.player.crossfadeSecNow : app.settings.crossfadeSec;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      HintHeading('Плавный переход', 'Конец трека затихает, а следующий в это время нарастает. Не работает, если вы сами переключили трек, '
-        'перемотали в конец, а также на коротких треках. В джем-сессии переход задаёт организатор: включён у него — включён у всех, выключен — выключен у всех.'),
+      const HintHeading('Плавный переход', null),
       if (locked)
         Padding(
           padding: const EdgeInsets.only(top: 8),
@@ -1069,6 +1061,21 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           child: Text(sec == 0 ? 'Выключено' : '$sec с', textAlign: TextAlign.right, style: const TextStyle(color: C.muted)),
         ),
       ]),
+      const SizedBox(height: 4),
+      HintSwitch(
+        contentPadding: EdgeInsets.zero,
+        value: app.player.smartMix,
+        onChanged: sec == 0 || locked
+            ? null
+            : (v) {
+                setState(() => app.settings.view['mix.smart'] = v ? '1' : '0');
+                app.lib.saveSettings();
+              },
+        title: 'Умный переход',
+        hint: 'Как Automix в Spotify: переход начинается там, где песня на самом деле затихает, тишина в начале следующей '
+          'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
+          'Ползунок выше задаёт самый длинный переход. Звук трека разбирается один раз в фоне; пока не готово — обычный переход.',
+      ),
       const SizedBox(height: 8),
       HintSwitch(
         contentPadding: EdgeInsets.zero,
@@ -1077,10 +1084,7 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           await app.player.setNormalize(v);
           if (mounted) setState(() {});
         },
-        title: 'Ровная громкость',
-        hint: 'Тихие треки подтягиваются, громкие приглушаются, чтобы громкость не прыгала от песни к песне. '
-          'Звук трека разбирается один раз в фоне (трек для этого скачивается в кэш); пока не готово, трек играет как есть, '
-          'а потом громкость плавно подстраивается. Если ползунок громкости уже почти на максимуме, поднять тихий трек можно лишь до предела.',
+        title: 'Выравнивание громкости',
       ),
       if (app.player.normalize)
         Padding(
@@ -1096,20 +1100,6 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
             ),
           ),
         ),
-      HintSwitch(
-        contentPadding: EdgeInsets.zero,
-        value: app.player.smartMix,
-        onChanged: sec == 0 || locked
-            ? null
-            : (v) {
-                setState(() => app.settings.view['mix.smart'] = v ? '1' : '0');
-                app.lib.saveSettings();
-              },
-        title: 'Умный переход',
-        hint: 'Как Automix в Spotify: переход начинается там, где песня на самом деле затихает, тишина в начале следующей '
-          'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
-          'Ползунок выше задаёт самый длинный переход. Звук трека разбирается один раз в фоне; пока не готово — обычный переход.',
-      ),
     ]);
   }
 }
@@ -1183,8 +1173,6 @@ class _AccentSectionState extends State<_AccentSection> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
         Flexible(child: Text('Акцентный цвет', style: display(20))),
-        const SizedBox(width: 10),
-        const HelpMark('Цвет кнопок, переключателей, ползунков и выделений.'),
         const Spacer(),
         if (current != C.defaultAccent.value) TextButton(onPressed: () => _pick(null), child: const Text('Как было')),
       ]),
@@ -1384,7 +1372,7 @@ class _SeekEdgeSectionState extends State<_SeekEdgeSection> {
     }
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      HintHeading('Край прослушанного', 'Граница светлой части нижней панели, которая идёт слева направо за песней.'),
+      const HintHeading('Край прослушанного', null),
       const SizedBox(height: 14),
       Wrap(spacing: 14, runSpacing: 14, children: [
         option('straight', 'Прямая', false),
@@ -1452,8 +1440,6 @@ class _LookSectionState extends State<_LookSection> {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
         Flexible(child: Text('Фон', style: display(20))),
-        const SizedBox(width: 10),
-        const HelpMark('Цвета фона из обложки трека или фото профиля: сделайте их ярче или контрастнее.'),
         const Spacer(),
         if (bright != 1 || contrast != 1)
           TextButton(
@@ -1505,7 +1491,6 @@ class _TraySwitchesState extends State<_TraySwitches> {
         contentPadding: EdgeInsets.zero,
         value: app.settings.trayOnClose,
         title: 'Сворачивать в трей при закрытии окна',
-        hint: 'Музыка играет дальше, а Cavey остаётся значком у часов. Закрыть совсем можно пунктом «Выйти» в меню значка.',
         onChanged: (v) async {
           setState(() {
             app.settings

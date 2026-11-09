@@ -108,26 +108,36 @@ void main() {
       expect(at(15), 1.0);
     });
 
-    test('хвост полосы: сразу начинает бледнеть, доезжает до края и растворяется', () {
+    test('хвост полосы: ровно гаснет за время перехода, пока идёт с прежней скоростью', () {
       final t0 = DateTime(2026, 1, 1, 12);
-      // Переход короткий (4 с), а до конца трека ещё 10 с: полоса всё равно доезжает, а не пропадает на полпути
+      // Переход 4 с, до конца трека ещё 10 с: полоса гаснет за 4 с и не доезжает до края, а не прыгает к нему
       final info = CrossfadeInfo(0.9, t0, 4000, oldDurationMs: 100000);
-      expect(info.reachMs, 10000);
+      expect(info.fadeMs, 4000);
+      expect(info.totalMs, 4000);
       expect(info.alpha(t0), 1.0);
-      // Затухание идёт всё время пути, без скачка
-      expect(info.alpha(t0.add(const Duration(seconds: 5))), closeTo(1 - 0.65 * 0.5, 1e-9));
-      expect(info.fraction(t0.add(const Duration(seconds: 10))), closeTo(1.0, 1e-9));
-      expect(info.alpha(t0.add(const Duration(seconds: 10))), closeTo(CrossfadeInfo.alphaAtEdge, 1e-9));
-      expect(info.alpha(t0.add(const Duration(milliseconds: 10450))), closeTo(CrossfadeInfo.alphaAtEdge * 0.5, 1e-9));
-      expect(info.alpha(t0.add(const Duration(seconds: 12))), 0.0);
-      expect(info.totalMs, 10000 + CrossfadeInfo.dissolveMs);
-      // Яркость нигде не растёт и не прыгает: соседние кадры отличаются мало
-      var prev = 1.0;
-      for (var ms = 0; ms <= 11000; ms += 16) {
-        final a = info.alpha(t0.add(Duration(milliseconds: ms)));
-        expect(a, lessThanOrEqualTo(prev + 1e-12));
-        expect(prev - a, lessThan(0.02));
-        prev = a;
+      expect(info.alpha(t0.add(const Duration(seconds: 2))), closeTo(0.5, 1e-9));
+      expect(info.alpha(t0.add(const Duration(seconds: 4))), 0.0);
+      // За это время она прошла ровно столько, сколько прошёл бы слайдер
+      expect(info.fraction(t0.add(const Duration(seconds: 4))), closeTo(0.94, 1e-9));
+    });
+
+    test('обычный переход: до края остаётся ровно время перехода, полоса гаснет к моменту прихода', () {
+      final t0 = DateTime(2026, 1, 1, 12);
+      final info = CrossfadeInfo(0.97, t0, 3000, oldDurationMs: 100000);
+      expect(info.reachMs, 3000);
+      expect(info.fadeMs, 3000);
+      expect(info.fraction(t0.add(const Duration(seconds: 3))), closeTo(1.0, 1e-9));
+      expect(info.alpha(t0.add(const Duration(seconds: 3))), 0.0);
+    });
+
+    test('полоса не ускоряется и не прыгает: шаг по кадрам везде одинаковый', () {
+      final t0 = DateTime(2026, 1, 1, 12);
+      final info = CrossfadeInfo(0.95, t0, 5000, oldDurationMs: 200000);
+      var prev = info.fraction(t0);
+      for (var ms = 16; ms <= info.totalMs; ms += 16) {
+        final f = info.fraction(t0.add(Duration(milliseconds: ms)));
+        expect(f - prev, closeTo(16 / 200000, 1e-9));
+        prev = f;
       }
     });
 
@@ -138,13 +148,6 @@ void main() {
       expect(info.alpha(t0), 1.0);
       expect(info.alpha(t0.add(const Duration(milliseconds: 450))), closeTo(0.5, 1e-9));
       expect(info.alpha(t0.add(const Duration(seconds: 1))), 0.0);
-    });
-
-    test('далёкий конец: полоса ускоряется и доезжает не дольше чем за 20 с', () {
-      final t0 = DateTime(2026, 1, 1, 12);
-      final info = CrossfadeInfo(0.2, t0, 5000, oldDurationMs: 300000);
-      expect(info.reachMs, CrossfadeInfo.maxReachMs);
-      expect(info.fraction(t0.add(const Duration(seconds: 20))), closeTo(1.0, 1e-9));
     });
 
     test('без длины трека полоса идёт линейно за время перехода', () {

@@ -1,7 +1,9 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
 import '../app.dart';
@@ -93,8 +95,8 @@ class _HeaderCoverState extends State<HeaderCover> {
   }
 }
 
-/// Обложка на весь экран: колесо — масштаб к точке под курсором, зажатая левая кнопка — двигать.
-/// Закрывается по Esc, клику по фону или крестиком
+/// Обложка на весь экран: колесо или ползунок под ней — масштаб, зажатая левая кнопка — двигать.
+/// Пока картинка не приближена, она слегка наклоняется в сторону курсора. Закрывается по Esc или клику по пустому месту
 Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId}) {
   final covers = Services.of(context).covers;
   final Future<Uint8List?> bytes = (fileId != null
@@ -108,7 +110,7 @@ Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId
     barrierDismissible: true,
     barrierLabel: 'Закрыть',
     barrierColor: Colors.black.withValues(alpha: 0.86),
-    transitionDuration: const Duration(milliseconds: 160),
+    transitionDuration: const Duration(milliseconds: 110),
     pageBuilder: (ctx, _, __) => _CoverViewer(bytes: bytes, fallback: _fallbackCover(context, track, fileId)),
     transitionBuilder: (ctx, a, _, child) => FadeTransition(opacity: a, child: child),
   );
@@ -129,24 +131,81 @@ class _CoverViewer extends StatefulWidget {
   State<_CoverViewer> createState() => _CoverViewerState();
 }
 
-class _CoverViewerState extends State<_CoverViewer> {
+class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderStateMixin {
+  static const _maxScale = 12.0;
+
+  /// Наибольший наклон, градусы: «лёгкая» панорама, а не переворот картинки
+  static const _maxTiltDeg = 7.0;
+
   double _scale = 1;
   Offset _pan = Offset.zero;
 
+  /// Куда смотрит курсор: от -1 до 1 по каждой оси относительно центра окна — и как далеко наклон дошёл сейчас
+  Offset _tiltTarget = Offset.zero;
+  Offset _tilt = Offset.zero;
+  late final Ticker _ticker = createTicker(_onTick);
+
+  DateTime _lastTap = DateTime.fromMillisecondsSinceEpoch(0);
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    super.dispose();
+  }
+
+  void _onTick(Duration _) {
+    // Приближенная картинка не наклоняется: наклон плавно возвращается в ноль
+    final target = _scale > 1.001 ? Offset.zero : _tiltTarget;
+    final next = _tilt + (target - _tilt) * 0.16;
+    final done = (next - target).distance < 0.002;
+    setState(() => _tilt = done ? target : next);
+    if (done) _ticker.stop();
+  }
+
+  void _aim(Offset t) {
+    _tiltTarget = t;
+    if (!_ticker.isActive) _ticker.start();
+  }
+
   /// Колесо: масштаб относительно точки под курсором, чтобы она оставалась на месте
   void _zoom(Offset fromCenter, double factor) {
-    final s = (_scale * factor).clamp(1.0, 12.0).toDouble();
+    final s = (_scale * factor).clamp(1.0, _maxScale).toDouble();
     if (s == _scale) return;
     setState(() {
       _pan = s <= 1.0001 ? Offset.zero : fromCenter - (fromCenter - _pan) * (s / _scale);
       _scale = s;
     });
+    if (!_ticker.isActive) _ticker.start();
   }
 
-  void _reset() => setState(() {
-        _scale = 1;
-        _pan = Offset.zero;
-      });
+  void _reset() {
+    setState(() {
+      _scale = 1;
+      _pan = Offset.zero;
+    });
+    if (!_ticker.isActive) _ticker.start();
+  }
+
+  Widget _controls() {
+    // Ползунок логарифмический: каждый шаг даёт одинаковое «во сколько раз» ближе
+    final t = math.log(_scale) / math.log(_maxScale);
+    return Column(mainAxisSize: MainAxisSize.min, children: [
+      Row(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.search_rounded, size: 20, color: Colors.white70),
+        SizedBox(
+          width: 260,
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(trackHeight: 3, overlayShape: const RoundSliderOverlayShape(overlayRadius: 14)),
+            child: Slider(
+              value: t.clamp(0.0, 1.0).toDouble(),
+              onChanged: (v) => _zoom(Offset.zero, math.pow(_maxScale, v).toDouble() / _scale),
+            ),
+          ),
+        ),
+      ]),
+      const Text('Щелкните по пустому месту на экране для выхода', style: TextStyle(color: Colors.white38, fontSize: 12.5)),
+    ]);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -163,7 +222,7 @@ class _CoverViewerState extends State<_CoverViewer> {
                 builder: (context, snap) {
                   final b = snap.data;
                   return LayoutBuilder(builder: (context, box) {
-                    final side = (box.biggest.shortestSide - 170).clamp(120.0, 4000.0).toDouble();
+                    final side = (box.biggest.shortestSide - 190).clamp(120.0, 4000.0).toDouble();
                     final center = box.biggest.center(Offset.zero);
                     final Widget picture;
                     if (b != null) {
@@ -177,6 +236,8 @@ class _CoverViewerState extends State<_CoverViewer> {
                       picture = widget.fallback ??
                           const Center(child: Text('Картинку не получилось загрузить', style: TextStyle(color: Colors.white70)));
                     }
+                    final ax = _tilt.dx * _maxTiltDeg * math.pi / 180;
+                    final ay = _tilt.dy * _maxTiltDeg * math.pi / 180;
                     return Listener(
                       onPointerSignal: (e) {
                         if (e is PointerScrollEvent && e.scrollDelta.dy != 0) {
@@ -185,14 +246,30 @@ class _CoverViewerState extends State<_CoverViewer> {
                       },
                       child: MouseRegion(
                         cursor: _scale > 1 ? SystemMouseCursors.grab : SystemMouseCursors.basic,
+                        onHover: (e) {
+                          final half = box.biggest / 2;
+                          final d = e.localPosition - center;
+                          _aim(Offset((d.dx / half.width).clamp(-1.0, 1.0).toDouble(), (d.dy / half.height).clamp(-1.0, 1.0).toDouble()));
+                        },
+                        onExit: (_) => _aim(Offset.zero),
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
-                          // Клик мимо картинки закрывает просмотр
+                          // Клик мимо картинки закрывает просмотр сразу: без onDoubleTap, который заставлял ждать
+                          // его срок (около трети секунды) перед тем, как одиночный клик сработает
                           onTapUp: (d) {
                             final r = Rect.fromCenter(center: center + _pan, width: side * _scale, height: side * _scale);
-                            if (!r.contains(d.localPosition)) Navigator.of(context).maybePop();
+                            if (!r.contains(d.localPosition)) {
+                              Navigator.of(context).maybePop();
+                              return;
+                            }
+                            final now = DateTime.now();
+                            if (now.difference(_lastTap) < const Duration(milliseconds: 320)) {
+                              _lastTap = DateTime.fromMillisecondsSinceEpoch(0);
+                              _reset();
+                            } else {
+                              _lastTap = now;
+                            }
                           },
-                          onDoubleTap: _reset,
                           onPanUpdate: (d) {
                             if (_scale > 1) setState(() => _pan += d.delta);
                           },
@@ -201,9 +278,24 @@ class _CoverViewerState extends State<_CoverViewer> {
                               child: Transform(
                                 alignment: Alignment.center,
                                 transform: Matrix4.identity()
+                                  ..setEntry(3, 2, 0.0011)
+                                  // Край, к которому подведён курсор, чуть уходит вглубь, противоположный выходит вперёд
+                                  ..rotateX(-ay)
+                                  ..rotateY(ax)
                                   ..translate(_pan.dx, _pan.dy)
                                   ..scale(_scale),
-                                child: SizedBox.square(dimension: side, child: picture),
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.35),
+                                        blurRadius: 40,
+                                        offset: Offset(-_tilt.dx * 14, 14 - _tilt.dy * 10),
+                                      ),
+                                    ],
+                                  ),
+                                  child: SizedBox.square(dimension: side, child: picture),
+                                ),
                               ),
                             ),
                           ),
@@ -214,15 +306,7 @@ class _CoverViewerState extends State<_CoverViewer> {
                 },
               ),
             ),
-            Positioned(
-              top: 44,
-              right: 20,
-              child: IconButton.filledTonal(
-                tooltip: 'Закрыть (Esc)',
-                onPressed: () => Navigator.of(context).maybePop(),
-                icon: const Icon(Icons.close_rounded),
-              ),
-            ),
+            Positioned(left: 0, right: 0, bottom: 16, child: Center(child: _controls())),
           ]),
         ),
       ),
