@@ -1407,7 +1407,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     try {
       final pick = await _findFresh().timeout(const Duration(seconds: 60), onTimeout: () => null);
       if (pick == null) {
-        AppLog.info('Моя волна: нового для скачивания не нашлось${lastfm.status.isEmpty ? '' : ' (${lastfm.status})'}');
+        AppLog.info('Моя волна: нового для скачивания не нашлось. Причины: ${_why.isEmpty ? 'поиск не уложился в 60 с' : _why.join('; ')}'
+            '${lastfm.status.isEmpty ? '' : ' (${lastfm.status})'}');
         _discoverPausedUntil = DateTime.now().add(const Duration(minutes: 2));
         _status('');
         release();
@@ -1481,10 +1482,16 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   bool _skippedArtist(String artist, Map<String, double> aff) =>
       splitArtists(artist).any((a) => (aff[a.toLowerCase()] ?? 0) <= -3);
 
+  /// Почему поиск новинки ничего не нашёл — попадает в журнал, чтобы было видно, где обрывается цепочка
+  final List<String> _why = [];
+
   Future<_Fresh?> _findFresh() async {
+    _why.clear();
     if (lastfm.available) {
       final f = await _findFreshLastFm();
       if (f != null) return f;
+    } else {
+      _why.add('Last.fm недоступен${lastfm.status.isEmpty ? '' : ' (${lastfm.status})'}');
     }
     return _findFreshDeezer();
   }
@@ -1529,15 +1536,33 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       final tag = m.tags[Random().nextInt(min(4, m.tags.length))];
       vote(await lastfm.tagTracks(tag), 0.9);
     }
-    if (score.isEmpty) return null;
+    if (score.isEmpty) {
+      _why.add('Last.fm: похожих треков не вернул (последний ответ: ${lastfm.status.isEmpty ? 'без ошибок' : lastfm.status})');
+      return null;
+    }
     final aff = _affinity();
     final trialKeys = _trialKeys;
     final cands = <(LfmItem, double)>[];
     final focus = _focus;
+    var nRejected = 0, nTrial = 0, nHave = 0, nSkipped = 0;
     score.forEach((k, v) {
       final i = item[k]!;
-      if (_rejected.contains(k) || trialKeys.contains(k)) return;
-      if (lib.existing(i.artist, i.title) != null || _skippedArtist(i.artist, aff)) return;
+      if (_rejected.contains(k)) {
+        nRejected++;
+        return;
+      }
+      if (trialKeys.contains(k)) {
+        nTrial++;
+        return;
+      }
+      if (lib.existing(i.artist, i.title) != null) {
+        nHave++;
+        return;
+      }
+      if (_skippedArtist(i.artist, aff)) {
+        nSkipped++;
+        return;
+      }
       final ak = i.artist.toLowerCase();
       var w = v;
       // Новый для библиотеки исполнитель интереснее, но новая песня знакомого — тоже хорошо
@@ -1547,7 +1572,11 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       if (focus.isNotEmpty && !focus.contains(ak)) w *= 0.2;
       cands.add((i, w));
     });
-    if (cands.isEmpty) return null;
+    if (cands.isEmpty) {
+      _why.add('Last.fm: кандидатов ${score.length}, отсеяно: уже в «отклонённых» $nRejected, уже на пробе $nTrial, '
+          'уже в библиотеке $nHave, исполнитель в минусе $nSkipped');
+      return null;
+    }
     cands.sort((a, b) => b.$2.compareTo(a.$2));
     final top = cands.take(8).toList();
     // До трёх попыток: раньше первый же интро/скит/часовой микс обрывал поиск целиком,
@@ -1572,13 +1601,19 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
             break;
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        AppLog.warn('Моя волна: поиск в Deezer «${pick.artist} — ${pick.title}»', e);
+        _why.add('поиск в Deezer упал: ${e.runtimeType}');
+      }
       if (odd) {
         _rejected.add(want);
+        _why.add('«${pick.title}» отпал по длительности (интро/микс)');
         continue;
       }
+      if (link == null) _why.add('в Deezer не нашлась ссылка на «${pick.artist} — ${pick.title}», качаю по названию');
       return _Fresh(pick.artist, pick.title, link);
     }
+    _why.add('три попытки подряд отпали по длительности');
     return null;
   }
 
@@ -1616,7 +1651,10 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       List<WebTrack>? list;
       try {
         list = await _radioOf(seeds[i]);
-      } catch (_) {}
+      } catch (e) {
+        AppLog.warn('Моя волна: радио Deezer «${seeds[i]}»', e);
+        _why.add('радио Deezer «${seeds[i]}» упало: ${e.runtimeType}');
+      }
       if (list == null) continue;
       for (final t in list) {
         byId[t.id] = t;
@@ -1631,18 +1669,35 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       artistVotes[k] = (artistVotes[k] ?? 0) + v;
     });
     final cands = <(WebTrack, double)>[];
+    var dRej = 0, dHave = 0, dSkip = 0, dOdd = 0;
     for (final t in byId.values) {
       final key = LibraryController.dupKey(t.artist, t.title);
-      if (t.link.isEmpty || key.isEmpty || _rejected.contains(key) || trialKeys.contains(key)) continue;
-      if (lib.existing(t.artist, t.title) != null) continue;
-      if (_skippedArtist(t.artist, aff)) continue; // исполнителя постоянно пропускают
-      if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) continue; // интро, скиты и часовые миксы
+      if (t.link.isEmpty || key.isEmpty || trialKeys.contains(key)) continue;
+      if (_rejected.contains(key)) {
+        dRej++;
+        continue;
+      }
+      if (lib.existing(t.artist, t.title) != null) {
+        dHave++;
+        continue;
+      }
+      if (_skippedArtist(t.artist, aff)) {
+        dSkip++; // исполнителя постоянно пропускают
+        continue;
+      }
+      if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) {
+        dOdd++; // интро, скиты и часовые миксы
+        continue;
+      }
       var w = votes[t.id]! + (artistVotes[t.artist.toLowerCase()] ?? 0) * 0.5;
       // Новые для библиотеки исполнители интереснее, но и новая песня знакомого — тоже хорошо
       if (lib.artist(t.artist.toLowerCase()) == null) w *= 1.3;
       cands.add((t, w));
     }
-    if (cands.isEmpty) return null;
+    if (cands.isEmpty) {
+      _why.add('Deezer: треков ${byId.length}, отсеяно: отклонённых $dRej, уже есть $dHave, исполнитель в минусе $dSkip, по длительности $dOdd');
+      return null;
+    }
     cands.sort((a, b) => b.$2.compareTo(a.$2));
     final t = _weighted(cands.take(5).toList());
     return _Fresh(t.artist, t.title, t.link);
