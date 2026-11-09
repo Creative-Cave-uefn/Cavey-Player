@@ -117,7 +117,7 @@ void main() {
     test('текст без имени: с заглавной буквы', () {
       expect(noticeBodyText(Notice(NoticeKind.like, 'a', t0, ['x']), title: title, label: label), 'Добавил(а) «Песня» в любимое');
       expect(noticeBodyText(Notice(NoticeKind.share, 'a', t0, ['x']), title: title, label: label), 'Поделился(ась): Песня — Автор');
-      expect(noticeBodyText(const Notice(NoticeKind.jamInvite, 'a', DateTime(2026), []), title: title, label: label), 'Зовёт в джем');
+      expect(noticeBodyText(Notice(NoticeKind.jamInvite, 'a', t0, const []), title: title, label: label), 'Зовёт в джем');
     });
 
     test('окно уведомления: ник, текст, цвета и место в стопке попадают в скрипт', () {
