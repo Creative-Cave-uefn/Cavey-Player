@@ -656,3 +656,39 @@ class _TileInkState extends State<TileInk> {
     });
   }
 }
+
+
+/// Выбор уровня ровной громкости: три кнопки одной ширины и одинаковых отступов, чтобы разметка не прыгала при переключении
+class NormLevelPicker extends StatelessWidget {
+  final String value;
+  final ValueChanged<String> onChanged;
+  const NormLevelPicker({super.key, required this.value, required this.onChanged});
+
+  static const _levels = [('quiet', 'Тише'), ('normal', 'Обычно'), ('loud', 'Громче')];
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(border: Border.all(color: C.line), borderRadius: BorderRadius.circular(999)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        for (final (id, label) in _levels)
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => onChanged(id),
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: Container(
+                width: 88,
+                height: 36,
+                alignment: Alignment.center,
+                color: id == value ? C.accent : Colors.transparent,
+                child: Text(label,
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: id == value ? C.accentInk : C.text)),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+}

@@ -424,39 +424,69 @@ class Updater extends ChangeNotifier {
     }
   }
 
+  /// Скачивает установщик. GitHub время от времени отвечает 502/503/504 или обрывает соединение, поэтому
+  /// такие сбои переживаем: до четырёх попыток с паузами 2, 5 и 12 секунд
   Future<String> _download(String url, String version, int size, [String sha256 = '']) async {
     state = UpdateState.downloading;
     progress = 0;
     notifyListeners();
+    const pauses = [Duration(seconds: 2), Duration(seconds: 5), Duration(seconds: 12)];
+    for (var attempt = 0;; attempt++) {
+      try {
+        return await _downloadOnce(url, version, size, sha256);
+      } catch (e) {
+        if (attempt >= pauses.length || !_retryable(e)) rethrow;
+        progress = 0;
+        notifyListeners();
+        await Future<void>.delayed(pauses[attempt]);
+      }
+    }
+  }
+
+  /// Сбой, после которого имеет смысл попробовать ещё раз: ответ сервера 5xx / 429 / 408, обрыв связи, недокачка
+  static bool _retryable(Object e) {
+    if (e is _HttpStatus) return e.code >= 500 || e.code == 429 || e.code == 408;
+    return e is _Incomplete || e is SocketException || e is http.ClientException || e is TimeoutException || e is HandshakeException;
+  }
+
+  Future<String> _downloadOnce(String url, String version, int size, String sha256) async {
     final file = File('${Directory.systemTemp.path}${Platform.pathSeparator}CavePlayer-Setup-$version.exe');
     final part = File('${file.path}.part');
     final client = http.Client();
     try {
       final res = await client.send(http.Request('GET', Uri.parse(url))..headers['User-Agent'] = 'CavePlayer/$kAppVersion');
-      if (res.statusCode != 200) throw Exception('загрузка ответила ${res.statusCode}');
+      if (res.statusCode != 200) throw _HttpStatus(res.statusCode);
       final total = res.contentLength ?? size;
       final sink = part.openWrite();
       final hashOut = _DigestSink();
       final hasher = crypto.sha256.startChunkedConversion(hashOut);
       var got = 0;
-      await for (final chunk in res.stream) {
-        sink.add(chunk);
-        hasher.add(chunk);
-        got += chunk.length;
-        if (total > 0) {
-          final p = got / total;
-          if (p - progress >= 0.02 || p >= 1) {
-            progress = p;
-            notifyListeners();
+      try {
+        await for (final chunk in res.stream) {
+          sink.add(chunk);
+          hasher.add(chunk);
+          got += chunk.length;
+          if (total > 0) {
+            final p = got / total;
+            if (p - progress >= 0.02 || p >= 1) {
+              progress = p;
+              notifyListeners();
+            }
           }
         }
+      } catch (_) {
+        // Связь оборвалась на середине: закрываем файл, чтобы следующая попытка могла его перезаписать
+        try {
+          await sink.close();
+        } catch (_) {}
+        rethrow;
       }
       await sink.close();
       hasher.close();
       // Не запускаем то, что скачалось не до конца или не совпало с релизом
       if (size > 0 && got != size) {
         await part.delete();
-        throw Exception('скачано $got байт вместо $size');
+        throw _Incomplete(got, size);
       }
       final actual = hashOut.value.toString();
       if (sha256.isNotEmpty && actual != sha256) {
@@ -513,4 +543,21 @@ class Updater extends ChangeNotifier {
     _timer?.cancel();
     super.dispose();
   }
+}
+
+
+/// Сервер ответил не 200
+class _HttpStatus implements Exception {
+  final int code;
+  _HttpStatus(this.code);
+  @override
+  String toString() => 'загрузка ответила $code';
+}
+
+/// Скачалось не всё
+class _Incomplete implements Exception {
+  final int got, expected;
+  _Incomplete(this.got, this.expected);
+  @override
+  String toString() => 'скачано $got байт вместо $expected';
 }

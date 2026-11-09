@@ -9,6 +9,7 @@ import '../app.dart';
 import '../core/smooth_position.dart';
 import '../core/player.dart';
 import 'cinema_view.dart';
+import 'glass_popup.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
@@ -356,9 +357,9 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
           final info = player.fadeInfo.value;
           double fadeX = 0, fadeAlpha = 0;
           if (info != null) {
-            final t = Curves.easeInOut.transform(info.progress(DateTime.now()));
-            fadeX = xOf(info.fromFraction + (1 - info.fromFraction) * t);
-            fadeAlpha = 1 - t;
+            final now = DateTime.now();
+            fadeX = xOf(info.fraction(now));
+            fadeAlpha = 1 - info.progress(now);
           }
           return RepaintBoundary(
             child: CustomPaint(
@@ -701,19 +702,28 @@ class _VolumeControl extends StatelessWidget {
       p: p,
       builder: (context, stop) => Row(mainAxisSize: MainAxisSize.min, children: [
         // Клик по динамику — выключить звук, ещё клик — вернуть прежнюю громкость
-        IconButton(
-          tooltip: p.volume == 0 ? 'Включить звук' : 'Выключить звук',
-          visualDensity: VisualDensity.compact,
-          iconSize: 20,
-          onPressed: () {
-            stop();
-            p.toggleMute();
-          },
-          icon: Icon(
-            p.volume == 0
-                ? Icons.volume_off_rounded
-                : (p.volume < 40 ? Icons.volume_down_rounded : Icons.volume_up_rounded),
-            color: p.volume == 0 ? C.muted : C.text,
+        // Правая кнопка мыши — настройка ровной громкости
+        Builder(
+          builder: (btn) => GestureDetector(
+            onSecondaryTap: () {
+              stop();
+              showGlassPopover(context: btn, width: 300, builder: (_) => _NormPanel(p));
+            },
+            child: IconButton(
+              tooltip: p.volume == 0 ? 'Включить звук (ПКМ — ровная громкость)' : 'Выключить звук (ПКМ — ровная громкость)',
+              visualDensity: VisualDensity.compact,
+              iconSize: 20,
+              onPressed: () {
+                stop();
+                p.toggleMute();
+              },
+              icon: Icon(
+                p.volume == 0
+                    ? Icons.volume_off_rounded
+                    : (p.volume < 40 ? Icons.volume_down_rounded : Icons.volume_up_rounded),
+                color: p.volume == 0 ? C.muted : C.text,
+              ),
+            ),
           ),
         ),
         SizedBox(
@@ -726,6 +736,50 @@ class _VolumeControl extends StatelessWidget {
             onChangeEnd: (v) => p.setVolume(v, save: true),
           ),
         ),
+      ]),
+    );
+  }
+}
+
+
+/// Окошко ровной громкости по правой кнопке на динамике: переключатель и уровень
+class _NormPanel extends StatefulWidget {
+  final PlayerController p;
+  const _NormPanel(this.p);
+  @override
+  State<_NormPanel> createState() => _NormPanelState();
+}
+
+class _NormPanelState extends State<_NormPanel> {
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.p;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 12, 8),
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Expanded(child: Text('Ровная громкость', style: TextStyle(fontWeight: FontWeight.w600))),
+          Switch(
+            value: p.normalize,
+            onChanged: (v) async {
+              await p.setNormalize(v);
+              if (mounted) setState(() {});
+            },
+          ),
+        ]),
+        if (p.normalize)
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 4),
+            child: NormLevelPicker(
+              value: p.normLevel,
+              onChanged: (v) async {
+                await p.setNormLevel(v);
+                if (mounted) setState(() {});
+              },
+            ),
+          ),
+        const SizedBox(height: 4),
+        const Text('Тихие треки подтягиваются, громкие приглушаются', style: TextStyle(color: C.faint, fontSize: 12, height: 1.3)),
       ]),
     );
   }

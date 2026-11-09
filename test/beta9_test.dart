@@ -73,6 +73,15 @@ void main() {
       expect(PlayerController.dbToFactor(0), closeTo(1, 1e-9));
       expect(PlayerController.dbToFactor(-6), closeTo(0.501, 0.001));
     });
+
+    test('громкость mpv кубическая: множитель для volume в кубе даёт ровно заданные децибелы', () {
+      for (final db in [-12.0, -7.0, -3.0, 0.0, 2.0, 4.0]) {
+        final f = PlayerController.dbToVolumeFactor(db);
+        expect(f * f * f, closeTo(PlayerController.dbToFactor(db), 1e-9));
+      }
+      // Приглушение на 7 дБ срезает свойство volume лишь до ~0,76, а не до ~0,45 как при линейном множителе
+      expect(PlayerController.dbToVolumeFactor(-7), greaterThan(0.75));
+    });
   });
 
   group('Плавный переход', () {
@@ -82,6 +91,25 @@ void main() {
       expect(info.progress(t0), 0);
       expect(info.progress(t0.add(const Duration(seconds: 2))), closeTo(0.5, 1e-9));
       expect(info.progress(t0.add(const Duration(seconds: 9))), 1);
+    });
+
+    test('полоса уходящего трека идёт с прежней скоростью и доходит до края', () {
+      final t0 = DateTime(2026, 1, 1, 12);
+      // Трек 100 с, переход начался на 90 %: осталось 10 с
+      final info = CrossfadeInfo(0.9, t0, 10000, oldDurationMs: 100000);
+      double at(int s) => info.fraction(t0.add(Duration(seconds: s)));
+      expect(at(0), closeTo(0.9, 1e-9));
+      // Скорость одинакова на всём протяжении: 1 % длины трека в секунду, как и до перехода
+      expect(at(1) - at(0), closeTo(0.01, 1e-9));
+      expect(at(6) - at(5), closeTo(0.01, 1e-9));
+      expect(at(10), closeTo(1.0, 1e-9));
+      expect(at(15), 1.0);
+    });
+
+    test('без длины трека полоса идёт линейно за время перехода', () {
+      final t0 = DateTime(2026, 1, 1, 12);
+      final info = CrossfadeInfo(0.8, t0, 4000);
+      expect(info.fraction(t0.add(const Duration(seconds: 2))), closeTo(0.9, 1e-9));
     });
   });
 

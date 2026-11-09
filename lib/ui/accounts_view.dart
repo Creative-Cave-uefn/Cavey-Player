@@ -814,17 +814,15 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
       if (app.player.normalize)
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
-          child: SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: 'quiet', label: Text('Тише')),
-              ButtonSegment(value: 'normal', label: Text('Обычно')),
-              ButtonSegment(value: 'loud', label: Text('Громче')),
-            ],
-            selected: {app.player.normLevel},
-            onSelectionChanged: (v) async {
-              await app.player.setNormLevel(v.first);
-              if (mounted) setState(() {});
-            },
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: NormLevelPicker(
+              value: app.player.normLevel,
+              onChanged: (v) async {
+                await app.player.setNormLevel(v);
+                if (mounted) setState(() {});
+              },
+            ),
           ),
         ),
       SwitchListTile(

@@ -23,10 +23,22 @@ class CrossfadeInfo {
   final double fromFraction;
   final DateTime started;
   final int lengthMs;
-  const CrossfadeInfo(this.fromFraction, this.started, this.lengthMs);
+
+  /// Длина уходящего трека, мс: по ней полоса продолжает идти с той же скоростью, что и весь трек
+  final int oldDurationMs;
+  const CrossfadeInfo(this.fromFraction, this.started, this.lengthMs, {this.oldDurationMs = 0});
 
   /// Ход перехода 0…1
   double progress(DateTime now) => (now.difference(started).inMilliseconds / lengthMs).clamp(0.0, 1.0);
+
+  /// Где полоса уходящего трека: идёт дальше с прежней скоростью до самого края (без разгона и остановки)
+  double fraction(DateTime now) {
+    final ms = now.difference(started).inMilliseconds;
+    final f = oldDurationMs > 0
+        ? fromFraction + ms / oldDurationMs
+        : fromFraction + (1 - fromFraction) * progress(now);
+    return f.clamp(0.0, 1.0).toDouble();
+  }
 }
 
 /// Источник бесконечной очереди («Моя волна»): даёт следующие треки и узнаёт, как их слушали
@@ -591,14 +603,19 @@ class PlayerController extends ChangeNotifier {
   /// Поправка в дБ: подтянуть тихий трек и приглушить громкий, но не больше −12 дБ и +4 дБ
   static double normGainDb(double trackDb, double targetDb) => (targetDb - trackDb).clamp(-12.0, 4.0).toDouble();
 
+  /// Во сколько раз меняется амплитуда при поправке [db]
   static double dbToFactor(double db) => math.pow(10, db / 20).toDouble();
+
+  /// Множитель для свойства `volume` проигрывателя. У mpv громкость кубическая (volume 50 — это уже −18 дБ),
+  /// поэтому чтобы поправка была ровно в [db] децибел, множитель — корень третьей степени из амплитуды
+  static double dbToVolumeFactor(double db) => math.pow(10, db / 60).toDouble();
 
   /// Множитель громкости трека; 1, пока он не разобран или выравнивание выключено
   double _normFactorFor(String? id) {
     if (!normalize || id == null) return 1;
     final pr = mixer?.profile(id);
     if (pr == null) return 1;
-    return dbToFactor(normGainDb(pr.loudDb, normTargetDb(normLevel)));
+    return dbToVolumeFactor(normGainDb(pr.loudDb, normTargetDb(normLevel)));
   }
 
   double _normIn = 1; // текущий трек
@@ -760,6 +777,7 @@ class PlayerController extends ChangeNotifier {
           ? math.min(lengthWanted, math.max(800, oldRemaining.inMilliseconds))
           : lengthWanted;
       final oldFraction = duration > Duration.zero ? (_p.state.position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0).toDouble() : 1.0;
+      final oldDurationMs = duration.inMilliseconds;
       // Теперь «главный» проигрыватель — новый, а прежний доигрывает затихая
       final old = _p;
       _p = incoming;
@@ -773,8 +791,10 @@ class PlayerController extends ChangeNotifier {
       _userPaused = false;
       _prevPos = Duration.zero;
       _openedAt = DateTime.now();
-      position.value = Duration.zero;
-      duration = Duration.zero;
+      // Новый проигрыватель уже сообщил длительность до того, как мы подписались на него: берём её из его состояния,
+      // иначе полоса перемотки считает трек нулевой длины и перематывать нельзя
+      position.value = _p.state.position;
+      duration = _p.state.duration;
       playing = true;
       _inGain = 0;
       _outGain = 1;
@@ -782,7 +802,7 @@ class PlayerController extends ChangeNotifier {
       _normOut = _normIn;
       _normIn = _normFactorFor(nextTrack.id);
       _applyVolume();
-      fadeInfo.value = CrossfadeInfo(oldFraction, DateTime.now(), lengthMs);
+      fadeInfo.value = CrossfadeInfo(oldFraction, DateTime.now(), lengthMs, oldDurationMs: oldDurationMs);
       notifyListeners();
       unawaited(_whenReady(seq, nextTrack));
       _preloadNext();
