@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -122,7 +123,11 @@ Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId
       // Если картинка так и не пришла, окно не должно висеть с крутилкой вечно
       .timeout(const Duration(seconds: 25), onTimeout: () => null)
       .catchError((Object _) => null);
-  return showGeneralDialog<void>(
+  // Окно лежит под шапкой окна, а прямоугольник обложки измерен на экране: переводим в координаты окна просмотра
+  final navBox = Navigator.of(context, rootNavigator: true).context.findRenderObject();
+  if (from != null && navBox is RenderBox && navBox.hasSize) from = from.shift(-navBox.localToGlobal(Offset.zero));
+  final gone = Completer<void>();
+  final shown = showGeneralDialog<void>(
     context: context,
     barrierDismissible: true,
     barrierLabel: 'Закрыть',
@@ -130,9 +135,14 @@ Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId
     // Обложка вылетает из шапки в центр и так же возвращается; фон темнеет вместе с ней
     transitionDuration: const Duration(milliseconds: 340),
     pageBuilder: (ctx, anim, __) =>
-        _CoverViewer(bytes: bytes, fallback: _fallbackCover(context, track, fileId), anim: anim, from: from, fromRadius: fromRadius),
+        _CoverViewer(bytes: bytes, fallback: _fallbackCover(context, track, fileId), anim: anim, from: from, fromRadius: fromRadius, onGone: () {
+      if (!gone.isCompleted) gone.complete();
+    }),
     transitionBuilder: (ctx, a, _, child) => child,
   );
+  // Future окна завершается в момент нажатия на «закрыть», а не когда обложка долетела: ждём конца полёта,
+  // иначе обложка в шапке появляется раньше времени
+  return shown.then((_) => gone.future.timeout(const Duration(seconds: 1), onTimeout: () {}));
 }
 
 /// Пока крупная картинка грузится (или не загрузилась), показываем ту, что уже есть на экране
@@ -149,7 +159,10 @@ class _CoverViewer extends StatefulWidget {
   final Animation<double> anim;
   final Rect? from;
   final double fromRadius;
-  const _CoverViewer({required this.bytes, this.fallback, required this.anim, this.from, this.fromRadius = 0});
+
+  /// Окно полностью убрано с экрана (закрывающий полёт закончился)
+  final VoidCallback? onGone;
+  const _CoverViewer({required this.bytes, this.fallback, required this.anim, this.from, this.fromRadius = 0, this.onGone});
 
   @override
   State<_CoverViewer> createState() => _CoverViewerState();
@@ -159,9 +172,11 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
   static const _maxScale = 12.0;
 
   /// Наибольший наклон, градусы: «лёгкая» панорама, а не переворот картинки
-  static const _maxTiltDeg = 7.0;
+  static const _maxTiltDeg = 3.5;
 
   double _scale = 1;
+  double _zoomTarget = 1;
+  Offset _zoomAnchor = Offset.zero;
   Offset _pan = Offset.zero;
 
   /// Куда смотрит курсор: от -1 до 1 по каждой оси относительно центра окна — и как далеко наклон дошёл сейчас
@@ -172,18 +187,40 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
   DateTime _lastTap = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
+  void initState() {
+    super.initState();
+    widget.anim.addStatusListener(_onAnimStatus);
+  }
+
+  void _onAnimStatus(AnimationStatus st) {
+    if (st == AnimationStatus.dismissed) widget.onGone?.call();
+  }
+
+  @override
   void dispose() {
+    widget.anim.removeStatusListener(_onAnimStatus);
+    widget.onGone?.call();
     _ticker.dispose();
     super.dispose();
   }
 
   void _onTick(Duration _) {
     // Приближенная картинка не наклоняется: наклон плавно возвращается в ноль
-    final target = _scale > 1.001 ? Offset.zero : _tiltTarget;
+    final target = _scale > 1.001 || _zoomTarget > 1.001 ? Offset.zero : _tiltTarget;
     final next = _tilt + (target - _tilt) * 0.16;
-    final done = (next - target).distance < 0.002;
-    setState(() => _tilt = done ? target : next);
-    if (done) _ticker.stop();
+    final tiltDone = (next - target).distance < 0.002;
+    // Масштаб подтягивается к цели плавно, в логарифме: одинаково и вблизи, и издалека; точка под курсором стоит на месте
+    final k = math.log(_zoomTarget / _scale);
+    final zoomDone = k.abs() < 0.003;
+    final ns = zoomDone ? _zoomTarget : _scale * math.exp(k * 0.2);
+    setState(() {
+      _tilt = tiltDone ? target : next;
+      if (ns != _scale) {
+        _pan = ns <= 1.0001 ? Offset.zero : _zoomAnchor - (_zoomAnchor - _pan) * (ns / _scale);
+        _scale = ns;
+      }
+    });
+    if (tiltDone && zoomDone) _ticker.stop();
   }
 
   void _aim(Offset t) {
@@ -193,20 +230,16 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
 
   /// Колесо: масштаб относительно точки под курсором, чтобы она оставалась на месте
   void _zoom(Offset fromCenter, double factor) {
-    final s = (_scale * factor).clamp(1.0, _maxScale).toDouble();
-    if (s == _scale) return;
-    setState(() {
-      _pan = s <= 1.0001 ? Offset.zero : fromCenter - (fromCenter - _pan) * (s / _scale);
-      _scale = s;
-    });
+    final s = (_zoomTarget * factor).clamp(1.0, _maxScale).toDouble();
+    if (s == _zoomTarget) return;
+    _zoomTarget = s;
+    _zoomAnchor = fromCenter;
     if (!_ticker.isActive) _ticker.start();
   }
 
   void _reset() {
-    setState(() {
-      _scale = 1;
-      _pan = Offset.zero;
-    });
+    _zoomTarget = 1;
+    _zoomAnchor = Offset.zero;
     if (!_ticker.isActive) _ticker.start();
   }
 
@@ -214,13 +247,14 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
 
   /// Вылет из шапки в центр и обратно: обложка плавно растёт от размера и места в шапке до полного.
   /// Без известного места (нет исходного прямоугольника) — просто плавное появление
-  Widget _fly(Offset center, double side, Widget child) {
+  Widget _fly(Offset center, double side, Widget Function(double u) build) {
     final from = widget.from;
     return AnimatedBuilder(
       animation: widget.anim,
-      child: child,
-      builder: (context, c) {
+      builder: (context, _) {
         final t = _curve.transform(widget.anim.value.clamp(0.0, 1.0));
+        // Наклон и приближение при открытии и закрытии сходят на нет, чтобы обложка садилась точно на своё место
+        final c = build(t);
         if (from == null || from.width <= 0) {
           return Opacity(opacity: t, child: Transform.scale(scale: 0.94 + 0.06 * t, child: c));
         }
@@ -251,7 +285,7 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
 
   Widget _controls() {
     // Ползунок логарифмический: каждый шаг даёт одинаковое «во сколько раз» ближе
-    final t = math.log(_scale) / math.log(_maxScale);
+    final t = math.log(_zoomTarget) / math.log(_maxScale);
     return FadeTransition(
       opacity: CurvedAnimation(parent: widget.anim, curve: const Interval(0.5, 1)),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -263,7 +297,7 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
             data: SliderTheme.of(context).copyWith(trackHeight: 3, overlayShape: const RoundSliderOverlayShape(overlayRadius: 14)),
             child: Slider(
               value: t.clamp(0.0, 1.0).toDouble(),
-              onChanged: (v) => _zoom(Offset.zero, math.pow(_maxScale, v).toDouble() / _scale),
+              onChanged: (v) => _zoom(Offset.zero, math.pow(_maxScale, v).toDouble() / _zoomTarget),
             ),
           ),
         ),
@@ -343,28 +377,28 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
                               child: _fly(
                                 center,
                                 side,
-                                Transform(
-                                alignment: Alignment.center,
-                                transform: Matrix4.identity()
-                                  ..setEntry(3, 2, 0.0011)
-                                  // Обложка прогибается под курсором: край, к которому он подведён, уходит вглубь
-                                  ..rotateX(ay)
-                                  ..rotateY(-ax)
-                                  ..translate(_pan.dx, _pan.dy)
-                                  ..scale(_scale),
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withValues(alpha: 0.35),
-                                        blurRadius: 40,
-                                        offset: Offset(_tilt.dx * 14, 14 + _tilt.dy * 10),
-                                      ),
-                                    ],
+                                (u) => Transform(
+                                  alignment: Alignment.center,
+                                  transform: Matrix4.identity()
+                                    ..setEntry(3, 2, 0.0011)
+                                    // Обложка прогибается под курсором: край, к которому он подведён, уходит вглубь
+                                    ..rotateX(ay * u)
+                                    ..rotateY(-ax * u)
+                                    ..translate(_pan.dx * u, _pan.dy * u)
+                                    ..scale(1 + (_scale - 1) * u),
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(alpha: 0.35 * u),
+                                          blurRadius: 40,
+                                          offset: Offset(_tilt.dx * 14, 14 + _tilt.dy * 10),
+                                        ),
+                                      ],
+                                    ),
+                                    child: _clipped(side, picture),
                                   ),
-                                  child: _clipped(side, picture),
                                 ),
-                              ),
                               ),
                             ),
                           ),
