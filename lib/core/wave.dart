@@ -310,8 +310,12 @@ class WaveInputs {
   /// Бан, пропуски и минусы исполнителям действуют только в том контексте, где их поставили
   final String ctx;
 
+  /// Во сколько раз лайки весят больше обычного. 1 — как всегда; в режиме настройки — больше
+  final double likeBoost;
+
   WaveInputs({
     this.ctx = '',
+    this.likeBoost = 1.0,
     required this.tracks,
     this.liked = const {},
     this.myPlays = const {},
@@ -347,7 +351,7 @@ class WaveEngine {
     final a = <String, double>{};
     void add(String k, double v) => a[k] = (a[k] ?? 0) + v;
     for (final t in x.tracks) {
-      final w = (x.liked.contains(t.id) ? 3.0 : 0.0) + min(x.myPlays[t.id] ?? 0, 6) * 0.7;
+      final w = (x.liked.contains(t.id) ? 3.0 * x.likeBoost : 0.0) + min(x.myPlays[t.id] ?? 0, 6) * 0.7;
       if (w == 0) continue;
       final names = t.artists;
       for (var i = 0; i < names.length; i++) {
@@ -387,10 +391,10 @@ class WaveEngine {
     final pop = (x.crowd[t.id] ?? 0) / maxCrowd;
     final fresh = fam == 0 && !liked && !x.taste.heard.contains(t.id); // Д8: слышал когда-то — уже не новое
     var w = switch (mode) {
-      WaveMode.mix => 0.4 + 2.0 * aN + (liked ? 1.0 : 0) + 0.6 * pop + (fresh ? 0.4 : 0),
-      WaveMode.favorite => 0.1 + 1.6 * aN + (liked ? 2.5 : 0) + 0.15 * min(fam, 6),
+      WaveMode.mix => 0.4 + 2.0 * aN + (liked ? 1.0 * x.likeBoost : 0) + 0.6 * pop + (fresh ? 0.4 : 0),
+      WaveMode.favorite => 0.1 + 1.6 * aN + (liked ? 2.5 * x.likeBoost : 0) + 0.15 * min(fam, 6),
       WaveMode.unfamiliar => fresh ? 0.4 + 2.2 * aN + 0.6 * pop : 0.003,
-      WaveMode.popular => 0.1 + 3.0 * pop + 0.8 * aN + (liked ? 0.3 : 0),
+      WaveMode.popular => 0.1 + 3.0 * pop + 0.8 * aN + (liked ? 0.3 * x.likeBoost : 0),
     };
     // Похож на то, что вы только что дослушали, — держим настроение
     w *= 1 + 2.5 * (x.boost[t.id] ?? 0);
@@ -570,6 +574,26 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   // ---------- новинки ----------
 
+  // ---------- режим настройки ----------
+
+  /// Отдельный режим для быстрой настройки волны (включается в Настройках → «Не лезь — убьёт»).
+  /// Пропуск ничего не штрафует: ни трек, ни исполнителя, ни пробный файл. Лайки, «нравится» и дослушивания
+  /// весят в [tuningBoost] раза больше, поэтому вкус схватывается за несколько треков.
+  /// Явное «не нравится» работает как всегда: это осознанное нажатие
+  bool tuning = false;
+  static const tuningBoost = 1.5;
+
+  double get _tuneK => tuning ? tuningBoost : 1.0;
+
+  void setTuning(bool on) {
+    if (tuning == on) return;
+    tuning = on;
+    AppLog.info('Моя волна: режим настройки ${on ? 'включён' : 'выключен'}');
+    _save();
+    notifyListeners();
+    if (active) player.refillFeed(keep: (id) => trials.containsKey(id));
+  }
+
   /// Качать новые треки в волну
   bool discover = true;
 
@@ -608,6 +632,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         final rel = j['similarArtists'];
         if (rel is Map) rel.forEach((k, v) => w._related['$k'] = [for (final x in (v as List? ?? const [])) '$x']);
         w.discover = j['discover'] != false;
+        w.tuning = j['tuning'] == true;
         final dl = (j['dailyLimit'] as num?)?.toInt();
         if (dl != null && WaveService.dailyLimits.contains(dl)) w.dailyLimit = dl;
         for (final x in (j['trials'] as List? ?? const [])) {
@@ -940,8 +965,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     taste.addSeed(t.artists.first, t.title);
     for (final a in t.artists) {
       final k = a.toLowerCase();
-      taste.bump(k, 2);
-      _session[k] = (_session[k] ?? 0) + 4;
+      taste.bump(k, 2 * _tuneK);
+      _session[k] = (_session[k] ?? 0) + 4 * _tuneK;
     }
     _good.remove(t.id);
     _good.add(t.id);
@@ -1034,6 +1059,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     }
     return WaveInputs(
       ctx: _ctx,
+      likeBoost: _tuneK,
       tracks: _cTracks,
       liked: _cLiked,
       myPlays: _cMyPlays,
@@ -1147,6 +1173,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     final keys = [for (final a in t.artists) a.toLowerCase()];
     final total = Duration(milliseconds: t.durationMs ?? 0);
     final early = skipped && listened < const Duration(seconds: 30);
+    // Режим настройки: ранний пропуск ничего не значит — ни штрафа треку и исполнителю,
+    // ни удаления пробного файла. Человек листает, чтобы найти, что нравится
+    if (early && tuning) return;
     if (listened >= const Duration(seconds: 30)) taste.markHeard(t.id);
     final finished = !skipped || (total > Duration.zero && listened.inMilliseconds > total.inMilliseconds * 0.7);
     final trial = trials[t.id];
@@ -1189,8 +1218,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       // Д3: если окно скрыто, человек ничего не нажимал — дослушивание весит вдвое меньше
       final bg = _inBackground ? 0.5 : 1.0;
       for (final k in keys) {
-        taste.bump(k, 0.4 * bg);
-        _session[k] = (_session[k] ?? 0) + 1.5 * bg;
+        taste.bump(k, 0.4 * bg * _tuneK);
+        _session[k] = (_session[k] ?? 0) + 1.5 * bg * _tuneK;
       }
       _good.remove(t.id);
       _good.add(t.id);
@@ -1741,6 +1770,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         'recent': _recent,
         'similarArtists': _related,
         'discover': discover,
+        'tuning': tuning,
         'mood': mood,
         'dailyLimit': dailyLimit,
         'custom': custom,

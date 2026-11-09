@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cave_player/config.dart';
 import 'package:cave_player/core/lastfm.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -91,6 +92,26 @@ void main() {
     expect(await l.artistTags('Air'), isNull);
     expect(l.paused, isTrue);
     expect(l.pauseLeft, greaterThan(const Duration(seconds: 20)));
+  });
+
+  test('ключ API не попадает в отчёт, даже если исключение печатает адрес запроса', () async {
+    final l = _lfm((r) async => throw http.ClientException('обрыв', r.url));
+    expect(await l.artistTags('Air'), isNull);
+    final rep = l.report();
+    expect(rep, isNot(contains(kLastFmKey)));
+    expect(rep, contains('net')); // тип сбоя
+    expect(rep, contains('ClientException')); // и исключение, чтобы было видно, что именно случилось
+    expect(rep, contains('artist.gettoptags «Air»')); // и о чём спрашивали
+  });
+
+  test('сбой с заглушкой провайдера: в отчёте код, заголовки и начало тела', () async {
+    final l = _lfm((r) async => http.Response('<html>Доступ ограничен</html>', 403, headers: {'server': 'blocker', 'content-type': 'text/html; charset=utf-8'}));
+    expect(await l.similarArtists('Air'), isEmpty);
+    final rep = l.report();
+    expect(rep, contains('nonjson'));
+    expect(rep, contains('HTTP 403'));
+    expect(rep, contains('server=blocker'));
+    expect(rep, contains('Доступ ограничен'));
   });
 
   test('срочные запросы обгоняют фоновые (теги)', () async {

@@ -322,8 +322,100 @@ class _DebugSection extends StatelessWidget {
       SizedBox(height: 32),
       LibraryDebug(),
       SizedBox(height: 32),
+      _WaveDebugSection(),
+      SizedBox(height: 32),
       _LogSection(),
     ]);
+  }
+}
+
+/// «Моя волна» для отладки: режим быстрой настройки и проверка связи с Last.fm
+class _WaveDebugSection extends StatefulWidget {
+  const _WaveDebugSection();
+  @override
+  State<_WaveDebugSection> createState() => _WaveDebugSectionState();
+}
+
+class _WaveDebugSectionState extends State<_WaveDebugSection> {
+  bool _checking = false;
+
+  Future<void> _check() async {
+    final wave = Services.of(context).wave;
+    setState(() => _checking = true);
+    String text;
+    try {
+      text = await wave.lastfm.diagnoseNow();
+    } catch (e) {
+      text = 'Не получилось проверить: $e';
+    }
+    if (!mounted) return;
+    setState(() => _checking = false);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Связь с Last.fm'),
+        content: SizedBox(
+          width: 560,
+          child: SingleChildScrollView(child: SelectableText(text, style: const TextStyle(fontSize: 13, height: 1.5))),
+        ),
+        actions: [
+          TextButton(onPressed: () => Clipboard.setData(ClipboardData(text: text)), child: const Text('Скопировать')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрыть')),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final wave = app.wave;
+    return ListenableBuilder(
+      listenable: wave,
+      builder: (context, _) {
+        final st = wave.lastfmStatus;
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Моя волна', style: display(17)),
+          const SizedBox(height: 10),
+          HintSwitch(
+            contentPadding: EdgeInsets.zero,
+            value: wave.tuning,
+            title: 'Режим настройки',
+            hint: 'Для быстрой настройки вкуса. Пропуск ничего не штрафует: ни трек, ни исполнителя, '
+                'пробный трек не удаляется. Лайки, «нравится в волне» и дослушивания весят в полтора раза больше. '
+                '«Не нравится» работает как обычно. Закончили настраивать — выключите.',
+            onChanged: wave.setTuning,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            st.isEmpty ? 'Last.fm: проблем сейчас не видно.' : st,
+            style: TextStyle(color: st.isEmpty ? C.muted : C.danger, fontSize: 14, height: 1.5),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Каждый сбой Last.fm пишется в журнал: причина, время ответа, заголовки и начало ответа. '
+            'При паузе волна сама проверяет связь по шагам (DNS, TCP, TLS, запрос), чтобы было видно, где рвётся.',
+            style: TextStyle(color: C.muted, fontSize: 13, height: 1.5),
+          ),
+          const SizedBox(height: 12),
+          Wrap(spacing: 12, runSpacing: 10, children: [
+            OutlinedButton.icon(
+              onPressed: _checking ? null : _check,
+              icon: const Icon(Icons.network_check_rounded, size: 18),
+              label: Text(_checking ? 'Проверяю…' : 'Проверить связь с Last.fm'),
+            ),
+            OutlinedButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: wave.lastfm.report()));
+                app.lib.messages.add('Отчёт Last.fm скопирован');
+              },
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Скопировать отчёт'),
+            ),
+          ]),
+        ]);
+      },
+    );
   }
 }
 

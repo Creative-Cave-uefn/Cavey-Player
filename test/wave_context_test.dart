@@ -104,6 +104,12 @@ void main() {
     expect(taste.skips, isEmpty);
   });
 
+  test('режим настройки: лайки весят в полтора раза больше', () {
+    double alpha(double k) =>
+        WaveEngine.affinity(WaveInputs(tracks: lib, liked: {'a1', 'a2', 'a3'}, likeBoost: k))['alpha']!;
+    expect(alpha(1.5), closeTo(alpha(1.0) * 1.5, 0.001));
+  });
+
   test('новые поля сохраняются и читаются', () {
     final taste = WaveTaste()
       ..dislike('x', 'dark')

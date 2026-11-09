@@ -52,7 +52,7 @@ class WavePage extends StatelessWidget {
                   left: 0,
                   right: 0,
                   top: 12,
-                  child: IgnorePointer(child: Center(child: Text('Моя волна', style: display(compact ? 24 : 30, color: C.muted)))),
+                  child: IgnorePointer(child: Center(child: Text(wave.tuning ? 'Моя волна · режим настройки' : 'Моя волна', style: display(compact ? 24 : 30, color: C.muted)))),
                 ),
                 Positioned(
                   right: 18,
