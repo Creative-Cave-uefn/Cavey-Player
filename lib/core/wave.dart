@@ -57,11 +57,65 @@ class WaveTaste {
   /// Ключ исполнителя (в нижнем регистре) → симпатия: растёт от дослушиваний, падает от пропусков
   final Map<String, double> artists = {};
 
-  /// «Не нравится»: эти треки волна больше не ставит
+  // Минусы привязаны к «контексту» волны: '' — обычная, 'custom' — своя подборка, иначе id настроения.
+  // Так «не люблю эмо-рэп» из обычной волны не мешает в «мрачном» настроении, где он как раз к месту.
+  // И всё забывается: человек меняется, а один пропуск в плохой день не должен хоронить трек навсегда.
+
+  /// «Не нравится»: эти треки волна не ставит — в том контексте, где их отметили, и [dislikeTtl]
   final Set<String> disliked = {};
 
-  /// Сколько раз трек пропустили в первые 30 секунд
+  /// Где и когда отметили «не нравится»; нет записи — считаем, что в обычной волне и без срока
+  final Map<String, (String, DateTime)> dislikedMeta = {};
+
+  static const dislikeTtl = Duration(days: 30);
+  static const skipTtl = Duration(days: 21);
+
+  bool isDisliked(String id, String ctx) => disliked.contains(id) && (dislikedMeta[id]?.$1 ?? '') == ctx;
+
+  void dislike(String id, String ctx, [DateTime? now]) {
+    disliked.add(id);
+    dislikedMeta[id] = (ctx, now ?? DateTime.now());
+  }
+
+  bool undislike(String id) {
+    dislikedMeta.remove(id);
+    return disliked.remove(id);
+  }
+
+  /// Сколько раз трек пропустили в первые 30 секунд — в обычной волне (контекст '')
   final Map<String, int> skips = {};
+
+  /// То же в волнах с настроением или своей подборкой: контекст → трек → пропуски
+  final Map<String, Map<String, int>> ctxSkips = {};
+
+  /// Когда трек пропускали в последний раз: ключ «контекст|трек». По сроку [skipTtl] пропуски забываются
+  final Map<String, DateTime> skipAt = {};
+
+  Map<String, int> skipsIn(String ctx) => ctx.isEmpty ? skips : (ctxSkips[ctx] ?? const {});
+  int skipsOf(String id, String ctx) => skipsIn(ctx)[id] ?? 0;
+
+  void addSkip(String id, String ctx, [DateTime? now]) {
+    final m = ctx.isEmpty ? skips : ctxSkips.putIfAbsent(ctx, () => {});
+    m[id] = (m[id] ?? 0) + 1;
+    skipAt['$ctx|$id'] = now ?? DateTime.now();
+  }
+
+  /// Дослушали — один пропуск прощается
+  void forgiveSkip(String id, String ctx) {
+    final m = ctx.isEmpty ? skips : ctxSkips[ctx];
+    final s = m?[id];
+    if (m == null || s == null) return;
+    if (s <= 1) {
+      m.remove(id);
+      skipAt.remove('$ctx|$id');
+    } else {
+      m[id] = s - 1;
+    }
+  }
+
+  /// Минусы исполнителям по контекстам (всегда ≤ 0). Остывают быстрее плюсов
+  final Map<String, Map<String, double>> neg = {};
+  Map<String, double> negFor(String ctx) => neg[ctx] ?? const {};
 
   /// Д8: треки, которые когда-либо слушали дольше 30 секунд (длинная память для «Незнакомого»)
   final Set<String> heard = {};
@@ -92,6 +146,7 @@ class WaveTaste {
   /// Д2: симпатии без новых сигналов остывают — ×0,98 за каждый прошедший день
   void decay([DateTime? now]) {
     now ??= DateTime.now();
+    _expire(now);
     final last = decayedAt;
     if (last == null) {
       decayedAt = now;
@@ -102,10 +157,46 @@ class WaveTaste {
     final k = pow(0.98, days).toDouble();
     artists.updateAll((_, v) => v * k);
     artists.removeWhere((_, v) => v.abs() < 0.05);
+    // Минусы остывают заметно быстрее плюсов: ×0,92 в день, то есть вдвое примерно за неделю
+    final kn = pow(0.92, days).toDouble();
+    for (final m in neg.values) {
+      m.updateAll((_, v) => v * kn);
+      m.removeWhere((_, v) => v.abs() < 0.05);
+    }
+    neg.removeWhere((_, m) => m.isEmpty);
     decayedAt = last.add(Duration(days: days));
   }
 
-  void bump(String artist, double by) {
+  /// Забываем старые «не нравится» и пропуски
+  void _expire(DateTime now) {
+    dislikedMeta.removeWhere((id, m) {
+      if (now.difference(m.$2) <= dislikeTtl) return false;
+      disliked.remove(id);
+      return true;
+    });
+    skipAt.removeWhere((key, at) {
+      if (now.difference(at) <= skipTtl) return false;
+      final i = key.indexOf('|');
+      final ctx = i < 0 ? '' : key.substring(0, i);
+      final m = ctx.isEmpty ? skips : ctxSkips[ctx];
+      m?.remove(key.substring(i + 1));
+      return true;
+    });
+    ctxSkips.removeWhere((_, m) => m.isEmpty);
+  }
+
+  /// Плюс идёт в общую симпатию к исполнителю, минус — только в симпатию в контексте [ctx]
+  void bump(String artist, double by, {String ctx = ''}) {
+    if (by < 0) {
+      final m = neg.putIfAbsent(ctx, () => {});
+      final v = ((m[artist] ?? 0) + by).clamp(-10.0, 0.0).toDouble();
+      if (v.abs() < 0.05) {
+        m.remove(artist);
+      } else {
+        m[artist] = v;
+      }
+      return;
+    }
     final v = ((artists[artist] ?? 0) + by).clamp(-10.0, 20.0).toDouble();
     if (v.abs() < 0.05) {
       artists.remove(artist);
@@ -116,8 +207,15 @@ class WaveTaste {
 
   Map<String, dynamic> toJson() => {
         'artists': artists.map((k, v) => MapEntry(k, double.parse(v.toStringAsFixed(2)))),
+        'neg': {
+          for (final e in neg.entries)
+            if (e.value.isNotEmpty) e.key: e.value.map((k, v) => MapEntry(k, double.parse(v.toStringAsFixed(2)))),
+        },
         'disliked': disliked.toList(),
+        'dislikedMeta': {for (final e in dislikedMeta.entries) e.key: [e.value.$1, e.value.$2.toUtc().toIso8601String()]},
         'skips': skips,
+        'ctxSkips': ctxSkips,
+        'skipAt': {for (final e in skipAt.entries) e.key: e.value.toUtc().toIso8601String()},
         'upvoted': upvoted.toList(),
         'seeds': [for (final x in seeds) [x.$1, x.$2]],
         'heard': heard.toList(),
@@ -144,6 +242,49 @@ class WaveTaste {
       t.heard.add('$x');
     }
     t.decayedAt = DateTime.tryParse('${j['decayedAt'] ?? ''}');
+    final n = j['neg'];
+    if (n is Map) {
+      n.forEach((c, m) {
+        if (m is Map) t.neg['$c'] = {for (final e in m.entries) '${e.key}': (e.value as num?)?.toDouble() ?? 0};
+      });
+    }
+    final cs = j['ctxSkips'];
+    if (cs is Map) {
+      cs.forEach((c, m) {
+        if (m is Map) t.ctxSkips['$c'] = {for (final e in m.entries) '${e.key}': (e.value as num?)?.toInt() ?? 0};
+      });
+    }
+    final sa = j['skipAt'];
+    if (sa is Map) {
+      sa.forEach((k, v) {
+        final at = DateTime.tryParse('$v');
+        if (at != null) t.skipAt['$k'] = at;
+      });
+    }
+    final dm = j['dislikedMeta'];
+    if (dm is Map) {
+      dm.forEach((k, v) {
+        final at = v is List && v.length >= 2 ? DateTime.tryParse('${v[1]}') : null;
+        if (at != null) t.dislikedMeta['$k'] = ('${(v as List)[0]}', at);
+      });
+    }
+    // Данные старого формата: у «не нравится» и пропусков не было ни контекста, ни срока.
+    // Считаем их данными обычной волны и даём обычный срок жизни от сегодняшнего дня
+    final now = DateTime.now();
+    for (final id in t.disliked) {
+      t.dislikedMeta.putIfAbsent(id, () => ('', now));
+    }
+    t.skips.forEach((id, _) => t.skipAt.putIfAbsent('|$id', () => now));
+    t.ctxSkips.forEach((c, m) => m.forEach((id, _) => t.skipAt.putIfAbsent('$c|$id', () => now)));
+    // Раньше минусы исполнителям лежали вместе с плюсами и действовали во всех волнах.
+    // Переносим их в обычную волну, где они остынут быстро
+    for (final k in t.artists.keys.toList()) {
+      final v = t.artists[k]!;
+      if (v >= 0) continue;
+      t.artists.remove(k);
+      final m = t.neg.putIfAbsent('', () => {});
+      m[k] = min(m[k] ?? 0, v.clamp(-10.0, 0.0).toDouble());
+    }
     t.decay();
     return t;
   }
@@ -165,7 +306,12 @@ class WaveInputs {
   final Map<String, double> bpm; // известный темп треков (Д6)
   final double? curBpm; // темп играющего сейчас трека
 
+  /// Контекст волны: '' — обычная, 'custom' — своя подборка, иначе id настроения.
+  /// Бан, пропуски и минусы исполнителям действуют только в том контексте, где их поставили
+  final String ctx;
+
   WaveInputs({
+    this.ctx = '',
     required this.tracks,
     this.liked = const {},
     this.myPlays = const {},
@@ -212,6 +358,7 @@ class WaveEngine {
       add(k, 6);
     }
     x.taste.artists.forEach(add);
+    x.taste.negFor(x.ctx).forEach(add);
     x.session.forEach(add);
     // Похожим исполнителям достаётся часть симпатии — так волна находит новое, но близкое
     final spill = <String, double>{};
@@ -260,7 +407,7 @@ class WaveEngine {
       w *= 1 - min(0.35, r.abs() * 0.5);
     }
     if (x.taste.upvoted.contains(t.id)) w *= 1.6;
-    w *= pow(0.45, x.taste.skips[t.id] ?? 0);
+    w *= pow(0.45, x.taste.skipsOf(t.id, x.ctx));
     return max(w, 0.002);
   }
 
@@ -269,7 +416,7 @@ class WaveEngine {
   static List<String> pick(WaveInputs x, WaveMode mode, int n,
       {List<String> recent = const [], Random? rnd, int sinceWide = 0}) {
     rnd ??= Random();
-    final pool = [for (final t in x.tracks) if (!x.taste.disliked.contains(t.id)) t];
+    final pool = [for (final t in x.tracks) if (!x.taste.isDisliked(t.id, x.ctx)) t];
     if (pool.isEmpty || n <= 0) return const [];
     // Не повторяем последние треки; в маленькой библиотеке — только самые свежие
     final int window = min(recent.length, max(0, pool.length - n) ~/ 2 + min<int>(pool.length ~/ 2, 60));
@@ -635,8 +782,13 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   // ---------- настроение ----------
 
+  /// В каком «контексте» идёт волна: от него зависит, какие минусы и баны действуют
+  String get _ctx => mood ?? (custom.isNotEmpty ? 'custom' : '');
+
   void setMood(String? id) {
     mood = moodById(id)?.id;
+    // Минусы, набранные в этой сессии (пропуски, «не нравится»), — про прежнее настроение, в новом их не тянем
+    _session.removeWhere((_, v) => v < 0);
     _save();
     notifyListeners();
     if (mood != null) unawaited(_loadTags());
@@ -819,10 +971,10 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   Future<void> dislike() async {
     final t = player.current;
     if (t == null) return;
-    taste.disliked.add(t.id);
+    taste.dislike(t.id, _ctx);
     for (final a in t.artists) {
       final k = a.toLowerCase();
-      taste.bump(k, -1.5);
+      taste.bump(k, -1.5, ctx: _ctx);
       _session[k] = (_session[k] ?? 0) - 4;
     }
     final trial = trials[t.id];
@@ -838,7 +990,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   }
 
   void undislike(String id) {
-    if (taste.disliked.remove(id)) {
+    if (taste.undislike(id)) {
       _save();
       notifyListeners();
     }
@@ -881,6 +1033,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       _rebuildInputs();
     }
     return WaveInputs(
+      ctx: _ctx,
       tracks: _cTracks,
       liked: _cLiked,
       myPlays: _cMyPlays,
@@ -981,7 +1134,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   /// Сколько разных песен исполнителя [key] пропущено в начале
   int _skippedSongsOf(String key) {
     var n = 0;
-    for (final id in taste.skips.keys) {
+    for (final id in taste.skipsIn(_ctx).keys) {
       final u = lib.data.tracks[id];
       if (u != null && u.artists.any((a) => a.toLowerCase() == key)) n++;
     }
@@ -1010,16 +1163,17 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
           if (cur != null && player.current?.id != t.id && !_kept(t.id)) _drop(cur);
         });
       }
-      taste.skips[t.id] = (taste.skips[t.id] ?? 0) + 1;
+      taste.addSkip(t.id, _ctx);
       // Д1: основной штраф получает сам трек (skips). Исполнителя заметно наказываем,
-      // только когда пропущены минимум две его разные песни
+      // только когда пропущены минимум две его разные песни. Всё это — только для текущего контекста
+      // (настроения), и со временем забывается
       for (final k in keys) {
         final songs = _skippedSongsOf(k);
         if (songs >= 2) {
-          taste.bump(k, -0.6);
+          taste.bump(k, -0.6, ctx: _ctx);
           _session[k] = (_session[k] ?? 0) - 2.5;
         } else {
-          taste.bump(k, -0.1);
+          taste.bump(k, -0.1, ctx: _ctx);
           _session[k] = (_session[k] ?? 0) - 0.5;
         }
       }
@@ -1031,12 +1185,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         }, keepVisible: true);
       }
     } else if (finished) {
-      final s = taste.skips[t.id];
-      if (s != null && s <= 1) {
-        taste.skips.remove(t.id);
-      } else if (s != null) {
-        taste.skips[t.id] = s - 1;
-      }
+      taste.forgiveSkip(t.id, _ctx);
       // Д3: если окно скрыто, человек ничего не нажимал — дослушивание весит вдвое меньше
       final bg = _inBackground ? 0.5 : 1.0;
       for (final k in keys) {
@@ -1534,7 +1683,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       final id = lib.data.resolve(t.id);
       final track = lib.data.tracks[id];
       if (track == null || _kept(id) || player.current?.id == id) continue;
-      final skipped = (taste.skips[t.id] ?? 0) > 0;
+      final skipped = taste.skipsOf(t.id, _ctx) > 0;
       if (skipped || _skippedArtist(track.artist, aff)) {
         _drop(t);
         removed++;
