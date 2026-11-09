@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'drive.dart';
 import 'library.dart';
 import 'log.dart';
+import 'models.dart';
 import 'notices.dart';
 import 'ntfy.dart';
 import 'player.dart';
@@ -91,6 +92,15 @@ class JamSnapshot {
 bool jamNeedsSeek(Duration local, Duration target, {Duration tolerance = const Duration(milliseconds: 700)}) =>
     (local - target).abs() > tolerance;
 
+/// Плавный переход у одного из участников: его следующий трек начался раньше общего времени, и он «опережает» остальных.
+/// По первому общему снимку этого трека меряем опережение: моя позиция минус общая. null — расхождение слишком большое
+/// или отрицательное, значит это не опережение, а перемотка или рассинхрон: нужно подстроиться под общее время
+Duration? jamMeasureLead(Duration local, Duration target, {Duration cap = const Duration(seconds: 20)}) {
+  final lead = local - target;
+  if (lead < const Duration(milliseconds: -700) || lead > cap) return null;
+  return lead.isNegative ? Duration.zero : lead;
+}
+
 /// Джем-сессия: несколько человек слушают одну очередь и управляют ей вместе.
 /// Действия идут по быстрому каналу ntfy, а копия последнего снимка каждого участника лежит на Google Диске
 /// (файл `jam-<id>-<почта>.json`): так всё работает и без ntfy, только медленнее.
@@ -171,6 +181,7 @@ class JamController extends ChangeNotifier {
     player.addListener(_onPlayer);
     player.position.addListener(_onPosition);
     player.jamOnEnded = _onEnded;
+    player.onJamCrossfade = _onCrossfade;
     social.onWritten = _sendWake;
     unawaited(ensureChannel());
     _tick = Timer.periodic(const Duration(milliseconds: 1500), (_) => _everySoon());
@@ -273,6 +284,7 @@ class JamController extends ChangeNotifier {
     state = null;
     _seen.clear();
     _driveWrite?.cancel();
+    _advanceTimer?.cancel();
     if (m != null) await _ntfy?.send({'t': 'leave', 'jam': id, 'who': m});
     // Файл джема на Диске больше не нужен
     final fid = _myFileId;
@@ -360,8 +372,41 @@ class JamController extends ChangeNotifier {
       queue: q,
       index: i,
       playing: playing ?? player.playing,
-      posMs: forceTrackStart ? 0 : player.position.value.inMilliseconds,
+      posMs: forceTrackStart ? 0 : math.max<int>(0, player.position.value.inMilliseconds - _myLead().inMilliseconds),
     );
+  }
+
+  /// Насколько позиция моего текущего трека опережает общую (плавный переход начал трек раньше)
+  Duration _myLead() =>
+      player.jamLeadTrack != null && player.jamLeadTrack == player.current?.id ? player.jamLead : Duration.zero;
+
+  /// Я ушёл вперёд плавным переходом: общее состояние ещё на одном из прошлых треков очереди
+  bool _localAhead(JamSnapshot st) {
+    final id = st.trackId, cur = player.current?.id;
+    if (id == null || cur == null || player.jamLeadTrack != cur || id == cur) return false;
+    final from = math.max(0, player.index - 6);
+    return player.queue.sublist(from, player.index).contains(id);
+  }
+
+  Timer? _advanceTimer;
+
+  /// У меня начался плавный переход: общий трек для остальных сменится, когда у них кончится прежний.
+  /// Если к тому времени никто его не сменил (у других переход тоже свой или они не дошли), общее состояние перевожу я
+  void _onCrossfade(Track next, Duration sharedRemaining) {
+    if (!active || me == null) return;
+    final id = next.id;
+    _advanceTimer?.cancel();
+    _advanceTimer = Timer(sharedRemaining + const Duration(milliseconds: 300), () {
+      if (!active || me == null) return;
+      // Человек успел переключить сам или ушёл дальше — не мешаем
+      if (player.current?.id != id) return;
+      if (state?.trackId == id) return; // кто-то уже перевёл джем на этот трек
+      final (q, i) = jamWindow(player.queue, player.index);
+      var at = serverNow;
+      if (at <= _lastAt) at = _lastAt + 1;
+      _lastAt = at;
+      _local(JamSnapshot(jam: jamId!, by: me!, at: at, queue: q, index: i, playing: player.playing, posMs: 0));
+    });
   }
 
   /// Раз в полторы секунды: подтягиваем файлы с Диска, обновляем свои признаки жизни
@@ -469,6 +514,35 @@ class JamController extends ChangeNotifier {
         }
         // Трека, которого нет в моей библиотеке (ещё не загрузилась), не включаем
         if (lib.data.tracks[snap.trackId!] == null) continue;
+        // Мой плавный переход начал следующий трек раньше остальных: назад не откатываемся и очередь не пересоздаём
+        if (player.jamLeadTrack != null && player.jamLeadTrack == player.current?.id) {
+          if (snap.trackId == player.current?.id) {
+            var shared = snap.positionAt(serverNow);
+            if (!player.jamLeadSynced) {
+              // Первый общий снимок этого трека: по нему уточняем, насколько я впереди
+              player.jamLeadSynced = true;
+              final measured = jamMeasureLead(player.position.value, shared);
+              if (measured == null) {
+                player.jamLeadTrack = null;
+                player.jamLead = Duration.zero;
+              } else {
+                player.jamLead = measured;
+              }
+            }
+            if (player.jamLeadTrack != null) {
+              shared += player.jamLead;
+              if (jamNeedsSeek(player.position.value, shared)) await player.seek(shared);
+              if (snap.playing && !player.playing) await player.play();
+              if (!snap.playing && player.playing) await player.pause();
+              continue;
+            }
+          } else if (_localAhead(snap)) {
+            // Общий трек ещё прежний: меняю только паузу и продолжение
+            if (snap.playing && !player.playing) await player.play();
+            if (!snap.playing && player.playing) await player.pause();
+            continue;
+          }
+        }
         final target = snap.positionAt(serverNow);
         final (ids, idx) = jamWindow(player.queue, player.index);
         if (!snap.sameQueueAs(ids, idx)) {
@@ -503,6 +577,24 @@ class JamController extends ChangeNotifier {
     if (st == null) return;
     final (ids, idx) = jamWindow(player.queue, player.index);
     if (player.current == null) return;
+    // Мой плавный переход уже начал следующий трек, а общий ещё прежний: не публикую «смену трека», только паузу
+    if (_localAhead(st)) {
+      if (player.playing != st.playing) {
+        var at = serverNow;
+        if (at <= _lastAt) at = _lastAt + 1;
+        _lastAt = at;
+        _local(JamSnapshot(
+          jam: st.jam,
+          by: me!,
+          at: at,
+          queue: st.queue,
+          index: st.index,
+          playing: player.playing,
+          posMs: st.positionAt(at).inMilliseconds,
+        ));
+      }
+      return;
+    }
     final queueChanged = !st.sameQueueAs(ids, idx);
     if (queueChanged) {
       // Новый трек или изменённая очередь: у всех начинается с начала, если трек другой
@@ -539,10 +631,19 @@ class JamController extends ChangeNotifier {
 
   /// Трек доиграл до конца: переходим к следующему; если кто-то уже перешёл, ничего не делаем.
   /// Возвращает true, если плеер сам не должен переключаться
-  bool _onEnded() {
+  bool _onEnded({bool waited = false}) {
     if (!active || me == null) return false;
     final st = state;
     if (st == null) return false;
+    // Трек кончился у меня раньше, чем у остальных (я опережаю общее время плавным переходом): подождём их
+    if (!waited && player.jamLeadTrack != null && player.jamLeadTrack == player.current?.id && player.jamLead > Duration.zero) {
+      final id = player.current?.id;
+      Timer(player.jamLead + const Duration(milliseconds: 400), () {
+        if (!active || state?.trackId != id) return; // общий джем уже ушёл дальше — меня переключили
+        _onEnded(waited: true);
+      });
+      return true;
+    }
     final (ids, idx) = jamWindow(player.queue, player.index);
     // Общее состояние уже ушло дальше этого трека — значит, нас уже переключили
     if (!st.sameQueueAs(ids, idx) && st.trackId != player.current?.id) return true;
@@ -579,6 +680,7 @@ class JamController extends ChangeNotifier {
   void dispose() {
     _tick?.cancel();
     _driveWrite?.cancel();
+    _advanceTimer?.cancel();
     _ntfy?.stop();
     super.dispose();
   }

@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:cave_player/core/autostart.dart';
 import 'package:cave_player/core/desktop_notify.dart';
+import 'package:cave_player/core/jam.dart';
 import 'package:cave_player/core/notify_prefs.dart';
 import 'package:cave_player/core/store.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -81,6 +82,27 @@ void main() {
 
     test('без значка картинки в разметке нет', () {
       expect(toastScript('Cavey', 'Текст'), isNot(contains('appLogoOverride')));
+    });
+  });
+
+  group('Плавный переход в джеме', () {
+    test('опережение: моя позиция минус общая, если это похоже на переход', () {
+      // Мой трек начался на 5 с раньше общего времени
+      expect(jamMeasureLead(const Duration(seconds: 6), const Duration(seconds: 1)), const Duration(seconds: 5));
+      // Совпадаем с общим временем — опережения нет
+      expect(jamMeasureLead(const Duration(seconds: 1), const Duration(milliseconds: 900)), const Duration(milliseconds: 100));
+      // Чуть отстаю (в пределах погрешности) — считаем нулём
+      expect(jamMeasureLead(const Duration(milliseconds: 500), const Duration(milliseconds: 900)), Duration.zero);
+    });
+
+    test('слишком большой отрыв или отставание — это перемотка, нужна синхронизация', () {
+      // Кто-то перемотал вперёд: я сильно позади
+      expect(jamMeasureLead(const Duration(seconds: 10), const Duration(seconds: 70)), isNull);
+      // Кто-то включил трек сначала, а я уже далеко ушёл вперёд
+      expect(jamMeasureLead(const Duration(seconds: 60), const Duration(seconds: 1)), isNull);
+      // Граница: ровно предел ещё опережение
+      expect(jamMeasureLead(const Duration(seconds: 21), const Duration(seconds: 1)), const Duration(seconds: 20));
+      expect(jamMeasureLead(const Duration(seconds: 22), const Duration(seconds: 1)), isNull);
     });
   });
 }

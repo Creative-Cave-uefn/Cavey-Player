@@ -154,7 +154,7 @@ class AppServices {
     // Слушаем вместе с другом: переходы идут по его трекам, плавный переход мешал бы синхронизации
     final jam = JamController(lib, drive, player, social,
         serverUrl: () => settings.viewOf('ntfy', '1') == '0' ? '' : settings.viewOf('ntfy.server', 'https://ntfy.sh'));
-    player.crossfadeBlocked = () => jam.active;
+    player.jamActive = () => jam.active;
     social.jamInfo = () => jam.active ? {'id': jam.jamId, 'm': jam.participants} : null;
     social.onFreshNotice = jam.onFreshNotice;
     jam.start();

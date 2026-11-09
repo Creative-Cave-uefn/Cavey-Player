@@ -556,7 +556,20 @@ class PlayerController extends ChangeNotifier {
   // ---------- плавный переход ----------
 
   /// Социальные функции (слушаем вместе с другом) могут запретить переход
-  bool Function()? crossfadeBlocked;
+  /// Идёт ли джем-сессия. Плавный переход в джеме работает у каждого по его настройкам: ушёл вперёд — запоминаем, на сколько
+  bool Function()? jamActive;
+
+  /// Джем: на сколько позиция текущего трека у меня опережает общую из-за плавного перехода (трек начался раньше общего времени)
+  Duration jamLead = Duration.zero;
+
+  /// Джем: для какого трека действует [jamLead]; null — опережения нет
+  String? jamLeadTrack;
+
+  /// Джем: опережение уже уточнено по первому общему снимку этого трека (до этого оно оценено по ходу перехода)
+  bool jamLeadSynced = true;
+
+  /// Джем: у меня начался плавный переход, [next] уже звучит, а общее время дойдёт до него через [sharedRemaining]
+  void Function(Track next, Duration sharedRemaining)? onJamCrossfade;
 
   /// Умный переход: профили звука треков и темп трека (если известен)
   MixAnalyzer? mixer;
@@ -702,7 +715,6 @@ class PlayerController extends ChangeNotifier {
     final prev = _prevPos;
     _prevPos = d;
     if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
-    if (crossfadeBlocked?.call() ?? false) return;
     if (settings.crossfadeSec <= 0 || _autoNextIndex() == null) return;
     // Профили смотрим только ближе к концу трека — не на каждом тике позиции
     final plan = duration - d < const Duration(seconds: 60) ? _smartPlan() : null;
@@ -805,6 +817,10 @@ class PlayerController extends ChangeNotifier {
           : lengthWanted;
       final oldFraction = duration > Duration.zero ? (_p.state.position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0).toDouble() : 1.0;
       final oldDurationMs = duration.inMilliseconds;
+      // Джем: общего времени у уходящего трека осталось на опережение больше, чем у меня на часах
+      final inJam = jamActive?.call() ?? false;
+      final prevLead = jamLeadTrack != null && jamLeadTrack == current?.id ? jamLead : Duration.zero;
+      final sharedRemaining = (oldRemaining > Duration.zero ? oldRemaining : Duration.zero) + prevLead;
       // Теперь «главный» проигрыватель — новый, а прежний доигрывает затихая
       final old = _p;
       _p = incoming;
@@ -830,7 +846,17 @@ class PlayerController extends ChangeNotifier {
       _normIn = _normFactorFor(nextTrack.id);
       _applyVolume();
       _startTail(CrossfadeInfo(oldFraction, DateTime.now(), lengthMs, oldDurationMs: oldDurationMs));
+      // Задаём до notifyListeners: джем по нему отличает мой переход от того, что человек переключил трек сам
+      if (inJam) {
+        jamLead = _p.state.position + sharedRemaining;
+        jamLeadTrack = nextTrack.id;
+        jamLeadSynced = false;
+      } else {
+        jamLeadTrack = null;
+        jamLead = Duration.zero;
+      }
       notifyListeners();
+      if (inJam) onJamCrossfade?.call(nextTrack, sharedRemaining);
       unawaited(_whenReady(seq, nextTrack));
       _preloadNext();
       _saveSession();
@@ -915,6 +941,8 @@ class PlayerController extends ChangeNotifier {
     final t = current;
     if (t == null) return;
     final seq = ++_openSeq;
+    jamLeadTrack = null;
+    jamLead = Duration.zero;
     // Обычная смена трека без плавного перехода: полоса старого трека растворяется
     // (дослушанный до конца — сразу, переключённый вручную — на месте)
     final natural = _autoEnd;
