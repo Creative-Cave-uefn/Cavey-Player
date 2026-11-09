@@ -151,7 +151,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
                       final a = albums[i];
                       return TileInk(
                         onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-                        onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
+                        onPlay: () => Services.of(context).player.playTracks(a.tracks, 0, inOrder: true),
                         // Правый клик: меню альбома
                         onSecondaryTapUp: (d) => showAlbumMenu(context, a, d.globalPosition),
                         child: LayoutBuilder(

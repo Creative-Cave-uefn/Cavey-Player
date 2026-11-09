@@ -10,7 +10,7 @@ import '../core/log.dart';
 import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
-import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength;
+import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength, seekWaveMin, seekWaveMax;
 import 'theme.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
@@ -774,7 +774,7 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
       const SizedBox(height: 6),
       const Text(
         'Конец трека затихает, а следующий в это время нарастает. Не работает, если вы сами переключили трек, '
-        'перемотали в конец или слушаете вместе с другом, а также на коротких треках.',
+        'перемотали в конец или слушаете в джем-сессии, а также на коротких треках.',
         style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
       ),
       const SizedBox(height: 4),
@@ -795,6 +795,38 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           child: Text(sec == 0 ? 'Выключено' : '$sec с', textAlign: TextAlign.right, style: const TextStyle(color: C.muted)),
         ),
       ]),
+      const SizedBox(height: 8),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: app.player.normalize,
+        onChanged: (v) async {
+          await app.player.setNormalize(v);
+          if (mounted) setState(() {});
+        },
+        title: const Text('Ровная громкость'),
+        subtitle: const Text(
+          'Тихие треки подтягиваются, громкие приглушаются, чтобы громкость не прыгала от песни к песне. '
+          'Звук трека разбирается один раз в фоне (трек для этого скачивается в кэш); пока не готово, трек играет как есть, '
+          'а потом громкость плавно подстраивается. Громкость выше вашего ползунка не поднимается.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+        ),
+      ),
+      if (app.player.normalize)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'quiet', label: Text('Тише')),
+              ButtonSegment(value: 'normal', label: Text('Обычно')),
+              ButtonSegment(value: 'loud', label: Text('Громче')),
+            ],
+            selected: {app.player.normLevel},
+            onSelectionChanged: (v) async {
+              await app.player.setNormLevel(v.first);
+              if (mounted) setState(() {});
+            },
+          ),
+        ),
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         value: app.player.smartMix,
@@ -809,6 +841,23 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           'Как Automix в Spotify: переход начинается там, где песня на самом деле затихает, тишина в начале следующей '
           'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
           'Ползунок выше задаёт самый длинный переход. Звук трека разбирается один раз в фоне; пока не готово — обычный переход.',
+          style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
+        ),
+      ),
+      const SizedBox(height: 18),
+      Text('Быстрые сообщения', style: display(20)),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: app.settings.viewOf('ntfy', '1') != '0',
+        onChanged: (v) {
+          setState(() => app.settings.view['ntfy'] = v ? '1' : '0');
+          app.lib.saveSettings();
+        },
+        title: const Text('Быстрый канал (ntfy)'),
+        subtitle: const Text(
+          'Джем-сессии и уведомления доходят за доли секунды: через бесплатный сервер ntfy.sh идут только короткие сигналы и '
+          'действия (почты и идентификаторы треков), тема канала не угадывается без вашей общей папки. Без него всё работает '
+          'через Google Диск, но с задержкой в несколько секунд. Применяется после перезапуска.',
           style: TextStyle(color: C.faint, fontSize: 13, height: 1.4),
         ),
       ),
@@ -1076,9 +1125,9 @@ class _SeekEdgeSectionState extends State<_SeekEdgeSection> {
             child: ValueListenableBuilder<double>(
               valueListenable: seekWaveLength,
               builder: (context, len, _) => Slider(
-                value: len.clamp(8.0, 40.0),
-                min: 8,
-                max: 40,
+                value: len.clamp(seekWaveMin, seekWaveMax),
+                min: seekWaveMin,
+                max: seekWaveMax,
                 onChanged: wave ? (v) => seekWaveLength.value = v : null,
                 onChangeEnd: (v) {
                   app.settings.view['seek.wlen'] = v.round().toString();

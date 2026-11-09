@@ -892,8 +892,8 @@ class _TracksPageState extends State<TracksPage> {
               onPressed: visible.isEmpty
                   ? null
                   : () {
-                      if (app.player.shuffle) app.player.toggleShuffle();
-                      app.player.playTracks(visible, 0);
+                      if (app.player.shuffle && !(widget.numbered && widget.playlistId == null)) app.player.toggleShuffle();
+                      app.player.playTracks(visible, 0, inOrder: widget.numbered && widget.playlistId == null);
                     },
               icon: const Icon(Icons.play_arrow_rounded, size: 20),
               label: const Text('Слушать'),
@@ -1046,7 +1046,7 @@ class _TracksPageState extends State<TracksPage> {
               compact: widget.compact,
               playlistId: widget.playlistId,
               cached: pinned.contains(visible[i].id) && app.cache.has(visible[i].id),
-              onPlay: () => app.player.playTracks(visible, i, playlistId: widget.playlistId),
+              onPlay: () => app.player.playTracks(visible, i, playlistId: widget.playlistId, inOrder: widget.numbered && widget.playlistId == null),
               selecting: _selecting,
               selected: _sel.contains(visible[i].id),
               onSelect: (shift) => _onSelect(visible, i, shift),

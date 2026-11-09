@@ -284,6 +284,9 @@ final seekEdgeWave = ValueNotifier<bool>(false);
 /// Длина волны края (период по вертикали, px): 8 — частая рябь, 40 — плавные длинные изгибы
 final seekWaveLength = ValueNotifier<double>(18);
 
+/// Шкала длины волны: короче 17 нельзя (дальше влево — перебор), вправо добавлена длинная волна
+const seekWaveMin = 17.0, seekWaveMax = 60.0;
+
 /// Осветление капсулы по прослушанной части: слева направо до текущего места
 class _Wash extends StatefulWidget {
   final PlayerController player;
@@ -312,7 +315,7 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
       _init = true;
       final st = Services.of(context).settings;
       seekEdgeWave.value = st.viewOf('seek.edge', 'straight') == 'wave';
-      seekWaveLength.value = st.viewNum('seek.wlen', 18).clamp(8.0, 40.0).toDouble();
+      seekWaveLength.value = st.viewNum('seek.wlen', 18).clamp(seekWaveMin, seekWaveMax).toDouble();
       _sync();
     }
   }
@@ -341,17 +344,27 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
       return ListenableBuilder(
-        listenable: Listenable.merge([SmoothPosition.of(player), _seekPreview, seekEdgeWave, seekWaveLength]),
+        listenable: Listenable.merge([SmoothPosition.of(player), _seekPreview, seekEdgeWave, seekWaveLength, player.fadeInfo]),
         builder: (context, _) {
           final total = player.duration.inMilliseconds.toDouble();
           final at = (_seekPreview.value ?? SmoothPosition.of(player).value).inMilliseconds.toDouble();
           final f = total <= 0 ? 0.0 : (at / total).clamp(0.0, 1.0);
           // Полоса перемотки идёт по прямому участку грани, а осветление — от самого края капсулы
-          final x = f <= 0 ? 0.0 : (f >= 1 ? w : _capInset + f * (w - 2 * _capInset));
+          double xOf(double fr) => fr <= 0 ? 0.0 : (fr >= 1 ? w : _capInset + fr * (w - 2 * _capInset));
+          final x = xOf(f);
+          // Плавный переход: полоса уходящего трека доезжает до края и гаснет, а слева уже растёт полоса нового
+          final info = player.fadeInfo.value;
+          double fadeX = 0, fadeAlpha = 0;
+          if (info != null) {
+            final t = Curves.easeInOut.transform(info.progress(DateTime.now()));
+            fadeX = xOf(info.fromFraction + (1 - info.fromFraction) * t);
+            fadeAlpha = 1 - t;
+          }
           return RepaintBoundary(
             child: CustomPaint(
               size: Size(w, box.maxHeight),
-              painter: _WashPainter(x: x, wave: seekEdgeWave.value, length: seekWaveLength.value, flow: _flow),
+              painter: _WashPainter(
+                  x: x, wave: seekEdgeWave.value, length: seekWaveLength.value, flow: _flow, fadeX: fadeX, fadeAlpha: fadeAlpha),
             ),
           );
         },
@@ -360,22 +373,28 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
   }
 }
 
-/// Рисует осветление до [x]; правая граница — прямая или синусоида, бегущая вдоль неё
+/// Рисует осветление до [x]; правая граница — прямая или синусоида, бегущая вдоль неё.
+/// Во время плавного перехода под ним рисуется полоса уходящего трека до [fadeX] с прозрачностью [fadeAlpha]
 class _WashPainter extends CustomPainter {
   final double x;
   final bool wave;
   final double length;
   final Animation<double> flow;
-  _WashPainter({required this.x, required this.wave, required this.length, required this.flow}) : super(repaint: flow);
+  final double fadeX;
+  final double fadeAlpha;
+  _WashPainter({required this.x, required this.wave, required this.length, required this.flow, this.fadeX = 0, this.fadeAlpha = 0})
+      : super(repaint: flow);
 
   static const amplitude = 3.0;
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (x <= 0) return;
+  void _strip(Canvas canvas, Size size, double x, double alpha) {
+    if (x <= 0 || alpha <= 0) return;
     final rect = Rect.fromLTWH(0, 0, x, size.height);
     final paint = Paint()
-      ..shader = const LinearGradient(colors: [Color(0x0AFFFFFF), Color(0x1AFFFFFF)]).createShader(rect);
+      ..shader = LinearGradient(colors: [
+        Color.fromRGBO(255, 255, 255, 0.04 * alpha),
+        Color.fromRGBO(255, 255, 255, 0.10 * alpha),
+      ]).createShader(rect);
     // Дошли до конца трека — края уже не видно
     if (!wave || x >= size.width - 0.5) {
       canvas.drawRect(rect, paint);
@@ -393,7 +412,14 @@ class _WashPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_WashPainter old) => old.x != x || old.wave != wave || old.length != length;
+  void paint(Canvas canvas, Size size) {
+    _strip(canvas, size, fadeX, fadeAlpha);
+    _strip(canvas, size, x, 1);
+  }
+
+  @override
+  bool shouldRepaint(_WashPainter old) =>
+      old.x != x || old.wave != wave || old.length != length || old.fadeX != fadeX || old.fadeAlpha != fadeAlpha;
 }
 
 /// Маленький пример края для «Настроек»: полоска осветления с прямой или волнистой границей

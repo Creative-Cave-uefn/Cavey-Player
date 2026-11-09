@@ -180,7 +180,7 @@ class _AlbumTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) => TileInk(
         onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-        onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
+        onPlay: () => Services.of(context).player.playTracks(a.tracks, 0, inOrder: true),
         child: LayoutBuilder(
           builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 10),

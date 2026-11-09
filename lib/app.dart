@@ -180,7 +180,9 @@ class AppServices {
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
     // Умный переход: профили звука треков и темп из Deezer (если уже узнали)
-    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')));
+    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))..onProfile = (id) {
+        if (id == player.current?.id) player.refreshNormalize();
+      };
     final tempo = <String, double?>{};
     player.tempoOf = (t) {
       if (tempo.containsKey(t.id)) return tempo[t.id];

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart' show Media, NativePlayer, Player;
@@ -15,6 +16,18 @@ import 'store.dart';
 import 'stream_proxy.dart';
 
 enum RepeatSetting { off, all, one }
+
+/// Идёт плавный переход: на какой доле длины шёл уходящий трек, когда переход начался, и сколько он длится.
+/// По этому полоса осветления старого трека доезжает до края и гаснет, пока у нового растёт своя
+class CrossfadeInfo {
+  final double fromFraction;
+  final DateTime started;
+  final int lengthMs;
+  const CrossfadeInfo(this.fromFraction, this.started, this.lengthMs);
+
+  /// Ход перехода 0…1
+  double progress(DateTime now) => (now.difference(started).inMilliseconds / lengthMs).clamp(0.0, 1.0);
+}
 
 /// Источник бесконечной очереди («Моя волна»): даёт следующие треки и узнаёт, как их слушали
 abstract class QueueFeeder {
@@ -109,7 +122,7 @@ class PlayerController extends ChangeNotifier {
 
   PlayerController(this.lib, this.accounts, this.settings, this.cache) {
     _bind(_p);
-    unawaited(_p.setVolume(settings.volume));
+    unawaited(_p.setVolume(_scaled(settings.volume)));
     // Пока играет, раз в 15 секунд запоминаем позицию — на случай, если окно закроют
     _saveTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (playing) _saveSession();
@@ -243,8 +256,11 @@ class PlayerController extends ChangeNotifier {
   /// Плейлист, из которого запущено воспроизведение (для пункта «Перейти в плейлист»); null — другой источник
   String? sourcePlaylist;
 
-  Future<void> playTracks(List<Track> list, int start, {String? playlistId}) async {
+  /// [inOrder] — альбом: «Вперемешку» выключается, чтобы шла последовательность альбома.
+  /// Переключатель остаётся рабочим: его можно включить снова
+  Future<void> playTracks(List<Track> list, int start, {String? playlistId, bool inOrder = false}) async {
     if (list.isEmpty) return;
+    if (inOrder) shuffle = false;
     feeder = null; // выбрали что-то сами — волна выключается
     sourcePlaylist = playlistId;
     _origin = [for (final t in list) t.id];
@@ -524,12 +540,27 @@ class PlayerController extends ChangeNotifier {
   /// Профили звука текущего и следующего трека — считаем заранее, пока трек играет
   void _prepareMix() {
     final m = mixer;
-    if (m == null || !smartMix || settings.crossfadeSec <= 0) return;
+    final needMix = smartMix && settings.crossfadeSec > 0;
+    if (m == null || !(needMix || normalize)) return;
     final cur = current;
-    if (cur != null) m.prepare(cur.id);
+    if (cur != null) {
+      // Ровной громкости нужна громкость текущего трека: он должен лежать в кэше, чтобы его можно было разобрать
+      if (normalize && !cache.has(cur.id)) cache.enqueue(cur.id);
+      m.prepare(cur.id);
+    }
     final ni = _autoNextIndex();
     if (ni != null) m.prepare(queue[ni]);
   }
+
+  /// Пока идёт переход, не null; по нему рисуется конец полосы осветления
+  final ValueNotifier<CrossfadeInfo?> fadeInfo = ValueNotifier(null);
+
+  /// Следующий трек уже открыт на втором проигрывателе (на паузе, громкость 0): переход начинается без задержки на буферизацию
+  String? _preparedId;
+  bool _preparing = false;
+
+  /// За сколько секунд до перехода открываем следующий трек заранее
+  static const prepareLeadSec = 10;
 
   Duration _prevPos = Duration.zero;
   bool _fading = false;
@@ -538,11 +569,81 @@ class PlayerController extends ChangeNotifier {
   double _outGain = 1;
   Player? _outgoing;
 
-  /// Громкость обоих проигрывателей с учётом перехода
+  // ---------- ровная громкость ----------
+
+  /// Выравнивание громкости треков. Без фильтров внутри проигрывателя (прежний `loudnorm` ломал вывод звука):
+  /// громкость каждого трека измеряет [MixAnalyzer], а поправка просто умножает обычную громкость
+  bool get normalize => settings.viewOf('norm', '0') == '1';
+
+  /// quiet / normal / loud
+  String get normLevel {
+    final v = settings.viewOf('norm.level', 'normal');
+    return v == 'quiet' || v == 'loud' ? v : 'normal';
+  }
+
+  /// Целевая громкость тела трека в дБ (шкала анализатора)
+  static double normTargetDb(String level) => switch (level) {
+        'quiet' => -19.0,
+        'loud' => -13.0,
+        _ => -16.0,
+      };
+
+  /// Поправка в дБ: подтянуть тихий трек и приглушить громкий, но не больше −12 дБ и +4 дБ
+  static double normGainDb(double trackDb, double targetDb) => (targetDb - trackDb).clamp(-12.0, 4.0).toDouble();
+
+  static double dbToFactor(double db) => math.pow(10, db / 20).toDouble();
+
+  /// Множитель громкости трека; 1, пока он не разобран или выравнивание выключено
+  double _normFactorFor(String? id) {
+    if (!normalize || id == null) return 1;
+    final pr = mixer?.profile(id);
+    if (pr == null) return 1;
+    return dbToFactor(normGainDb(pr.loudDb, normTargetDb(normLevel)));
+  }
+
+  double _normIn = 1; // текущий трек
+  double _normOut = 1; // уходящий при переходе
+  Timer? _normTimer;
+
+  /// Громкость трека стала известна (или поменяли настройку): плавно, за ~1,5 с, переходим к нужной
+  void refreshNormalize() {
+    final target = _normFactorFor(current?.id);
+    _normTimer?.cancel();
+    if ((target - _normIn).abs() < 0.005) return;
+    _normTimer = Timer.periodic(const Duration(milliseconds: 50), (t) {
+      final goal = _normFactorFor(current?.id);
+      _normIn += (goal - _normIn) * 0.15;
+      if ((goal - _normIn).abs() < 0.005) {
+        _normIn = goal;
+        t.cancel();
+      }
+      _applyVolume();
+    });
+  }
+
+  Future<void> setNormalize(bool on) async {
+    settings.view['norm'] = on ? '1' : '0';
+    _prepareMix();
+    refreshNormalize();
+    notifyListeners();
+    await lib.saveSettings();
+  }
+
+  Future<void> setNormLevel(String level) async {
+    settings.view['norm.level'] = level;
+    refreshNormalize();
+    notifyListeners();
+    await lib.saveSettings();
+  }
+
+  /// Выше 100 не поднимаем: запас громкости у libmpv зависит от сборки, а переполнение хуже тихого трека
+  double _scaled(double v) => v.clamp(0.0, 100.0).toDouble();
+
+  /// Громкость обоих проигрывателей с учётом перехода и выравнивания
   void _applyVolume() {
-    unawaited(_p.setVolume(volume * _inGain));
+    unawaited(_p.setVolume(_scaled(volume * _inGain * _normIn)));
     final o = _outgoing;
-    if (o != null) unawaited(o.setVolume(volume * _outGain));
+    if (o != null) unawaited(o.setVolume(_scaled(volume * _outGain * _normOut)));
   }
 
   /// Есть ли следующий трек для автоматического перехода (индекс, либо null)
@@ -561,12 +662,52 @@ class PlayerController extends ChangeNotifier {
     if (settings.crossfadeSec <= 0 || _autoNextIndex() == null) return;
     // Профили смотрим только ближе к концу трека — не на каждом тике позиции
     final plan = duration - d < const Duration(seconds: 60) ? _smartPlan() : null;
+    _maybePrepare(d, plan);
     final step = d - prev;
     final due = plan != null
         ? d >= plan.start && prev < plan.start && step >= Duration.zero && step < const Duration(seconds: 2)
         : crossfadeDue(seconds: settings.crossfadeSec, duration: duration, position: d, previous: prev);
     if (!due) return;
     unawaited(_startCrossfade(plan));
+  }
+
+  /// Ближе к переходу открываем следующий трек заранее, чтобы к началу перехода он уже был забуферизован
+  void _maybePrepare(Duration d, MixPlan? plan) {
+    if (_preparing || _fading || _preparedId != null) return;
+    final ni = _autoNextIndex();
+    if (ni == null) return;
+    final lead = Duration(seconds: prepareLeadSec) + (plan?.length ?? Duration(seconds: settings.crossfadeSec));
+    final startAt = plan?.start ?? (duration - Duration(seconds: settings.crossfadeSec));
+    if (duration < Duration(seconds: settings.crossfadeSec * 2) || startAt - d > lead) return;
+    final t = lib.data.tracks[queue[ni]];
+    if (t == null) return;
+    _preparing = true;
+    final seq = _openSeq;
+    unawaited(() async {
+      try {
+        final media = await _mediaFor(t);
+        if (seq != _openSeq || _fading) return;
+        final q = _q ??= Player();
+        await q.setVolume(0);
+        await q.open(media, play: false);
+        if (seq != _openSeq) {
+          await q.stop();
+          return;
+        }
+        if (!_fading) _preparedId = t.id;
+      } catch (e) {
+        AppLog.warn('Переход: не получилось заранее открыть следующий трек', e);
+      } finally {
+        _preparing = false;
+      }
+    }());
+  }
+
+  /// Сбрасывает заранее открытый трек (человек переключил трек сам)
+  void _dropPrepared() {
+    if (_preparedId == null && !_preparing) return;
+    _preparedId = null;
+    if (!_fading) unawaited(_q?.stop() ?? Future<void>.value());
   }
 
   Future<void> _startCrossfade([MixPlan? plan]) async {
@@ -576,24 +717,49 @@ class PlayerController extends ChangeNotifier {
     if (nextTrack == null) return;
     _fading = true;
     final seq = ++_openSeq;
-    final lengthMs = plan?.length.inMilliseconds ?? settings.crossfadeSec.clamp(1, 10).toInt() * 1000;
-    final match = plan?.inGain ?? 1.0;
+    final lengthWanted = plan?.length.inMilliseconds ?? settings.crossfadeSec.clamp(1, 10).toInt() * 1000;
+    final lengthMs0 = lengthWanted;
+    // С выравниванием громкости оба трека уже приведены к одному уровню — свою подгонку перехода не добавляем
+    final match = normalize ? 1.0 : (plan?.inGain ?? 1.0);
     try {
       AppLog.info(plan == null
-          ? 'Плавный переход на «${nextTrack.title}» (${lengthMs ~/ 1000} с)'
-          : 'Умный переход на «${nextTrack.title}»: с ${plan.start.inMilliseconds / 1000} с, ${(lengthMs / 1000).toStringAsFixed(1)} с, '
+          ? 'Плавный переход на «${nextTrack.title}» (${lengthMs0 ~/ 1000} с)'
+          : 'Умный переход на «${nextTrack.title}»: с ${plan.start.inMilliseconds / 1000} с, ${(lengthMs0 / 1000).toStringAsFixed(1)} с, '
               'следующий с ${plan.inStart.inMilliseconds / 1000} с, громкость ×${match.toStringAsFixed(2)}');
-      final media = await _mediaFor(nextTrack);
-      if (seq != _openSeq || !_fading) return; // пока готовили, человек сам что-то переключил
+      // Следующий трек как раз открывается заранее — дожидаемся, чтобы не открывать его дважды на одном проигрывателе
+      for (var i = 0; _preparing && i < 60; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      if (seq != _openSeq || !_fading) return;
       final incoming = _q ??= Player();
+      final prepared = _preparedId == nextTrack.id;
+      _preparedId = null;
       await incoming.setVolume(0);
-      await incoming.open(media, play: true);
+      if (prepared) {
+        await incoming.play();
+      } else {
+        final media = await _mediaFor(nextTrack);
+        if (seq != _openSeq || !_fading) return; // пока готовили, человек сам что-то переключил
+        await incoming.open(media, play: true);
+      }
       // Пустое вступление следующего трека пропускаем
-      if (plan != null && plan.inStart > const Duration(milliseconds: 300)) await incoming.seek(plan.inStart);
+      final inStart = plan != null && plan.inStart > const Duration(milliseconds: 300) ? plan.inStart : Duration.zero;
+      if (inStart > Duration.zero) await incoming.seek(inStart);
+      // Уходящий трек остаётся на полной громкости, пока у следующего не пошёл звук (до 3 с),
+      // и оба затихают и нарастают одновременно
+      await incoming.stream.position
+          .firstWhere((d) => d > inStart + const Duration(milliseconds: 40))
+          .timeout(const Duration(seconds: 3), onTimeout: () => Duration.zero);
       if (seq != _openSeq || !_fading) {
         await incoming.stop();
         return;
       }
+      // Уходящему осталось звучать не дольше, чем он ещё длится: переход укорачивается на время ожидания
+      final oldRemaining = duration - _p.state.position;
+      final lengthMs = oldRemaining > Duration.zero
+          ? math.min(lengthWanted, math.max(800, oldRemaining.inMilliseconds))
+          : lengthWanted;
+      final oldFraction = duration > Duration.zero ? (_p.state.position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0).toDouble() : 1.0;
       // Теперь «главный» проигрыватель — новый, а прежний доигрывает затихая
       final old = _p;
       _p = incoming;
@@ -612,7 +778,11 @@ class PlayerController extends ChangeNotifier {
       playing = true;
       _inGain = 0;
       _outGain = 1;
+      _normTimer?.cancel();
+      _normOut = _normIn;
+      _normIn = _normFactorFor(nextTrack.id);
       _applyVolume();
+      fadeInfo.value = CrossfadeInfo(oldFraction, DateTime.now(), lengthMs);
       notifyListeners();
       unawaited(_whenReady(seq, nextTrack));
       _preloadNext();
@@ -641,6 +811,8 @@ class PlayerController extends ChangeNotifier {
   void _endFade({bool stopIncoming = false}) {
     _fadeTimer?.cancel();
     _fadeTimer = null;
+    fadeInfo.value = null;
+    _preparedId = null;
     final wasFading = _fading;
     _fading = false;
     final old = _outgoing;
@@ -648,7 +820,8 @@ class PlayerController extends ChangeNotifier {
     _inGain = 1;
     _outGain = 1;
     if (old != null) unawaited(old.stop());
-    if (wasFading || old != null) unawaited(_p.setVolume(volume));
+    _normOut = 1;
+    if (wasFading || old != null) unawaited(_p.setVolume(_scaled(volume * _normIn)));
     if (stopIncoming && old == null) unawaited(_q?.stop() ?? Future<void>.value());
   }
 
@@ -682,6 +855,10 @@ class PlayerController extends ChangeNotifier {
     if (t == null) return;
     final seq = ++_openSeq;
     _endFade();
+    _dropPrepared();
+    _normTimer?.cancel();
+    _normIn = _normFactorFor(t.id);
+    _applyVolume();
     _prevPos = Duration.zero;
     _resumeAt = null;
     _userPaused = false;

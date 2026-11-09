@@ -74,7 +74,7 @@ class CollectionPage extends StatelessWidget {
                   title: a.title,
                   subtitle: a.artist,
                   onTap: () => nav.go(Nav('album', a.key)),
-                  onPlay: () => app.player.playTracks(a.tracks, 0),
+                  onPlay: () => app.player.playTracks(a.tracks, 0, inOrder: true),
                 ),
             ], 176),
             const SizedBox(height: 30),

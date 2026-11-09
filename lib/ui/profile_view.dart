@@ -577,7 +577,7 @@ Widget _albumTile(BuildContext context, Album a) => _tile(
       title: a.title,
       subtitle: a.year.isEmpty ? countTracks(a.tracks.length) : '${a.year} · ${countTracks(a.tracks.length)}',
       onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-      onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
+      onPlay: () => Services.of(context).player.playTracks(a.tracks, 0, inOrder: true),
     );
 
 // ---------- страница исполнителя ----------
@@ -884,7 +884,7 @@ class UserProfilePage extends StatelessWidget {
                       title: a.title,
                       subtitle: 'Альбом · ${a.artist}',
                       onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-                      onPlay: () => app.player.playTracks(a.tracks, 0),
+                      onPlay: () => app.player.playTracks(a.tracks, 0, inOrder: true),
                     ),
                   for (final p in favs.playlists)
                     _tile(
