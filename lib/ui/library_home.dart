@@ -102,15 +102,19 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         Text('Треки · ${foundTracks.length}', style: display(20, weight: FontWeight.w700)),
         const SizedBox(height: 10),
         for (var i = 0; i < shown.length; i++)
-          TrackRow(
+          // Строка рассчитана на фиксированную высоту, как в списке «Все песни» (itemExtent: 58): без неё в ListView не рисуется
+          SizedBox(
             key: ValueKey('hs:${shown[i].id}'),
-            track: shown[i],
-            index: i,
-            current: shown[i].id == currentId,
-            playing: app.player.playing,
-            compact: compact,
-            cached: false,
-            onPlay: () => app.player.playTracks(shown, i),
+            height: 58,
+            child: TrackRow(
+              track: shown[i],
+              index: i,
+              current: shown[i].id == currentId,
+              playing: app.player.playing,
+              compact: compact,
+              cached: false,
+              onPlay: () => app.player.playTracks(shown, i),
+            ),
           ),
         if (foundTracks.length > maxTracks)
           Padding(

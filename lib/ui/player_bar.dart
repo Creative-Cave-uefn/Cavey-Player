@@ -706,15 +706,15 @@ class _VolumeControl extends StatelessWidget {
       p: p,
       builder: (context, stop) => Row(mainAxisSize: MainAxisSize.min, children: [
         // Клик по динамику — выключить звук, ещё клик — вернуть прежнюю громкость
-        // Правая кнопка мыши — настройка ровной громкости
+        // Правая кнопка мыши — настройки звука
         Builder(
           builder: (btn) => GestureDetector(
             onSecondaryTap: () {
               stop();
-              showGlassPopover(context: btn, width: 330, above: true, gap: 36, builder: (ctx) => _SoundPanel(Services.of(ctx)));
+              showGlassPopover(context: btn, width: 380, above: true, gap: 36, builder: (ctx) => _SoundPanel(Services.of(ctx)));
             },
             child: IconButton(
-              tooltip: p.volume == 0 ? 'Включить звук (ПКМ — ровная громкость)' : 'Выключить звук (ПКМ — ровная громкость)',
+              tooltip: p.volume == 0 ? 'Включить звук (ПКМ - настройки звука)' : 'Выключить звук (ПКМ - настройки звука)',
               visualDensity: VisualDensity.compact,
               iconSize: 20,
               onPressed: () {
@@ -857,61 +857,47 @@ class _SoundPanelState extends State<_SoundPanel> {
   }
 }
 
-/// Строка настройки: название, значок «?» с раскрывающимся описанием и переключатель
-class _PanelRow extends StatefulWidget {
+/// Строка настройки: название (целиком, при нехватке места переносится), полупрозрачный значок «?» с описанием в облачке
+/// при наведении и переключатель
+class _PanelRow extends StatelessWidget {
   final String title, help;
   final bool value;
   final ValueChanged<bool> onChanged;
   const _PanelRow({required this.title, required this.help, required this.value, required this.onChanged});
-  @override
-  State<_PanelRow> createState() => _PanelRowState();
-}
-
-class _PanelRowState extends State<_PanelRow> {
-  bool _help = false;
 
   @override
   Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      SizedBox(
-        height: 44,
-        child: Row(children: [
-          Flexible(child: Text(widget.title, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600))),
-          const SizedBox(width: 8),
-          MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => setState(() => _help = !_help),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 160),
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 44),
+      child: Row(children: [
+        Flexible(child: Padding(padding: const EdgeInsets.symmetric(vertical: 6), child: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)))),
+        const SizedBox(width: 8),
+        Tooltip(
+          message: help,
+          // Облачко появляется почти сразу и держится, пока курсор над значком
+          waitDuration: const Duration(milliseconds: 120),
+          showDuration: const Duration(seconds: 30),
+          constraints: const BoxConstraints(maxWidth: 280),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          textStyle: const TextStyle(color: C.text, fontSize: 12.5, height: 1.4),
+          preferBelow: false,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.help,
+            child: Opacity(
+              opacity: 0.5,
+              child: Container(
                 width: 18,
                 height: 18,
                 alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: _help ? C.accent : Colors.transparent,
-                  border: Border.all(color: _help ? C.accent : C.faint, width: 1.3),
-                ),
-                child: Text('?', style: TextStyle(fontSize: 11, height: 1, fontWeight: FontWeight.w700, color: _help ? C.accentInk : C.muted)),
+                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: C.muted, width: 1.3)),
+                child: const Text('?', style: TextStyle(fontSize: 11, height: 1, fontWeight: FontWeight.w700, color: C.muted)),
               ),
             ),
           ),
-          const Spacer(),
-          Switch(value: widget.value, onChanged: widget.onChanged),
-        ]),
-      ),
-      AnimatedSize(
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-        alignment: Alignment.topCenter,
-        child: _help
-            ? Padding(
-                padding: const EdgeInsets.only(right: 8, bottom: 8),
-                child: Text(widget.help, style: const TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
-              )
-            : const SizedBox(width: double.infinity),
-      ),
-    ]);
+        ),
+        const SizedBox(width: 8),
+        Switch(value: value, onChanged: onChanged),
+      ]),
+    );
   }
 }
