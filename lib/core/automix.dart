@@ -122,6 +122,9 @@ class MixAnalyzer {
   final Tools tools;
   MixAnalyzer(this.dir, this.cache, this.tools);
 
+  /// Профиль трека посчитан (плеер по нему подстраивает громкость)
+  void Function(String id)? onProfile;
+
   final Map<String, MixProfile> _mem = {};
   final Set<String> _queue = {};
   bool _running = false;
@@ -193,6 +196,7 @@ class MixAnalyzer {
       if (p == null) return;
       _mem[id] = p;
       await _file(id).writeAsString(jsonEncode(p.toJson()));
+      onProfile?.call(id);
     } catch (e) {
       AppLog.warn('Умный переход: не посчитался звук', e);
     }

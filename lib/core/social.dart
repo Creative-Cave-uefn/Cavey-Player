@@ -71,6 +71,13 @@ class Member {
 
   /// Версия приложения у человека (пишется в статус; у старых версий пусто)
   String version;
+
+  /// Джем-сессия, в которой человек сейчас, и её участники (чтобы можно было попроситься)
+  String? jamId;
+  List<String> jamMembers = const [];
+
+  /// Организатор этого джема (почта)
+  String? jamHost;
   Member(this.email, this.name, this.updated, this.now, this.events, this.plays,
       [this.version = '', Map<String, int>? totals, Map<String, Map<String, int>>? time, Map<String, int>? timeTotals])
       : totals = totals ?? playTotalsFrom(plays),
@@ -85,6 +92,12 @@ class Member {
 
   /// Слушает прямо сейчас
   bool get live => now != null && now!.playing && nowSynced.difference(updated) < const Duration(seconds: 100);
+
+  /// Сейчас в джем-сессии: статус свежий (участники джема обновляют его каждые 30 с, даже на паузе)
+  bool get inJam => jamId != null && nowSynced.difference(updated) < const Duration(seconds: 100);
+
+  /// Остальные участники джема этого человека (без него)
+  List<String> get jamOthers => [for (final e in jamMembers) if (e != email) e];
 
   /// Недавно был, но на паузе
   bool get recent => now != null && nowSynced.difference(updated) < const Duration(minutes: 15);
@@ -110,7 +123,8 @@ class Member {
     final ltc = j['ltc'];
     final tc = j['tc'];
     if (!fresh) plays.clear();
-    return Member(
+    final jam = j['jam'];
+    final result = Member(
       '${j['email']}',
       '${j['name'] ?? ''}',
       DateTime.tryParse('${j['updated']}')?.toUtc() ?? DateTime.fromMillisecondsSinceEpoch(0),
@@ -123,6 +137,13 @@ class Member {
       time,
       fresh && ltc is Map ? ltc.map((k, v) => MapEntry('$k', (v as num?)?.toInt() ?? 0)) : null,
     );
+    if (jam is Map && jam['id'] != null) {
+      result.jamId = '${jam['id']}';
+      result.jamMembers = [for (final x in (jam['m'] as List? ?? const [])) '$x'];
+      final h = '${jam['h'] ?? ''}';
+      result.jamHost = h.isEmpty ? null : h;
+    }
+    return result;
   }
 }
 
@@ -212,7 +233,6 @@ class SocialController extends ChangeNotifier {
   _ResumeWatcher? _resume;
   Timer? _heartbeat;
   Timer? _writeTimer;
-  Timer? _followTimer;
   bool _polling = false;
   bool _writing = false;
   bool _dirty = false;
@@ -223,9 +243,6 @@ class SocialController extends ChangeNotifier {
   String? pollError;
   bool _loggedPoll = false;
 
-  /// С кем слушаем вместе
-  String? following;
-  bool _syncing = false;
   String? _lastTrack;
   String? _countedFor;
 
@@ -242,13 +259,16 @@ class SocialController extends ChangeNotifier {
       // Е5: музыка не играет и окно скрыто — опрашиваем раз в минуту
       final st = WidgetsBinding.instance.lifecycleState;
       final hidden = st == AppLifecycleState.hidden || st == AppLifecycleState.paused;
-      if (hidden && !player.playing && DateTime.now().difference(lastPoll ?? DateTime(2000)) < const Duration(seconds: 60)) return;
+      // Уведомления включены — свёрнутое окно опрашиваем раз в 15 секунд, чтобы уведомление (звук и окошко) пришло вовремя,
+      // даже если человек в игре; без уведомлений хватает минуты
+      final gap = Duration(seconds: lib.settings.viewOf('ntf.on', '1') == '1' ? 15 : 60);
+      if (hidden && !player.playing && DateTime.now().difference(lastPoll ?? DateTime(2000)) < gap) return;
       unawaited(poll());
     });
     _resume = _ResumeWatcher(() => unawaited(poll()));
     WidgetsBinding.instance.addObserver(_resume!);
     _heartbeat = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (player.playing) _markDirty();
+      if (player.playing || jamInfo?.call() != null) _markDirty();
     });
     unawaited(poll());
   }
@@ -268,8 +288,6 @@ class SocialController extends ChangeNotifier {
     final id = player.current?.id;
     if (id != _lastTrack) {
       _lastTrack = id;
-      // Сам выбрал другой трек — значит, больше не слушаем вместе
-      if (following != null && !_syncing) stopFollowing();
       _markDirty(soon: true);
     }
   }
@@ -309,6 +327,7 @@ class SocialController extends ChangeNotifier {
   void _addEvent(Map<String, dynamic> e) {
     _myEvents.add({...e, 'at': DateTime.now().toUtc().toIso8601String()});
     if (_myEvents.length > 80) _myEvents = _myEvents.sublist(_myEvents.length - 80);
+    _eventPending = true;
     _markDirty(soon: true);
     _refreshMe();
   }
@@ -347,6 +366,7 @@ class SocialController extends ChangeNotifier {
       'lv': kListenVersion,
       'lt': _myTime,
       'ltc': _myTimeTotals,
+      'jam': jamInfo?.call(),
     };
   }
 
@@ -449,6 +469,10 @@ class SocialController extends ChangeNotifier {
       if (lastWrite == null) AppLog.info('Статус сохранён в cave-data');
       lastWrite = DateTime.now();
       _refreshMe();
+      if (_eventPending) {
+        _eventPending = false;
+        onWritten?.call();
+      }
     } catch (e) {
       _dirty = true;
       AppLog.warn('Не удалось сохранить статус', e);
@@ -542,6 +566,10 @@ class SocialController extends ChangeNotifier {
       notifyListeners();
     } finally {
       _polling = false;
+      if (_pollAgain) {
+        _pollAgain = false;
+        unawaited(poll());
+      }
     }
   }
 
@@ -589,7 +617,6 @@ class SocialController extends ChangeNotifier {
       return;
     }
     members[email] = m;
-    if (following == email) _syncFollow();
   }
 
   /// Друзья, кроме меня: сначала те, кто слушает прямо сейчас
@@ -639,16 +666,27 @@ class SocialController extends ChangeNotifier {
       unawaited(lib.saveSettings());
       return;
     }
-    final fresh = freshNotices(notices, seen);
+    final fresh = [for (final n in freshNotices(notices, seen)) if (!n.expired(now)) n];
     if (fresh.isEmpty) return;
     // Отметка не уходит в будущее: у друга часы могут спешить
     final newest = fresh.first.at.isAfter(now) ? now : fresh.first.at;
     lib.settings.noticeSeen = newest.toIso8601String();
     unawaited(lib.saveSettings());
     for (final n in fresh.take(5).toList().reversed) {
+      onFreshNotice?.call(n);
       noticeStream.add(n);
     }
   }
+
+  /// Текст уведомления без имени: имя стоит в заголовке карточки («добавил(а) «Трек» в любимое»)
+  String noticeBody(Notice n) => noticeBodyText(
+        n,
+        title: (id) => lib.data.tracks[lib.data.resolve(id)]?.title ?? 'трек',
+        label: (id) {
+          final t = lib.data.tracks[lib.data.resolve(id)];
+          return t == null ? 'трек' : '${t.title} — ${t.displayArtist}';
+        },
+      );
 
   /// Текст уведомления для показа
   String noticeLine(Notice n) => noticeText(
@@ -776,64 +814,42 @@ class SocialController extends ChangeNotifier {
     return list.length > limit ? list.sublist(0, limit) : list;
   }
 
-  // ---------- слушать вместе ----------
+  // ---------- быстрые сигналы (ntfy) ----------
 
-  void follow(String email) {
-    following = email;
-    _followTimer?.cancel();
-    _followTimer = Timer.periodic(const Duration(seconds: 4), (_) => _pollHost());
-    _syncFollow();
-    notifyListeners();
-  }
+  /// Мой джем для статуса: {id, m: участники}; null — не в джеме
+  Map<String, dynamic>? Function()? jamInfo;
 
-  void stopFollowing() {
-    following = null;
-    _followTimer?.cancel();
-    _followTimer = null;
-    notifyListeners();
-  }
+  /// Статус изменился не из-за плеера (вошли в джем или вышли): пишем быстрее
+  void touchStatus() => _markDirty(soon: true);
 
-  Future<void> _pollHost() async {
-    final email = following;
-    final id = email == null ? null : _fileOwner[email];
-    if (email == null || id == null) return;
-    try {
-      final meta = await lib.withHub((e) => drive.getFile(e, id, fields: 'id,modifiedTime'));
-      if (meta['modifiedTime'] != _fileModified[id]) {
-        await _load(id, email, serverTime: '${meta['modifiedTime']}');
-        _fileModified[id] = '${meta['modifiedTime']}';
-        notifyListeners();
-      } else {
-        _syncFollow(); // поправляем расхождение, даже если хост ничего не менял
-      }
-    } catch (e) {
-      AppLog.warn('Не удалось обновить статус друга', e);
+  bool _eventPending = false;
+
+  /// Сразу после успешной записи своего файла, если в нём было новое событие: джем рассылает по быстрому каналу «у меня новое событие»
+  void Function()? onWritten;
+
+  /// Пришёл сигнал «у друга что-то новое»: не ждём шести секунд до очередного опроса
+  void wake() {
+    if (_polling) {
+      _pollAgain = true;
+      return;
     }
+    unawaited(poll());
   }
 
-  Future<void> _syncFollow() async {
-    final host = following == null ? null : members[following];
-    final now = host?.now;
-    if (host == null || now == null || _syncing) return;
-    final t = lib.data.tracks[now.trackId];
-    if (t == null) return;
-    _syncing = true;
-    try {
-      final target = now.estimate();
-      if (player.current?.id != t.id) {
-        await player.playTracks([t], 0);
-        await Future<void>.delayed(const Duration(milliseconds: 800));
-        await player.seek(now.estimate());
-      } else if ((player.position.value - target).abs() > const Duration(seconds: 3)) {
-        await player.seek(target);
-      }
-      if (now.playing && !player.playing) await player.play();
-      if (!now.playing && player.playing) await player.pause();
-    } catch (e) {
-      AppLog.warn('Совместное прослушивание', e);
-    } finally {
-      _syncing = false;
-    }
+  bool _pollAgain = false;
+
+  /// Новое уведомление (до показа): джем по нему входит сам, если это ответ на мой запрос
+  void Function(Notice n)? onFreshNotice;
+
+  /// Событие, которое должно дойти быстро (приглашение в джем): запись на Диск сразу, без отсрочки
+  Future<void> emitEvent(Map<String, dynamic> e) async {
+    _myEvents.add({...e, 'at': DateTime.now().toUtc().toIso8601String()});
+    if (_myEvents.length > 80) _myEvents = _myEvents.sublist(_myEvents.length - 80);
+    _eventPending = true;
+    _dirty = true;
+    _refreshMe();
+    _writeTimer?.cancel();
+    await _write();
   }
 
   @override
@@ -842,7 +858,6 @@ class SocialController extends ChangeNotifier {
     if (_resume != null) WidgetsBinding.instance.removeObserver(_resume!);
     _heartbeat?.cancel();
     _writeTimer?.cancel();
-    _followTimer?.cancel();
     noticeStream.close();
     super.dispose();
   }

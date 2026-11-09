@@ -19,6 +19,7 @@ import 'core/discord.dart';
 import 'core/dl/service.dart';
 import 'core/dl/tools.dart';
 import 'core/drive.dart';
+import 'core/jam.dart';
 import 'core/library.dart';
 import 'core/lyric_sources.dart';
 import 'core/perf.dart';
@@ -29,6 +30,8 @@ import 'core/social.dart';
 import 'core/store.dart';
 import 'core/single_instance.dart';
 import 'core/taskbar.dart';
+import 'core/autostart.dart';
+import 'core/notify_prefs.dart';
 import 'core/tray.dart';
 import 'core/tray_cleanup.dart';
 import 'core/media_keys.dart';
@@ -56,6 +59,7 @@ class AppServices {
   final AudioCache cache;
   final LyricsService lyrics;
   final SocialController social;
+  final JamController jam;
   final DiscordPresence discord;
   final DownloadService downloads;
   final TrayController tray;
@@ -73,7 +77,7 @@ class AppServices {
   /// Ключи Google вшиты при сборке — тогда друзьям не нужно ничего вводить
   final bool keysBuiltIn;
 
-  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.discord, this.downloads, this.tray, this.keysBuiltIn);
+  AppServices._(this.store, this.settings, this.accounts, this.drive, this.lib, this.player, this.covers, this.updater, this.cache, this.lyrics, this.social, this.jam, this.discord, this.downloads, this.tray, this.keysBuiltIn);
 
   static Future<AppServices> create() async {
     final store = await AppStore.open();
@@ -148,7 +152,12 @@ class AppServices {
         );
     player.addListener(showInDiscord);
     // Слушаем вместе с другом: переходы идут по его трекам, плавный переход мешал бы синхронизации
-    player.crossfadeBlocked = () => social.following != null;
+    final jam = JamController(lib, drive, player, social,
+        serverUrl: () => settings.viewOf('ntfy', '1') == '0' ? '' : settings.viewOf('ntfy.server', 'https://ntfy.sh'));
+    player.jamActive = () => jam.active;
+    social.jamInfo = () => jam.active ? {'id': jam.jamId, 'm': jam.participants, 'h': jam.effectiveHost} : null;
+    social.onFreshNotice = jam.onFreshNotice;
+    jam.start();
     player.onUserAction = () {
       social.onUserAction();
       showInDiscord();
@@ -168,12 +177,14 @@ class AppServices {
       },
     );
     app = AppServices._(
-        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, discord, downloads, tray, builtIn);
+        store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, jam, discord, downloads, tray, builtIn);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
     // Умный переход: профили звука треков и темп из Deezer (если уже узнали)
-    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')));
+    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))..onProfile = (id) {
+        if (id == player.current?.id) player.refreshNormalize();
+      };
     final tempo = <String, double?>{};
     player.tempoOf = (t) {
       if (tempo.containsKey(t.id)) return tempo[t.id];
@@ -185,6 +196,8 @@ class AppServices {
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
+    // Автозапуск: заново записываем команду, если программу переустановили в другую папку
+    if (settings.autostartMode != 'off') unawaited(Autostart.apply(settings.autostartMode));
     // Значок в цвете акцента: в трее и у окна — сразу при запуске
     unawaited(app.collectIconResult().then((_) => app.refreshAppIcon()));
     // Значки, оставшиеся от закрытых принудительно прошлых версий, Проводник выбрасывает, когда над ними «проведут курсор»
@@ -281,6 +294,9 @@ class AppServices {
         await applyExeIcon(relaunch: false);
       } catch (_) {}
     }
+    try {
+      await jam.shutdown();
+    } catch (_) {}
     try {
       await player.flushSession();
       await wave.flush();

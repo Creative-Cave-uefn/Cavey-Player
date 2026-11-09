@@ -21,6 +21,9 @@ class TrayController with TrayListener, WindowListener {
   final Future<bool?> Function() askFirstTime;
 
   bool _ready = false;
+
+  /// Значок в трее уже стоит (спрятать окно без риска остаться без значка)
+  bool get ready => _ready;
   bool _closing = false;
 
   /// Значок: стандартный из сборки или перекрашенный под акцентный цвет (полный путь к .ico)

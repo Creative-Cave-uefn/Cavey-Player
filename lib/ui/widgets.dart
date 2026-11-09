@@ -656,3 +656,123 @@ class _TileInkState extends State<TileInk> {
     });
   }
 }
+
+
+/// Выбор уровня ровной громкости: три кнопки одной ширины и одинаковых отступов, чтобы разметка не прыгала при переключении.
+/// [appear]: при появлении кнопки по очереди плавно выезжают и проявляются
+class NormLevelPicker extends StatelessWidget {
+  final String value;
+  final ValueChanged<String> onChanged;
+  final bool appear;
+  const NormLevelPicker({super.key, required this.value, required this.onChanged, this.appear = false});
+
+  static const _levels = [('quiet', 'Тише'), ('normal', 'Обычно'), ('loud', 'Громче')];
+
+  @override
+  Widget build(BuildContext context) {
+    Widget button(int i, String id, String label) {
+      final on = id == value;
+      final core = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => onChanged(id),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            width: 88,
+            height: 36,
+            alignment: Alignment.center,
+            color: on ? C.accent : Colors.transparent,
+            child: AnimatedDefaultTextStyle(
+              duration: const Duration(milliseconds: 180),
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: on ? C.accentInk : C.text),
+              child: Text(label),
+            ),
+          ),
+        ),
+      );
+      if (!appear) return core;
+      return TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: Duration(milliseconds: 240 + i * 90),
+        curve: Curves.easeOutCubic,
+        builder: (context, t, child) => Opacity(
+          opacity: t,
+          child: Transform.translate(offset: Offset(0, (1 - t) * 8), child: child),
+        ),
+        child: core,
+      );
+    }
+
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(border: Border.all(color: C.line), borderRadius: BorderRadius.circular(999)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        for (var i = 0; i < _levels.length; i++) button(i, _levels[i].$1, _levels[i].$2),
+      ]),
+    );
+  }
+}
+
+/// Высота поля поиска и кнопок в одной строке: у всех одинаковая, поэтому центры совпадают
+const double kRowControlHeight = 44;
+
+/// Оборачивает ряд из поля поиска и кнопок: кнопки получают высоту [kRowControlHeight] без лишних отступов под палец
+Widget uniformControls(BuildContext context, Widget child) {
+  final theme = Theme.of(context);
+  final extra = ButtonStyle(
+    fixedSize: const WidgetStatePropertyAll(Size.fromHeight(kRowControlHeight)),
+    minimumSize: const WidgetStatePropertyAll(Size(0, kRowControlHeight)),
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  );
+  return Theme(
+    data: theme.copyWith(
+      filledButtonTheme: FilledButtonThemeData(style: theme.filledButtonTheme.style?.merge(extra) ?? extra),
+      outlinedButtonTheme: OutlinedButtonThemeData(style: theme.outlinedButtonTheme.style?.merge(extra) ?? extra),
+    ),
+    child: child,
+  );
+}
+
+/// Поле поиска той же высоты, что и кнопки рядом
+class RowSearchField extends StatelessWidget {
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final String hint;
+  final double width;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+  const RowSearchField({
+    super.key,
+    required this.controller,
+    this.focusNode,
+    required this.hint,
+    required this.onChanged,
+    required this.onClear,
+    this.width = 340,
+  });
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: width,
+        height: kRowControlHeight,
+        child: TextField(
+          controller: controller,
+          focusNode: focusNode,
+          onChanged: onChanged,
+          maxLines: 1,
+          textAlignVertical: TextAlignVertical.center,
+          decoration: InputDecoration(
+            constraints: const BoxConstraints.tightFor(height: kRowControlHeight),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+            hintText: hint,
+            hintMaxLines: 1,
+            prefixIcon: const Icon(Icons.search_rounded, size: 18),
+            suffixIcon: controller.text.isEmpty
+                ? null
+                : IconButton(icon: const Icon(Icons.close_rounded, size: 16), onPressed: onClear),
+          ),
+        ),
+      );
+}

@@ -65,6 +65,7 @@ void tintCaption() {
     }
     if (hwnd == 0) return;
     _paintBackdrop(user32, hwnd);
+    _clipChildren(user32, hwnd);
     if (build < 17763) return;
     final dwm = DynamicLibrary.open('dwmapi.dll');
     final set = dwm.lookupFunction<_DwmSetC, _DwmSetD>('DwmSetWindowAttribute');
@@ -110,6 +111,31 @@ void _paintBackdrop(DynamicLibrary user32, int hwnd) {
     if (_backdropBrush != 0) del(_backdropBrush);
     _backdropBrush = brush;
     _backdropColor = color;
+  }
+}
+
+bool _clipDone = false;
+
+/// Мерцание при растягивании окна: пока тянут за край, Windows на каждом шаге заливает фоном всё окно, в том числе
+/// область под полотном Flutter, а полотно перерисовывается чуть позже — между этими моментами и мелькает тёмный кадр.
+/// Стиль WS_CLIPCHILDREN запрещает окну-родителю закрашивать то, что лежит под дочерним полотном
+void _clipChildren(DynamicLibrary user32, int hwnd) {
+  if (_clipDone) return;
+  try {
+    final getStyle = user32.lookupFunction<IntPtr Function(IntPtr, Int32), int Function(int, int)>('GetWindowLongPtrW');
+    final setStyle = user32.lookupFunction<IntPtr Function(IntPtr, Int32, IntPtr), int Function(int, int, int)>('SetWindowLongPtrW');
+    final setPos = user32.lookupFunction<Int32 Function(IntPtr, IntPtr, Int32, Int32, Int32, Int32, Uint32), int Function(int, int, int, int, int, int, int)>('SetWindowPos');
+    const gwlStyle = -16;
+    const wsClipChildren = 0x02000000;
+    final style = getStyle(hwnd, gwlStyle);
+    if (style & wsClipChildren == 0) {
+      setStyle(hwnd, gwlStyle, style | wsClipChildren);
+      // SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+      setPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);
+    }
+    _clipDone = true;
+  } catch (e) {
+    AppLog.warn('Окно: не удалось убрать мерцание при растягивании', e);
   }
 }
 

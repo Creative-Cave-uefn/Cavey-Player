@@ -88,13 +88,16 @@ class _AlbumsPageState extends State<AlbumsPage> {
             if (!LibraryFrame.on(context))
               Text(ep ? 'Синглы и EP' : 'Альбомы', style: display(36, weight: FontWeight.w700)),
             if (all.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Text(
-                q.isEmpty
-                    ? '${all.length} ${plural(all.length, 'альбом', 'альбома', 'альбомов')}'
-                    : 'Найдено ${albums.length} из ${all.length}',
-                style: const TextStyle(color: C.muted, fontSize: 15),
-              ),
+              // В «Медиатеке» общее число уже стоит под заголовком раздела; здесь остаётся лишь итог поиска
+              if (!LibraryFrame.on(context) || q.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Text(
+                  q.isEmpty
+                      ? '${all.length} ${plural(all.length, 'альбом', 'альбома', 'альбомов')}'
+                      : 'Найдено ${albums.length} из ${all.length}',
+                  style: const TextStyle(color: C.muted, fontSize: 15),
+                ),
+              ],
               const SizedBox(height: 18),
               SearchSortBar(
                 controller: _search,
@@ -151,7 +154,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
                       final a = albums[i];
                       return TileInk(
                         onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-                        onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
+                        onPlay: () => Services.of(context).player.playTracks(a.tracks, 0, inOrder: true),
                         // Правый клик: меню альбома
                         onSecondaryTapUp: (d) => showAlbumMenu(context, a, d.globalPosition),
                         child: LayoutBuilder(

@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/desktop_notify.dart';
 import '../core/notices.dart';
+import '../core/notify_prefs.dart';
+import '../core/toast_window.dart';
+import 'widgets.dart';
 import 'theme.dart';
 import 'glass_popup.dart';
 
@@ -17,10 +21,17 @@ class NoticeTower extends StatefulWidget {
   State<NoticeTower> createState() => _NoticeTowerState();
 }
 
+/// Следующее уведомление — пример из «Настроек»: настоящая карточка, звук и (если включено) уведомление Windows,
+/// даже когда уведомления выключены
+bool noticePreviewing = false;
+
 class _Card {
   final Notice notice;
   final String text;
   Timer? timer;
+
+  /// Карточка уезжает вправо; после анимации её убирают из списка
+  bool leaving = false;
   _Card(this.notice, this.text);
 }
 
@@ -46,14 +57,24 @@ class _NoticeTowerState extends State<NoticeTower> {
 
   Future<void> _onNotice(Notice n) async {
     final app = Services.of(context);
-    final text = app.social.noticeLine(n);
-    // Окно спрятано в трей или свёрнуто — вместо башенки уведомление Windows
-    if (await windowIsHidden()) {
-      unawaited(desktopToast(text));
-      return;
+    final st = app.settings;
+    final preview = noticePreviewing;
+    noticePreviewing = false;
+    if (!preview && !st.notifyOn) return;
+    // В «Настройках» для каждого вида уведомлений отдельно выбирается, играть ли звук и показывать ли карточку.
+    // В колокольчике на вкладке «Компания» уведомление остаётся в любом случае
+    final sound = preview || st.soundFor(n.kind);
+    final popup = preview || st.popupFor(n.kind);
+    // Звук: слышно, даже если окно далеко или спрятано
+    if (sound) unawaited(NotifySound.play(st, force: preview));
+    if (!popup) return;
+    // Окно спрятано в трей, свёрнуто или не в фокусе — своё окошко уведомления поверх остальных окон
+    if (st.notifySystem && (preview || await windowIsHidden())) {
+      unawaited(_systemToast(app, n));
+      if (!preview) return;
     }
     if (!mounted) return;
-    final card = _Card(n, text);
+    final card = _Card(n, app.social.noticeBody(n));
     card.timer = Timer(const Duration(seconds: 12), () => _close(card));
     setState(() {
       _cards.add(card);
@@ -63,9 +84,65 @@ class _NoticeTowerState extends State<NoticeTower> {
     });
   }
 
+  /// Окошко уведомления вне плеера: ник, аватарка человека и текст. Не вышло — обычное уведомление Windows
+  Future<void> _systemToast(AppServices app, Notice n) async {
+    final lib = app.lib;
+    final nick = lib.firstNameOf(n.from);
+    final body = app.social.noticeBody(n);
+    String? avatar;
+    final fileId = lib.profileAvatar(n.from);
+    if (fileId != null) {
+      try {
+        final bytes = await app.covers.forFile(fileId, px: 128);
+        if (bytes != null && bytes.isNotEmpty) {
+          final f = File('${Directory.systemTemp.path}${Platform.pathSeparator}cavey_toast_av_${n.from.hashCode.abs()}.png');
+          await f.writeAsBytes(bytes, flush: true);
+          avatar = f.path;
+        }
+      } catch (_) {
+        // без аватарки: останется кружок с буквой
+      }
+    }
+    final shown = nick.trim().isEmpty ? n.from : nick.trim();
+    // Приглашение в джем и запрос на вход можно принять или отклонить прямо в окошке
+    final answerable = n.isJam && app.jam.noticeState(n) == null;
+    final result = await showToastWindow(ToastSpec(
+      title: nick,
+      text: body,
+      letter: shown.characters.first.toUpperCase(),
+      avatarPath: avatar,
+      bg: C.panel,
+      line: C.line,
+      accent: C.accent,
+      fg: C.text,
+      muted: C.muted,
+      letterBg: friendColor(n.from),
+      letterInk: C.accentInk,
+      buttons: answerable,
+      seconds: answerable ? 20 : 8,
+    ));
+    switch (result) {
+      case ToastResult.failed:
+        await desktopToast(body, title: nick);
+      case ToastResult.accepted:
+        unawaited(app.jam.acceptNotice(n));
+      case ToastResult.declined:
+        app.jam.declineNotice(n);
+      case ToastResult.closed:
+      case ToastResult.opened:
+        break;
+    }
+  }
+
   void _close(_Card c) {
+    if (c.leaving) return;
     c.timer?.cancel();
-    if (mounted) setState(() => _cards.remove(c));
+    if (!mounted) return;
+    // Сначала уезжает вправо, потом убирается из стопки
+    setState(() => c.leaving = true);
+    Timer(const Duration(milliseconds: 320), () {
+      if (mounted) setState(() => _cards.remove(c));
+    });
   }
 
   @override
@@ -82,11 +159,76 @@ class _NoticeTowerState extends State<NoticeTower> {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             for (final c in _cards.reversed)
-              Padding(padding: const EdgeInsets.only(bottom: 8), child: _NoticeCard(card: c, onClose: () => _close(c))),
+              Padding(
+                key: ObjectKey(c),
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _SlideIn(leaving: c.leaving, child: _NoticeCard(card: c, onClose: () => _close(c))),
+              ),
             if (saving) _SaveCloud(error: err),
           ],
         );
       },
+    );
+  }
+}
+
+/// Карточка уведомления: круглая аватарка человека слева, жирный заголовок, текст цветом акцента и крестик — как у Telegram.
+/// Одна и та же в правом нижнем углу плеера и в предпросмотре «Настроек»
+class ToastCard extends StatelessWidget {
+  /// Ник человека
+  final String title;
+  final String text;
+  final String? note;
+
+  /// Аватарка человека, с которым связано уведомление (круглая, 48 на 48)
+  final Widget leading;
+
+  /// Кнопки под текстом (например «Войти»)
+  final List<Widget> actions;
+  final VoidCallback? onClose;
+  const ToastCard({super.key, required this.title, required this.text, required this.leading, this.note, this.actions = const [], this.onClose});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      type: MaterialType.transparency,
+      child: Container(
+        width: 360,
+        padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
+        decoration: BoxDecoration(
+          color: C.panel,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: C.line),
+          boxShadow: const [BoxShadow(color: Color(0x66000000), blurRadius: 18, offset: Offset(0, 6))],
+        ),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox.square(dimension: 48, child: leading),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 1),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: C.text)),
+                const SizedBox(height: 3),
+                Text(text, maxLines: 3, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 14, height: 1.35, color: C.accent)),
+                if (note != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text('«$note»', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12.5)),
+                  ),
+                if (actions.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 6), child: Wrap(spacing: 4, runSpacing: 2, children: actions)),
+              ]),
+            ),
+          ),
+          if (onClose != null)
+            IconButton(
+              tooltip: 'Закрыть',
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.close_rounded, size: 18, color: C.faint),
+              onPressed: onClose,
+            ),
+        ]),
+      ),
     );
   }
 }
@@ -100,50 +242,79 @@ class _NoticeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     final n = card.notice;
-    final track = app.lib.data.tracks[app.lib.data.resolve(n.trackIds.first)];
-    final icon = switch (n.kind) {
-      NoticeKind.like => Icons.favorite_rounded,
-      NoticeKind.addToPlaylist => Icons.playlist_add_rounded,
-      NoticeKind.share => Icons.share_rounded,
-    };
-    return Material(
-      type: MaterialType.transparency,
-      child: SizedBox(
-        width: 340,
-        child: GlassPanel(
-        radius: 16,
-        padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
-        child: Row(children: [
-          Icon(icon, size: 18, color: C.accent),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-              Text(card.text, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, height: 1.35)),
-              if (n.note != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text('«${n.note}»', maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12.5)),
-                ),
-            ]),
+    final track = n.trackIds.isEmpty ? null : app.lib.data.tracks[app.lib.data.resolve(n.trackIds.first)];
+    return ToastCard(
+      title: app.lib.firstNameOf(n.from),
+      leading: Avatar(email: n.from, name: app.lib.firstNameOf(n.from), size: 48),
+      text: card.text,
+      note: n.note,
+      onClose: onClose,
+      actions: [
+        // Приглашение в джем и запрос на вход: «Принять» и «Отклонить»
+        if (n.isJam) ...[
+          FilledButton(
+            style: FilledButton.styleFrom(visualDensity: VisualDensity.compact, padding: const EdgeInsets.symmetric(horizontal: 14)),
+            onPressed: () {
+              app.jam.acceptNotice(n);
+              onClose();
+            },
+            child: const Text('Принять'),
           ),
-          if (track != null)
-            IconButton(
-              tooltip: 'Слушать',
-              visualDensity: VisualDensity.compact,
-              icon: Icon(Icons.play_arrow_rounded, color: C.accent),
-              onPressed: () {
-                app.player.playTracks([track], 0);
-                onClose();
-              },
-            ),
-          IconButton(
-            tooltip: 'Закрыть',
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.close_rounded, size: 16, color: C.faint),
-            onPressed: onClose,
+          TextButton(
+            onPressed: () {
+              app.jam.declineNotice(n);
+              onClose();
+            },
+            child: const Text('Отклонить'),
           ),
-        ]),
-      ),
+        ],
+        if (track != null)
+          TextButton.icon(
+            onPressed: () {
+              app.player.playTracks([track], 0);
+              onClose();
+            },
+            icon: Icon(Icons.play_arrow_rounded, size: 18, color: C.accent),
+            label: const Text('Слушать'),
+          ),
+      ],
+    );
+  }
+}
+
+/// Карточка выезжает из-за правого края окна и уезжает обратно, когда [leaving]
+class _SlideIn extends StatefulWidget {
+  final bool leaving;
+  final Widget child;
+  const _SlideIn({required this.leaving, required this.child});
+
+  @override
+  State<_SlideIn> createState() => _SlideInState();
+}
+
+class _SlideInState extends State<_SlideIn> {
+  bool _shown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Первый кадр — за краем, следующий — на месте: так выезд виден
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _shown = true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final on = _shown && !widget.leaving;
+    return AnimatedSlide(
+      offset: on ? Offset.zero : const Offset(1.15, 0),
+      duration: Duration(milliseconds: widget.leaving ? 280 : 360),
+      curve: widget.leaving ? Curves.easeInCubic : Curves.easeOutCubic,
+      child: AnimatedOpacity(
+        opacity: on ? 1 : 0,
+        duration: Duration(milliseconds: widget.leaving ? 240 : 260),
+        child: widget.child,
       ),
     );
   }

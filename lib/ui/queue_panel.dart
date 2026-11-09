@@ -36,7 +36,7 @@ class QueuePanel extends StatelessWidget {
         ),
         Expanded(
           child: ListenableBuilder(
-            listenable: Listenable.merge([app.player, app.lib]),
+            listenable: Listenable.merge([app.player, app.lib, app.jam]),
             builder: (context, _) => _body(context, app),
           ),
         ),
@@ -104,7 +104,7 @@ class QueuePanel extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 4),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           title('Сейчас играет'),
-          _QueueRow(track: cur, current: true, playing: p.playing),
+          _QueueRow(track: cur, current: true, playing: p.playing, adder: app.jam.adderOf(cur.id)),
         ]),
       ),
       footer: ctxTotal > ctxShown
@@ -148,7 +148,9 @@ class QueuePanel extends StatelessWidget {
         return ReorderableDragStartListener(
           key: ValueKey('q$qi:${p.queue[qi]}'),
           index: i,
-          child: t == null ? const SizedBox(height: 1) : _QueueRow(track: t, onTap: () => p.jumpTo(qi), onRemove: () => p.removeAt(qi)),
+          child: t == null
+              ? const SizedBox(height: 1)
+              : _QueueRow(track: t, adder: app.jam.adderOf(t.id), onTap: () => p.jumpTo(qi), onRemove: () => p.removeAt(qi)),
         );
       },
     );
@@ -178,7 +180,10 @@ class _QueueRow extends StatefulWidget {
   final bool playing;
   final VoidCallback? onTap;
   final VoidCallback? onRemove;
-  const _QueueRow({required this.track, this.current = false, this.playing = false, this.onTap, this.onRemove});
+
+  /// В джеме: кто добавил трек в очередь (почта); аватарка стоит справа от трека
+  final String? adder;
+  const _QueueRow({required this.track, this.current = false, this.playing = false, this.onTap, this.onRemove, this.adder});
 
   @override
   State<_QueueRow> createState() => _QueueRowState();
@@ -213,6 +218,19 @@ class _QueueRowState extends State<_QueueRow> {
                 Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
               ]),
             ),
+            if (widget.adder != null)
+              Tooltip(
+                message: 'Добавил(а): ${Services.of(context).lib.firstNameOf(widget.adder!)}',
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: Avatar(
+                    key: ValueKey('qa-${widget.adder}'),
+                    email: widget.adder!,
+                    name: Services.of(context).lib.firstNameOf(widget.adder!),
+                    size: 24,
+                  ),
+                ),
+              ),
             if (widget.onRemove != null && _hover)
               IconButton(
                 tooltip: 'Убрать из очереди',

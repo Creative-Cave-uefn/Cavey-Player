@@ -12,7 +12,7 @@ import 'package:http/http.dart' as http;
 
 import 'library.dart';
 import 'log.dart';
-import 'models.dart';
+import 'search_rank.dart';
 
 class WebArtist {
   final int id;
@@ -102,8 +102,11 @@ class WebTrack {
 
   /// Номер диска в альбоме (у многодисковых изданий), 1 — если не знаем
   final int disc;
+
+  /// Популярность трека в Deezer (0, если неизвестна)
+  final int rank;
   const WebTrack(this.id, this.title, this.artist, this.preview, this.seconds, this.link,
-      {this.artistId = 0, this.albumId = 0, this.album = '', this.cover = '', this.disc = 1});
+      {this.artistId = 0, this.albumId = 0, this.album = '', this.cover = '', this.disc = 1, this.rank = 0});
 
   /// Из ответа Deezer; [album] — если трек пришёл в составе альбома
   static WebTrack fromDeezer(Map x, {Map? album}) {
@@ -121,6 +124,7 @@ class WebTrack {
       album: '${al?['title'] ?? ''}',
       cover: '${al?['cover_medium'] ?? al?['cover_big'] ?? ''}',
       disc: (x['disk_number'] as num?)?.toInt() ?? 1,
+      rank: (x['rank'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -542,14 +546,25 @@ class WebInfoService extends ChangeNotifier {
       publish();
     }
 
+    // Альбомы в двух порядках: по релевантности и по популярности; итоговый порядок считаем сами
+    var albumsRelevance = <WebAlbum>[];
+    var albumsRanking = <WebAlbum>[];
     Future<void> loadAlbums() async {
-      try {
-        final j = await _deezer('/search/album', {'q': q, 'limit': '16'})
-            .timeout(searchTimeout);
-        albums = [for (final x in data(j)) WebAlbum.fromDeezer(x)];
-      } catch (e) {
-        AppLog.warn('Deezer: поиск альбомов', e);
+      Future<List<WebAlbum>> one(Map<String, String> params) async {
+        try {
+          final j = await _deezer('/search/album', {'q': q, ...params}).timeout(searchTimeout);
+          return [for (final x in data(j)) WebAlbum.fromDeezer(x)];
+        } catch (e) {
+          AppLog.warn('Deezer: поиск альбомов', e);
+          return <WebAlbum>[];
+        }
       }
+
+      final got = await Future.wait([one({'limit': '25'}), one({'limit': '25', 'order': 'RANKING'})]);
+      albumsRelevance = got[0];
+      albumsRanking = got[1];
+      // Пока не пришли остальные списки, показываем как есть; точный порядок — когда всё готово
+      albums = [...albumsRelevance, for (final a in albumsRanking) if (!albumsRelevance.any((x) => x.id == a.id)) a];
       publish();
     }
 
@@ -565,6 +580,15 @@ class WebInfoService extends ChangeNotifier {
     }
 
     await Future.wait([loadTracks(), loadAlbums(), loadArtists()]);
+    // Все три списка пришли: сначала популярные официальные релизы, каверы и фанатские версии ниже
+    try {
+      albums = rankAlbums(q, albumsRelevance, albumsRanking, tracks: tracks, artists: artists);
+      tracks = rankTracks(q, tracks);
+      artists = rankArtists(q, artists);
+      publish();
+    } catch (e) {
+      AppLog.warn('Поиск: не получилось упорядочить результаты', e);
+    }
     final result = current();
     if (_searchCache.length >= 30) _searchCache.remove(_searchCache.keys.first);
     _searchCache[key] = (

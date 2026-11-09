@@ -149,6 +149,66 @@ class DownloadService extends ChangeNotifier {
     return job;
   }
 
+  final Set<String> _replacingFromFile = {};
+
+  /// Идёт ли замена аудио трека файлом с компьютера
+  bool isReplacingFromFile(String trackId) => _replacingFromFile.contains(trackId);
+
+  /// Тип файла для Google Диска по расширению; пусто, если формат не из известных
+  static String audioMime(String path) {
+    final dot = path.lastIndexOf('.');
+    final ext = dot < 0 ? '' : path.substring(dot + 1).toLowerCase();
+    return switch (ext) {
+      'mp3' => 'audio/mpeg',
+      'flac' => 'audio/flac',
+      'm4a' || 'aac' || 'mp4' => 'audio/mp4',
+      'ogg' || 'oga' || 'opus' => 'audio/ogg',
+      'wav' => 'audio/wav',
+      'wma' => 'audio/x-ms-wma',
+      _ => '',
+    };
+  }
+
+  /// «Перекачать из своего файла»: заменяет аудио трека файлом с компьютера в том же файле Google Диска.
+  /// ID, ссылки, лайки, плейлисты и ручные метаданные сохраняются, как и при замене через загрузчик
+  Future<bool> replaceFromFile(Track track, File file) async {
+    if (!_replacingFromFile.add(track.id)) {
+      lib.messages.add('«${track.title}» уже заменяется');
+      return false;
+    }
+    try {
+      if (!await file.exists() || await file.length() == 0) {
+        lib.messages.add('Файл пустой или недоступен');
+        return false;
+      }
+      lib.messages.add('Заменяю аудио «${track.title}»: загружаю файл на Google Диск…');
+      Uint8List? oldArtwork;
+      if (track.pic != null && track.cover == null && lib.customCoverOf(track) == null) {
+        try {
+          if (covers != null) oldArtwork = await covers!.forTrack(track, px: 0).timeout(const Duration(seconds: 20));
+        } catch (_) {}
+        if (oldArtwork != null && oldArtwork.length > 8 * 1024 * 1024) oldArtwork = null;
+      }
+      final email = await lib.accessFor(track.source);
+      final meta = await lib.drive.getFile(email, track.id, fields: 'mimeType');
+      final own = audioMime(file.path);
+      await lib.replaceTrackAudio(track, file,
+          mime: own.isNotEmpty ? own : ((meta['mimeType'] as String?) ?? 'application/octet-stream'));
+      await cache?.invalidate(track.id);
+      onAudioReplaced?.call(track.id);
+      // Если в новом файле есть своя встроенная обложка, остаётся она; иначе сохраняем прежнюю
+      if (lib.data.tracks[track.id]?.pic == null) await _preserveCover(track, oldArtwork, (m) => AppLog.warn(m));
+      lib.messages.add('«${track.title}» заменён вашим файлом');
+      return true;
+    } catch (e, st) {
+      AppLog.error('Замена аудио своим файлом', e, st);
+      lib.messages.add('Не получилось заменить «${track.title}»: $e');
+      return false;
+    } finally {
+      _replacingFromFile.remove(track.id);
+    }
+  }
+
   /// Stop a queued or active job without deleting already uploaded tracks.
   /// Cancellation applies to this job only, not the global download queue.
   void cancel(DownloadJob job) {

@@ -3,12 +3,14 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/smooth_position.dart';
 import '../core/player.dart';
 import 'cinema_view.dart';
+import 'glass_popup.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
@@ -83,6 +85,10 @@ class PlayerBar extends StatelessWidget {
                 : IconButton(
                     tooltip: p.playing ? 'Пауза' : 'Играть',
                     onPressed: t == null ? null : p.toggle,
+                    // Без внутренних отступов: иконка 36 + отступы по 8 не помещались в 48 и сдвигались от центра круга
+                    padding: EdgeInsets.zero,
+                    alignment: Alignment.center,
+                    constraints: const BoxConstraints.tightFor(width: 48, height: 48),
                     icon: Icon(p.playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 36, color: ink),
                   ),
           ),
@@ -284,6 +290,9 @@ final seekEdgeWave = ValueNotifier<bool>(false);
 /// Длина волны края (период по вертикали, px): 8 — частая рябь, 40 — плавные длинные изгибы
 final seekWaveLength = ValueNotifier<double>(18);
 
+/// Шкала длины волны: короче 17 нельзя (дальше влево — перебор), вправо добавлена длинная волна
+const seekWaveMin = 17.0, seekWaveMax = 60.0;
+
 /// Осветление капсулы по прослушанной части: слева направо до текущего места
 class _Wash extends StatefulWidget {
   final PlayerController player;
@@ -293,7 +302,7 @@ class _Wash extends StatefulWidget {
   State<_Wash> createState() => _WashState();
 }
 
-class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
+class _WashState extends State<_Wash> with TickerProviderStateMixin {
   // Волна медленно течёт по вертикали; один оборот — две секунды
   late final AnimationController _flow = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
   bool _init = false;
@@ -303,6 +312,23 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
     super.initState();
     widget.player.addListener(_sync);
     seekEdgeWave.addListener(_sync);
+    widget.player.fadeInfo.addListener(_syncTail);
+  }
+
+  // Пока идёт хвост полосы (доезжает и растворяется), перерисовываем каждый кадр, даже если музыка не играет
+  Ticker? _tailTick;
+
+  void _syncTail() {
+    final on = widget.player.fadeInfo.value != null;
+    if (on && _tailTick == null) {
+      _tailTick = createTicker((_) {
+        if (mounted) setState(() {});
+      })..start();
+    } else if (!on && _tailTick != null) {
+      _tailTick!.dispose();
+      _tailTick = null;
+      if (mounted) setState(() {});
+    }
   }
 
   @override
@@ -312,7 +338,7 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
       _init = true;
       final st = Services.of(context).settings;
       seekEdgeWave.value = st.viewOf('seek.edge', 'straight') == 'wave';
-      seekWaveLength.value = st.viewNum('seek.wlen', 18).clamp(8.0, 40.0).toDouble();
+      seekWaveLength.value = st.viewNum('seek.wlen', 18).clamp(seekWaveMin, seekWaveMax).toDouble();
       _sync();
     }
   }
@@ -321,6 +347,8 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
   void dispose() {
     widget.player.removeListener(_sync);
     seekEdgeWave.removeListener(_sync);
+    widget.player.fadeInfo.removeListener(_syncTail);
+    _tailTick?.dispose();
     _flow.dispose();
     super.dispose();
   }
@@ -341,17 +369,29 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
     return LayoutBuilder(builder: (context, box) {
       final w = box.maxWidth;
       return ListenableBuilder(
-        listenable: Listenable.merge([SmoothPosition.of(player), _seekPreview, seekEdgeWave, seekWaveLength]),
+        listenable: Listenable.merge([SmoothPosition.of(player), _seekPreview, seekEdgeWave, seekWaveLength, player.fadeInfo]),
         builder: (context, _) {
           final total = player.duration.inMilliseconds.toDouble();
           final at = (_seekPreview.value ?? SmoothPosition.of(player).value).inMilliseconds.toDouble();
           final f = total <= 0 ? 0.0 : (at / total).clamp(0.0, 1.0);
           // Полоса перемотки идёт по прямому участку грани, а осветление — от самого края капсулы
-          final x = f <= 0 ? 0.0 : (f >= 1 ? w : _capInset + f * (w - 2 * _capInset));
+          double xOf(double fr) => fr <= 0 ? 0.0 : (fr >= 1 ? w : _capInset + fr * (w - 2 * _capInset));
+          final x = xOf(f);
+          // Плавный переход: полоса уходящего трека доезжает до края и гаснет, а слева уже растёт полоса нового
+          final info = player.fadeInfo.value;
+          double fadeX = 0, fadeAlpha = 0;
+          if (info != null) {
+            final now = DateTime.now();
+            // Без особого случая «1 → край окна»: он давал прыжок на ширину скругления; полоса идёт по тому же пути, что слайдер
+            final tf = info.fraction(now);
+            fadeX = tf <= 0 ? 0.0 : _capInset + tf * (w - 2 * _capInset);
+            fadeAlpha = info.alpha(now);
+          }
           return RepaintBoundary(
             child: CustomPaint(
               size: Size(w, box.maxHeight),
-              painter: _WashPainter(x: x, wave: seekEdgeWave.value, length: seekWaveLength.value, flow: _flow),
+              painter: _WashPainter(
+                  x: x, wave: seekEdgeWave.value, length: seekWaveLength.value, flow: _flow, fadeX: fadeX, fadeAlpha: fadeAlpha),
             ),
           );
         },
@@ -360,22 +400,28 @@ class _WashState extends State<_Wash> with SingleTickerProviderStateMixin {
   }
 }
 
-/// Рисует осветление до [x]; правая граница — прямая или синусоида, бегущая вдоль неё
+/// Рисует осветление до [x]; правая граница — прямая или синусоида, бегущая вдоль неё.
+/// Во время плавного перехода под ним рисуется полоса уходящего трека до [fadeX] с прозрачностью [fadeAlpha]
 class _WashPainter extends CustomPainter {
   final double x;
   final bool wave;
   final double length;
   final Animation<double> flow;
-  _WashPainter({required this.x, required this.wave, required this.length, required this.flow}) : super(repaint: flow);
+  final double fadeX;
+  final double fadeAlpha;
+  _WashPainter({required this.x, required this.wave, required this.length, required this.flow, this.fadeX = 0, this.fadeAlpha = 0})
+      : super(repaint: flow);
 
   static const amplitude = 3.0;
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (x <= 0) return;
+  void _strip(Canvas canvas, Size size, double x, double alpha) {
+    if (x <= 0 || alpha <= 0) return;
     final rect = Rect.fromLTWH(0, 0, x, size.height);
     final paint = Paint()
-      ..shader = const LinearGradient(colors: [Color(0x0AFFFFFF), Color(0x1AFFFFFF)]).createShader(rect);
+      ..shader = LinearGradient(colors: [
+        Color.fromRGBO(255, 255, 255, 0.04 * alpha),
+        Color.fromRGBO(255, 255, 255, 0.10 * alpha),
+      ]).createShader(rect);
     // Дошли до конца трека — края уже не видно
     if (!wave || x >= size.width - 0.5) {
       canvas.drawRect(rect, paint);
@@ -393,7 +439,14 @@ class _WashPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_WashPainter old) => old.x != x || old.wave != wave || old.length != length;
+  void paint(Canvas canvas, Size size) {
+    _strip(canvas, size, fadeX, fadeAlpha);
+    _strip(canvas, size, x, 1);
+  }
+
+  @override
+  bool shouldRepaint(_WashPainter old) =>
+      old.x != x || old.wave != wave || old.length != length || old.fadeX != fadeX || old.fadeAlpha != fadeAlpha;
 }
 
 /// Маленький пример края для «Настроек»: полоска осветления с прямой или волнистой границей
@@ -675,19 +728,28 @@ class _VolumeControl extends StatelessWidget {
       p: p,
       builder: (context, stop) => Row(mainAxisSize: MainAxisSize.min, children: [
         // Клик по динамику — выключить звук, ещё клик — вернуть прежнюю громкость
-        IconButton(
-          tooltip: p.volume == 0 ? 'Включить звук' : 'Выключить звук',
-          visualDensity: VisualDensity.compact,
-          iconSize: 20,
-          onPressed: () {
-            stop();
-            p.toggleMute();
-          },
-          icon: Icon(
-            p.volume == 0
-                ? Icons.volume_off_rounded
-                : (p.volume < 40 ? Icons.volume_down_rounded : Icons.volume_up_rounded),
-            color: p.volume == 0 ? C.muted : C.text,
+        // Правая кнопка мыши — настройки звука
+        Builder(
+          builder: (btn) => GestureDetector(
+            onSecondaryTap: () {
+              stop();
+              showGlassPopover(context: btn, width: 380, above: true, gap: 36, builder: (ctx) => _SoundPanel(Services.of(ctx)));
+            },
+            child: IconButton(
+              tooltip: p.volume == 0 ? 'Включить звук (ПКМ - настройки звука)' : 'Выключить звук (ПКМ - настройки звука)',
+              visualDensity: VisualDensity.compact,
+              iconSize: 20,
+              onPressed: () {
+                stop();
+                p.toggleMute();
+              },
+              icon: Icon(
+                p.volume == 0
+                    ? Icons.volume_off_rounded
+                    : (p.volume < 40 ? Icons.volume_down_rounded : Icons.volume_up_rounded),
+                color: p.volume == 0 ? C.muted : C.text,
+              ),
+            ),
           ),
         ),
         SizedBox(
@@ -700,6 +762,178 @@ class _VolumeControl extends StatelessWidget {
             onChangeEnd: (v) => p.setVolume(v, save: true),
           ),
         ),
+      ]),
+    );
+  }
+}
+
+
+/// Окошко звука по правой кнопке на динамике: ровная громкость и плавный переход с настройками.
+/// Описания функций спрятаны под значок «?» рядом с названием
+class _SoundPanel extends StatefulWidget {
+  final AppServices app;
+  const _SoundPanel(this.app);
+  @override
+  State<_SoundPanel> createState() => _SoundPanelState();
+}
+
+class _SoundPanelState extends State<_SoundPanel> {
+  /// Плавное появление и скрытие блока настроек
+  Widget _reveal(bool show, Widget child) => AnimatedSize(
+        duration: const Duration(milliseconds: 240),
+        curve: Curves.easeOutCubic,
+        alignment: Alignment.topCenter,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 200),
+          switchInCurve: Curves.easeOut,
+          switchOutCurve: Curves.easeIn,
+          layoutBuilder: (current, previous) => Stack(alignment: Alignment.topCenter, children: [...previous, if (current != null) current]),
+          child: show
+              ? KeyedSubtree(key: const ValueKey('on'), child: child)
+              : const SizedBox(key: ValueKey('off'), width: double.infinity),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    // В джеме переход задаёт организатор: панель следит за джемом и блокирует свои настройки перехода
+    return ListenableBuilder(listenable: widget.app.jam, builder: (context, _) => _content(context));
+  }
+
+  Widget _content(BuildContext context) {
+    final app = widget.app;
+    final p = app.player;
+    final locked = p.jamXfSec != null;
+    final sec = locked ? p.crossfadeSecNow : app.settings.crossfadeSec;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 12, 10),
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _PanelRow(
+          title: 'Выравнивание громкости',
+          help: 'Тихие треки подтягиваются, громкие приглушаются, чтобы громкость не прыгала от песни к песне. '
+              'Звук трека разбирается один раз в фоне. Если ползунок громкости почти на максимуме, поднять тихий трек можно лишь до предела.',
+          value: p.normalize,
+          onChanged: (v) async {
+            await p.setNormalize(v);
+            if (mounted) setState(() {});
+          },
+        ),
+        _reveal(
+          p.normalize,
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 6),
+            child: NormLevelPicker(
+              appear: true,
+              value: p.normLevel,
+              onChanged: (v) async {
+                await p.setNormLevel(v);
+                if (mounted) setState(() {});
+              },
+            ),
+          ),
+        ),
+        const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Divider(height: 1, color: C.line)),
+        _PanelRow(
+          title: 'Плавный переход',
+          help: 'Конец трека затихает, а следующий в это время нарастает. Не работает, если вы сами переключили трек, '
+              'перемотали в конец, а также на коротких треках. В джем-сессии переход задаёт организатор: включён у него — включён у всех, выключен — выключен у всех.',
+          value: sec > 0,
+          onChanged: locked ? null : (v) {
+            // Выключая, запоминаем длину, чтобы при включении вернуть прежнюю
+            if (v) {
+              app.settings.crossfadeSec = int.tryParse(app.settings.viewOf('xf.last', '5')) ?? 5;
+            } else {
+              app.settings.view['xf.last'] = '${sec.clamp(1, 10)}';
+              app.settings.crossfadeSec = 0;
+            }
+            app.lib.saveSettings();
+            setState(() {});
+          },
+        ),
+        if (locked)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text('В джеме: по настройке организатора', style: TextStyle(color: C.accent, fontSize: 12.5)),
+          ),
+        _reveal(
+          sec > 0,
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(
+                child: Slider(
+                  value: sec.clamp(1, 10).toDouble(),
+                  min: 1,
+                  max: 10,
+                  divisions: 9,
+                  onChanged: locked ? null : (v) => setState(() => app.settings.crossfadeSec = v.round()),
+                  onChangeEnd: (_) => app.lib.saveSettings(),
+                ),
+              ),
+              SizedBox(width: 40, child: Text('$sec с', textAlign: TextAlign.right, style: const TextStyle(color: C.muted, fontSize: 13))),
+            ]),
+            _PanelRow(
+              title: 'Умный переход',
+              help: 'Как Automix в Spotify: переход начинается там, где песня на самом деле затихает, тишина в начале следующей '
+                  'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
+                  'Ползунок задаёт самый длинный переход.',
+              value: p.smartMix,
+              onChanged: locked ? null : (v) {
+                app.settings.view['mix.smart'] = v ? '1' : '0';
+                app.lib.saveSettings();
+                setState(() {});
+              },
+            ),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Строка настройки: название (целиком, при нехватке места переносится), полупрозрачный значок «?» с описанием в облачке
+/// при наведении и переключатель
+class _PanelRow extends StatelessWidget {
+  final String title, help;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+  const _PanelRow({required this.title, required this.help, required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 44),
+      child: Row(children: [
+        Flexible(child: Padding(padding: const EdgeInsets.symmetric(vertical: 6), child: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)))),
+        const SizedBox(width: 8),
+        Tooltip(
+          // Ширину облачка ограничиваем сами: у Tooltip в Flutter 3.27 нет параметра constraints
+          richMessage: WidgetSpan(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 280),
+              child: Text(help, style: const TextStyle(color: C.text, fontSize: 12.5, height: 1.4)),
+            ),
+          ),
+          // Облачко появляется почти сразу и держится, пока курсор над значком
+          waitDuration: const Duration(milliseconds: 120),
+          showDuration: const Duration(seconds: 30),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          preferBelow: false,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.help,
+            child: Opacity(
+              opacity: 0.5,
+              child: Container(
+                width: 18,
+                height: 18,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: C.muted, width: 1.3)),
+                child: const Text('?', style: TextStyle(fontSize: 11, height: 1, fontWeight: FontWeight.w700, color: C.muted)),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Switch(value: value, onChanged: onChanged),
       ]),
     );
   }

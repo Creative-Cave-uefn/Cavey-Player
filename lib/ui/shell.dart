@@ -841,9 +841,9 @@ class _Sidebar extends StatelessWidget {
                 ]),
               ),
             ),
-            item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
             item(Icons.library_music_outlined, 'Медиатека', const Nav('all'),
                 also: const ['albums', 'artists', 'recent', 'songs', 'playlists', 'collection']),
+            item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
             const SizedBox(height: 14),
             item(Icons.travel_explore_rounded, 'Поиск в интернете', const Nav('websearch')),
             item(Icons.new_releases_outlined, 'Новинки', const Nav('new')),
@@ -908,7 +908,7 @@ class _Sidebar extends StatelessWidget {
             // Сколько места нужно, чтобы верх и низ панели стояли на месте, а прокручивались только плейлисты.
             // Оценка с запасом; если места меньше, прокручивается вся панель целиком
             final live = app.social.friends.where((m) => m.live).length;
-            final need = 864 + (live > 0 ? 44 : 0) + (app.social.following != null ? 36 : 0);
+            final need = 864 + (live > 0 ? 44 : 0) + (app.jam.active ? 36 : 0);
             if (box.maxHeight >= need) {
               return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 ...head,
@@ -1231,7 +1231,8 @@ class _SideRow extends StatelessWidget {
                 child: Text(entry.label,
                     overflow: TextOverflow.ellipsis, style: TextStyle(color: color, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
               ),
-              if (entry.owner != null) FriendDot(entry.owner!, size: 7),
+              // Точка присутствия — только у чужих плейлистов: у собственных она ничего не говорит
+              if (entry.owner != null && entry.owner!.isNotEmpty && entry.owner != Services.of(context).lib.me) FriendDot(entry.owner!, size: 7),
               const SizedBox(width: 4),
             ],
           ],
@@ -1439,29 +1440,45 @@ class _NavItem extends StatelessWidget {
   }
 }
 
-/// Подсказка, когда над окном тащат файлы
+/// Подсказка, когда над окном тащат файлы: стеклянная карточка по центру на затемнённом фоне
 class _DropOverlay extends StatelessWidget {
   const _DropOverlay();
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: C.bg.withValues(alpha: 0.86),
-      alignment: Alignment.center,
+    // Material нужен тексту: без него на нём рисовалось жёлтое подчёркивание и стиль по умолчанию
+    return Material(
+      type: MaterialType.transparency,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 40),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: C.accent, width: 2),
+        color: Colors.black.withValues(alpha: 0.5),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440),
+          child: GlassPanel(
+            radius: 24,
+            blur: 32,
+            border: C.accent.withValues(alpha: 0.55),
+            padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 34),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: C.accent.withValues(alpha: 0.16),
+                  border: Border.all(color: C.accent.withValues(alpha: 0.5)),
+                ),
+                child: Icon(Icons.upload_rounded, size: 30, color: C.accent),
+              ),
+              const SizedBox(height: 18),
+              Text('Отпустите, чтобы загрузить', textAlign: TextAlign.center, style: display(20)),
+              const SizedBox(height: 8),
+              const Text('Музыка уйдёт на Google Диск и появится в библиотеке у всех',
+                  textAlign: TextAlign.center, style: TextStyle(color: C.muted, fontSize: 14, height: 1.4, decoration: TextDecoration.none)),
+            ]),
+          ),
         ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.upload_rounded, size: 44, color: C.accent),
-          const SizedBox(height: 16),
-          Text('Отпустите, чтобы загрузить', style: display(22)),
-          const SizedBox(height: 8),
-          const Text('Музыка уйдёт на Google Диск и появится в библиотеке у всех',
-              style: TextStyle(color: C.muted)),
-        ]),
       ),
     );
   }

@@ -1,6 +1,9 @@
+import 'dart:async' show unawaited;
+import 'dart:io' show File;
 import 'dart:math' show max, min;
 
 import 'package:flutter/material.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
 
 import '../app.dart';
@@ -44,7 +47,8 @@ class AllTracksPage extends StatelessWidget {
         final albums = lib.albums.length;
         return TracksPage(
           title: title,
-          subtitle: tracks.isEmpty
+          // В «Медиатеке» итог уже написан под заголовком раздела
+          subtitle: tracks.isEmpty || LibraryFrame.on(context)
               ? null
               : '${countTracks(tracks.length)} в $albums ${plural(albums, 'альбоме', 'альбомах', 'альбомах')}',
           tracks: tracks,
@@ -853,35 +857,19 @@ class _TracksPageState extends State<TracksPage> {
     }
 
     // Поле поиска одной высоты с кнопками рядом
-    Widget searchBox(String hint, {double width = 300}) => SizedBox(
+    Widget searchBox(String hint, {double width = 300}) => RowSearchField(
+          controller: _search,
+          focusNode: _searchFocus,
+          hint: hint,
           width: width,
-          height: 48,
-          child: TextField(
-            controller: _search,
-            focusNode: _searchFocus,
-            onChanged: (v) => setState(() => _query = v),
-            maxLines: 1,
-            textAlignVertical: TextAlignVertical.center,
-            decoration: InputDecoration(
-              // Высота как у кнопок рядом; текст и подсказка строго в одну строку
-              constraints: const BoxConstraints.tightFor(height: 48),
-              hintText: hint,
-              hintMaxLines: 1,
-              prefixIcon: const Icon(Icons.search_rounded, size: 18),
-              suffixIcon: _query.isEmpty
-                  ? null
-                  : IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 16),
-                      onPressed: () => setState(() {
-                        _search.clear();
-                        _query = '';
-                      }),
-                    ),
-            ),
-          ),
+          onChanged: (v) => setState(() => _query = v),
+          onClear: () => setState(() {
+            _search.clear();
+            _query = '';
+          }),
         );
 
-    Widget buttons(WrapAlignment align, {Widget? leading}) => Wrap(
+    Widget buttons(WrapAlignment align, {Widget? leading}) => uniformControls(context, Wrap(
           spacing: 12,
           runSpacing: 10,
           alignment: align,
@@ -892,8 +880,8 @@ class _TracksPageState extends State<TracksPage> {
               onPressed: visible.isEmpty
                   ? null
                   : () {
-                      if (app.player.shuffle) app.player.toggleShuffle();
-                      app.player.playTracks(visible, 0);
+                      if (app.player.shuffle && !(widget.numbered && widget.playlistId == null)) app.player.toggleShuffle();
+                      app.player.playTracks(visible, 0, inOrder: widget.numbered && widget.playlistId == null);
                     },
               icon: const Icon(Icons.play_arrow_rounded, size: 20),
               label: const Text('Слушать'),
@@ -910,7 +898,7 @@ class _TracksPageState extends State<TracksPage> {
             ),
             ...widget.actions,
           ],
-        );
+        ));
 
     final hero = widget.heroColor;
     final left = widget.heroLeft;
@@ -1036,6 +1024,9 @@ class _TracksPageState extends State<TracksPage> {
       listenable: Listenable.merge([app.player, app.cache]),
       builder: (context, _) {
         final currentId = app.player.current?.id;
+        // Перетаскиваемая строка рисуется в Overlay навигатора, выше страницы, где живёт NavScope: передаём его вручную,
+        // иначе строка не строится (trackLinks берёт NavScope сразу) и в сборке без отладки заливается серым
+        final navScope = NavScope.of(context);
         // Галочка — только у треков, сохранённых офлайн: из «Любимого», плейлиста или альбома с кнопкой «Сохранить офлайн»
         final pinned = app.cache.pinnedIds;
         Widget row(BuildContext context, int i) => TrackRow(
@@ -1046,7 +1037,7 @@ class _TracksPageState extends State<TracksPage> {
               compact: widget.compact,
               playlistId: widget.playlistId,
               cached: pinned.contains(visible[i].id) && app.cache.has(visible[i].id),
-              onPlay: () => app.player.playTracks(visible, i, playlistId: widget.playlistId),
+              onPlay: () => app.player.playTracks(visible, i, playlistId: widget.playlistId, inOrder: widget.numbered && widget.playlistId == null),
               selecting: _selecting,
               selected: _sel.contains(visible[i].id),
               onSelect: (shift) => _onSelect(visible, i, shift),
@@ -1093,7 +1084,7 @@ class _TracksPageState extends State<TracksPage> {
                           ),
                         );
                       },
-                      child: Material(type: MaterialType.transparency, child: child),
+                      child: NavScope(nav: navScope, child: Material(type: MaterialType.transparency, child: child)),
                     ),
                     onReorder: (from, to) {
                       if (to > from) to--;
@@ -1495,18 +1486,7 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
     case 'album':
       NavScope.of(context).go(Nav('album', track.albumKey));
     case 'redownload':
-      final ok = await confirm(context,
-        title: 'Перекачать «${track.title}»?',
-        text: 'Cavey найдёт новую версию трека через выбранный источник и заменит аудио в том же файле Google Диска. '
-            'ID, ссылки, лайки, плейлисты и ручные метаданные сохранятся. Для замены нужны права записи в файл. Старую аудиозапись после успешной замены вернуть не получится.',
-        action: 'Перекачать',
-      );
-      if (ok && context.mounted) {
-        final job = app.downloads.enqueueReplacement(track);
-        app.lib.messages.add(job == null
-            ? 'Этот трек уже перекачивается или у него не указаны исполнитель и название.'
-            : 'Перекачивание «${track.title}» добавлено в очередь загрузок');
-      }
+      await redownloadTrack(context, track);
     case 'edit':
       await editTrackDialog(context, track);
     case 'delete':
@@ -1922,4 +1902,53 @@ Future<void> showPlaysDialog(BuildContext context, Track track) {
       actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрыть'))],
     ),
   );
+}
+
+
+/// «Перекачать трек»: на выбор — заменить аудио файлом с компьютера или найти новую версию через загрузчик Cavey
+Future<void> redownloadTrack(BuildContext context, Track track) async {
+  final app = Services.of(context);
+  final choice = await showGlassDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('Перекачать «${track.title}»', style: display(18)),
+      content: SizedBox(
+        width: 400,
+        child: Text(
+          'Аудио заменится в том же файле Google Диска: ID, ссылки, лайки, плейлисты и ручные метаданные сохранятся. '
+          'Для замены нужны права записи в файл. Старую аудиозапись после замены вернуть не получится.\n\n'
+          'Откуда взять новое аудио?',
+          style: const TextStyle(color: C.muted, height: 1.45),
+        ),
+      ),
+      actionsOverflowButtonSpacing: 8,
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена', style: TextStyle(color: C.muted))),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.pop(ctx, 'file'),
+          icon: const Icon(Icons.folder_open_rounded, size: 18),
+          label: const Text('Из своего файла'),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.pop(ctx, 'search'),
+          icon: const Icon(Icons.search_rounded, size: 18),
+          label: const Text('Найти через загрузчик'),
+        ),
+      ],
+    ),
+  );
+  if (choice == null || !context.mounted) return;
+  if (choice == 'search') {
+    final job = app.downloads.enqueueReplacement(track);
+    app.lib.messages.add(job == null
+        ? 'Этот трек уже перекачивается или у него не указаны исполнитель и название.'
+        : 'Перекачивание «${track.title}» добавлено в очередь загрузок');
+    return;
+  }
+  final f = await openFile(acceptedTypeGroups: const [
+    XTypeGroup(label: 'Аудио', extensions: ['mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus', 'wav', 'wma']),
+  ]);
+  if (f == null) return;
+  // Замена идёт в фоне: загрузка файла на Диск может занять время, интерфейс при этом не блокируется
+  unawaited(app.downloads.replaceFromFile(track, File(f.path)));
 }

@@ -1,7 +1,10 @@
 // Уведомления «Вам»: кто-то добавил загруженный вами трек в любимое или плейлист, или поделился с вами треком.
 // Источник — события в личных файлах друзей (cave-data/user-<почта>.json), поэтому здесь только разбор таких событий.
 
-enum NoticeKind { like, addToPlaylist, share }
+enum NoticeKind { like, addToPlaylist, share, jamInvite, jamRequest }
+
+/// Сколько действует приглашение в джем и запрос на вход
+const jamInviteTtl = Duration(minutes: 10);
 
 class Notice {
   final NoticeKind kind;
@@ -14,7 +17,22 @@ class Notice {
 
   /// Подпись к «поделился»
   final String? note;
-  const Notice(this.kind, this.from, this.at, this.trackIds, {this.playlist, this.note});
+
+  /// Идентификатор джем-сессии (для приглашений и запросов)
+  final String? jam;
+
+  /// Приглашение — ответ на мой запрос: войти сразу, без подтверждения
+  final bool reply;
+
+  /// Организатор джема (почта), если приглашавший знает его
+  final String? host;
+  const Notice(this.kind, this.from, this.at, this.trackIds,
+      {this.playlist, this.note, this.jam, this.reply = false, this.host});
+
+  bool get isJam => kind == NoticeKind.jamInvite || kind == NoticeKind.jamRequest;
+
+  /// Приглашение или запрос уже не действуют
+  bool expired(DateTime now) => isJam && now.difference(at) > jamInviteTtl;
 
   /// Устойчивый ключ: одно и то же событие после каждого опроса получает тот же
   String get id => '${kind.name}|$from|${at.toUtc().toIso8601String()}';
@@ -53,6 +71,20 @@ List<Notice> collectNotices({
           final note = '${d['note'] ?? ''}'.trim();
           out.add(Notice(NoticeKind.share, email, at, ['${d['track']}'], note: note.isEmpty ? null : note));
         }
+      case 'jaminv':
+        // Приглашение в джем: только свежее и только мне
+        final to = [for (final x in (d['to'] as List? ?? const [])) '$x'];
+        if (to.contains(me) && d['jam'] != null) {
+          final h = '${d['host'] ?? ''}';
+          out.add(Notice(NoticeKind.jamInvite, email, at, const [],
+              jam: '${d['jam']}', reply: d['re'] == true, host: h.isEmpty ? null : h));
+        }
+      case 'jamreq':
+        // Запрос «попроситься в джем» приходит всем участникам
+        final to = [for (final x in (d['to'] as List? ?? const [])) '$x'];
+        if (to.contains(me) && d['jam'] != null) {
+          out.add(Notice(NoticeKind.jamRequest, email, at, const [], jam: '${d['jam']}'));
+        }
     }
   }
   out.sort((a, b) => b.at.compareTo(a.at));
@@ -69,8 +101,12 @@ List<Notice> freshNotices(List<Notice> all, String? seen) {
 
 /// Текст уведомления. [label] — «Название — Исполнитель» для трека, [title] — только название
 String noticeText(Notice n, {required String who, required String Function(String id) title, required String Function(String id) label}) {
-  final first = n.trackIds.first;
+  final first = n.trackIds.isEmpty ? '' : n.trackIds.first;
   switch (n.kind) {
+    case NoticeKind.jamInvite:
+      return '$who зовёт в джем';
+    case NoticeKind.jamRequest:
+      return '$who просится в джем';
     case NoticeKind.like:
       return '$who добавил(а) «${title(first)}» в любимое';
     case NoticeKind.addToPlaylist:
@@ -81,4 +117,10 @@ String noticeText(Notice n, {required String who, required String Function(Strin
     case NoticeKind.share:
       return '$who поделился(ась): ${label(first)}';
   }
+}
+
+/// Текст уведомления без имени (имя стоит в заголовке карточки): «Добавил(а) «Трек» в любимое»
+String noticeBodyText(Notice n, {required String Function(String id) title, required String Function(String id) label}) {
+  final t = noticeText(n, who: '', title: title, label: label).trim();
+  return t.isEmpty ? t : '${t[0].toUpperCase()}${t.substring(1)}';
 }

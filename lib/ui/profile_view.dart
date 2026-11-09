@@ -577,7 +577,7 @@ Widget _albumTile(BuildContext context, Album a) => _tile(
       title: a.title,
       subtitle: a.year.isEmpty ? countTracks(a.tracks.length) : '${a.year} · ${countTracks(a.tracks.length)}',
       onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-      onPlay: () => Services.of(context).player.playTracks(a.tracks, 0),
+      onPlay: () => Services.of(context).player.playTracks(a.tracks, 0, inOrder: true),
     );
 
 // ---------- страница исполнителя ----------
@@ -792,7 +792,9 @@ class UserProfilePage extends StatelessWidget {
         final lists = [for (final p in lib.visiblePlaylists) if (p.by == email) p];
         final m = app.social.members[email];
         String? subtitle;
-        if (m != null && m.live && m.now != null) {
+        if (m != null && m.inJam) {
+          subtitle = 'Сейчас ${jamStatusText(app, m)}';
+        } else if (m != null && m.live && m.now != null) {
           subtitle = 'Сейчас слушает: ${m.now!.title} — ${m.now!.artist}';
         } else if (email == lib.me) {
           subtitle = 'Это ваша страница';
@@ -884,7 +886,7 @@ class UserProfilePage extends StatelessWidget {
                       title: a.title,
                       subtitle: 'Альбом · ${a.artist}',
                       onTap: () => NavScope.of(context).go(Nav('album', a.key)),
-                      onPlay: () => app.player.playTracks(a.tracks, 0),
+                      onPlay: () => app.player.playTracks(a.tracks, 0, inOrder: true),
                     ),
                   for (final p in favs.playlists)
                     _tile(
@@ -1020,7 +1022,7 @@ class ListenStats extends StatelessWidget {
             InkWell(
               borderRadius: BorderRadius.circular(14),
               onTap: () => NavScope.of(context).go(Nav('artist', top.toLowerCase())),
-              child: tile('любимый исполнитель месяца', top, width: width),
+              child: tile('любимый исполнитель месяца', top, width: width == null ? null : width * 2 + 0),
             ),
         ]);
 
@@ -1037,7 +1039,7 @@ class ListenStats extends StatelessWidget {
                       child: Tooltip(
                         message: '${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}: ${formatListened(d)}',
                         child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 3),
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
                           child: Container(
                             height: peak == 0 ? 3 : (3 + room * d.inMinutes / peak),
                             decoration: BoxDecoration(
@@ -1065,9 +1067,10 @@ class ListenStats extends StatelessWidget {
       LayoutBuilder(builder: (context, box) {
         // Широкое окно: четыре плашки в один ряд и график правее них на том же ряду.
         // Совсем узкое: плашки остаются рядом друг с другом, а график уходит под них
+        // Плитка «Любимый исполнитель» вдвое шире остальных, график сжимается под оставшееся место
         const tileW = 132.0;
-        const tilesW = tileW * 4 + 8 * 3;
-        if (box.maxWidth >= tilesW + 16 + 200) {
+        final tilesW = tileW * (top == null ? 3 : 5) + 8 * (top == null ? 2 : 3);
+        if (box.maxWidth >= tilesW + 16 + 160) {
           return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             SizedBox(width: tilesW, child: tiles(width: tileW)),
             const SizedBox(width: 16),
