@@ -435,14 +435,14 @@ class _MarkerPainter extends CustomPainter {
       final x = i * w;
       final after = (i + 0.5) / n >= marker;
       canvas.drawRRect(
-        RRect.fromRectAndRadius(Rect.fromLTWH(x + 0.5, (size.height - h) / 2, math.max(1, w - 1), h), const Radius.circular(1)),
+        RRect.fromRectAndRadius(Rect.fromLTWH(x + 0.5, (size.height - h) / 2, math.max(1.0, w - 1), h), const Radius.circular(1)),
         after ? past : base,
       );
     }
     final line = Paint()
       ..color = Colors.white
       ..strokeWidth = 2;
-    final mx = marker.clamp(0.0, 1.0) * size.width;
+    final mx = marker.clamp(0.0, 1.0).toDouble() * size.width;
     canvas.drawLine(Offset(mx, 0), Offset(mx, size.height), line);
   }
 
