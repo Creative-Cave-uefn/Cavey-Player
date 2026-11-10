@@ -498,7 +498,7 @@ class _DeckWavePainter extends CustomPainter {
           const Radius.circular(1)),
         i / count <= progress ? left : right);
     }
-    final x = progress.clamp(0.0, 1.0) * size.width;
+    final x = progress.clamp(0.0, 1.0).toDouble() * size.width;
     canvas.drawLine(Offset(x, 0), Offset(x, size.height),
       Paint()..color = Colors.white..strokeWidth = 2);
   }
