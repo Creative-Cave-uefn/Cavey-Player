@@ -25,6 +25,8 @@ import 'theme.dart';
 import 'wave_view.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
+import 'dj_menu.dart';
+import 'mix_view.dart';
 
 /// Ctrl+F: каждое увеличение просит открытый список треков поставить курсор в поиск
 final searchRequests = ValueNotifier<int>(0);
@@ -807,6 +809,37 @@ class _TracksPageState extends State<TracksPage> {
     );
   }
 
+  /// Режим «Микс» этого списка: колонки BPM и тональность, между треками — плашки перехода
+  String get _mixKey => 'mix.view.${widget.playlistId ?? widget.title}';
+  bool get _mixOn => Services.of(context).settings.viewOf(_mixKey, '0') == '1';
+
+  /// Высота плашки перехода под строкой
+  static const _chipH = 32.0;
+
+  Widget _mixButton(AppServices app) {
+    final on = _mixOn;
+    return Tooltip(
+      message: on ? 'Выключить режим «Микс»' : 'Настроить переходы между треками',
+      child: OutlinedButton.icon(
+        style: on ? OutlinedButton.styleFrom(side: BorderSide(color: C.accent), foregroundColor: C.accent) : null,
+        onPressed: widget.tracks.length < 2
+            ? null
+            : () {
+                setState(() => app.settings.view[_mixKey] = on ? '0' : '1');
+                app.lib.saveSettings();
+                if (!on) {
+                  // Темп и тональность берутся из разбора звука: ставим на разбор начало списка
+                  final ids = [for (final t in _visibleNow.take(100)) t.id];
+                  final n = app.player.mixer?.prepareMany(ids) ?? 0;
+                  if (n > 0) app.lib.messages.add('На разбор поставлено треков: $n. Темп и тональность появятся по мере готовности');
+                }
+              },
+        icon: const Icon(Icons.tune_rounded, size: 18),
+        label: const Text('Микс'),
+      ),
+    );
+  }
+
   Widget _sortHeader(bool compact) {
     Widget label(String key, String text, {IconData? icon}) {
       final active = _sort == key;
@@ -843,6 +876,10 @@ class _TracksPageState extends State<TracksPage> {
           Expanded(flex: 3, child: Align(alignment: Alignment.centerLeft, child: label('album', 'Альбом'))),
           const SizedBox(width: 16),
           Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: label('by', 'Загрузил(а)'))),
+        ],
+        if (_mixOn && !compact) ...[
+          const SizedBox(width: kMixBpmW, child: Text('BPM', style: TextStyle(fontSize: 12, color: C.faint, fontWeight: FontWeight.w500))),
+          const SizedBox(width: kMixKeyW, child: Text('Key', style: TextStyle(fontSize: 12, color: C.faint, fontWeight: FontWeight.w500))),
         ],
         if (widget.playlistId != null && !compact)
           SizedBox(width: _addedColW, child: Align(alignment: Alignment.centerLeft, child: label('padded', 'Дата добавления'))),
@@ -913,6 +950,8 @@ class _TracksPageState extends State<TracksPage> {
                 selected: _mineOnly,
                 onSelected: (v) => setState(() => _mineOnly = v),
               ),
+            DjMenuButton(tracks: visible, name: widget.title),
+            _mixButton(app),
             ...widget.actions,
           ],
         ));
@@ -1038,7 +1077,8 @@ class _TracksPageState extends State<TracksPage> {
     }
 
     return ListenableBuilder(
-      listenable: Listenable.merge([app.player, app.cache]),
+      // Разбор звука закончился — в колонках BPM и тональность появляются значения
+      listenable: Listenable.merge([app.player, app.cache, if (app.player.mixer != null) app.player.mixer!.pending]),
       builder: (context, _) {
         final currentId = app.player.current?.id;
         // Перетаскиваемая строка рисуется в Overlay навигатора, выше страницы, где живёт NavScope: передаём его вручную,
@@ -1046,7 +1086,9 @@ class _TracksPageState extends State<TracksPage> {
         final navScope = NavScope.of(context);
         // Галочка — только у треков, сохранённых офлайн: из «Любимого», плейлиста или альбома с кнопкой «Сохранить офлайн»
         final pinned = app.cache.pinnedIds;
-        Widget row(BuildContext context, int i) => TrackRow(
+        final mixOn = _mixOn;
+        final itemH = mixOn ? 58.0 + _chipH : 58.0;
+        Widget plainRow(BuildContext context, int i) => TrackRow(
               track: visible[i],
               index: i,
               current: visible[i].id == currentId,
@@ -1060,7 +1102,18 @@ class _TracksPageState extends State<TracksPage> {
               onSelect: (shift) => _onSelect(visible, i, shift),
               addedAt: addedAt?[visible[i].id],
               dragIndex: _canReorder ? i : null,
+              showMix: mixOn && !widget.compact,
             );
+        // В режиме «Микс» под каждым треком (кроме последнего) — плашка перехода к следующему
+        Widget row(BuildContext context, int i) => !mixOn
+            ? plainRow(context, i)
+            : Column(children: [
+                SizedBox(height: 58, child: plainRow(context, i)),
+                SizedBox(
+                  height: _chipH,
+                  child: i + 1 < visible.length ? TransitionChip(from: visible[i], to: visible[i + 1]) : const SizedBox.shrink(),
+                ),
+              ]);
         final list = CustomScrollView(
             // Вернулись назад — список на том же месте
             key: PageStorageKey('tracks:${widget.title}:${widget.playlistId ?? ''}'),
@@ -1084,7 +1137,7 @@ class _TracksPageState extends State<TracksPage> {
             sliver: _canReorder
                 ? SliverReorderableList(
                     itemCount: visible.length,
-                    itemExtent: 58,
+                    itemExtent: itemH,
                     proxyDecorator: (child, i, anim) => AnimatedBuilder(
                       animation: anim,
                       builder: (context, child) {
@@ -1112,11 +1165,11 @@ class _TracksPageState extends State<TracksPage> {
                     itemBuilder: (context, i) => ReorderableDelayedDragStartListener(
                       key: ValueKey(visible[i].id),
                       index: i,
-                      child: SizedBox(height: 58, child: row(context, i)),
+                      child: SizedBox(height: itemH, child: row(context, i)),
                     ),
                   )
                 : SliverFixedExtentList(
-                    itemExtent: 58,
+                    itemExtent: itemH,
                     delegate: SliverChildBuilderDelegate(row, childCount: visible.length),
                   ),
           ),
@@ -1164,7 +1217,11 @@ class TrackRow extends StatelessWidget {
     this.onSelect,
     this.addedAt,
     this.dragIndex,
+    this.showMix = false,
   });
+
+  /// Режим «Микс»: у строки колонки BPM и тональность
+  final bool showMix;
 
   /// Номер в списке, который можно перетаскивать: у строки появляется ручка (при наведении вместо номера)
   final int? dragIndex;
@@ -1253,6 +1310,7 @@ class TrackRow extends StatelessWidget {
             const SizedBox(width: 16),
             Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: FriendTag(track.by))),
           ],
+          if (showMix) MixCells(track),
           if (addedAt != null && !compact)
             SizedBox(
               width: 120,
