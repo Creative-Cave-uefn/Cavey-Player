@@ -394,7 +394,7 @@ class _WaveMarker extends StatelessWidget {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
         Expanded(child: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12))),
-        Text(label, style: const TextStyle(color: C.accent, fontSize: 12, fontWeight: FontWeight.w600)),
+        Text(label, style: TextStyle(color: C.accent, fontSize: 12, fontWeight: FontWeight.w600)),
       ]),
       const SizedBox(height: 4),
       LayoutBuilder(builder: (context, box) {

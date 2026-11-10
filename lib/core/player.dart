@@ -654,7 +654,7 @@ class PlayerController extends ChangeNotifier {
     // Профиль от другого файла (трек заменили) — не доверяем
     if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
     final auto = MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur), dj: _djMix);
-    return manual ? MixPlan.manual(a, b, pref!, auto: auto) : auto;
+    return manual ? MixPlan.manual(a, b, pref, auto: auto) : auto;
   }
 
   /// Переход между текущим треком и следующим настроен вручную (или хоть как-то задан)
@@ -913,7 +913,7 @@ class PlayerController extends ChangeNotifier {
       if (dj) {
         // Темп следующего подгоняем под уходящий до того, как он зазвучит; у басов следующего срезаем низы
         _fxDirty = true;
-        await _setRate(incoming, djp!.rate);
+        await _setRate(incoming, djp.rate);
         if (djp.swapAt != null) await _setLowCut(incoming, true);
       } else if (_fxDirty) {
         await _setRate(incoming, 1.0);
@@ -946,7 +946,7 @@ class PlayerController extends ChangeNotifier {
         // и сверяем доли: если расходятся заметно, один раз подтягиваем, дальше подстраиваем скоростью
         _stopClocks();
         final oc = _outClock = _PosClock(_p, 1.0);
-        final ic = _inClock = _PosClock(incoming, djp!.rate);
+        final ic = _inClock = _PosClock(incoming, djp.rate);
         final wait = djp.start - oc.now();
         if (wait > const Duration(milliseconds: 5)) {
           await Future<void>.delayed(wait < const Duration(seconds: 3) ? wait : const Duration(seconds: 3));
