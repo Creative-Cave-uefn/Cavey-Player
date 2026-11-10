@@ -458,7 +458,7 @@ class _PendingUploads extends StatelessWidget {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         Row(children: [
-          const Icon(Icons.cloud_upload_outlined, size: 20, color: C.accent),
+          Icon(Icons.cloud_upload_outlined, size: 20, color: C.accent),
           const SizedBox(width: 10),
           Expanded(
             child: Text('Ожидают загрузки: ${items.length}',
