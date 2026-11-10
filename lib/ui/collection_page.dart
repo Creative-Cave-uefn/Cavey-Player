@@ -6,6 +6,7 @@ import '../core/models.dart';
 import '../core/pin_order.dart';
 import 'collection_menu.dart';
 import 'library_tabs.dart';
+import 'list_filter.dart' show AnimatedTileGrid;
 import 'pin_drag.dart';
 import 'playlists_view.dart';
 import 'profile_view.dart';
@@ -110,15 +111,13 @@ class CollectionPage extends StatelessWidget {
         final shownTokens = [for (final e in shown) e.tokenIn(pinSet)];
         void drop(String dragged, String target) => applyPinDrop(app, shownTokens, split.pinned.length, dragged, target);
 
-        Widget wrap(_Item e, double w) {
+        Widget wrap(_Item e) {
           final token = e.tokenIn(pinSet);
-          return SizedBox(
-            width: w,
-            child: PinDrag(token: token, onDrop: drop, child: e.tile(pinSet.contains(token), drop, token)),
-          );
+          return PinDrag(key: ValueKey('pin:$token'), token: token, onDrop: drop, child: e.tile(pinSet.contains(token), drop, token));
         }
 
-        Widget grid(Iterable<_Item> items, double w) => Wrap(spacing: 20, runSpacing: 24, children: [for (final e in items) wrap(e, e.kind == 2 ? 150 : w)]);
+        Widget grid(Iterable<_Item> items, double w) =>
+            AnimatedTileGrid(tile: w, extra: 56, children: [for (final e in items) wrap(e)]);
         final restLists = rest.where((e) => e.kind == 0);
         final restAlbums = rest.where((e) => e.kind == 1);
         final restArtists = rest.where((e) => e.kind == 2);

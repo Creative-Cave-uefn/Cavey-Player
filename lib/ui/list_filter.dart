@@ -7,12 +7,13 @@ import 'package:flutter/rendering.dart';
 import '../app.dart';
 import '../core/models.dart';
 import '../core/store.dart';
+import '../core/text_fold.dart' as fold;
 import 'glass_popup.dart';
 import 'theme.dart';
 
 
-/// Для поиска и сортировки: без регистра, «ё» как «е»
-String foldText(String s) => s.toLowerCase().replaceAll('ё', 'е');
+/// Для поиска и сортировки: без регистра и диакритики, «ё» как «е»
+String foldText(String s) => fold.foldText(s);
 
 /// Ключ сортировки по алфавиту: ведущие кавычки, скобки и знаки не мешают
 String sortKey(String s) {
@@ -220,18 +221,96 @@ class ViewControls extends StatelessWidget {
   }
 }
 
+/// Сколько столбцов помещается при ширине [w] и каким тогда будет размер плитки (плитки не уже [tile], остаток делится поровну)
+({int cols, double width}) fitGrid(double w, double tile, double gap) {
+  final n = math.max(1, ((w + gap) / (tile + gap)).floor());
+  return (cols: n, width: (w - gap * (n - 1)) / n);
+}
+
+/// Расположение плиток одной сетки: считается по номеру плитки
+class _GridGeom {
+  final int n;
+  final double tw, th, gap, mainGap;
+  const _GridGeom(this.n, this.tw, this.th, this.gap, this.mainGap);
+
+  double get stride => th + mainGap;
+
+  SliverGridGeometry at(int i, bool reverse, double crossExtent) {
+    final col = i % n, row = i ~/ n;
+    final x = col * (tw + gap);
+    return SliverGridGeometry(
+      scrollOffset: row * stride,
+      crossAxisOffset: reverse ? crossExtent - x - tw : x,
+      mainAxisExtent: th,
+      crossAxisExtent: tw,
+    );
+  }
+
+  int minIndex(double s) => stride > 0 ? n * (s ~/ stride) : 0;
+  int maxIndex(double s) => stride > 0 ? math.max(0, n * (s / stride).ceil() - 1) : 0;
+  double maxScroll(int count) => count == 0 ? 0 : stride * (((count - 1) ~/ n) + 1) - mainGap;
+}
+
+/// Раскладка «между двумя сетками»: плитки плавно переезжают с прежних мест на новые
+class _LerpLayout extends SliverGridLayout {
+  final _GridGeom a, b;
+  final double t;
+  final bool reverse;
+  final double crossExtent;
+  const _LerpLayout(this.a, this.b, this.t, this.reverse, this.crossExtent);
+
+  @override
+  SliverGridGeometry getGeometryForChildIndex(int i) {
+    final x = a.at(i, reverse, crossExtent), y = b.at(i, reverse, crossExtent);
+    double l(double p, double q) => p + (q - p) * t;
+    return SliverGridGeometry(
+      scrollOffset: l(x.scrollOffset, y.scrollOffset),
+      crossAxisOffset: l(x.crossAxisOffset, y.crossAxisOffset),
+      mainAxisExtent: l(x.mainAxisExtent, y.mainAxisExtent),
+      crossAxisExtent: l(x.crossAxisExtent, y.crossAxisExtent),
+    );
+  }
+
+  @override
+  int getMinChildIndexForScrollOffset(double s) => math.min(a.minIndex(s), b.minIndex(s));
+
+  @override
+  int getMaxChildIndexForScrollOffset(double s) => math.max(a.maxIndex(s), b.maxIndex(s));
+
+  @override
+  double computeMaxScrollOffset(int count) {
+    final x = a.maxScroll(count), y = b.maxScroll(count);
+    return x + (y - x) * t;
+  }
+}
+
+class _LerpDelegate extends SliverGridDelegate {
+  final _GridGeom from, to;
+  final double t;
+  const _LerpDelegate(this.from, this.to, this.t);
+
+  @override
+  SliverGridLayout getLayout(SliverConstraints c) =>
+      _LerpLayout(from, to, t, axisDirectionIsReversed(c.crossAxisDirection), c.crossAxisExtent);
+
+  @override
+  bool shouldRelayout(_LerpDelegate old) =>
+      old.t != t || old.to.n != to.n || old.to.tw != to.tw || old.to.th != th || old.from.n != from.n || old.from.tw != from.tw;
+
+  double get th => to.th;
+}
+
 /// Сетка плиток с подгонкой под ширину: плитки не уже [tile], под картинкой остаётся место [extra] на подписи.
 ///
-/// Пока ширина страницы меняется (разворачивается левая или правая панель), число столбцов и размер плиток
-/// не пересчитываются: сетка стоит на месте, обложки не перезагружаются и не мерцают. Через [settle]
-/// после последнего изменения ширины сетка один раз пересчитывается под новую ширину.
+/// Плитки следуют за шириной страницы, пока разворачивается левая или правая панель (CoverImage при этом
+/// не перерисовывает картинку на каждом кадре). Как только последняя плитка перестала помещаться (или, наоборот, освободилось
+/// место для ещё одного столбца), число столбцов меняется сразу, а плитки за ~250 мс плавно переезжают на новые места.
 class AdaptiveGridSliver extends StatefulWidget {
   final double tile;
   final double extra;
   final double gap;
   final int count;
   final IndexedWidgetBuilder builder;
-  final Duration settle;
   const AdaptiveGridSliver({
     super.key,
     required this.tile,
@@ -239,67 +318,127 @@ class AdaptiveGridSliver extends StatefulWidget {
     required this.count,
     required this.builder,
     this.gap = 20,
-    this.settle = const Duration(milliseconds: 380),
   });
 
   @override
   State<AdaptiveGridSliver> createState() => _AdaptiveGridSliverState();
 }
 
-class _AdaptiveGridSliverState extends State<AdaptiveGridSliver> {
-  double? _used; // ширина, под которую сейчас посчитана сетка
-  double? _latest; // последняя настоящая ширина
-  Timer? _timer;
+class _AdaptiveGridSliverState extends State<AdaptiveGridSliver> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctl = AnimationController(vsync: this, duration: const Duration(milliseconds: 260))
+    ..addListener(() => setState(() {}));
+  _GridGeom? _from; // откуда плитки переезжают
+  int? _cols; // сколько столбцов сейчас целевое
+  _GridGeom? _lastTo; // последний показанный целевой расклад
+  bool _retargetQueued = false;
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _ctl.dispose();
     super.dispose();
-  }
-
-  /// Какую ширину брать для расчёта: прежнюю, пока настоящая меняется; новую — когда она устоялась
-  double _width(double actual) {
-    _latest = actual;
-    final used = _used;
-    if (used == null) return _used = actual;
-    if ((used - actual).abs() < 0.5) {
-      _timer?.cancel();
-      return used;
-    }
-    _timer?.cancel();
-    _timer = Timer(widget.settle, () {
-      if (!mounted) return;
-      setState(() => _used = _latest);
-    });
-    return used;
   }
 
   @override
   void didUpdateWidget(AdaptiveGridSliver old) {
     super.didUpdateWidget(old);
-    // Размер плиток поменяли в настройках вида — это не анимация панели, пересчитываем сразу
-    if (old.tile != widget.tile || old.gap != widget.gap) {
-      _used = null;
-      _timer?.cancel();
+    // Размер плиток поменяли ползунком — это не переезд, пересчитываем сразу
+    if (old.tile != widget.tile || old.gap != widget.gap || old.extra != widget.extra) {
+      _from = null;
+      _cols = null;
+      _ctl.value = 1;
     }
+  }
+
+  /// Расклад, который сейчас на экране между [_from] и целью
+  _GridGeom _target(double w) {
+    final f = fitGrid(w, widget.tile, widget.gap);
+    return _GridGeom(f.cols, f.width, f.width + widget.extra, widget.gap, 20);
   }
 
   @override
   Widget build(BuildContext context) {
     return SliverLayoutBuilder(builder: (context, c) {
-      final w = _width(c.crossAxisExtent);
-      final gap = widget.gap;
-      final n = math.max(1, ((w + gap) / (widget.tile + gap)).floor());
-      final tw = (w - gap * (n - 1)) / n;
+      final to = _target(c.crossAxisExtent);
+      final cols = _cols;
+      if (cols == null) {
+        _cols = to.n;
+        _from = to;
+        _ctl.value = 1;
+      } else if (cols != to.n && !_retargetQueued) {
+        // Столбцов стало больше или меньше: запоминаем, как плитки лежат сейчас, и едем к новому раскладу
+        final prev = _lastTo ?? to;
+        final from = _from ?? prev;
+        final t = _ctl.value;
+        final dir = axisDirectionIsReversed(c.crossAxisDirection);
+        _retargetQueued = true;
+        final snapshot = _Snapshot(from, prev, t, dir, c.crossAxisExtent);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _retargetQueued = false;
+          if (!mounted) return;
+          _from = snapshot.freeze(widget.count);
+          _cols = to.n;
+          _ctl.forward(from: 0);
+        });
+      }
+      _lastTo = to;
+      final from = _from ?? to;
+      final t = Curves.easeOutCubic.transform(_ctl.value.clamp(0.0, 1.0));
       return SliverGrid(
-        gridDelegate: FixedTileGridDelegate(
-          columns: n,
-          tileWidth: tw,
-          tileHeight: tw + widget.extra,
-          crossSpacing: gap,
-          mainSpacing: 20,
-        ),
+        gridDelegate: _LerpDelegate(from, to, t),
         delegate: SliverChildBuilderDelegate(widget.builder, childCount: widget.count),
+      );
+    });
+  }
+}
+
+/// Снимок «где плитки лежат сейчас» посреди переезда. Прямоугольная сетка из двух слоёв сводится к одной:
+/// если переезд почти закончился, берём конечную, иначе — ближайшую по числу столбцов
+class _Snapshot {
+  final _GridGeom from, to;
+  final double t;
+  final bool reverse;
+  final double extent;
+  const _Snapshot(this.from, this.to, this.t, this.reverse, this.extent);
+
+  _GridGeom freeze(int count) {
+    final k = Curves.easeOutCubic.transform(t.clamp(0.0, 1.0));
+    return k >= 0.5 ? to : from;
+  }
+}
+
+/// Обычная (не ленивая) сетка плиток для небольших списков, например «Коллекция»: число столбцов пересчитывается
+/// сразу, как только последняя плитка перестала помещаться, и плитки за ~250 мс переезжают на новые места
+class AnimatedTileGrid extends StatelessWidget {
+  final double tile;
+  final double extra;
+  final double gap;
+  final List<Widget> children;
+  const AnimatedTileGrid({super.key, required this.tile, required this.extra, required this.children, this.gap = 20});
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, box) {
+      final w = box.maxWidth.isFinite ? box.maxWidth : tile;
+      final f = fitGrid(w, tile, gap);
+      final th = f.width + extra;
+      final rows = children.isEmpty ? 0 : ((children.length - 1) ~/ f.cols) + 1;
+      final height = rows == 0 ? 0.0 : rows * th + (rows - 1) * 24;
+      const dur = Duration(milliseconds: 250);
+      return SizedBox(
+        height: height,
+        child: Stack(clipBehavior: Clip.none, children: [
+          for (var i = 0; i < children.length; i++)
+            AnimatedPositioned(
+              key: children[i].key ?? ValueKey('tg$i'),
+              duration: dur,
+              curve: Curves.easeOutCubic,
+              left: (i % f.cols) * (f.width + gap),
+              top: (i ~/ f.cols) * (th + 24),
+              width: f.width,
+              height: th,
+              child: children[i],
+            ),
+        ]),
       );
     });
   }
