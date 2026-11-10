@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
+import '../core/library.dart' show Album;
 import '../core/models.dart';
 import '../core/web_info.dart';
 import 'ambient.dart';
@@ -119,7 +120,8 @@ class PreviewButton extends StatelessWidget {
 /// «Уже есть» или «Скачать» для трека
 class TrackGetButton extends StatelessWidget {
   final WebTrack track;
-  const TrackGetButton({super.key, required this.track});
+  final Album? into;
+  const TrackGetButton({super.key, required this.track, this.into});
 
   @override
   Widget build(BuildContext context) {
@@ -133,7 +135,7 @@ class TrackGetButton extends StatelessWidget {
     return IconButton(
       tooltip: 'Скачать в библиотеку',
       iconSize: 18,
-      onPressed: track.link.isEmpty ? null : () => downloadToLibrary(context, track.link, track.title),
+      onPressed: track.link.isEmpty ? null : () => downloadToLibrary(context, track.link, track.title, into: into),
       icon: const Icon(Icons.download_rounded, color: C.muted),
     );
   }
@@ -145,7 +147,10 @@ class WebTrackLine extends StatelessWidget {
   final WebTrack track;
   final bool showCover;
   final List<WebTrack>? list;
-  const WebTrackLine({super.key, required this.track, this.showCover = true, this.list});
+
+  /// Докачка в существующий альбом (см. downloadToLibrary)
+  final Album? into;
+  const WebTrackLine({super.key, required this.track, this.showCover = true, this.list, this.into});
 
   @override
   Widget build(BuildContext context) {
@@ -194,7 +199,7 @@ class WebTrackLine extends StatelessWidget {
               Text(formatDuration(Duration(seconds: track.seconds)), style: const TextStyle(color: C.faint, fontSize: 12)),
               const SizedBox(width: 6),
               PreviewButton(track: track, list: list),
-              TrackGetButton(track: track),
+              TrackGetButton(track: track, into: into),
             ]),
           ),
         );
@@ -832,7 +837,7 @@ class _WebSearchPageState extends State<WebSearchPage> {
 
 /// Строки треков альбома из интернета. У многодисковых изданий — разделы «Диск 1», «Диск 2»…
 /// и нумерация внутри диска
-List<Widget> webAlbumRows(List<WebTrack> tracks, {bool cover = false}) {
+List<Widget> webAlbumRows(List<WebTrack> tracks, {bool cover = false, Album? into}) {
   final discs = tracks.map((t) => t.disc).toSet();
   final multi = discs.length > 1;
   final out = <Widget>[];
@@ -856,7 +861,7 @@ List<Widget> webAlbumRows(List<WebTrack> tracks, {bool cover = false}) {
       decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
       child: Row(children: [
         SizedBox(width: 32, child: Text('$n', style: const TextStyle(color: C.faint, fontSize: 13))),
-        Expanded(child: WebTrackLine(track: t, showCover: cover, list: tracks)),
+        Expanded(child: WebTrackLine(track: t, showCover: cover, list: tracks, into: into)),
       ]),
     ));
   }

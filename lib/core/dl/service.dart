@@ -25,6 +25,10 @@ class DownloadJob {
   final String path;
   final bool quiet, makePlaylist;
   final void Function(Track)? onTrack;
+
+  /// Докачка недостающих треков существующего альбома: всем скачанным трекам ставим его название и исполнителя альбома,
+  /// чтобы они встали в него, а не создали второй альбом из-за мелких отличий в написании
+  final String? intoAlbum, intoAlbumArtist;
   String title;
   JobState state = JobState.queued;
   bool cancelRequested = false;
@@ -57,7 +61,7 @@ class DownloadJob {
 
   DownloadJob(this.input, this.sourceId, this.folderName,
       {this.folderId, this.path = '', this.quiet = false, this.makePlaylist = true,
-       this.onTrack, this.replaceTrackId}) : title = input;
+       this.onTrack, this.replaceTrackId, this.intoAlbum, this.intoAlbumArtist}) : title = input;
 
   String get target => folderId ?? sourceId;
   void add(String line) {
@@ -128,13 +132,13 @@ class DownloadService extends ChangeNotifier {
 
   DownloadJob? enqueue(String input, String sourceId,
       {String? folderId, String path = '', bool quiet = false,
-       void Function(Track)? onTrack, bool makePlaylist = true}) {
+       void Function(Track)? onTrack, bool makePlaylist = true, String? intoAlbum, String? intoAlbumArtist}) {
     final value = input.trim();
     if (value.isEmpty) return null;
     final source = lib.data.sources.where((s) => s.id == sourceId).firstOrNull;
     final job = DownloadJob(value, sourceId, source?.name ?? 'Cavey',
       folderId: folderId, path: path, quiet: quiet, onTrack: onTrack,
-      makePlaylist: makePlaylist);
+      makePlaylist: makePlaylist, intoAlbum: intoAlbum, intoAlbumArtist: intoAlbumArtist);
     jobs.insert(0, job);
     notifyListeners();
     unawaited(_pump());
@@ -651,6 +655,10 @@ class DownloadService extends ChangeNotifier {
           if (m['duration'] is num && (m['duration'] as num) > 0)
             'd': '${((m['duration'] as num) * 1000).round()}',
         };
+        if ((job.intoAlbum ?? '').isNotEmpty) {
+          edit['al'] = job.intoAlbum!;
+          if ((job.intoAlbumArtist ?? '').isNotEmpty) edit['aa'] = job.intoAlbumArtist!;
+        }
         if (waiting != null) {
           // Трека на Диске ещё нет: метаданные применятся, когда файл выйдет из очереди «Ожидают загрузки»
           waiting.edit = edit;

@@ -15,6 +15,7 @@ import 'drive.dart';
 import 'models.dart';
 import 'store.dart';
 import 'tags.dart';
+import 'text_fold.dart';
 import 'broker.dart';
 import 'upload_queue.dart';
 
@@ -2389,11 +2390,15 @@ class _Found {
 
 // ---------- склейка альбомов ----------
 
-String _normAlbumTitle(String s) => s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+/// Название для склейки: без регистра, диакритики, знаков и пометок «(Remastered)»
+String _normAlbumTitle(String s) {
+  final f = foldAlbumTitle(s);
+  return f.isEmpty ? s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim() : f;
+}
 
 Set<String> _albumNames(Track t) => {
-      for (final n in t.artists) n.toLowerCase(),
-      if (t.albumArtist.isNotEmpty) ...splitArtists(t.albumArtist).map((n) => n.toLowerCase()),
+      for (final n in t.artists) foldText(n),
+      if (t.albumArtist.isNotEmpty) ...splitArtists(t.albumArtist).map(foldText),
     };
 
 /// Диск трека; если в тегах не указан, считаем первым
