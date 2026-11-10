@@ -144,7 +144,7 @@ class _SuggestFieldState extends State<SuggestField> {
   }
 
   Widget _leading(_Row r) {
-    if (r.create) return const Icon(Icons.add_circle_outline_rounded, size: 20, color: C.accent);
+    if (r.create) return Icon(Icons.add_circle_outline_rounded, size: 20, color: C.accent);
     final ref = r.s?.ref;
     if (ref is Track) return CoverImage(track: ref, size: 30, radius: 4);
     return const Icon(Icons.person_outline_rounded, size: 20, color: C.muted);

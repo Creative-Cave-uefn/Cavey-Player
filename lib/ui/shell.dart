@@ -41,7 +41,6 @@ import 'collection_page.dart';
 import 'device_export_ui.dart';
 import 'migration_ui.dart';
 import 'pin_drag.dart';
-import 'album_edit.dart';
 import 'queue_panel.dart';
 
 class Nav {

@@ -7,6 +7,7 @@ import 'package:cave_player/core/store.dart';
 import 'package:cave_player/core/suggest.dart';
 import 'package:cave_player/core/text_fold.dart';
 import 'package:cave_player/ui/library_tabs.dart';
+import 'package:cave_player/ui/shell.dart' show Nav;
 import 'package:cave_player/ui/uploader_filter.dart';
 import 'package:flutter_test/flutter_test.dart';
 
