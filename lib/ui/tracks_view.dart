@@ -12,6 +12,7 @@ import '../core/models.dart';
 import 'albums_view.dart';
 import 'ambient.dart';
 import 'cover_picker.dart';
+import 'delete_dialog.dart';
 import 'download_view.dart';
 import 'library_tabs.dart';
 import 'library_views.dart';
@@ -56,6 +57,7 @@ class AllTracksPage extends StatelessWidget {
           actions: libraryActions(context),
           // Поиск по трекам — под шапкой, на месте прежней плашки «Перетащите сюда файлы»
           searchInBanner: true,
+          mineFilter: true,
           empty: lib.scan.running
               ? EmptyState(
                   icon: Icons.downloading_rounded,
@@ -382,7 +384,11 @@ class TracksPage extends StatefulWidget {
     this.searchInBanner = false,
     this.heroLeft = false,
     this.defaultSort,
+    this.mineFilter = false,
   });
+
+  /// Показывать переключатель «Мои загрузки» (только треки, которые загрузил я с любого из своих аккаунтов)
+  final bool mineFilter;
 
   /// Сортировка, с которой открывается страница, пока человек не выбрал свою (например, 'liked' — свежие любимые сверху)
   final String? defaultSort;
@@ -412,7 +418,11 @@ class _TracksPageState extends State<TracksPage> {
   String _memoQuery = '';
   String _memoSort = '';
   bool _memoDesc = false;
+  bool _memoMine = false;
   int _memoRevision = -1;
+
+  /// Включён фильтр «Мои загрузки»
+  bool _mineOnly = false;
 
   List<Track> _rememberVisible(List<Track> tracks, LibraryController lib) {
     _memoTracks = widget.tracks;
@@ -420,6 +430,7 @@ class _TracksPageState extends State<TracksPage> {
     _memoQuery = _query;
     _memoSort = _sort;
     _memoDesc = _desc;
+    _memoMine = _mineOnly;
     _memoRevision = lib.revision;
     return tracks;
   }
@@ -625,17 +636,16 @@ class _TracksPageState extends State<TracksPage> {
                 onPressed: none
                     ? null
                     : () async {
-                        final foreign = picked.where((t) => t.by.isNotEmpty && t.by != app.lib.me).length;
-                        final ok = await confirm(
+                        final foreign = picked.where((t) => t.by.isNotEmpty && !app.lib.isMyAccount(t.by)).length;
+                        final choice = await askDeleteReason(
                           context,
                           title: 'Удалить выбранное: ${countTracks(picked.length)}?',
                           text: 'Треки пропадут из библиотеки у всех, а файлы уйдут в корзину Google Диска (их можно вернуть оттуда).'
-                              '${foreign > 0 ? '\n\nЧужих файлов среди них: $foreign. Google Диск даёт удалить файл только владельцу, '
-                                  'поэтому они уйдут в корзину, когда их владелец откроет Cavey и подтвердит удаление.' : ''}',
-                          action: 'Удалить',
+                              '${foreign > 0 ? '\n\nЧужих файлов среди них: $foreign. Их удаляет тот, кто загрузил, поэтому в корзину они уйдут, '
+                                  'когда он откроет Cavey и подтвердит удаление. Выбранную причину он увидит.' : ''}',
                         );
-                        if (!ok) return;
-                        app.lib.deleteTracks(picked);
+                        if (choice == null) return;
+                        app.lib.deleteTracks(picked, reason: choice.reason, note: choice.note);
                         app.lib.messages.add('Удалено: ${countTracks(picked.length)}');
                         _exitSelection();
                       },
@@ -687,14 +697,15 @@ class _TracksPageState extends State<TracksPage> {
 
   List<Track> _visible(LibraryController lib, String Function(String) nameOf, Map<String, int>? addedAt) {
     if (identical(_memoTracks, widget.tracks) && _memoVisible != null &&
-        _memoQuery == _query && _memoSort == _sort && _memoDesc == _desc &&
+        _memoQuery == _query && _memoSort == _sort && _memoDesc == _desc && _memoMine == _mineOnly &&
         _memoRevision == lib.revision) {
       return _memoVisible!;
     }
     final q = _query.trim().toLowerCase();
+    final base = _mineOnly && widget.mineFilter ? [for (final t in widget.tracks) if (lib.isMyAccount(t.by)) t] : widget.tracks;
     var list = q.isEmpty
-        ? widget.tracks
-        : widget.tracks
+        ? base
+        : base
             .where((t) =>
                 t.title.toLowerCase().contains(q) || t.artist.toLowerCase().contains(q) || t.album.toLowerCase().contains(q))
             .toList();
@@ -896,6 +907,12 @@ class _TracksPageState extends State<TracksPage> {
               icon: const Icon(Icons.shuffle_rounded, size: 18),
               label: const Text('Вперемешку'),
             ),
+            if (widget.mineFilter && widget.tracks.isNotEmpty)
+              FilterChip(
+                label: const Text('Мои загрузки'),
+                selected: _mineOnly,
+                onSelected: (v) => setState(() => _mineOnly = v),
+              ),
             ...widget.actions,
           ],
         ));
@@ -1490,17 +1507,16 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
     case 'edit':
       await editTrackDialog(context, track);
     case 'delete':
-      final mine = track.by == app.lib.me || track.by.isEmpty;
-      final ok = await confirm(
+      final mine = app.lib.isMyAccount(track.by) || track.by.isEmpty;
+      final choice = await askDeleteReason(
         context,
         title: 'Удалить «${track.title}» с Диска?',
-        text: 'Трек пропадёт из библиотеки у всех, а файл удалится с Google Диска безвозвратно.'
-            '${mine ? '' : '\n\nФайл принадлежит ${app.lib.firstNameOf(track.by)}: Google Диск даёт удалить его только '
-                'владельцу, поэтому с Диска он удалится, когда ${app.lib.firstNameOf(track.by)} откроет Cavey.'}',
-        action: 'Удалить',
+        text: 'Трек пропадёт из библиотеки у всех, а файл уйдёт в корзину Google Диска (30 дней можно вернуть).'
+            '${mine ? '' : '\n\nЭтот трек загрузил(а) ${app.lib.firstNameOf(track.by)}: с Диска он удалится, когда '
+                '${app.lib.firstNameOf(track.by)} откроет Cavey и подтвердит. Выбранную причину он(а) увидит.'}',
       );
-      if (!ok) return;
-      app.lib.deleteTracks([track]);
+      if (choice == null) return;
+      app.lib.deleteTracks([track], reason: choice.reason, note: choice.note);
       app.lib.messages.add('«${track.title}» удалён');
     case 'hide':
       app.lib.hideTrack(track.id, true);

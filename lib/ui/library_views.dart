@@ -345,7 +345,7 @@ class _DuplicatesPageState extends State<DuplicatesPage> {
       for (final t in g) {
         if (t.id == keep) continue;
         copies++;
-        if (t.by != lib.me && t.by.isNotEmpty) others.add(lib.firstNameOf(t.by));
+        if (t.by.isNotEmpty && !lib.isMyAccount(t.by)) others.add(lib.firstNameOf(t.by));
       }
     }
     final ok = await confirm(
@@ -353,8 +353,8 @@ class _DuplicatesPageState extends State<DuplicatesPage> {
       title: groups.length == 1 ? 'Объединить и удалить копии?' : 'Объединить ${groups.length} групп и удалить копии?',
       text: 'Останется выбранная копия: лайки всех друзей, места в плейлистах и прослушивания перейдут на неё. '
           'Остальные копии ($copies) удалятся с Google Диска безвозвратно, у всех.'
-          '${others.isEmpty ? '' : '\n\nЧужие файлы (${others.join(', ')}) Google Диск даёт удалить только владельцу: '
-              'из библиотеки они пропадут сразу, а с Диска — когда владелец откроет Cavey.'}',
+          '${others.isEmpty ? '' : '\n\nЧужие файлы (${others.join(', ')}): из библиотеки они пропадут сразу, а с Диска '
+              'их удалит загрузивший, когда откроет Cavey. Причина «Дубликат» и оставшаяся копия будут показаны ему.'}',
       action: 'Удалить копии',
     );
     if (!ok) return;
@@ -469,7 +469,7 @@ class _DuplicatesPageState extends State<DuplicatesPage> {
                   final ok = await confirm(context,
                       title: 'Удалить скрытые копии с Диска?',
                       text: 'Копии (${merged.length}) удалятся с Google Диска безвозвратно. Свои — сразу, чужие — когда '
-                          'владелец откроет Cavey. Лайки и плейлисты уже на оставшихся копиях.',
+                          'загрузивший откроет Cavey. Лайки и плейлисты уже на оставшихся копиях.',
                       action: 'Удалить');
                   if (ok) lib.messages.add('Удаляю копии: ${lib.deleteMergedCopies()}');
                 },

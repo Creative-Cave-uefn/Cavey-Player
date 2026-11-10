@@ -35,6 +35,9 @@ class DriveFile {
   final String ownerEmail;
   final String ownerName;
 
+  /// Публичные свойства файла. Брокер загрузки пишет туда cave_uploader, cave_uploaded_at, cave_source, cave_upload_id
+  final Map<String, String> properties;
+
   DriveFile.fromJson(Map j)
       : id = j['id'] as String,
         name = (j['name'] as String?) ?? '',
@@ -44,7 +47,30 @@ class DriveFile {
         modifiedTime = (j['modifiedTime'] as String?) ?? '',
         createdTime = (j['createdTime'] as String?) ?? '',
         ownerEmail = _person(j)['emailAddress'] ?? '',
-        ownerName = _person(j)['displayName'] ?? '';
+        ownerName = _person(j)['displayName'] ?? '',
+        properties = _props(j['properties']);
+
+  static Map<String, String> _props(Object? raw) =>
+      raw is Map ? {for (final e in raw.entries) '${e.key}': '${e.value}'} : const {};
+
+  /// Кто загрузил файл. У файлов, загруженных через брокер, это проверенная почта из свойства cave_uploader
+  /// (владелец на Диске у них один и тот же — аккаунт с подпиской). У старых файлов свойства нет —
+  /// тогда загрузил тот, кто ими владеет на Диске.
+  String get uploaderEmail {
+    final p = (properties[uploaderKey] ?? '').trim().toLowerCase();
+    return p.isNotEmpty ? p : ownerEmail;
+  }
+
+  /// Загружен через брокер (есть свойство cave_uploader), а не старым способом
+  bool get viaBroker => (properties[uploaderKey] ?? '').trim().isNotEmpty;
+
+  /// Откуда трек: deezer, soulseek, youtube, bandcamp или manual; у старых файлов пусто
+  String get uploadSource => properties['cave_source'] ?? '';
+
+  /// Когда загружен (по часам брокера); у старых файлов — время создания на Диске
+  String get uploadedAt => (properties['cave_uploaded_at'] ?? '').isNotEmpty ? properties['cave_uploaded_at']! : createdTime;
+
+  static const uploaderKey = 'cave_uploader';
 
   bool get isFolder => mimeType == 'application/vnd.google-apps.folder';
 
@@ -59,7 +85,7 @@ class DriveFile {
     return const {};
   }
 
-  static const fields = 'id,name,mimeType,size,md5Checksum,modifiedTime,createdTime,owners(emailAddress,displayName),lastModifyingUser(emailAddress,displayName)';
+  static const fields = 'id,name,mimeType,size,md5Checksum,modifiedTime,createdTime,owners(emailAddress,displayName),lastModifyingUser(emailAddress,displayName),properties';
 }
 
 /// A bounded account-level Drive change feed. Changes are filtered against
@@ -512,12 +538,27 @@ class DriveApi {
     );
     final location = start.headers['location'];
     if (location == null) throw DriveException(500, 'Диск не создал сессию замены');
-    final uri = Uri.parse(location);
+    return uploadToSession(Uri.parse(location), file,
+        mime: mime, authEmail: email, onProgress: onProgress, onStatus: onStatus);
+  }
+
+  /// Передаёт файл по готовому адресу сессии возобновляемой загрузки, частями по [mediaChunkBytes].
+  /// Если связь оборвалась, спрашивает у Google, сколько байт уже принято, и продолжает с этого места.
+  ///
+  /// [authEmail] — чьим токеном подписывать запросы. Для сессии, которую открыл брокер, он не нужен:
+  /// адрес сессии сам служит ключом, а токен друга к чужой сессии не относится.
+  Future<DriveFile> uploadToSession(Uri uri, File file,
+      {required String mime, String? authEmail, void Function(double progress)? onProgress,
+       void Function(String status)? onStatus}) async {
+    final length = await file.length();
     if (uri.scheme != 'https' || uri.host != 'www.googleapis.com') {
       throw DriveException(500, 'Небезопасный адрес сессии Google Диска');
     }
-    onStatus?.call('Google Drive: передаю аудио по частям');
+    onStatus?.call('Google Drive: передаю файл по частям');
     onProgress?.call(0);
+
+    Future<Map<String, String>> auth() async =>
+        authEmail == null ? const {} : {'Authorization': 'Bearer ${await accounts.token(authEmail)}'};
 
     var offset = 0;
     var failures = 0;
@@ -526,8 +567,8 @@ class DriveApi {
       Future<http.Response> queryStatus() async {
         final req = http.Request('PUT', uri)
           ..followRedirects = false
+          ..headers.addAll(await auth())
           ..headers['Content-Range'] = 'bytes */$length'
-          ..headers['Authorization'] = 'Bearer ${await accounts.token(email)}'
           ..headers['Content-Type'] = mime;
         return _sendMediaChunk(req);
       }
@@ -552,9 +593,9 @@ class DriveApi {
             offset = confirmed;
             onProgress?.call(offset / length);
           } else if (status.statusCode == 404 || status.statusCode == 410) {
-            throw DriveException(status.statusCode, 'Сессия загрузки истекла; повторите замену');
-          } else if (status.statusCode == 401) {
-            await accounts.token(email, force: true);
+            throw DriveException(status.statusCode, 'Сессия загрузки истекла; повторите');
+          } else if (status.statusCode == 401 && authEmail != null) {
+            await accounts.token(authEmail, force: true);
           }
         } on DriveException catch (e) {
           if (e.status == 404 || e.status == 410 || e.status == 502) rethrow;
@@ -569,11 +610,11 @@ class DriveApi {
         await reader.setPosition(offset);
         final chunk = await reader.read(end - offset);
         if (chunk.length != end - offset) {
-          throw DriveException(0, 'Не удалось прочитать часть подготовленного аудиофайла');
+          throw DriveException(0, 'Не удалось прочитать часть подготовленного файла');
         }
         final req = http.Request('PUT', uri)
           ..followRedirects = false
-          ..headers['Authorization'] = 'Bearer ${await accounts.token(email)}'
+          ..headers.addAll(await auth())
           ..headers['Content-Type'] = mime
           ..headers['Content-Range'] = 'bytes $offset-${end - 1}/$length'
           ..bodyBytes = chunk;
@@ -587,7 +628,7 @@ class DriveApi {
         }
         if (response.statusCode == 200 || response.statusCode == 201) {
           onProgress?.call(1);
-          onStatus?.call('Google Drive: аудиофайл сохранён');
+          onStatus?.call('Google Drive: файл сохранён');
           return DriveFile.fromJson(jsonDecode(response.body) as Map);
         }
         if (response.statusCode == 308) {
@@ -602,8 +643,8 @@ class DriveApi {
           onProgress?.call(offset / length);
           continue;
         }
-        if (response.statusCode == 401) {
-          await accounts.token(email, force: true);
+        if (response.statusCode == 401 && authEmail != null) {
+          await accounts.token(authEmail, force: true);
         }
         if (response.statusCode == 401 || response.statusCode == 408 ||
             response.statusCode == 429 || response.statusCode >= 500) {
@@ -618,11 +659,11 @@ class DriveApi {
       final finalStatus = await queryStatus();
       if (finalStatus.statusCode == 200 || finalStatus.statusCode == 201) {
         onProgress?.call(1);
-        onStatus?.call('Google Drive: аудиофайл сохранён');
+        onStatus?.call('Google Drive: файл сохранён');
         return DriveFile.fromJson(jsonDecode(finalStatus.body) as Map);
       }
       throw DriveException(finalStatus.statusCode,
-          'Google Drive не подтвердил завершение замены файла');
+          'Google Drive не подтвердил завершение загрузки файла');
     } finally {
       await reader.close();
     }

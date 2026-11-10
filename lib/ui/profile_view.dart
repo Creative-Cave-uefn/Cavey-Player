@@ -774,7 +774,7 @@ class UserProfilePage extends StatelessWidget {
   }
 
   static List<Track> uploadedBy(AppServices app, String email) {
-    final list = [for (final t in app.lib.allTracks) if (t.by == email) t];
+    final list = [for (final t in app.lib.allTracks) if (t.by.toLowerCase() == email.toLowerCase()) t];
     list.sort((x, y) => _when(y).compareTo(_when(x)));
     return list;
   }
