@@ -21,11 +21,14 @@ import 'core/dl/tools.dart';
 import 'core/drive.dart';
 import 'core/jam.dart';
 import 'core/library.dart';
+import 'core/listenbrainz.dart';
+import 'core/mixbook.dart';
 import 'core/lyric_sources.dart';
 import 'core/perf.dart';
 import 'core/log.dart';
 import 'core/lyrics.dart';
 import 'core/player.dart';
+import 'core/radio.dart';
 import 'core/social.dart';
 import 'core/store.dart';
 import 'core/single_instance.dart';
@@ -68,6 +71,11 @@ class AppServices {
   late final WebInfoService web;
   late final PreviewPlayer preview;
   late final WaveService wave;
+
+  /// Похожесть треков по локальным данным (для радио и АвтоDJ) и скробблинг в ListenBrainz
+  late final SimIndex sim;
+  late final ListenBrainz listenBrainz;
+  late final MixBook mixBook;
   late final KaraokeService karaoke;
   late final MediaKeys mediaKeys;
 
@@ -182,9 +190,15 @@ class AppServices {
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
     // Умный переход: профили звука треков и темп из Deezer (если уже узнали)
-    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))..onProfile = (id) {
+    final mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))..onProfile = (id) {
         if (id == player.current?.id) player.refreshNormalize();
       };
+    player.mixer = mixer;
+    app.mixBook = MixBook(File('${store.sub('mixbook').path}${Platform.pathSeparator}transitions.json'));
+    player.mixBook = app.mixBook;
+    unawaited(mixer.preload()); // сохранённые разборы звука — в память, в фоне
+    app.sim = SimIndex(lib, () => player.mixer);
+    app.listenBrainz = ListenBrainz(settings, player)..start();
     final tempo = <String, double?>{};
     player.tempoOf = (t) {
       if (tempo.containsKey(t.id)) return tempo[t.id];
