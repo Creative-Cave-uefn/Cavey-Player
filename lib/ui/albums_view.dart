@@ -88,22 +88,22 @@ class _AlbumsPageState extends State<AlbumsPage> {
         final prefs = ViewPrefs(app.settings, ep ? 'eps' : 'albums', defaultGrid: true);
         final pad = MediaQuery.sizeOf(context).width < 860 ? 20.0 : 36.0;
         final header = Padding(
-          padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
+          padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 18),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             if (!LibraryFrame.on(context))
               Text(ep ? 'Синглы и EP' : 'Альбомы', style: display(36, weight: FontWeight.w700)),
             if (every.isNotEmpty) ...[
-              // В «Медиатеке» общее число уже стоит под заголовком раздела; здесь остаётся лишь итог поиска
-              if (!LibraryFrame.on(context) || q.isNotEmpty || by.isNotEmpty) ...[
+              // В «Медиатеке» заголовка и подписи нет: сразу ряд с поиском на одном отступе от вкладок
+              if (!LibraryFrame.on(context)) ...[
                 const SizedBox(height: 10),
                 Text(
-                  q.isEmpty
+                  q.isEmpty && by.isEmpty
                       ? '${all.length} ${plural(all.length, 'альбом', 'альбома', 'альбомов')}'
-                      : 'Найдено ${albums.length} из ${all.length}',
+                      : 'Найдено ${albums.length} из ${every.length}',
                   style: const TextStyle(color: C.muted, fontSize: 15),
                 ),
+                const SizedBox(height: 18),
               ],
-              const SizedBox(height: 18),
               SearchSortBar(
                 controller: _search,
                 focusNode: _focus,

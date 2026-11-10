@@ -41,13 +41,9 @@ class CompanyPage extends StatelessWidget {
         final now = social.listeningNow;
         final chart = social.chart();
         final feed = social.feed;
-        final notices = social.notices.take(20).toList();
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 28, pad, 40), children: [
-          Row(children: [
-            Expanded(child: Text('Участники', style: display(20))),
-            _NoticeBell(notices: notices),
-          ]),
-          const SizedBox(height: 14),
+        return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
+          Text('Участники', style: display(36, weight: FontWeight.w700)),
+          const SizedBox(height: 18),
           _People(),
           const SizedBox(height: 40),
           Text('Сейчас слушают', style: display(20)),
@@ -295,15 +291,29 @@ int unreadNotices(AppServices app) {
   return app.social.notices.where((n) => n.at.isAfter(seen)).length;
 }
 
-/// Колокольчик с уведомлениями «Вам»: цвета акцента и красная точка, пока есть непрочитанные; по нажатию раскрывается окошко
-class _NoticeBell extends StatefulWidget {
-  final List<Notice> notices;
-  const _NoticeBell({required this.notices});
+/// Колокольчик с уведомлениями «Вам»: цвета акцента и красная точка, пока есть непрочитанные; по нажатию раскрывается окошко.
+/// Стоит в левой панели справа от «Компании»
+class NoticeBell extends StatelessWidget {
+  const NoticeBell({super.key});
+
   @override
-  State<_NoticeBell> createState() => _NoticeBellState();
+  Widget build(BuildContext context) {
+    final social = Services.of(context).social;
+    return ListenableBuilder(
+      listenable: social,
+      builder: (context, _) => _NoticeBellBody(notices: social.notices.take(20).toList()),
+    );
+  }
 }
 
-class _NoticeBellState extends State<_NoticeBell> {
+class _NoticeBellBody extends StatefulWidget {
+  final List<Notice> notices;
+  const _NoticeBellBody({required this.notices});
+  @override
+  State<_NoticeBellBody> createState() => _NoticeBellState();
+}
+
+class _NoticeBellState extends State<_NoticeBellBody> {
   final _menu = MenuController();
 
   /// Что считать прочитанным: всё, что старше последнего открытия колокольчика
@@ -323,7 +333,8 @@ class _NoticeBellState extends State<_NoticeBell> {
         shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
         padding: const WidgetStatePropertyAll(EdgeInsets.zero),
       ),
-      alignmentOffset: const Offset(-330, 4),
+      // Окошко раскрывается вправо от левой панели, на уровне колокольчика
+      alignmentOffset: const Offset(34, -34),
       onOpen: () {
         // Открыли — всё считается прочитанным, колокольчик гаснет
         app.settings.bellSeen = DateTime.now().toUtc().toIso8601String();
@@ -355,9 +366,13 @@ class _NoticeBellState extends State<_NoticeBell> {
       builder: (context, controller, _) => IconButton(
         tooltip: lit ? 'Новых уведомлений: $unread' : 'Уведомления',
         onPressed: () => controller.isOpen ? controller.close() : controller.open(),
+        iconSize: 20,
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints.tightFor(width: 32, height: 32),
         icon: Stack(clipBehavior: Clip.none, children: [
           Icon(lit ? Icons.notifications_active_rounded : Icons.notifications_none_rounded,
-              color: lit ? C.accent : C.muted),
+              size: 20, color: lit ? C.accent : C.muted),
           if (lit)
             Positioned(
               right: -2,

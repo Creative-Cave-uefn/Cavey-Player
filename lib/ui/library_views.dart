@@ -104,22 +104,22 @@ class _ArtistsPageState extends State<ArtistsPage> {
         return CustomScrollView(slivers: [
           SliverToBoxAdapter(
             child: Padding(
-              padding: EdgeInsets.fromLTRB(pad, 34, pad, 18),
+              padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 18),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 if (!LibraryFrame.on(context))
                   Text('Исполнители', style: display(36, weight: FontWeight.w700)),
                 if (every.isNotEmpty) ...[
-                  // В «Медиатеке» общее число уже стоит под заголовком раздела; здесь остаётся лишь итог поиска
-                  if (!LibraryFrame.on(context) || q.isNotEmpty || by.isNotEmpty) ...[
+                  // В «Медиатеке» заголовка и подписи нет: сразу ряд с поиском на одном отступе от вкладок
+                  if (!LibraryFrame.on(context)) ...[
                     const SizedBox(height: 10),
                     Text(
-                      q.isEmpty
+                      q.isEmpty && by.isEmpty
                           ? '${all.length} ${plural(all.length, 'исполнитель', 'исполнителя', 'исполнителей')}'
-                          : 'Найдено ${list.length} из ${all.length}',
+                          : 'Найдено ${list.length} из ${every.length}',
                       style: const TextStyle(color: C.muted, fontSize: 15),
                     ),
+                    const SizedBox(height: 18),
                   ],
-                  const SizedBox(height: 18),
                   SearchSortBar(
                     controller: _search,
                     focusNode: _focus,
@@ -319,9 +319,10 @@ class RecentPage extends StatelessWidget {
         final tracks = app.lib.recent;
         return TracksPage(
           title: 'Недавно добавленные',
-          subtitle: tracks.isEmpty ? null : 'Новые сверху',
           tracks: tracks,
           compact: compact,
+          // Поиск в одном ряду с «Слушать» и «Вперемешку», как на вкладке «Все песни»
+          searchInBanner: true,
           empty: const EmptyState(
             icon: Icons.schedule_rounded,
             title: 'Пока пусто',

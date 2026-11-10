@@ -812,12 +812,13 @@ class _Sidebar extends StatelessWidget {
           final lib = app.lib;
           final cur = nav.value;
           final v = t.value;
-          Widget item(IconData icon, String label, Nav target, {Widget? trailing, List<String> also = const []}) => _NavItem(
+          Widget item(IconData icon, String label, Nav target, {Widget? trailing, Widget? miniTrailing, List<String> also = const []}) => _NavItem(
                 icon: icon,
                 label: label,
                 t: v,
                 selected: cur.same(target) || also.contains(cur.kind),
                 trailing: trailing,
+                miniTrailing: miniTrailing,
                 onTap: () => nav.go(target),
               );
 
@@ -879,8 +880,10 @@ class _Sidebar extends StatelessWidget {
             const SizedBox(height: 14),
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
             if (lib.me != null) item(Icons.person_outline_rounded, 'Моя страница', Nav('user', lib.me)),
+            // Колокольчик с уведомлениями — справа от названия; в узкой панели остаётся красная точка на значке
             item(Icons.groups_outlined, 'Компания', const Nav('company'),
-                trailing: unread > 0
+                trailing: const NoticeBell(),
+                miniTrailing: unread > 0
                     ? Tooltip(
                         message: 'Новых уведомлений: $unread',
                         child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFFFF4D4F), shape: BoxShape.circle)),
@@ -1371,6 +1374,9 @@ class _NavItem extends StatelessWidget {
   final double t;
   final VoidCallback onTap;
   final Widget? trailing;
+
+  /// Что рисовать на значке, когда панель узкая; без него там стоит [trailing]
+  final Widget? miniTrailing;
   final Widget? leading;
 
   const _NavItem({
@@ -1380,6 +1386,7 @@ class _NavItem extends StatelessWidget {
     required this.t,
     required this.onTap,
     this.trailing,
+    this.miniTrailing,
     this.leading,
   });
 
@@ -1412,8 +1419,8 @@ class _NavItem extends StatelessWidget {
                   const SizedBox(width: 16),
                   Stack(clipBehavior: Clip.none, children: [
                     Icon(icon, size: 20, color: selected ? C.accent : color),
-                    if (trailing != null && t > 0)
-                      Positioned(right: -8, top: -6, child: Opacity(opacity: t.clamp(0.0, 1.0), child: trailing!)),
+                    if ((miniTrailing ?? trailing) != null && t > 0)
+                      Positioned(right: -8, top: -6, child: Opacity(opacity: t.clamp(0.0, 1.0), child: miniTrailing ?? trailing!)),
                   ]),
                   const SizedBox(width: 14),
                   Expanded(
@@ -1431,7 +1438,7 @@ class _NavItem extends StatelessWidget {
                           ),
                           if (leading != null) ...[leading!, const SizedBox(width: 4)],
                           if (trailing != null) trailing!,
-                          const SizedBox(width: 16),
+                          SizedBox(width: trailing is NoticeBell ? 8 : 16),
                         ]),
                       ),
                     ),

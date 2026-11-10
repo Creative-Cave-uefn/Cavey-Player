@@ -20,6 +20,9 @@ const libraryTabs = <(String, Nav)>[
 /// Страница — одна из вкладок медиатеки
 bool isLibraryTab(Nav n) => libraryTabs.any((t) => t.$2.same(n)) || (n.kind == 'albums' && n.id == null);
 
+/// Верхний отступ страницы: у вкладки «Медиатеки» — 18 под рядом вкладок, у отдельной страницы — 34 от верха окна
+double pageTop(BuildContext context) => LibraryFrame.on(context) ? 18 : 34;
+
 /// Сообщает страницам, что они внутри «Медиатеки»: свой большой заголовок им не нужен
 class LibraryFrame extends InheritedWidget {
   const LibraryFrame({super.key, required super.child});
@@ -43,12 +46,12 @@ class LibraryTabsPage extends StatelessWidget {
     final pad = compact ? 20.0 : 36.0;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Padding(
-        padding: EdgeInsets.fromLTRB(pad, 18, pad, 0),
-        child: Text('Медиатека', style: display(compact ? 30 : 36, weight: FontWeight.w700)),
+        padding: EdgeInsets.fromLTRB(pad, 34, pad, 0),
+        child: Text('Медиатека', style: display(36, weight: FontWeight.w700)),
       ),
       // Сколько в библиотеке: сразу под заголовком, а ниже уже вкладки
       Padding(
-        padding: EdgeInsets.fromLTRB(pad, 8, pad, 0),
+        padding: EdgeInsets.fromLTRB(pad, 10, pad, 0),
         child: ListenableBuilder(
           listenable: Services.of(context).lib,
           builder: (context, _) {
@@ -65,7 +68,7 @@ class LibraryTabsPage extends StatelessWidget {
           },
         ),
       ),
-      const SizedBox(height: 14),
+      const SizedBox(height: 18),
       SizedBox(
         height: 38,
         child: ListView(

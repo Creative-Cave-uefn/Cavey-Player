@@ -99,7 +99,7 @@ class _DownloadPageState extends State<DownloadPage> {
           const SizedBox(height: 8),
           Text('Активный источник: ${switch (app.settings.downloadProvider) { 'full' => 'Полный поиск', 'deezer' => 'Deezer', 'bandcamp' => 'Bandcamp', 'sockseek' => 'Soulseek', _ => 'YouTube' }}. Переключить можно в настройках аккаунта.',
               style: const TextStyle(color: C.faint, fontSize: 13)),
-          const SizedBox(height: 24),
+          const SizedBox(height: 18),
           if (app.lib.uploadQueue.count > 0) ...[
             _PendingUploads(queue: app.lib.uploadQueue, onRetry: () => app.lib.retryPendingUploads(manual: true)),
             const SizedBox(height: 16),

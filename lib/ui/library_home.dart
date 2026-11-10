@@ -199,18 +199,18 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         final topArtists = shelves.artists;
         final shortShelf = shelves.short;
 
-        return ListView(padding: EdgeInsets.fromLTRB(pad, LibraryFrame.on(context) ? 12 : 34, pad, 40), children: [
+        return ListView(padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 40), children: [
           // Внутри «Медиатеки» счётчики стоят под её заголовком (library_tabs.dart); своё место они нужны только без рамки
           if (!LibraryFrame.on(context)) ...[
-            Text('Медиатека', style: display(compact ? 30 : 36, weight: FontWeight.w700)),
-            const SizedBox(height: 8),
+            Text('Медиатека', style: display(36, weight: FontWeight.w700)),
+            const SizedBox(height: 10),
             Text(
               '${countTracks(tracks.length)} · ${albums.length} ${plural(albums.length, 'альбом', 'альбома', 'альбомов')} · '
               '${artists.length} ${plural(artists.length, 'исполнитель', 'исполнителя', 'исполнителей')}',
               style: const TextStyle(color: C.muted, fontSize: 15),
             ),
+            const SizedBox(height: 18),
           ],
-          const SizedBox(height: 18),
           // Поиск и кнопки в одной строке, у всех один центр по вертикали
           uniformControls(
             context,

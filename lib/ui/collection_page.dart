@@ -121,8 +121,11 @@ class CollectionPage extends StatelessWidget {
         final restLists = rest.where((e) => e.kind == 0);
         final restAlbums = rest.where((e) => e.kind == 1);
         final restArtists = rest.where((e) => e.kind == 2);
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 22, pad, 40), children: [
-          if (!LibraryFrame.on(context)) Text('Коллекция', style: display(compact ? 30 : 36, weight: FontWeight.w700)),
+        return ListView(padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 40), children: [
+          if (!LibraryFrame.on(context)) ...[
+            Text('Коллекция', style: display(36, weight: FontWeight.w700)),
+            const SizedBox(height: 18),
+          ],
           if (split.pinned.isNotEmpty) ...[
             const SectionTitle('Закреплённые'),
             grid(split.pinned, 176),

@@ -81,14 +81,15 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
 
         final prefs = ViewPrefs(app.settings, 'playlists', defaultGrid: true, gridDef: 180, listDef: 60, listMin: 48, listMax: 96);
         final header = Padding(
-          padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
+          padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 18),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            if (!LibraryFrame.on(context))
+            if (!LibraryFrame.on(context)) ...[
               Text('Плейлисты', style: display(36, weight: FontWeight.w700)),
-            const SizedBox(height: 10),
-            Text('${lists.length} ${plural(lists.length, 'плейлист', 'плейлиста', 'плейлистов')}',
-                style: const TextStyle(color: C.muted, fontSize: 15)),
-            const SizedBox(height: 18),
+              const SizedBox(height: 10),
+              Text('${lists.length} ${plural(lists.length, 'плейлист', 'плейлиста', 'плейлистов')}',
+                  style: const TextStyle(color: C.muted, fontSize: 15)),
+              const SizedBox(height: 18),
+            ],
             Wrap(spacing: 16, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
               FilledButton.icon(
                 onPressed: () => newPlaylistFlow(context),

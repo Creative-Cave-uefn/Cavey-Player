@@ -1014,7 +1014,7 @@ class _TracksPageState extends State<TracksPage> {
           ]);
 
     final header = heroHeader ?? Padding(
-      padding: EdgeInsets.fromLTRB(pad, 34, pad, 18),
+      padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 18),
       child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
         if (widget.image != null) ...[
           widget.image!,
@@ -1047,7 +1047,8 @@ class _TracksPageState extends State<TracksPage> {
               SelectionArea(child: Text(widget.subtitle!, style: const TextStyle(color: C.muted, fontSize: 15))),
             ],
             if (widget.tracks.isNotEmpty) ...[
-              const SizedBox(height: 22),
+              // Внутри «Медиатеки» заголовка и подписи нет — ряд кнопок сразу под вкладками, без лишнего зазора
+              if (!LibraryFrame.on(context) || widget.subtitle != null || widget.subtitleWidget != null) const SizedBox(height: 22),
               buttons(WrapAlignment.start,
                   leading: widget.searchInBanner ? searchBox('Найти трек, исполнителя или альбом', width: 400) : null),
             ] else if (widget.actions.isNotEmpty) ...[
