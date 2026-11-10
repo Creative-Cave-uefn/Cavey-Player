@@ -32,6 +32,10 @@ class AudioAnalysis {
   /// Где стоит сильная доля ближе к концу трека, мс
   final int? tailBeatMs;
 
+  /// Где начинается такт (первая доля) в начале и ближе к концу трека, мс. null — какая из долей первая, определить не удалось
+  final int? headBarMs;
+  final int? tailBarMs;
+
   /// Тональность в записи Camelot: «8A» — Am, «8B» — C. null — не определилась
   final String? key;
 
@@ -46,6 +50,8 @@ class AudioAnalysis {
     this.bpmConfidence = 0,
     this.headBeatMs,
     this.tailBeatMs,
+    this.headBarMs,
+    this.tailBarMs,
     this.key,
     this.keyConfidence = 0,
     this.wave = const [],
@@ -68,22 +74,35 @@ AudioAnalysis analyzePcm(Uint8List pcm, {int introMs = 0, int endMs = 0}) {
 
   double? bpm;
   var conf = 0.0;
-  int? head, tail;
+  int? head, tail, headBar, tailBar;
   // Для темпа нужно хотя бы 15 секунд звука
   if (frames >= 1500) {
-    final t = findTempo(onsetStrength(lv.$1));
+    final broadO = onsetStrength(lv.$1);
+    final t = findTempo(broadO);
     if (t != null) {
       bpm = t.$1;
       conf = t.$2;
       if (conf >= 0.1) {
+        // Грубый темп (шаг 0,25) за четыре минуты уводит сетку почти на полсекунды: уточняем до сотых
+        bpm = refineTempo(broadO, t.$1);
         final low = onsetStrength(lv.$2);
-        final period = 6000.0 / t.$1;
+        final period = 6000.0 / bpm;
         final from = math.max(0, introMs ~/ 10);
         final to = endMs > 0 ? math.min(frames, endMs ~/ 10) : frames;
-        final h = beatPhase(low, period, from, math.min(to, from + 3000));
-        if (h >= 0) head = (h * _frameMs).round();
-        final tl = beatPhase(low, period, math.max(from, to - 4000), to);
-        if (tl >= 0) tail = (tl * _frameMs).round();
+        final headTo = math.min(to, from + 3000);
+        final h = beatPhase(low, period, from, headTo);
+        if (h >= 0) {
+          head = (h * _frameMs).round();
+          final d = downbeatOf(low, broadO, period, h, headTo);
+          if (d != null) headBar = ((h + d * period) * _frameMs).round();
+        }
+        final tailFrom = math.max(from, to - 4000);
+        final tl = beatPhase(low, period, tailFrom, to);
+        if (tl >= 0) {
+          tail = (tl * _frameMs).round();
+          final d = downbeatOf(low, broadO, period, tl, to);
+          if (d != null) tailBar = ((tl + d * period) * _frameMs).round();
+        }
       }
     }
   }
@@ -95,7 +114,16 @@ AudioAnalysis analyzePcm(Uint8List pcm, {int introMs = 0, int endMs = 0}) {
     key = k.$1;
     keyConf = k.$2;
   }
-  return AudioAnalysis(bpm: bpm, bpmConfidence: conf, headBeatMs: head, tailBeatMs: tail, key: key, keyConfidence: keyConf, wave: wave);
+  return AudioAnalysis(
+      bpm: bpm,
+      bpmConfidence: conf,
+      headBeatMs: head,
+      tailBeatMs: tail,
+      headBarMs: headBar,
+      tailBarMs: tailBar,
+      key: key,
+      keyConfidence: keyConf,
+      wave: wave);
 }
 
 /// То же, но в отдельном изоляте: интерфейс не подвисает, пока считается длинный трек.
@@ -201,6 +229,71 @@ Float64List onsetStrength(Float64List db) {
   if (bestBpm <= 0 || bestRaw <= 0) return null;
   final conf = (bestRaw / variance).clamp(0.0, 1.0).toDouble();
   return (bestBpm, conf);
+}
+
+/// Уточняет темп около [bpm] (±0,6 с шагом 0,01): берётся тот, при котором доли по всему треку точнее всего попадают в атаки.
+/// Нужно, потому что сетка долей строится от одной точки и ошибка темпа копится: 0,1 BPM за четыре минуты — это 0,2 % длины, около полусекунды
+double refineTempo(Float64List o, double bpm) {
+  final n = o.length;
+  if (n < 1500) return bpm;
+  var best = bpm, bestScore = -1.0;
+  // Перебор от центра к краям: при равенстве остаётся ближайший к найденному грубо
+  for (var i = 0; i <= 120; i++) {
+    final step = i.isOdd ? (i + 1) ~/ 2 : -(i ~/ 2);
+    final b = bpm + step * 0.01;
+    if (b < 40) continue;
+    final period = 6000.0 / b;
+    var top = 0.0;
+    for (var ph = 0.0; ph < period; ph += 2.0) {
+      var sum = 0.0;
+      var k = 0;
+      for (var t = ph; t < n; t += period) {
+        final idx = t.round();
+        sum += o[idx < n ? idx : n - 1];
+        k++;
+      }
+      final v = k > 0 ? sum / k : 0.0;
+      if (v > top) top = v;
+    }
+    if (top > bestScore) {
+      bestScore = top;
+      best = b;
+    }
+  }
+  return best;
+}
+
+/// Какая из четырёх долей считается первой в такте: номер 0…3 от доли [phase] (кадр) или null, если нет явного победителя.
+/// Первая доля обычно самая сильная: бочка с басом, акцент. Смотрим низкие частоты ([low]) и весь звук ([broad]) на долях до кадра [to]
+int? downbeatOf(Float64List low, Float64List broad, double period, double phase, int to) {
+  if (period < 5) return null;
+  final sums = List<double>.filled(4, 0);
+  var beats = 0;
+  double near(Float64List o, int i) {
+    var m = 0.0;
+    for (var j = i - 1; j <= i + 1; j++) {
+      if (j >= 0 && j < o.length && o[j] > m) m = o[j];
+    }
+    return m;
+  }
+
+  var k = 0;
+  for (var t = phase; t < to && t < low.length; t += period, k++) {
+    final i = t.round();
+    sums[k % 4] += near(low, i) + 0.5 * near(broad, i);
+    beats++;
+  }
+  if (beats < 16) return null; // меньше четырёх тактов: судить рано
+  var bi = 0;
+  for (var i = 1; i < 4; i++) {
+    if (sums[i] > sums[bi]) bi = i;
+  }
+  var others = 0.0;
+  for (var i = 0; i < 4; i++) {
+    if (i != bi) others += sums[i];
+  }
+  final ratio = sums[bi] / math.max(1e-9, others / 3);
+  return ratio >= 1.08 ? bi : null;
 }
 
 /// Где стоит доля: кадр в окне [start, end), с которого с шагом [period] кадров набирается больше всего атак.

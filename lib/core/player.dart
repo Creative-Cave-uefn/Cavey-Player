@@ -614,7 +614,8 @@ class PlayerController extends ChangeNotifier {
       ? DjMix(
           bars: settings.viewNum('mix.bars', 8).round().clamp(1, 32).toInt(),
           range: (settings.viewNum('mix.range', 8) / 100).clamp(0.01, 0.2).toDouble(),
-          bass: settings.viewOf('mix.bass', '1') == '1')
+          bass: settings.viewOf('mix.bass', '1') == '1',
+          offsetMs: settings.viewNum('mix.offset', 0).round().clamp(-200, 200).toInt())
       : null;
 
   /// Джем: настройки плавного перехода организатора (секунды, 0 — выключен; умный переход). null — действуют мои.
@@ -769,8 +770,10 @@ class PlayerController extends ChangeNotifier {
     final plan = duration - d < Duration(seconds: djStyle ? 180 : 60) ? _smartPlan() : null;
     _maybePrepare(d, plan);
     final step = d - prev;
+    // Диджейский переход запускает следующий трек чуть раньше (без звука), поэтому и отсчёт начинается раньше
+    final trigger = plan == null ? Duration.zero : plan.start - plan.preroll;
     final due = plan != null
-        ? d >= plan.start && prev < plan.start && step >= Duration.zero && step < const Duration(seconds: 2)
+        ? d >= trigger && prev < trigger && step >= Duration.zero && step < const Duration(seconds: 2)
         : crossfadeDue(seconds: crossfadeSecNow, duration: duration, position: d, previous: prev);
     if (!due) return;
     unawaited(_startCrossfade(plan));
@@ -859,8 +862,11 @@ class PlayerController extends ChangeNotifier {
         await incoming.open(media, play: true);
       }
       // Пустое вступление следующего трека пропускаем
-      final inStart = plan != null && plan.inStart > const Duration(milliseconds: 300) ? plan.inStart : Duration.zero;
-      if (inStart > Duration.zero) await incoming.seek(inStart);
+      // Диджейскому следующий трек запускается на preroll раньше, чтобы к началу перехода дойти ровно до своей доли
+      final inStart = djp != null
+          ? djp.inStart - Duration(microseconds: (djp.preroll.inMicroseconds * djp.rate).round())
+          : (plan != null && plan.inStart > const Duration(milliseconds: 300) ? plan.inStart : Duration.zero);
+      if (inStart > (djp != null ? const Duration(milliseconds: 20) : Duration.zero)) await incoming.seek(inStart);
       // Уходящий трек остаётся на полной громкости, пока у следующего не пошёл звук (до 3 с),
       // и оба затихают и нарастают одновременно
       await incoming.stream.position
@@ -871,12 +877,24 @@ class PlayerController extends ChangeNotifier {
         return;
       }
       if (dj) {
-        // Пока ждали звук, уходящий ушёл вперёд: подтягиваем следующий, чтобы доли двух треков совпали
-        final lag = _p.state.position - djp!.start; // сколько прошло от запланированного начала (время уходящего)
-        final want = inStart + lag * djp.rate;
-        final gap = want - incoming.state.position;
-        if (gap > const Duration(milliseconds: 25) && gap < const Duration(seconds: 2)) {
-          await incoming.seek(incoming.state.position + gap + const Duration(milliseconds: 50));
+        // Ждём, пока уходящий дойдёт до начала перехода (следующий всё это время уже играет без звука),
+        // и сверяем доли: если расходятся заметно, один раз подтягиваем, дальше подстраиваем скоростью
+        _stopClocks();
+        final oc = _outClock = _PosClock(_p, 1.0);
+        final ic = _inClock = _PosClock(incoming, djp!.rate);
+        final wait = djp.start - oc.now();
+        if (wait > const Duration(milliseconds: 5)) {
+          await Future<void>.delayed(wait < const Duration(seconds: 3) ? wait : const Duration(seconds: 3));
+        }
+        if (seq != _openSeq || !_fading) {
+          _stopClocks();
+          await incoming.stop();
+          return;
+        }
+        final e = _phaseErr(djp, oc.now(), ic.now());
+        if (e != null && e.abs() > 60) {
+          final back = Duration(microseconds: ((e - 45) * djp.rate * 1000).round()); // 45 мс — на саму перемотку
+          await incoming.seek(ic.now() - back);
         }
       }
       // Уходящему осталось звучать не дольше, чем он ещё длится: переход укорачивается на время ожидания
@@ -934,8 +952,24 @@ class PlayerController extends ChangeNotifier {
       final started = DateTime.now();
       final swapAt = djp?.swapAt;
       var swapped = false;
+      var ticks = 0;
+      var cmdRate = djp?.rate ?? 1.0;
       _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
         final elapsed = DateTime.now().difference(started);
+        // Подстройка скоростью: раз в 200 мс смотрим, не уехали ли доли, и чуть ускоряем или замедляем следующий трек
+        if (djp != null && ++ticks % 2 == 0) {
+          final oc = _outClock, ic = _inClock;
+          final e = oc == null || ic == null ? null : _phaseErr(djp, oc.now(), ic.now());
+          if (e != null) {
+            final want = e.abs() < 10 ? djp.rate : djp.rate * (1 + (-e / 1500).clamp(-0.02, 0.02));
+            if ((want - cmdRate).abs() > 0.0005) {
+              cmdRate = want;
+              _pendingRate = want;
+              _inClock?.speed = want;
+              unawaited(_setRate(incoming, want));
+            }
+          }
+        }
         final t = elapsed.inMilliseconds / lengthMs;
         if (t >= 1) {
           _endFade();
@@ -985,6 +1019,31 @@ class PlayerController extends ChangeNotifier {
   double _pendingRate = 1.0;
   Timer? _rateTimer;
   final Set<Player> _cut = {};
+
+  _PosClock? _outClock;
+  _PosClock? _inClock;
+
+  void _stopClocks() {
+    _outClock?.dispose();
+    _inClock?.dispose();
+    _outClock = null;
+    _inClock = null;
+  }
+
+  /// Насколько следующий трек «впереди» доли уходящего, мс (— отстаёт); нужен период, на который доли совпадают.
+  /// Время доли отсчитывается от сетки: у каждого трека время с последней доли, пересчитанное в часы уходящего
+  double? _phaseErr(MixPlan plan, Duration pOut, Duration pIn) {
+    final g = plan.grid;
+    if (g == null || plan.rate <= 0) return null;
+    final outBeat = g.$2;
+    final inBeat = g.$4 / plan.rate; // доля следующего в часах уходящего
+    final per = math.min(outBeat, inBeat);
+    final tOut = (pOut.inMicroseconds / 1000 - g.$1) % outBeat;
+    final tIn = ((pIn.inMicroseconds / 1000 - g.$3) % g.$4) / plan.rate;
+    var d = (tIn - tOut + plan.offsetMs) % per;
+    if (d > per / 2) d -= per;
+    return d;
+  }
 
   /// Скорость проигрывателя; высота звука не меняется (mpv сам подтягивает её обратно)
   Future<void> _setRate(Player p, double r) async {
@@ -1037,6 +1096,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _endFade({bool stopIncoming = false}) {
+    _stopClocks();
     _fadeTimer?.cancel();
     _fadeTimer = null;
     _preparedId = null;
@@ -1400,4 +1460,24 @@ class PlayerController extends ChangeNotifier {
     lyricsOpen.dispose();
     super.dispose();
   }
+}
+
+/// Позиция проигрывателя с поправкой на время с последнего отсчёта: события позиции приходят редко, а доли считаются в миллисекундах
+class _PosClock {
+  final Player p;
+  double speed;
+  Duration _pos;
+  DateTime _at = DateTime.now();
+  StreamSubscription<Duration>? _sub;
+
+  _PosClock(this.p, this.speed) : _pos = p.state.position {
+    _sub = p.stream.position.listen((d) {
+      _pos = d;
+      _at = DateTime.now();
+    });
+  }
+
+  Duration now() => _pos + Duration(microseconds: (DateTime.now().difference(_at).inMicroseconds * speed).round());
+
+  void dispose() => _sub?.cancel();
 }

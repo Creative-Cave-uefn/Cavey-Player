@@ -1296,6 +1296,7 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
     final bars = app.settings.viewNum('mix.bars', 8).round();
     final barIdx = barSteps.indexOf(bars).clamp(0, barSteps.length - 1).toInt();
     final range = app.settings.viewNum('mix.range', 8).clamp(2, 16).toDouble();
+    final offset = app.settings.viewNum('mix.offset', 0).clamp(-150, 150).toDouble();
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       const HintHeading('Стиль перехода',
           'Плавный: громкость одного трека затихает, другого нарастает. DJ: следующий трек подгоняется по темпу, доли двух треков '
@@ -1343,6 +1344,26 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           ),
           SizedBox(width: 80, child: Text('${range.round()} %', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
         ]),
+        Row(children: [
+          const SizedBox(width: 150, child: Text('Сдвиг долей')),
+          Expanded(
+            child: Slider(
+              value: offset,
+              min: -150,
+              max: 150,
+              divisions: 60,
+              label: '${offset.round()} мс',
+              onChanged: enabled ? (v) => setState(() => app.settings.view['mix.offset'] = '${(v / 5).round() * 5}') : null,
+              onChangeEnd: (_) => app.lib.saveSettings(),
+            ),
+          ),
+          SizedBox(width: 80, child: Text('${offset.round()} мс', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+        ]),
+        const Padding(
+          padding: EdgeInsets.only(bottom: 4),
+          child: Text('Если на слух следующий трек чуть опережает ударные или отстаёт, сдвиньте: «+» — позже, «−» — раньше.',
+              style: TextStyle(color: C.muted, fontSize: 12, height: 1.4)),
+        ),
         HintSwitch(
           contentPadding: EdgeInsets.zero,
           value: app.settings.viewOf('mix.bass', '1') == '1',

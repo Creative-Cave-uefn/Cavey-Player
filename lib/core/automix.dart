@@ -25,7 +25,7 @@ import 'log.dart';
 /// Что известно о звуке трека
 class MixProfile {
   /// Версия разбора. У профилей старше этой нет темпа, тональности и волны: их досчитаем, когда трек снова будет в кэше
-  static const version = 2;
+  static const version = 3;
 
   final int durationMs;
   final int introMs; // где кончается тишина в начале
@@ -42,6 +42,10 @@ class MixProfile {
   /// Где стоит сильная доля после вступления и ближе к концу, мс. Только если сетку долей можно считать верной
   final int? headBeatMs;
   final int? tailBeatMs;
+
+  /// Где начинается такт (первая доля) после вступления и ближе к концу, мс; null — не определили
+  final int? headBarMs;
+  final int? tailBarMs;
 
   /// Тональность в записи Camelot («8A»); null — не известна
   final String? key;
@@ -62,6 +66,8 @@ class MixProfile {
     this.bpm,
     this.headBeatMs,
     this.tailBeatMs,
+    this.headBarMs,
+    this.tailBarMs,
     this.key,
     this.wave = const [],
     this.genre = '',
@@ -73,18 +79,25 @@ class MixProfile {
     final detected = (a != null && a.bpm != null && a.bpmConfidence >= 0.1) ? a.bpm : null;
     final tag = (tagBpm != null && tagBpm >= 40 && tagBpm <= 250) ? tagBpm : null;
     double? bpmNow;
-    int? head = a?.headBeatMs, tail = a?.tailBeatMs;
+    int? head = a?.headBeatMs, tail = a?.tailBeatMs, headBar = a?.headBarMs, tailBar = a?.tailBarMs;
     if (tag != null) {
       bpmNow = tag;
       if (detected == null || bpmStretch(tag, detected) > 0.03) {
         head = null;
         tail = null;
+        headBar = null;
+        tailBar = null;
+      } else {
+        // Сетка долей построена по своему темпу, он точнее округлённого в теге: с ним доли не разойдутся
+        bpmNow = detected;
       }
     } else if (detected != null) {
       bpmNow = detected;
     } else {
       head = null;
       tail = null;
+      headBar = null;
+      tailBar = null;
     }
     String? keyNow;
     final tk = Camelot.parse(tagKey);
@@ -103,6 +116,8 @@ class MixProfile {
       bpm: bpmNow,
       headBeatMs: head,
       tailBeatMs: tail,
+      headBarMs: headBar,
+      tailBarMs: tailBar,
       key: keyNow,
       wave: (a != null && a.wave.isNotEmpty) ? a.wave : wave,
       genre: genre.isNotEmpty ? genre : this.genre,
@@ -119,6 +134,8 @@ class MixProfile {
         if (bpm != null) 'bpm': bpm,
         if (headBeatMs != null) 'hb': headBeatMs,
         if (tailBeatMs != null) 'tb': tailBeatMs,
+        if (headBarMs != null) 'hB': headBarMs,
+        if (tailBarMs != null) 'tB': tailBarMs,
         if (key != null) 'k': key,
         if (wave.isNotEmpty) 'w': base64Encode(Uint8List.fromList(wave)),
         if (genre.isNotEmpty) 'g': genre,
@@ -140,6 +157,8 @@ class MixProfile {
         bpm: (j['bpm'] as num?)?.toDouble(),
         headBeatMs: (j['hb'] as num?)?.toInt(),
         tailBeatMs: (j['tb'] as num?)?.toInt(),
+        headBarMs: (j['hB'] as num?)?.toInt(),
+        tailBarMs: (j['tB'] as num?)?.toInt(),
         key: j['k'] as String?,
         wave: wave,
         genre: (j['g'] as String?) ?? '',
@@ -198,7 +217,13 @@ class DjMix {
   /// Обмен басов: сначала у следующего трека срезаны низы, на середине перехода низы переходят к нему
   final bool bass;
 
-  const DjMix({this.bars = 8, this.range = 0.08, this.bass = true});
+  /// При несовместимых тональностях переход укорачивается до двух тактов: недолго терпеть разлад
+  final bool harmonic;
+
+  /// Сдвиг долей следующего трека вручную, мс: «+» — позже. Нужен, если на слух доли чуть расходятся
+  final int offsetMs;
+
+  const DjMix({this.bars = 8, this.range = 0.08, this.bass = true, this.harmonic = true, this.offsetMs = 0});
 }
 
 class MixPlan {
@@ -216,7 +241,18 @@ class MixPlan {
   /// Когда (от начала перехода) менять басы местами; null — без обмена
   final Duration? swapAt;
 
-  const MixPlan(this.start, this.length, this.inStart, this.inGain, {this.dj = false, this.rate = 1.0, this.swapAt});
+  /// Сетка долей для подстройки на лету: время какой-то доли и период уходящего ($1, $2) и следующего ($3, $4) трека, мс
+  /// (время — по самому треку). null — сетки нет
+  final (double, double, double, double)? grid;
+
+  /// Сдвиг долей следующего трека, заданный вручную, мс
+  final int offsetMs;
+
+  /// За сколько до начала перехода запускать следующий трек (без звука), чтобы он успел «встать на рельсы»
+  final Duration preroll;
+
+  const MixPlan(this.start, this.length, this.inStart, this.inGain,
+      {this.dj = false, this.rate = 1.0, this.swapAt, this.grid, this.offsetMs = 0, this.preroll = Duration.zero});
 
   /// [maxSec] — самый длинный переход (настройка), [bpm] — темп уходящего трека, если известен
   /// (свой разбор звука важнее, он в профиле). Если у обоих треков известна сетка долей и темпы близки,
@@ -265,7 +301,9 @@ class MixPlan {
 
   /// Диджейский переход; null — данных не хватает (нет темпа или сетки долей) или темпы слишком разные
   static MixPlan? _makeDj(MixProfile out, MixProfile inn, DjMix o) {
-    final ob = out.bpm, ib = inn.bpm, oh = out.tailBeatMs, ih = inn.headBeatMs;
+    final ob = out.bpm, ib = inn.bpm;
+    // Если известна первая доля такта, привязываемся к тактам, иначе к долям
+    final oh = out.tailBarMs ?? out.tailBeatMs, ih = inn.headBarMs ?? inn.headBeatMs;
     if (ob == null || ib == null || oh == null || ih == null) return null;
     if (ob < 60 || ob > 200 || ib < 60 || ib > 200) return null;
     // Темп следующего подгоняем под уходящий; двойной и половинный темп считаются совпадением
@@ -276,25 +314,34 @@ class MixPlan {
     }
     if ((rate - 1).abs() > o.range) return null;
     final tail = out.endMs;
-    final beat = 60000 / ob; // доля уходящего трека, мс
+    final beat = 60000 / ob;
     final bar = 4 * beat;
-    // Переход не должен начинаться раньше, чем через 10 с после начала трека: если не помещается, укорачиваем вдвое
     var bars = o.bars.clamp(1, 64).toInt();
+    // Тональности спорят: долгое наложение звучало бы разладом, поэтому переход короткий
+    if (o.harmonic) {
+      final ka = Camelot.parse(out.key), kb = Camelot.parse(inn.key);
+      if (ka != null && kb != null && Camelot.compat(ka, kb) < 0.45) bars = math.min(bars, 2);
+    }
     var len = bars * bar;
+    // Переход не должен начинаться раньше, чем через 10 с после начала трека: если не помещается, укорачиваем вдвое
     while (bars > 1 && tail - len < out.introMs + 10000) {
       bars = (bars / 2).floor();
       len = bars * bar;
     }
     if (tail - len < out.introMs + 10000 - beat) return null;
-    // Начало — на доле уходящего трека не позже, чем «конец минус длина»: переход заканчивается там, где трек затихает
-    final k = ((tail - len - oh) / beat).floor();
-    final start = (oh + k * beat).round();
+    // Начало — на первой доле такта (или на доле) уходящего трека не позже, чем «конец минус длина»
+    final unit = out.tailBarMs != null ? bar : beat;
+    final k = ((tail - len - oh) / unit).floor();
+    final start = (oh + k * unit).round();
     if (start < 0) return null;
-    // Следующий входит на своей доле, после тишины в начале
+    // Следующий входит на первой доле своего первого такта, после тишины в начале
     final ibeat = 60000 / ib;
-    var enter = snapToBeat(inn.introMs, ih, ib);
-    if (enter < inn.introMs) enter += ibeat.round();
+    final iunit = inn.headBarMs != null ? 4 * ibeat : ibeat;
+    final j = ((inn.introMs - ih) / iunit).ceil();
+    final enter = (ih + j * iunit).round();
     if (enter < 0 || enter > 12000) return null;
+    // Следующий трек запускаем чуть раньше (бесшумно), чтобы к началу перехода он уже играл ровно с нужной доли
+    final pre = Duration(milliseconds: math.min(700, (enter / rate).floor()));
     final diff = (out.loudDb - inn.loudDb).clamp(-6.0, 6.0);
     final swap = o.bass && bars >= 2 ? Duration(milliseconds: (bars ~/ 2 * bar).round()) : null;
     return MixPlan(
@@ -305,6 +352,9 @@ class MixPlan {
       dj: true,
       rate: rate,
       swapAt: swap,
+      grid: (oh.toDouble(), beat, ih.toDouble(), ibeat),
+      offsetMs: o.offsetMs,
+      preroll: pre,
     );
   }
 }

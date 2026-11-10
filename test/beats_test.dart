@@ -46,6 +46,26 @@ Uint8List kicks(double bpm, int seconds, {double first = 0.7}) {
   return p.bytes;
 }
 
+/// Бочки с акцентом на первой доле такта (громкая, потом тихие), первая — на [first] секунде
+Uint8List accented(double bpm, int seconds, {double first = 0.7}) {
+  final p = _Pcm(seconds);
+  final period = 60.0 / bpm;
+  var seed = 777;
+  for (var i = 0; i < p.n; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    p.add(i, (seed / 0x7fffffff - 0.5) * 0.02);
+  }
+  var k = 0;
+  for (var t = first; t < seconds - 0.2; t += period, k++) {
+    final at = (t * beatRate).round();
+    final amp = k % 4 == 0 ? 0.8 : 0.2;
+    for (var j = 0; j < 480; j++) {
+      p.add(at + j, math.sin(2 * math.pi * 60 * j / beatRate) * math.exp(-j / 120.0) * amp);
+    }
+  }
+  return p.bytes;
+}
+
 /// Аккорды в заданной тональности: [chords] — пары (смещение корня от тоники, терция)
 Uint8List chords(int tonic, List<(int, int)> chords, {int seconds = 40}) {
   final p = _Pcm(seconds);
@@ -93,6 +113,26 @@ void main() {
       // Первая бочка на 700 мс, период 500 мс
       expect(_phaseGap(a.headBeatMs!, 700, 500), lessThan(40));
       expect(_phaseGap(a.tailBeatMs!, 700, 500), lessThan(40));
+    });
+
+    test('темп уточняется до сотых', () {
+      final a = analyzePcm(kicks(123.37, 90));
+      expect(a.bpm, closeTo(123.37, 0.06));
+    });
+
+    test('первая доля такта находится по акценту', () {
+      final a = analyzePcm(accented(120, 60));
+      expect(a.headBarMs, isNotNull);
+      expect(a.tailBarMs, isNotNull);
+      // Громкая бочка на 700 мс, такт — 2000 мс
+      expect(_phaseGap(a.headBarMs!, 700, 2000), lessThan(60));
+      expect(_phaseGap(a.tailBarMs!, 700, 2000), lessThan(60));
+    });
+
+    test('ровные бочки без акцента — первую долю не придумываем', () {
+      final a = analyzePcm(kicks(120, 60));
+      expect(a.headBeatMs, isNotNull);
+      expect(a.headBarMs == null || _phaseGap(a.headBarMs!, 700, 500) < 40, isTrue);
     });
 
     test('шум без ритма не даёт уверенного темпа', () {
@@ -190,7 +230,7 @@ void main() {
       expect(tagged.key, '8A');
       expect(tagged.headBeatMs, isNull); // 128 и 100 расходятся: сетке 100 верить нельзя
       final agree = base.withAnalysis(a, tagBpm: 101);
-      expect(agree.bpm, 101);
+      expect(agree.bpm, 100); // сетка построена по своему темпу, он точнее округлённого в теге
       expect(agree.headBeatMs, 100);
     });
 
@@ -290,6 +330,57 @@ void main() {
       final plan = MixPlan.make(shortOut, inn, dj: const DjMix(bars: 32));
       expect(plan.dj, isTrue);
       expect(plan.start.inMilliseconds, greaterThanOrEqualTo(10000 - 500));
+    });
+
+    test('привязка к тактам: старт на первой доле такта уходящего', () {
+      const bars = MixProfile(
+          durationMs: 240000,
+          introMs: 0,
+          outroMs: 230000,
+          endMs: 236000,
+          loudDb: -12,
+          v: 3,
+          bpm: 120,
+          headBeatMs: 200,
+          tailBeatMs: 130,
+          headBarMs: 1200,
+          tailBarMs: 630);
+      final plan = MixPlan.make(bars, inn, dj: const DjMix(bars: 8));
+      expect(_phaseGap(plan.start.inMilliseconds, 630, 2000), lessThan(1));
+      expect((plan.start + plan.length).inMilliseconds, lessThanOrEqualTo(bars.endMs));
+      expect(plan.grid, isNotNull);
+      expect(plan.preroll, greaterThan(Duration.zero));
+    });
+
+    test('вход следующего — на первой доле его такта', () {
+      const bars = MixProfile(
+          durationMs: 200000,
+          introMs: 700,
+          outroMs: 190000,
+          endMs: 198000,
+          loudDb: -12,
+          v: 3,
+          bpm: 120,
+          headBeatMs: 200,
+          tailBeatMs: 130,
+          headBarMs: 1200,
+          tailBarMs: 130);
+      final plan = MixPlan.make(out, bars, dj: const DjMix());
+      // Такт следующего: 1200 + k·2000; первый после тишины (700 мс) — 1200
+      expect(plan.inStart.inMilliseconds, 1200);
+      expect(plan.preroll, const Duration(milliseconds: 700));
+    });
+
+    test('спорящие тональности укорачивают переход до двух тактов', () {
+      const a = MixProfile(
+          durationMs: 240000, introMs: 0, outroMs: 230000, endMs: 236000, loudDb: -12, v: 3, bpm: 120, headBeatMs: 200, tailBeatMs: 130, key: '8A');
+      const clash = MixProfile(
+          durationMs: 200000, introMs: 700, outroMs: 190000, endMs: 198000, loudDb: -12, v: 3, bpm: 120, headBeatMs: 420, tailBeatMs: 130, key: '3B');
+      const friend = MixProfile(
+          durationMs: 200000, introMs: 700, outroMs: 190000, endMs: 198000, loudDb: -12, v: 3, bpm: 120, headBeatMs: 420, tailBeatMs: 130, key: '9A');
+      expect(MixPlan.make(a, clash, dj: const DjMix(bars: 16)).length.inMilliseconds, 4000);
+      expect(MixPlan.make(a, friend, dj: const DjMix(bars: 16)).length.inMilliseconds, 32000);
+      expect(MixPlan.make(a, clash, dj: const DjMix(bars: 16, harmonic: false)).length.inMilliseconds, 32000);
     });
 
     test('громкость: уходящий держится, пока следующий входит', () {
