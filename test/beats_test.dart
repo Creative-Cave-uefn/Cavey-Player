@@ -143,7 +143,7 @@ void main() {
       expect(camelotOf(0, false), '8B'); // C
       expect(camelotOf(9, true), '8A'); // Am
       expect(camelotOf(6, false), '2B'); // F#
-      expect(camelotOf(3, true), '5A'); // D#m
+      expect(camelotOf(3, true), '2A'); // D#m = Ebm
     });
   });
 
