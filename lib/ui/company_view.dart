@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/notices.dart';
 import '../core/social.dart';
+import 'animated_tiles.dart';
 import 'glass_popup.dart';
 import 'jam_panel.dart';
 import 'shell.dart';
@@ -46,27 +47,26 @@ class CompanyPage extends StatelessWidget {
             Expanded(child: Text('Участники', style: display(20))),
             _NoticeBell(notices: notices),
           ]),
-          const SizedBox(height: 6),
-          const Text('Нажмите на человека, чтобы открыть его страницу.', style: TextStyle(color: C.faint, fontSize: 13)),
           const SizedBox(height: 14),
           _People(),
           const SizedBox(height: 40),
           Text('Сейчас слушают', style: display(20)),
-          const SizedBox(height: 6),
-          Text(
-            social.pollError != null
-                ? 'Не получилось обновить статусы: ${social.pollError}'
-                : social.lastPoll == null
-                    ? 'Загружаю статусы друзей…'
-                    : 'Обновляется раз в 15 секунд, последний раз в ${TimeOfDay.fromDateTime(social.lastPoll!).format(context)}. '
-                        'Друзей с Cavey: ${social.friends.length}.',
-            style: TextStyle(color: social.pollError != null ? C.danger : C.faint, fontSize: 13),
-          ),
+          // Подпись про обновление убрана; остаётся только сообщение, если статусы не получилось загрузить
+          if (social.pollError != null) ...[
+            const SizedBox(height: 6),
+            Text('Не получилось обновить статусы: ${social.pollError}', style: const TextStyle(color: C.danger, fontSize: 13)),
+          ],
           const SizedBox(height: 14),
           if (now.isEmpty)
             const Text('Сейчас никто ничего не слушает.', style: TextStyle(color: C.faint))
           else
-            Wrap(spacing: 14, runSpacing: 14, children: [for (final m in now) _ListenerCard(member: m)]),
+            AnimatedTiles(
+              tileWidth: 300,
+              rowHeight: _ListenerCard.height,
+              spacing: 14,
+              runSpacing: 14,
+              tiles: [for (final m in now) TileSlot('listen-${m.email}', _ListenerCard(member: m))],
+            ),
           const SizedBox(height: 40),
           Row(children: [
             Expanded(child: Text('Чарт недели', style: display(20))),
@@ -131,6 +131,8 @@ String jamStatusText(AppServices app, Member m) {
 }
 
 class _ListenerCard extends StatelessWidget {
+  /// Шаг между рядами карточек: карточка в узкой панели может стать выше, но не выше этого
+  static const height = 212.0;
   final Member member;
   const _ListenerCard({required this.member});
 
@@ -174,10 +176,11 @@ class _ListenerCard extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(3, 3, 10, 3),
             decoration: BoxDecoration(color: const Color(0x47000000), borderRadius: BorderRadius.circular(20)),
             child: Row(children: [
-              Avatar(email: member.email, name: member.name, size: 26),
+              Avatar(email: member.email, name: app.lib.nameOf(member.email, fallback: member.name), size: 26),
               const SizedBox(width: 10),
               Expanded(
-                child: Text(member.name.isEmpty ? member.email : member.name,
+                // Ник из профиля в плеере, а не имя из Google
+                child: Text(app.lib.nameOf(member.email, fallback: member.name),
                     overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
               ),
               Text(member.inJam ? 'в джеме' : (member.live ? 'слушает' : 'на паузе'),
@@ -859,7 +862,7 @@ class _ListenerTileState extends State<_ListenerTile> {
                 child: Row(
                   mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start,
                   children: [
-                    Avatar(key: ValueKey('av-${m.email}'), email: m.email, name: m.name, size: 22),
+                    Avatar(key: ValueKey('av-${m.email}'), email: m.email, name: app.lib.nameOf(m.email, fallback: m.name), size: 22),
                     if (!compact) ...[
                       const SizedBox(width: 10),
                       Expanded(
@@ -1021,7 +1024,7 @@ class JamStrip extends StatelessWidget {
                   CheckboxListTile(
                     value: picked.contains(m.email),
                     onChanged: (v) => setS(() => v == true ? picked.add(m.email) : picked.remove(m.email)),
-                    secondary: Avatar(email: m.email, name: m.name, size: 28),
+                    secondary: Avatar(email: m.email, name: app.lib.nameOf(m.email, fallback: m.name), size: 28),
                     title: Text(app.lib.firstNameOf(m.email)),
                     subtitle: m.live ? const Text('слушает сейчас') : null,
                   ),
@@ -1049,9 +1052,14 @@ class _People extends StatelessWidget {
     final app = Services.of(context);
     final lib = app.lib;
     final emails = {...lib.people, ...app.social.members.keys}..removeWhere((e) => e.isEmpty);
+    // Считаем по тому же полю «кто загрузил», что и в списках треков: у новых файлов это проверенная почта
+    // из свойства на Диске, у старых — их владелец. Почту приводим к нижнему регистру, чтобы не плодить двойников
     final uploads = <String, int>{};
     for (final t in lib.data.tracks.values) {
-      if (t.by.isNotEmpty && !lib.data.hidden.contains(t.id)) uploads[t.by] = (uploads[t.by] ?? 0) + 1;
+      if (t.by.isNotEmpty && !lib.data.hidden.contains(t.id)) {
+        final k = t.by.toLowerCase();
+        uploads[k] = (uploads[k] ?? 0) + 1;
+      }
     }
     final list = emails.toList()
       ..sort((a, b) {
@@ -1062,13 +1070,20 @@ class _People extends StatelessWidget {
         if (la != lb) return la ? -1 : 1;
         return lib.nameOf(a).toLowerCase().compareTo(lib.nameOf(b).toLowerCase());
       });
-    return Wrap(spacing: 12, runSpacing: 12, children: [
-      for (final e in list) _PersonCard(email: e, uploads: uploads[e] ?? 0),
-    ]);
+    // Плитки плавно переезжают, когда боковая панель разворачивается и ширина страницы меняется
+    return AnimatedTiles(
+      tileWidth: 250,
+      rowHeight: _PersonCard.height,
+      tiles: [
+        for (final e in list) TileSlot('person-$e', _PersonCard(email: e, uploads: uploads[e.toLowerCase()] ?? 0)),
+      ],
+    );
   }
 }
 
 class _PersonCard extends StatelessWidget {
+  /// Все плитки одной высоты: так их можно расставлять по сетке и плавно переставлять
+  static const height = 92.0;
   final String email;
   final int uploads;
   const _PersonCard({required this.email, required this.uploads});
@@ -1095,6 +1110,7 @@ class _PersonCard extends StatelessWidget {
     final live = (m?.live ?? false) || (m?.inJam ?? false);
     return SizedBox(
       width: 250,
+      height: height,
       child: Material(
         color: C.surface,
         borderRadius: BorderRadius.circular(14),
@@ -1102,6 +1118,7 @@ class _PersonCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
           onTap: () => NavScope.of(context).go(Nav('user', email)),
           child: Container(
+            height: height,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(borderRadius: BorderRadius.circular(14), border: Border.all(color: live ? C.accent : C.line)),
             child: Row(children: [

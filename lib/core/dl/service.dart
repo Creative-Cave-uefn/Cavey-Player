@@ -13,6 +13,7 @@ import '../covers.dart';
 import '../library.dart';
 import '../log.dart';
 import '../models.dart';
+import '../upload_queue.dart';
 import 'winproc.dart';
 
 const kDownloaderProtocol = 3;
@@ -28,6 +29,10 @@ class DownloadJob {
   JobState state = JobState.queued;
   bool cancelRequested = false;
   int total = 0, done = 0, failed = 0, skipped = 0;
+
+  /// Скачано, но на Диск пока не загружено: файл лежит в очереди «Ожидают загрузки».
+  /// Входит в [done] (скачивание удалось), в библиотеку попадёт позже
+  int deferred = 0;
   final List<String> log = [];
   final List<String> failedNames = [];
   String? playlistId, playlistName;
@@ -290,6 +295,7 @@ class DownloadService extends ChangeNotifier {
           ..skipCovers = false
           ..done = 0
           ..failed = 0
+          ..deferred = 0
           ..skipped = 0
           ..failedNames.clear()
           ..touch();
@@ -394,8 +400,11 @@ class DownloadService extends ChangeNotifier {
           job.state = job.cancelRequested ? JobState.cancelled :
               (value == true ? JobState.done : JobState.failed);
           if (job.state == JobState.done && job.done > 0 && !job.quiet && job.replaceTrackId == null) {
-            lib.onEvent?.call({'k': 'upload', 'n': job.done, 'folder': job.folderName});
-            lib.messages.add('Скачано и добавлено в библиотеку: ${job.done}');
+            final added = job.done - job.deferred;
+            if (added > 0) lib.onEvent?.call({'k': 'upload', 'n': added, 'folder': job.folderName});
+            lib.messages.add(job.deferred == 0
+                ? 'Скачано и добавлено в библиотеку: ${job.done}'
+                : 'Скачано: ${job.done}. Загружено в библиотеку: $added, ждут загрузки: ${job.deferred}');
           }
         } catch (e) {
           job.state = job.cancelRequested ? JobState.cancelled : JobState.failed;
@@ -595,20 +604,29 @@ class DownloadService extends ChangeNotifier {
         final target = (call['folderId'] as String?) ?? job.target;
         var lastMove = DateTime.now();
         job.touch();
-        final t = await _idleLimit(
-            lib.uploadOne(f, sourceId: job.sourceId, folderId: target, path: '${call['path'] ?? job.path}',
-                onProgress: (_) {
-              lastMove = DateTime.now();
-              job.touch();
-            }),
-            () => lastMove,
-            'Загрузка на Google Drive');
-        job.onTrack?.call(t);
-        return t.id;
+        try {
+          final t = await _idleLimit(
+              lib.uploadOne(f, sourceId: job.sourceId, folderId: target, path: '${call['path'] ?? job.path}',
+                  uploadSource: lib.uploadSourceNow, onProgress: (_) {
+                lastMove = DateTime.now();
+                job.touch();
+              }),
+              () => lastMove,
+              'Загрузка на Google Drive');
+          job.onTrack?.call(t);
+          return t.id;
+        } on UploadDeferred catch (e) {
+          // Файл скачан и сохранён в очереди; загрузчику сообщаем об успехе, а загрузка на Диск случится позже
+          job.deferred++;
+          job.add('Скачано, но не загружено на Диск: ${e.reason}');
+          _notify();
+          return '${UploadQueue.idPrefix}${e.pendingId}';
+        }
       case 'enrich':
         final id = '${call['trackId'] ?? ''}';
         final track = lib.data.tracks[id];
-        if (track == null || track.source != job.sourceId) {
+        final waiting = id.startsWith(UploadQueue.idPrefix) ? lib.uploadQueue.byId(id) : null;
+        if (waiting == null && (track == null || track.source != job.sourceId)) {
           throw const FormatException('Метаданные разрешены только для нового трека этого задания.');
         }
         final m = call['meta'];
@@ -633,6 +651,13 @@ class DownloadService extends ChangeNotifier {
           if (m['duration'] is num && (m['duration'] as num) > 0)
             'd': '${((m['duration'] as num) * 1000).round()}',
         };
+        if (waiting != null) {
+          // Трека на Диске ещё нет: метаданные применятся, когда файл выйдет из очереди «Ожидают загрузки»
+          waiting.edit = edit;
+          await lib.uploadQueue.update();
+          log('Метаданные сохранены и применятся после загрузки трека на Диск.');
+          return true;
+        }
         // Persist metadata even if the image cannot be retrieved or uploaded.
         if (edit.isNotEmpty) lib.setMeta({id: edit});
         final imagePath = call['coverFile'];

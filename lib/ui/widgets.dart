@@ -240,6 +240,10 @@ class _CoverImageState extends State<CoverImage> {
     return cap != null && px > cap ? cap : px;
   }
 
+  /// Ширина, в которую декодируется картинка. Округляется вверх до 32 пикселей: пока плитка чуть меняет размер
+  /// (разворачивается боковая панель), картинка не декодируется заново на каждом кадре и не мерцает
+  int _cacheWidth(double dpr) => ((widget.size * dpr / 32).ceil() * 32).clamp(32, 4096).toInt();
+
   /// Ключ поменялся (другой трек, другой человек) — старую картинку не показываем ни на кадр
   void _ensure() {
     final svc = _svc;
@@ -330,7 +334,7 @@ class _CoverImageState extends State<CoverImage> {
                       alignment: Alignment.center,
                       filterQuality: FilterQuality.medium,
                       gaplessPlayback: true,
-                      cacheWidth: (widget.size * dpr).round(),
+                      cacheWidth: _cacheWidth(dpr),
                       errorBuilder: (_, __, ___) => _onBroken(placeholder),
                     ),
                   ])
@@ -340,7 +344,7 @@ class _CoverImageState extends State<CoverImage> {
                     gaplessPlayback: true,
                     // На весь экран картинку уменьшают, и качественная фильтрация держит резкость
                     filterQuality: widget.fullscreen ? FilterQuality.high : FilterQuality.low,
-                    cacheWidth: (widget.size * dpr).round(),
+                    cacheWidth: _cacheWidth(dpr),
                     errorBuilder: (_, __, ___) => _onBroken(placeholder),
                   ),
       ),

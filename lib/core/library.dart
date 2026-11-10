@@ -15,6 +15,8 @@ import 'drive.dart';
 import 'models.dart';
 import 'store.dart';
 import 'tags.dart';
+import 'broker.dart';
+import 'upload_queue.dart';
 
 /// Внутренний сигнал: библиотеку отключили или сменили, пока шло сохранение
 class _Abandoned implements Exception {}
@@ -67,6 +69,7 @@ class UploadStatus {
   int done = 0;
   int failed = 0;
   int skipped = 0; // уже были в библиотеке
+  int deferred = 0; // не загрузились сейчас, лежат в очереди «Ожидают загрузки»
   String current = '';
   double fileProgress = 0;
 }
@@ -133,8 +136,23 @@ class LibraryController extends ChangeNotifier {
 
   LibraryController(this.store, this.settings, this.accounts, this.drive);
 
+  /// Брокер загрузки (Apps Script): открывает сессии загрузки от имени владельца библиотеки
+  late final UploadBroker broker = UploadBroker(accounts, drive);
+
+  /// Файлы, которые не удалось загрузить сразу: ждут в очереди и уходят на Диск позже
+  late final UploadQueue uploadQueue = UploadQueue(store);
+  Timer? _queueTimer;
+
   bool get hasHub => settings.hubId != null && settings.libFileId != null;
   String? get me => accounts.primary?.email;
+
+  /// Один из подключённых к приложению аккаунтов Google (а не только основной)
+  bool isMyAccount(String email) =>
+      email.isNotEmpty && accounts.accounts.any((a) => a.email.toLowerCase() == email.toLowerCase());
+
+  /// Для файла, загруженного через брокера, записанный в треке загрузивший должен совпадать со свойством на Диске
+  static bool _uploaderStale(Track old, DriveFile f) =>
+      f.viaBroker && (old.by != f.uploaderEmail || old.uploadSource.isEmpty);
   bool get hasUnsavedChanges => _pending.isNotEmpty;
 
   Future<void> saveSettings() => store.writeJson('settings.json', settings.toJson());
@@ -167,6 +185,7 @@ class LibraryController extends ChangeNotifier {
       }
       _pruneRecentOps();
     }
+    await uploadQueue.load();
     final pend = await store.readJson('pending_ops.json');
     if (pend is List) {
       for (final op in pend) {
@@ -185,6 +204,8 @@ class LibraryController extends ChangeNotifier {
     _scanTimer?.cancel();
     _pollTimer = Timer.periodic(const Duration(seconds: 30), (_) => _poll());
     _scanTimer = Timer.periodic(const Duration(minutes: 10), (_) => scanAll(quiet: true).then((_) => fillDurations()));
+    _queueTimer?.cancel();
+    _queueTimer = Timer.periodic(const Duration(minutes: 5), (_) => unawaited(retryPendingUploads()));
     () async {
       try {
         await reload();
@@ -192,6 +213,7 @@ class LibraryController extends ChangeNotifier {
         if (_pending.isNotEmpty) _scheduleFlush();
         await scanAll(quiet: true);
         unawaited(fillDurations());
+        unawaited(retryPendingUploads());
       } catch (e) {
         _report(e);
       }
@@ -202,6 +224,7 @@ class LibraryController extends ChangeNotifier {
   void dispose() {
     _pollTimer?.cancel();
     _scanTimer?.cancel();
+    _queueTimer?.cancel();
     _flushTimer?.cancel();
     super.dispose();
   }
@@ -1008,9 +1031,14 @@ class LibraryController extends ChangeNotifier {
       final cover = covers[f.folder];
       if (old == null || old.modified != f.file.modifiedTime || recheck.contains(old.id)) {
         toParse.add(f);
-      } else if (old.cover != cover || (old.md5.isEmpty && f.file.md5.isNotEmpty)) {
-        // обложка поменялась или у старой записи ещё нет md5 — обновляем без чтения тегов
+      } else if (old.cover != cover || (old.md5.isEmpty && f.file.md5.isNotEmpty) || _uploaderStale(old, f.file)) {
+        // обложка поменялась, у старой записи ещё нет md5 или кто загрузил — обновляем без чтения тегов
         final j = old.toJson();
+        if (f.file.viaBroker) {
+          j['by'] = f.file.uploaderEmail;
+          j['ua'] = f.file.uploadedAt;
+          if (f.file.uploadSource.isNotEmpty) j['us'] = f.file.uploadSource;
+        }
         if (cover != null) {
           j['c'] = cover;
         } else {
@@ -1054,9 +1082,11 @@ class LibraryController extends ChangeNotifier {
         modified: f.file.modifiedTime,
         size: f.file.size,
         md5: f.file.md5,
-        by: f.file.ownerEmail,
+        by: f.file.uploaderEmail,
         path: f.path,
         added: f.file.createdTime,
+        uploadedAt: f.file.viaBroker ? f.file.uploadedAt : '',
+        uploadSource: f.file.uploadSource,
       ).toJson();
       scan.done++;
       if (batch.length >= 100) {
@@ -1073,7 +1103,7 @@ class LibraryController extends ChangeNotifier {
     }
 
     // Свои новые файлы, загруженные мимо приложения, тоже попадают в ленту
-    final mine = toParse.where((f) => existing[f.file.id] == null && f.file.ownerEmail == me).length;
+    final mine = toParse.where((f) => existing[f.file.id] == null && isMyAccount(f.file.uploaderEmail)).length;
     if (mine > 0) onEvent?.call({'k': 'upload', 'n': mine, 'folder': s.name});
 
     final removed = existing.keys.where((id) => !seen.contains(id)).toList();
@@ -1535,15 +1565,37 @@ class LibraryController extends ChangeNotifier {
 
   // ---------- удаление с Диска ----------
 
-  /// Удаляет треки: из библиотеки у всех сразу, а файлы — в корзину Диска их владельцев (30 дней можно вернуть).
-  /// Свои файлы удаляются сразу, чужие — когда владелец откроет Cave Player
-  /// (удалить чужой файл Google Диск не даёт никому, кроме владельца)
-  void deleteTracks(Iterable<Track> list) {
+  /// Снимок трека для окна «Друзья предлагают удалить»: после удаления трек из библиотеки пропадает,
+  /// а обложку, название и длительность загрузивший всё равно должен увидеть
+  static Map<String, dynamic> snapshotOf(Track t) => {
+        ...t.toJson(),
+        if (t.durationMs != null) 'd': t.durationMs,
+        if (t.customCover != null) 'cv': t.customCover,
+      };
+
+  static Track trackFromSnapshot(String id, Map j) => Track.fromJson(id, j)
+    ..durationMs = (j['d'] as num?)?.toInt()
+    ..customCover = j['cv'] as String?;
+
+  /// Удаляет треки: из библиотеки у всех сразу, а файлы — в корзину Диска (30 дней можно вернуть).
+  /// Файл удаляет тот, кто его загрузил (или владелец библиотеки). Если удаляет не загрузивший,
+  /// ему придёт предложение с причиной [reason] (dup, bad, tags, other) и комментарием [note];
+  /// для дубликатов [keep] — копия, которая остаётся.
+  void deleteTracks(Iterable<Track> list, {String reason = 'other', String note = '', Track? keep}) {
     final ids = {for (final t in list) t.id: t.by};
     if (ids.isEmpty) return;
     final names = {for (final t in list) t.id: '${t.displayArtist} — ${t.title}'};
-    commit({'op': 'deleteTracks', 'ids': ids, 'names': names, if (me != null) 'by': me});
-    AppLog.info('Удаление с Диска: ${ids.length}');
+    final info = {
+      for (final t in list)
+        t.id: {
+          'k': reason,
+          if (note.trim().isNotEmpty) 'note': note.trim(),
+          't': snapshotOf(t),
+          if (keep != null && keep.id != t.id) 'keep': {'id': keep.id, 't': snapshotOf(keep)},
+        }
+    };
+    commit({'op': 'deleteTracks', 'ids': ids, 'names': names, 'info': info, if (me != null) 'by': me});
+    AppLog.info('Удаление с Диска: ${ids.length} (причина: $reason)');
     unawaited(processDeletions());
   }
 
@@ -1552,7 +1604,7 @@ class LibraryController extends ChangeNotifier {
     final drop = [for (final t in copies) if (t.id != keep.id) t];
     if (drop.isEmpty) return;
     mergeTracks(keep.id, drop.map((t) => t.id));
-    deleteTracks(drop);
+    deleteTracks(drop, reason: 'dup', keep: keep);
   }
 
   /// Копии, объединённые раньше и только скрытые, — удалить с Диска
@@ -1561,7 +1613,9 @@ class LibraryController extends ChangeNotifier {
       for (final id in data.merged.keys)
         if (data.hidden.contains(id) && data.tracks[id] != null) data.tracks[id]!
     ];
-    deleteTracks(list);
+    for (final t in list) {
+      deleteTracks([t], reason: 'dup', keep: data.tracks[data.resolve(t.id)]);
+    }
     return list.length;
   }
 
@@ -1570,20 +1624,17 @@ class LibraryController extends ChangeNotifier {
 
   /// Мои файлы, которые удалил друг: сами не удаляем, спрашиваем (А3). id → кто предложил
   Map<String, String> get foreignDeletions {
-    final mine = {for (final a in accounts.accounts) a.email.toLowerCase()};
     return {
       for (final e in data.deleted.entries)
-        if (mine.contains(e.value.toLowerCase()) &&
+        if (isMyAccount(e.value) &&
             (data.deletedBy[e.key] ?? '').isNotEmpty &&
-            !mine.contains(data.deletedBy[e.key]!.toLowerCase()))
+            !isMyAccount(data.deletedBy[e.key]!))
           e.key: data.deletedBy[e.key]!
     };
   }
 
   /// «Удалить» — файл уходит в корзину Диска
   Future<void> approveForeignDeletions(Iterable<String> ids) async {
-    for (final id in ids) {
-    }
     commit({'op': 'approveDeletion', 'ids': ids.toList()});
     await processDeletions();
   }
@@ -1595,21 +1646,59 @@ class LibraryController extends ChangeNotifier {
     unawaited(scanAll(quiet: true));
   }
 
+  /// Отправляет файл в корзину Диска. Свой (старый, загруженный до брокера) файл можно удалить напрямую.
+  /// Файл, который принадлежит владельцу библиотеки, удаляет брокер: он проверяет, что просит владелец
+  /// или тот, кто загрузил файл.
+  Future<void> _trashFile(String email, String id) async {
+    var direct = false;
+    try {
+      final c = await drive.getFile(email, id, fields: 'trashed,capabilities(canTrash)');
+      if (c['trashed'] == true) return;
+      direct = (c['capabilities'] as Map?)?['canTrash'] == true;
+    } on DriveException catch (e) {
+      if (e.notFound) return; // уже удалён
+    }
+    if (direct) {
+      try {
+        await drive.trash(email, id);
+        return;
+      } on DriveException catch (e) {
+        if (e.notFound) return;
+        if (e.status != 403) rethrow;
+      }
+    }
+    final cfg = await brokerConfig();
+    await broker.delete(cfg.url, email, id);
+  }
+
   Future<int> processDeletions() async {
     if (_purging || data.deleted.isEmpty) return 0;
     _purging = true;
     final done = <String>[];
     try {
+      final hubOwner = (settings.hubEmail ?? '').toLowerCase();
       for (final e in Map.of(data.deleted).entries) {
-        final owner = e.value.toLowerCase();
-        final acc = accounts.accounts.where((a) => a.email.toLowerCase() == owner).firstOrNull;
-        if (acc == null) continue; // не мой файл — удалит владелец
-        // Удаление записал не я и не владелец (я им стал) — ждёт моего подтверждения
+        final uploader = e.value.toLowerCase();
         final by = (data.deletedBy[e.key] ?? '').toLowerCase();
-        if (by != owner && !accounts.accounts.any((a) => a.email.toLowerCase() == by)) continue;
+        final upAcc = accounts.accounts.where((a) => a.email.toLowerCase() == uploader).firstOrNull;
+        final ownerAcc = hubOwner.isEmpty ? null : accounts.accounts.where((a) => a.email.toLowerCase() == hubOwner).firstOrNull;
+        final Account acc;
+        if (upAcc != null) {
+          // Удаление записал не я и не загрузивший (я им стал) — ждёт моего подтверждения
+          if (by != uploader && !isMyAccount(by)) continue;
+          acc = upAcc;
+        } else if (ownerAcc != null && by == hubOwner) {
+          // Владелец библиотеки удаляет чужой файл: ему можно без подтверждения (если Диск и брокер разрешат)
+          acc = ownerAcc;
+        } else {
+          continue; // не мой файл — удалит тот, кто его загрузил
+        }
         try {
-          await drive.trash(acc.email, e.key); // в корзину Диска, не навсегда
+          await _trashFile(acc.email, e.key); // в корзину Диска, не навсегда
           done.add(e.key);
+        } on BrokerException catch (err) {
+          // Например, чужой старый файл: брокер его не удалит. Отметка остаётся, пока файл не удалит тот, кто им владеет
+          AppLog.warn('Не получилось удалить файл ${e.key} с Диска (${err.code}): ${err.message}');
         } on DriveException catch (err) {
           if (err.notFound) {
             done.add(e.key); // уже удалён
@@ -1907,7 +1996,7 @@ class LibraryController extends ChangeNotifier {
       return await _withHub((email) async {
         final same = await drive.listChildren(email, folder, nameEquals: name);
         if (same.isNotEmpty) return same.first.id;
-        return (await drive.uploadFile(email, folder, tmp)).id;
+        return (await _brokerUpload(tmp, folderId: folder, who: email, source: 'manual')).id;
       });
     } finally {
       try {
@@ -1970,7 +2059,7 @@ class LibraryController extends ChangeNotifier {
   /// Отправляет файл в корзину Диска (можно восстановить оттуда 30 дней) и убирает из библиотеки
   Future<void> trashTrack(Track t) async {
     final email = await accessFor(t.source);
-    await drive.trash(email, t.id);
+    await _trashFile(email, t.id);
     commit({'op': 'removeTracks', 'ids': [t.id]});
   }
 
@@ -1994,6 +2083,7 @@ class LibraryController extends ChangeNotifier {
       ..total = files.length
       ..done = 0
       ..failed = 0
+      ..deferred = 0
       ..skipped = 0;
     notifyListeners();
     final source = data.sources.where((s) => s.id == folderId).firstOrNull;
@@ -2020,6 +2110,9 @@ class LibraryController extends ChangeNotifier {
             notifyListeners();
           });
           upload.done++;
+        } on UploadDeferred catch (e) {
+          upload.deferred++;
+          AppLog.warn('Файл ждёт в очереди: $name (${e.reason})');
         } catch (e) {
           upload.failed++;
           AppLog.warn('Не удалось загрузить $name', e);
@@ -2031,9 +2124,10 @@ class LibraryController extends ChangeNotifier {
         onEvent?.call({'k': 'upload', 'n': ok, 'folder': source?.name ?? 'Cave Player'});
       }
       final skipped = upload.skipped == 0 ? '' : ', уже были в библиотеке: ${upload.skipped}';
+      final waiting = upload.deferred == 0 ? '' : ', ждут в очереди: ${upload.deferred}';
       messages.add(upload.failed == 0
-          ? 'Загружено: $ok ${ok == 1 ? 'трек' : 'треков'}$skipped'
-          : 'Загружено ${upload.done}, не получилось ${upload.failed}$skipped. Подробности в журнале ошибок.');
+          ? 'Загружено: $ok ${ok == 1 ? 'трек' : 'треков'}$skipped$waiting'
+          : 'Загружено ${upload.done}, не получилось ${upload.failed}$skipped$waiting. Подробности в журнале ошибок.');
     } catch (e) {
       messages.add('Не получилось загрузить: $e');
     } finally {
@@ -2044,14 +2138,102 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
+  /// Адрес брокера и ограничения из cave-data/config.json (кэш на 10 минут)
+  BrokerConfig? _brokerCfg;
+  DateTime? _brokerCfgAt;
+
+  Future<BrokerConfig> brokerConfig({bool force = false}) async {
+    final cached = _brokerCfg;
+    final at = _brokerCfgAt;
+    if (!force && cached != null && at != null && DateTime.now().difference(at) < const Duration(minutes: 10)) return cached;
+    BrokerConfig? cfg;
+    try {
+      final folder = await dataFolder();
+      cfg = await _withHub((email) async {
+        final found = (await drive.listChildren(email, folder, nameEquals: 'config.json')).where((f) => !f.isFolder).toList();
+        if (found.isEmpty) return null;
+        try {
+          return BrokerConfig.fromJson(jsonDecode(utf8.decode(await drive.download(email, found.first.id))));
+        } on FormatException {
+          return null;
+        }
+      });
+    } on LibraryException {
+      rethrow;
+    } catch (e) {
+      // Не получилось прочитать настройки: если раньше они уже были, пользуемся прежними
+      if (cached != null) return cached;
+      throw BrokerException('unavailable', 'Не удалось прочитать настройки загрузки: $e');
+    }
+    if (cfg == null) {
+      if (cached != null) return cached;
+      throw BrokerException('no_broker', BrokerException.friendly('no_broker', ''));
+    }
+    _brokerCfg = cfg;
+    _brokerCfgAt = DateTime.now();
+    return cfg;
+  }
+
+  /// Единственный путь загрузки новых файлов в библиотеку: через брокера, на место владельца.
+  /// Запасного пути «загрузить со своего аккаунта» нет намеренно — иначе место снова тратилось бы у друзей.
+  Future<DriveFile> _brokerUpload(File file,
+      {required String folderId, required String who, String source = 'manual', void Function(double)? onProgress}) async {
+    final cfg = await brokerConfig();
+    if (cfg.minClientVersion.isNotEmpty && kAppVersion.isNotEmpty && BrokerConfig.isNewer(cfg.minClientVersion, kAppVersion)) {
+      throw BrokerException('outdated', 'Эта версия Cavey устарела для загрузки. Обновитесь до ${cfg.minClientVersion} или новее.');
+    }
+    return broker.upload(cfg.url, who, file, parentId: folderId, source: source, onProgress: onProgress);
+  }
+
+  /// Название источника для свойства файла: что выбрано в загрузчике
+  String get uploadSourceNow {
+    switch (settings.downloadProvider) {
+      case 'deezer':
+        return 'deezer';
+      case 'sockseek':
+        return 'soulseek';
+      case 'youtube':
+        return 'youtube';
+      case 'bandcamp':
+        return 'bandcamp';
+      default:
+        return 'manual';
+    }
+  }
+
   /// Загружает один файл в папку на Диске и сразу добавляет его в библиотеку.
   /// [sourceId] — папка библиотеки, [folderId] — она же или подпапка внутри неё.
+  ///
+  /// Если брокер недоступен или у владельца нет места, файл остаётся в очереди «Ожидают загрузки» и
+  /// выбрасывается [UploadDeferred]: это не ошибка, файл загрузится позже сам.
   Future<Track> uploadOne(File file,
-      {required String sourceId, required String folderId, String path = '', String? email, void Function(double)? onProgress}) async {
+      {required String sourceId,
+      required String folderId,
+      String path = '',
+      String? email,
+      String uploadSource = 'manual',
+      bool defer = true,
+      void Function(double)? onProgress}) async {
     final who = email ?? await accessFor(sourceId);
+    final DriveFile f;
+    try {
+      f = await _brokerUpload(file, folderId: folderId, who: who, source: uploadSource, onProgress: onProgress);
+    } on BrokerException catch (e) {
+      if (defer && e.deferrable) {
+        final p = await uploadQueue.add(file,
+            sourceId: sourceId, folderId: folderId, relPath: path, uploadSource: uploadSource, reason: e.message);
+        AppLog.warn('Загрузка отложена (${e.code}): ${file.path}');
+        throw UploadDeferred(p.id, e.message);
+      }
+      rethrow;
+    }
+    return _registerUploaded(f, file, sourceId: sourceId, path: path, who: who, uploadSource: uploadSource);
+  }
+
+  Future<Track> _registerUploaded(DriveFile f, File file,
+      {required String sourceId, required String path, required String who, required String uploadSource}) async {
     final name = file.uri.pathSegments.where((s) => s.isNotEmpty).last;
     final tags = parseTags(await _readHead(file), name);
-    final f = await drive.uploadFile(who, folderId, file, onProgress: onProgress);
     final t = Track(
       id: f.id,
       source: sourceId,
@@ -2067,12 +2249,59 @@ class LibraryController extends ChangeNotifier {
       modified: f.modifiedTime,
       size: f.size,
       md5: f.md5,
-      by: me ?? who,
+      by: f.viaBroker ? f.uploaderEmail : (me ?? who),
       path: path,
       added: f.createdTime,
+      uploadedAt: f.uploadedAt,
+      uploadSource: f.uploadSource.isNotEmpty ? f.uploadSource : uploadSource,
     );
     commit({'op': 'upsertTracks', 'tracks': {f.id: t.toJson()}});
     return t;
+  }
+
+  /// Пробует загрузить всё, что лежит в очереди «Ожидают загрузки». Если брокер по-прежнему недоступен,
+  /// останавливается на первом же файле, чтобы не долбить его впустую.
+  Future<void> retryPendingUploads({bool manual = false}) async {
+    if (uploadQueue.retrying || uploadQueue.items.isEmpty || !hasHub) return;
+    uploadQueue.retrying = true;
+    uploadQueue.refresh();
+    var uploaded = 0;
+    try {
+      for (final p in List.of(uploadQueue.items)) {
+        if (p.stuck && !manual) continue;
+        final file = File(p.path);
+        if (!await file.exists()) {
+          await uploadQueue.remove(p, deleteFile: false);
+          continue;
+        }
+        p.attempts++;
+        try {
+          final who = await accessFor(p.sourceId);
+          final f = await _brokerUpload(file, folderId: p.folderId, who: who, source: p.uploadSource);
+          final t = await _registerUploaded(f, file, sourceId: p.sourceId, path: p.relPath, who: who, uploadSource: p.uploadSource);
+          if (p.edit.isNotEmpty) setMeta({t.id: p.edit});
+          await uploadQueue.remove(p);
+          uploaded++;
+        } on BrokerException catch (e) {
+          p.lastError = e.message;
+          p.stuck = !e.deferrable;
+          await uploadQueue.update();
+          if (e.deferrable) break; // брокер или место ещё недоступны — остальные тоже не пройдут
+        } catch (e) {
+          p.lastError = '$e';
+          await uploadQueue.update();
+          break;
+        }
+      }
+    } finally {
+      uploadQueue.retrying = false;
+      uploadQueue.refresh();
+    }
+    if (uploaded > 0) {
+      messages.add('Из очереди загружено: $uploaded ${uploaded == 1 ? 'трек' : 'треков'}');
+      onUploaded?.call(uploaded, 'Cave Player');
+      onEvent?.call({'k': 'upload', 'n': uploaded, 'folder': 'Cave Player'});
+    }
   }
 
   /// Replaces audio in place. The Drive file ID is stable so playlist entries,
@@ -2128,12 +2357,15 @@ class LibraryController extends ChangeNotifier {
 
   int tracksIn(String sourceId) => data.tracks.values.where((t) => t.source == sourceId).length;
 
-  String nameOf(String email) {
+  /// Как показывать человека везде: сначала ник из его профиля в плеере, имя из Google — только запасной вариант.
+  /// [fallback] — имя, которое известно вызывающему (например, из статуса «Сейчас слушает»)
+  String nameOf(String email, {String? fallback}) {
     if (email.isEmpty) return 'кто-то';
     final nick = profileNick(email);
     if (nick != null) return nick;
     final n = data.members[email] ?? accounts.byEmail(email)?.name;
     if (n != null && n.isNotEmpty) return n;
+    if (fallback != null && fallback.trim().isNotEmpty) return fallback.trim();
     return email.split('@').first;
   }
 

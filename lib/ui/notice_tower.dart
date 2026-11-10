@@ -125,13 +125,23 @@ class _NoticeTowerState extends State<NoticeTower> {
       case ToastResult.failed:
         await desktopToast(body, title: nick);
       case ToastResult.accepted:
+        app.social.markNoticeRead(n);
         unawaited(app.jam.acceptNotice(n));
       case ToastResult.declined:
+        app.social.markNoticeRead(n);
         app.jam.declineNotice(n);
-      case ToastResult.closed:
       case ToastResult.opened:
+        app.social.markNoticeRead(n); // нажали на окошко — прочитано
+      case ToastResult.closed:
+        // «closed» — и крестик, и само погасло: по нему не понять, видел ли человек уведомление
         break;
     }
+  }
+
+  /// Закрыли крестиком или нажали на карточку: уведомление прочитано
+  void _dismiss(_Card c) {
+    Services.of(context).social.markNoticeRead(c.notice);
+    _close(c);
   }
 
   void _close(_Card c) {
@@ -162,7 +172,7 @@ class _NoticeTowerState extends State<NoticeTower> {
               Padding(
                 key: ObjectKey(c),
                 padding: const EdgeInsets.only(bottom: 8),
-                child: _SlideIn(leaving: c.leaving, child: _NoticeCard(card: c, onClose: () => _close(c))),
+                child: _SlideIn(leaving: c.leaving, child: _NoticeCard(card: c, onClose: () => _dismiss(c))),
               ),
             if (saving) _SaveCloud(error: err),
           ],
@@ -243,7 +253,10 @@ class _NoticeCard extends StatelessWidget {
     final app = Services.of(context);
     final n = card.notice;
     final track = n.trackIds.isEmpty ? null : app.lib.data.tracks[app.lib.data.resolve(n.trackIds.first)];
-    return ToastCard(
+    // Нажатие на саму карточку тоже закрывает её и отмечает прочитанной; кнопки внутри перехватывают свои нажатия
+    return GestureDetector(
+      onTap: onClose,
+      child: ToastCard(
       title: app.lib.firstNameOf(n.from),
       leading: Avatar(email: n.from, name: app.lib.firstNameOf(n.from), size: 48),
       text: card.text,
@@ -278,6 +291,7 @@ class _NoticeCard extends StatelessWidget {
             label: const Text('Слушать'),
           ),
       ],
+      ),
     );
   }
 }

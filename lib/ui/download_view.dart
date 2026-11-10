@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/dl/service.dart';
+import '../core/upload_queue.dart';
 import 'shell.dart';
 import 'theme.dart';
 
@@ -77,7 +78,7 @@ class _DownloadPageState extends State<DownloadPage> {
     final app = Services.of(context);
     final pad = widget.compact ? 20.0 : 36.0;
     return ListenableBuilder(
-      listenable: Listenable.merge([app.downloads, app.lib]),
+      listenable: Listenable.merge([app.downloads, app.lib, app.lib.uploadQueue]),
       builder: (context, _) {
         final dl = app.downloads;
         final sources = app.lib.data.sources;
@@ -99,6 +100,10 @@ class _DownloadPageState extends State<DownloadPage> {
           Text('Активный источник: ${switch (app.settings.downloadProvider) { 'full' => 'Полный поиск', 'deezer' => 'Deezer', 'bandcamp' => 'Bandcamp', 'sockseek' => 'Soulseek', _ => 'YouTube' }}. Переключить можно в настройках аккаунта.',
               style: const TextStyle(color: C.faint, fontSize: 13)),
           const SizedBox(height: 24),
+          if (app.lib.uploadQueue.count > 0) ...[
+            _PendingUploads(queue: app.lib.uploadQueue, onRetry: () => app.lib.retryPendingUploads(manual: true)),
+            const SizedBox(height: 16),
+          ],
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
@@ -238,7 +243,14 @@ class _JobCardState extends State<_JobCard> {
       JobState.queued => ('В очереди', C.faint),
       JobState.running => (job.cancelRequested ? 'Останавливаю загрузку…' :
           (job.total > 1 ? 'Скачиваю ${job.done + job.failed} из ${job.total}' : 'Скачиваю…'), C.accent),
-      JobState.done => (job.failed > 0 ? 'Готово, не скачалось: ${job.failed}' : 'Готово', const Color(0xFF7CD3B8)),
+      JobState.done => (
+          switch ((job.failed > 0, job.deferred > 0)) {
+            (false, false) => 'Готово',
+            (true, false) => 'Готово, не скачалось: ${job.failed}',
+            (false, true) => 'Скачано ${job.done}, загружено ${job.done - job.deferred}, ждут загрузки: ${job.deferred}',
+            (true, true) => 'Скачано ${job.done}, загружено ${job.done - job.deferred}, ждут загрузки: ${job.deferred}, не скачалось: ${job.failed}',
+          },
+          const Color(0xFF7CD3B8)),
       JobState.failed => ('Не получилось', C.danger),
       JobState.cancelled => ('Отменено: скачано ${job.done}, уже было ${job.skipped}', C.faint),
     };
@@ -428,3 +440,61 @@ class DropHint extends StatelessWidget {
   }
 }
 
+/// Очередь «Ожидают загрузки»: скачанные файлы, которые ещё не ушли на Диск
+class _PendingUploads extends StatelessWidget {
+  final UploadQueue queue;
+  final VoidCallback onRetry;
+  const _PendingUploads({required this.queue, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final items = List.of(queue.items);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: C.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: C.accent.withValues(alpha: 0.5)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Icon(Icons.cloud_upload_outlined, size: 20, color: C.accent),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text('Ожидают загрузки: ${items.length}',
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+          ),
+          TextButton(
+            onPressed: queue.retrying ? null : onRetry,
+            child: Text(queue.retrying ? 'Загружаю…' : 'Повторить сейчас'),
+          ),
+        ]),
+        const SizedBox(height: 4),
+        const Text('Файлы скачаны и лежат на этом компьютере. Они уйдут в общую библиотеку сами, как только сервис загрузки станет доступен.',
+            style: TextStyle(color: C.muted, fontSize: 13, height: 1.4)),
+        const SizedBox(height: 8),
+        for (final p in items.take(8))
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Row(children: [
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(p.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+                  if (p.lastError.isNotEmpty)
+                    Text(p.lastError, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 12)),
+                ]),
+              ),
+              IconButton(
+                tooltip: 'Убрать из очереди и удалить файл',
+                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.close_rounded, size: 18),
+                onPressed: () => queue.remove(p),
+              ),
+            ]),
+          ),
+        if (items.length > 8)
+          Text('…и ещё ${items.length - 8}', style: const TextStyle(color: C.faint, fontSize: 12)),
+      ]),
+    );
+  }
+}

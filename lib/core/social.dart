@@ -651,6 +651,17 @@ class SocialController extends ChangeNotifier {
     );
   }
 
+  /// Человек закрыл уведомление или нажал на него: оно (и всё, что пришло раньше) считается прочитанным,
+  /// красная точка у колокольчика и у «Компании» обновляется сразу
+  void markNoticeRead(Notice n) {
+    final now = DateTime.now().toUtc();
+    final at = n.at.toUtc().isAfter(now) ? now : n.at.toUtc(); // часы друга могут спешить
+    final cur = DateTime.tryParse(lib.settings.bellSeen ?? '');
+    if (cur != null && !at.isAfter(cur)) return;
+    lib.settings.bellSeen = at.toIso8601String();
+    lib.viewChanged();
+  }
+
   /// После каждого опроса: что появилось нового с прошлого раза. При первом запуске лишь ставим отметку.
   void _checkNotices() {
     if (me == null || !_loadedMine) return;

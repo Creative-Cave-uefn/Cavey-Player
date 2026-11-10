@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../app.dart';
 import '../core/models.dart';
@@ -218,30 +220,119 @@ class ViewControls extends StatelessWidget {
   }
 }
 
-/// Сетка плиток с подгонкой под ширину: плитки не уже [tile], под картинкой остаётся место [extra] на подписи
-class AdaptiveGridSliver extends StatelessWidget {
+/// Сетка плиток с подгонкой под ширину: плитки не уже [tile], под картинкой остаётся место [extra] на подписи.
+///
+/// Пока ширина страницы меняется (разворачивается левая или правая панель), число столбцов и размер плиток
+/// не пересчитываются: сетка стоит на месте, обложки не перезагружаются и не мерцают. Через [settle]
+/// после последнего изменения ширины сетка один раз пересчитывается под новую ширину.
+class AdaptiveGridSliver extends StatefulWidget {
   final double tile;
   final double extra;
   final double gap;
   final int count;
   final IndexedWidgetBuilder builder;
-  const AdaptiveGridSliver({super.key, required this.tile, required this.extra, required this.count, required this.builder, this.gap = 20});
+  final Duration settle;
+  const AdaptiveGridSliver({
+    super.key,
+    required this.tile,
+    required this.extra,
+    required this.count,
+    required this.builder,
+    this.gap = 20,
+    this.settle = const Duration(milliseconds: 380),
+  });
+
+  @override
+  State<AdaptiveGridSliver> createState() => _AdaptiveGridSliverState();
+}
+
+class _AdaptiveGridSliverState extends State<AdaptiveGridSliver> {
+  double? _used; // ширина, под которую сейчас посчитана сетка
+  double? _latest; // последняя настоящая ширина
+  Timer? _timer;
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  /// Какую ширину брать для расчёта: прежнюю, пока настоящая меняется; новую — когда она устоялась
+  double _width(double actual) {
+    _latest = actual;
+    final used = _used;
+    if (used == null) return _used = actual;
+    if ((used - actual).abs() < 0.5) {
+      _timer?.cancel();
+      return used;
+    }
+    _timer?.cancel();
+    _timer = Timer(widget.settle, () {
+      if (!mounted) return;
+      setState(() => _used = _latest);
+    });
+    return used;
+  }
+
+  @override
+  void didUpdateWidget(AdaptiveGridSliver old) {
+    super.didUpdateWidget(old);
+    // Размер плиток поменяли в настройках вида — это не анимация панели, пересчитываем сразу
+    if (old.tile != widget.tile || old.gap != widget.gap) {
+      _used = null;
+      _timer?.cancel();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return SliverLayoutBuilder(builder: (context, c) {
-      final w = c.crossAxisExtent;
-      final n = math.max(1, ((w + gap) / (tile + gap)).floor());
+      final w = _width(c.crossAxisExtent);
+      final gap = widget.gap;
+      final n = math.max(1, ((w + gap) / (widget.tile + gap)).floor());
       final tw = (w - gap * (n - 1)) / n;
       return SliverGrid(
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: n,
-          mainAxisSpacing: 20,
-          crossAxisSpacing: gap,
-          mainAxisExtent: tw + extra,
+        gridDelegate: FixedTileGridDelegate(
+          columns: n,
+          tileWidth: tw,
+          tileHeight: tw + widget.extra,
+          crossSpacing: gap,
+          mainSpacing: 20,
         ),
-        delegate: SliverChildBuilderDelegate(builder, childCount: count),
+        delegate: SliverChildBuilderDelegate(widget.builder, childCount: widget.count),
       );
     });
   }
+}
+
+/// Сетка с твёрдым размером плиток: он не зависит от того, какая ширина у страницы в этот кадр.
+/// Если страница стала у́же, лишнее обрезается краем окна; если шире — справа остаётся пустое место.
+class FixedTileGridDelegate extends SliverGridDelegate {
+  final int columns;
+  final double tileWidth, tileHeight, crossSpacing, mainSpacing;
+  const FixedTileGridDelegate({
+    required this.columns,
+    required this.tileWidth,
+    required this.tileHeight,
+    required this.crossSpacing,
+    required this.mainSpacing,
+  });
+
+  @override
+  SliverGridLayout getLayout(SliverConstraints constraints) => SliverGridRegularTileLayout(
+        crossAxisCount: columns,
+        mainAxisStride: tileHeight + mainSpacing,
+        crossAxisStride: tileWidth + crossSpacing,
+        childMainAxisExtent: tileHeight,
+        childCrossAxisExtent: tileWidth,
+        reverseCrossAxis: axisDirectionIsReversed(constraints.crossAxisDirection),
+      );
+
+  @override
+  bool shouldRelayout(FixedTileGridDelegate old) =>
+      old.columns != columns ||
+      old.tileWidth != tileWidth ||
+      old.tileHeight != tileHeight ||
+      old.crossSpacing != crossSpacing ||
+      old.mainSpacing != mainSpacing;
 }

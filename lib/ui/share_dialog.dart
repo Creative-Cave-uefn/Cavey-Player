@@ -70,7 +70,7 @@ class _ShareDialogState extends State<_ShareDialog> {
                       checkColor: C.accentInk,
                       value: _picked.contains(m.email),
                       onChanged: (v) => setState(() => v == true ? _picked.add(m.email) : _picked.remove(m.email)),
-                      secondary: Avatar(email: m.email, name: m.name, size: 30),
+                      secondary: Avatar(email: m.email, name: app.lib.nameOf(m.email, fallback: m.name), size: 30),
                       title: Text(app.lib.nameOf(m.email), overflow: TextOverflow.ellipsis),
                     ),
                 ]),

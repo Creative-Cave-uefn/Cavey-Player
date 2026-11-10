@@ -85,6 +85,12 @@ class Track {
   final String path; // папки внутри источника
   final String added; // когда файл появился на Диске
 
+  /// Когда загружен (по часам брокера); у старых записей пусто — берётся [added]
+  final String uploadedAt;
+
+  /// Откуда трек: deezer, soulseek, youtube, bandcamp, manual; у старых записей пусто
+  final String uploadSource;
+
   // Эти поля приходят не из файла, а из общих ручных правок (edits): старые версии
   // приложения их не знают, но при сохранении библиотеки не теряют
   int? durationMs; // длительность трека
@@ -108,6 +114,8 @@ class Track {
     required this.by,
     required this.path,
     this.added = '',
+    this.uploadedAt = '',
+    this.uploadSource = '',
   });
 
   String get displayArtist => artist.isNotEmpty
@@ -148,6 +156,8 @@ class Track {
         if (by.isNotEmpty) 'by': by,
         if (path.isNotEmpty) 'path': path,
         if (added.isNotEmpty) 'ca': added,
+        if (uploadedAt.isNotEmpty) 'ua': uploadedAt,
+        if (uploadSource.isNotEmpty) 'us': uploadSource,
       };
 
   static Track fromJson(String id, Map j) {
@@ -172,6 +182,8 @@ class Track {
       by: (j['by'] as String?) ?? '',
       path: (j['path'] as String?) ?? '',
       added: (j['ca'] as String?) ?? '',
+      uploadedAt: (j['ua'] as String?) ?? '',
+      uploadSource: (j['us'] as String?) ?? '',
     );
   }
 }
@@ -225,6 +237,11 @@ class LibraryData {
   /// Названия удалённых треков для окна подтверждения: id → «исполнитель — название»
   final Map<String, String> deletedName = {};
 
+  /// Подробности удаления для окна подтверждения у загрузившего: id → {
+  ///   'k': причина (dup, bad, tags, other), 'note': комментарий, 't': снимок трека (с обложкой),
+  ///   'keep': {'id', 't'} — какая копия остаётся (для дубликатов) }
+  final Map<String, Map<String, dynamic>> deletedInfo = {};
+
   /// Куда ведёт id после объединений (цепочки тоже)
   String resolve(String id) {
     var cur = id;
@@ -251,6 +268,7 @@ class LibraryData {
         if (deleted.isNotEmpty) 'deleted': deleted,
         if (deletedBy.isNotEmpty) 'deletedBy': deletedBy,
         if (deletedName.isNotEmpty) 'deletedName': deletedName,
+        if (deletedInfo.isNotEmpty) 'deletedInfo': deletedInfo,
       };
 
   static LibraryData fromJson(dynamic j) {
@@ -309,6 +327,12 @@ class LibraryData {
     if (delBy is Map) delBy.forEach((k, v) => d.deletedBy['$k'] = '$v');
     final delName = j['deletedName'];
     if (delName is Map) delName.forEach((k, v) => d.deletedName['$k'] = '$v');
+    final delInfo = j['deletedInfo'];
+    if (delInfo is Map) {
+      delInfo.forEach((k, v) {
+        if (v is Map) d.deletedInfo['$k'] = Map<String, dynamic>.from(v);
+      });
+    }
     for (final id in d.edits.keys) {
       d._overlay(id);
     }
@@ -430,6 +454,8 @@ class LibraryData {
           if (by is String && by.isNotEmpty) deletedBy[id] = by;
           final nm = (op['names'] as Map?)?['$k'];
           if (nm != null) deletedName[id] = '$nm';
+          final info = (op['info'] as Map?)?['$k'];
+          if (info is Map) deletedInfo[id] = Map<String, dynamic>.from(info);
           tracks.remove(id);
           hidden.remove(id);
           likes.remove(id);
@@ -450,6 +476,7 @@ class LibraryData {
           deleted.remove('$id');
           deletedBy.remove('$id');
           deletedName.remove('$id');
+          deletedInfo.remove('$id');
         }
       case 'unmergeTrack':
         // Вернуть копию отдельным треком (лайки и плейлисты остаются на той, куда перешли)
