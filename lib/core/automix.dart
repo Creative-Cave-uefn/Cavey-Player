@@ -187,18 +187,47 @@ class MixProfile {
 }
 
 /// Как сделать переход между двумя треками
+/// Настройки «диджейского» перехода: длина в тактах, насколько можно подтягивать темп, обмен басов
+class DjMix {
+  /// Длина перехода в тактах (по 4 доли)
+  final int bars;
+
+  /// Самая большая подгонка темпа следующего трека (0,08 — 8 %)
+  final double range;
+
+  /// Обмен басов: сначала у следующего трека срезаны низы, на середине перехода низы переходят к нему
+  final bool bass;
+
+  const DjMix({this.bars = 8, this.range = 0.08, this.bass = true});
+}
+
 class MixPlan {
   final Duration start; // когда в уходящем треке начать
   final Duration length; // сколько длится
   final Duration inStart; // с какого места начать следующий
   final double inGain; // громкость следующего в начале перехода (выравнивание), к концу — 1
 
-  const MixPlan(this.start, this.length, this.inStart, this.inGain);
+  /// Диджейский переход: доли двух треков совпадают, следующий играет с подогнанным темпом
+  final bool dj;
+
+  /// Во сколько раз ускорить (замедлить) следующий трек, чтобы его темп совпал с уходящим; после перехода темп плавно возвращается
+  final double rate;
+
+  /// Когда (от начала перехода) менять басы местами; null — без обмена
+  final Duration? swapAt;
+
+  const MixPlan(this.start, this.length, this.inStart, this.inGain, {this.dj = false, this.rate = 1.0, this.swapAt});
 
   /// [maxSec] — самый длинный переход (настройка), [bpm] — темп уходящего трека, если известен
   /// (свой разбор звука важнее, он в профиле). Если у обоих треков известна сетка долей и темпы близки,
-  /// переход начинается на доле уходящего трека, а следующий входит на своей доле
-  static MixPlan make(MixProfile out, MixProfile inn, {int maxSec = 8, double? bpm}) {
+  /// переход начинается на доле уходящего трека, а следующий входит на своей доле.
+  /// С [dj] переход длится заданное число тактов, темп следующего подгоняется под уходящий (если разница в пределах
+  /// [DjMix.range]); если для этого не хватает данных, переход обычный
+  static MixPlan make(MixProfile out, MixProfile inn, {int maxSec = 8, double? bpm, DjMix? dj}) {
+    if (dj != null) {
+      final p = _makeDj(out, inn, dj);
+      if (p != null) return p;
+    }
     const minMs = 1500;
     final maxMs = math.max(minMs, maxSec * 1000);
     final tail = out.endMs;
@@ -231,6 +260,51 @@ class MixPlan {
       Duration(milliseconds: tail - start),
       Duration(milliseconds: inStart),
       math.pow(10, diff / 20).toDouble(),
+    );
+  }
+
+  /// Диджейский переход; null — данных не хватает (нет темпа или сетки долей) или темпы слишком разные
+  static MixPlan? _makeDj(MixProfile out, MixProfile inn, DjMix o) {
+    final ob = out.bpm, ib = inn.bpm, oh = out.tailBeatMs, ih = inn.headBeatMs;
+    if (ob == null || ib == null || oh == null || ih == null) return null;
+    if (ob < 60 || ob > 200 || ib < 60 || ib > 200) return null;
+    // Темп следующего подгоняем под уходящий; двойной и половинный темп считаются совпадением
+    var rate = double.infinity;
+    for (final m in const [0.5, 1.0, 2.0]) {
+      final r = ob * m / ib;
+      if ((r - 1).abs() < (rate - 1).abs()) rate = r;
+    }
+    if ((rate - 1).abs() > o.range) return null;
+    final tail = out.endMs;
+    final beat = 60000 / ob; // доля уходящего трека, мс
+    final bar = 4 * beat;
+    // Переход не должен начинаться раньше, чем через 10 с после начала трека: если не помещается, укорачиваем вдвое
+    var bars = o.bars.clamp(1, 64).toInt();
+    var len = bars * bar;
+    while (bars > 1 && tail - len < out.introMs + 10000) {
+      bars = (bars / 2).floor();
+      len = bars * bar;
+    }
+    if (tail - len < out.introMs + 10000 - beat) return null;
+    // Начало — на доле уходящего трека не позже, чем «конец минус длина»: переход заканчивается там, где трек затихает
+    final k = ((tail - len - oh) / beat).floor();
+    final start = (oh + k * beat).round();
+    if (start < 0) return null;
+    // Следующий входит на своей доле, после тишины в начале
+    final ibeat = 60000 / ib;
+    var enter = snapToBeat(inn.introMs, ih, ib);
+    if (enter < inn.introMs) enter += ibeat.round();
+    if (enter < 0 || enter > 12000) return null;
+    final diff = (out.loudDb - inn.loudDb).clamp(-6.0, 6.0);
+    final swap = o.bass && bars >= 2 ? Duration(milliseconds: (bars ~/ 2 * bar).round()) : null;
+    return MixPlan(
+      Duration(milliseconds: start),
+      Duration(milliseconds: len.round()),
+      Duration(milliseconds: enter),
+      math.pow(10, diff / 20).toDouble(),
+      dj: true,
+      rate: rate,
+      swapAt: swap,
     );
   }
 }

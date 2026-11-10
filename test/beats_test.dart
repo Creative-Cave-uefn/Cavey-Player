@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cave_player/core/automix.dart';
 import 'package:cave_player/core/beats.dart';
+import 'package:cave_player/core/crossfade.dart';
 import 'package:cave_player/core/dj.dart';
 
 /// Звук для проверок: моно, 4 кГц, 16 бит
@@ -239,6 +240,66 @@ void main() {
           maxSec: 8);
       final plan = MixPlan.make(out, inn, maxSec: 8);
       expect(plan.inStart, plain.inStart);
+    });
+  });
+
+  group('диджейский переход', () {
+    const out = MixProfile(
+        durationMs: 240000, introMs: 0, outroMs: 230000, endMs: 236000, loudDb: -12, v: 2, bpm: 120, headBeatMs: 200, tailBeatMs: 130);
+    const inn = MixProfile(
+        durationMs: 200000, introMs: 700, outroMs: 190000, endMs: 198000, loudDb: -12, v: 2, bpm: 124, headBeatMs: 420, tailBeatMs: 130);
+
+    test('длина — целое число тактов, старт на доле, конец не позже затихания', () {
+      final plan = MixPlan.make(out, inn, dj: const DjMix(bars: 8));
+      expect(plan.dj, isTrue);
+      expect(plan.length.inMilliseconds, 16000); // 8 тактов по 2 с
+      expect(_phaseGap(plan.start.inMilliseconds, 130, 500), lessThan(1));
+      expect((plan.start + plan.length).inMilliseconds, lessThanOrEqualTo(out.endMs));
+      expect((plan.start + plan.length).inMilliseconds, greaterThan(out.endMs - 500));
+    });
+
+    test('темп следующего подгоняется, вход на его доле, басы меняются на середине', () {
+      final plan = MixPlan.make(out, inn, dj: const DjMix(bars: 8));
+      expect(plan.rate, closeTo(120 / 124, 1e-9));
+      expect(_phaseGap(plan.inStart.inMilliseconds, 420, 60000 / 124), lessThan(2));
+      expect(plan.inStart.inMilliseconds, greaterThanOrEqualTo(700));
+      expect(plan.swapAt, const Duration(milliseconds: 8000));
+      final noBass = MixPlan.make(out, inn, dj: const DjMix(bars: 8, bass: false));
+      expect(noBass.swapAt, isNull);
+    });
+
+    test('двойной темп считается совпадением', () {
+      const slow = MixProfile(
+          durationMs: 200000, introMs: 700, outroMs: 190000, endMs: 198000, loudDb: -12, v: 2, bpm: 61, headBeatMs: 420, tailBeatMs: 130);
+      final plan = MixPlan.make(out, slow, dj: const DjMix());
+      expect(plan.dj, isTrue);
+      expect(plan.rate, closeTo(60 / 61, 1e-9)); // 61 — половина от 120: играем на 60, одна доля следующего на две уходящего
+    });
+
+    test('слишком разные темпы или нет сетки долей — обычный переход', () {
+      const far = MixProfile(
+          durationMs: 200000, introMs: 700, outroMs: 190000, endMs: 198000, loudDb: -12, v: 2, bpm: 150, headBeatMs: 420, tailBeatMs: 130);
+      expect(MixPlan.make(out, far, dj: const DjMix()).dj, isFalse);
+      const noGrid = MixProfile(durationMs: 200000, introMs: 700, outroMs: 190000, endMs: 198000, loudDb: -12, v: 2, bpm: 120);
+      expect(MixPlan.make(out, noGrid, dj: const DjMix()).dj, isFalse);
+    });
+
+    test('длинный переход не залезает в начало короткого трека: укорачивается', () {
+      const shortOut = MixProfile(
+          durationMs: 40000, introMs: 0, outroMs: 36000, endMs: 38000, loudDb: -12, v: 2, bpm: 120, headBeatMs: 200, tailBeatMs: 130);
+      final plan = MixPlan.make(shortOut, inn, dj: const DjMix(bars: 32));
+      expect(plan.dj, isTrue);
+      expect(plan.start.inMilliseconds, greaterThanOrEqualTo(10000 - 500));
+    });
+
+    test('громкость: уходящий держится, пока следующий входит', () {
+      final a = djGains(0.25);
+      expect(a.$2, greaterThan(0.55));
+      expect(a.$1, greaterThan(0.9));
+      expect(djGains(0).$1, 1.0);
+      expect(djGains(0).$2, 0.0);
+      expect(djGains(1).$1, closeTo(0, 1e-9));
+      expect(djGains(1).$2, closeTo(1, 1e-9));
     });
   });
 }

@@ -1284,6 +1284,77 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
     return ListenableBuilder(listenable: app.jam, builder: (context, _) => _content(app));
   }
 
+  /// Диджейский стиль перехода и его ручные настройки
+  Widget _djBlock(AppServices app, {required bool enabled}) {
+    void put(String k, String v) {
+      setState(() => app.settings.view[k] = v);
+      app.lib.saveSettings();
+    }
+
+    final dj = app.settings.viewOf('mix.style', 'fade') == 'dj';
+    const barSteps = [1, 2, 4, 8, 16, 32];
+    final bars = app.settings.viewNum('mix.bars', 8).round();
+    final barIdx = barSteps.indexOf(bars).clamp(0, barSteps.length - 1).toInt();
+    final range = app.settings.viewNum('mix.range', 8).clamp(2, 16).toDouble();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const HintHeading('Стиль перехода',
+          'Плавный: громкость одного трека затихает, другого нарастает. DJ: следующий трек подгоняется по темпу, доли двух треков '
+          'совпадают, переход длится целое число тактов, а низкие частоты передаются от одного трека другому на середине. '
+          'Диджейский стиль работает, когда у обоих треков известны темп и доли (кнопка «АвтоDJ → Разобрать темп и тональность»); '
+          'иначе звучит обычный переход.'),
+      const SizedBox(height: 8),
+      SegmentedButton<String>(
+        segments: const [
+          ButtonSegment(value: 'fade', label: Text('Плавный')),
+          ButtonSegment(value: 'dj', label: Text('DJ')),
+        ],
+        selected: {dj ? 'dj' : 'fade'},
+        onSelectionChanged: enabled ? (v) => put('mix.style', v.first) : null,
+      ),
+      if (dj) ...[
+        const SizedBox(height: 8),
+        Row(children: [
+          const SizedBox(width: 150, child: Text('Длина перехода')),
+          Expanded(
+            child: Slider(
+              value: barIdx.toDouble(),
+              min: 0,
+              max: (barSteps.length - 1).toDouble(),
+              divisions: barSteps.length - 1,
+              label: '${barSteps[barIdx]} тактов',
+              onChanged: enabled ? (v) => setState(() => app.settings.view['mix.bars'] = '${barSteps[v.round()]}') : null,
+              onChangeEnd: (_) => app.lib.saveSettings(),
+            ),
+          ),
+          SizedBox(width: 80, child: Text('${barSteps[barIdx]} тактов', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+        ]),
+        Row(children: [
+          const SizedBox(width: 150, child: Text('Подгонка темпа до')),
+          Expanded(
+            child: Slider(
+              value: range,
+              min: 2,
+              max: 16,
+              divisions: 14,
+              label: '${range.round()} %',
+              onChanged: enabled ? (v) => setState(() => app.settings.view['mix.range'] = '${v.round()}') : null,
+              onChangeEnd: (_) => app.lib.saveSettings(),
+            ),
+          ),
+          SizedBox(width: 80, child: Text('${range.round()} %', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+        ]),
+        HintSwitch(
+          contentPadding: EdgeInsets.zero,
+          value: app.settings.viewOf('mix.bass', '1') == '1',
+          onChanged: enabled ? (v) => put('mix.bass', v ? '1' : '0') : null,
+          title: 'Обмен басов',
+          hint: 'У следующего трека сначала срезаны низы, чтобы два баса не сливались в кашу. На середине перехода низы переходят к нему, '
+              'а у уходящего пропадают. Если разница в темпе больше допустимой, переход остаётся обычным.',
+        ),
+      ],
+    ]);
+  }
+
   Widget _content(AppServices app) {
     final locked = app.player.jamXfSec != null;
     final sec = locked ? app.player.crossfadeSecNow : app.settings.crossfadeSec;
@@ -1334,6 +1405,8 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
           'Ползунок выше задаёт самый длинный переход. Звук трека разбирается один раз в фоне; пока не готово — обычный переход.',
       ),
+      const SizedBox(height: 8),
+      _djBlock(app, enabled: sec != 0 && !locked && app.player.smartMix),
       const SizedBox(height: 8),
       HintSwitch(
         contentPadding: EdgeInsets.zero,

@@ -607,6 +607,16 @@ class PlayerController extends ChangeNotifier {
   double? Function(Track t)? tempoOf;
   bool get smartMix => jamSmart ?? settings.viewOf('mix.smart', '1') == '1';
 
+  /// Диджейский стиль перехода: подгонка темпа, переход на целое число тактов, обмен басов (в джеме действует стиль организатора — обычный)
+  bool get djStyle => jamXfSec == null && smartMix && settings.viewOf('mix.style', 'fade') == 'dj';
+
+  DjMix? get _djMix => djStyle
+      ? DjMix(
+          bars: settings.viewNum('mix.bars', 8).round().clamp(1, 32).toInt(),
+          range: (settings.viewNum('mix.range', 8) / 100).clamp(0.01, 0.2).toDouble(),
+          bass: settings.viewOf('mix.bass', '1') == '1')
+      : null;
+
   /// Джем: настройки плавного перехода организатора (секунды, 0 — выключен; умный переход). null — действуют мои.
   /// Организатор задаёт переход всем: включил у себя — включается у остальных, выключил — выключается
   int? jamXfSec;
@@ -623,7 +633,7 @@ class PlayerController extends ChangeNotifier {
     if (a == null || b == null) return null;
     // Профиль от другого файла (трек заменили) — не доверяем
     if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
-    return MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur));
+    return MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur), dj: _djMix);
   }
 
   /// Профили звука текущего и следующего трека — считаем заранее, пока трек играет
@@ -756,7 +766,7 @@ class PlayerController extends ChangeNotifier {
     if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
     if (crossfadeSecNow <= 0 || _autoNextIndex() == null) return;
     // Профили смотрим только ближе к концу трека — не на каждом тике позиции
-    final plan = duration - d < const Duration(seconds: 60) ? _smartPlan() : null;
+    final plan = duration - d < Duration(seconds: djStyle ? 180 : 60) ? _smartPlan() : null;
     _maybePrepare(d, plan);
     final step = d - prev;
     final due = plan != null
@@ -830,6 +840,17 @@ class PlayerController extends ChangeNotifier {
       final prepared = _preparedId == nextTrack.id;
       _preparedId = null;
       await incoming.setVolume(0);
+      final djp = plan != null && plan.dj ? plan : null;
+      final dj = djp != null;
+      if (dj) {
+        // Темп следующего подгоняем под уходящий до того, как он зазвучит; у басов следующего срезаем низы
+        _fxDirty = true;
+        await _setRate(incoming, djp!.rate);
+        if (djp.swapAt != null) await _setLowCut(incoming, true);
+      } else if (_fxDirty) {
+        await _setRate(incoming, 1.0);
+        await _setLowCut(incoming, false);
+      }
       if (prepared) {
         await incoming.play();
       } else {
@@ -848,6 +869,15 @@ class PlayerController extends ChangeNotifier {
       if (seq != _openSeq || !_fading) {
         await incoming.stop();
         return;
+      }
+      if (dj) {
+        // Пока ждали звук, уходящий ушёл вперёд: подтягиваем следующий, чтобы доли двух треков совпали
+        final lag = _p.state.position - djp!.start; // сколько прошло от запланированного начала (время уходящего)
+        final want = inStart + lag * djp.rate;
+        final gap = want - incoming.state.position;
+        if (gap > const Duration(milliseconds: 25) && gap < const Duration(seconds: 2)) {
+          await incoming.seek(incoming.state.position + gap + const Duration(milliseconds: 50));
+        }
       }
       // Уходящему осталось звучать не дольше, чем он ещё длится: переход укорачивается на время ожидания
       final oldRemaining = duration - _p.state.position;
@@ -884,6 +914,7 @@ class PlayerController extends ChangeNotifier {
       _normOut = _normIn;
       _normIn = _normFactorFor(nextTrack.id);
       _applyVolume();
+      _pendingRate = djp?.rate ?? 1.0;
       _startTail(CrossfadeInfo(oldFraction, DateTime.now(), lengthMs, oldDurationMs: oldDurationMs));
       // Задаём до notifyListeners: джем по нему отличает мой переход от того, что человек переключил трек сам
       if (inJam) {
@@ -901,13 +932,22 @@ class PlayerController extends ChangeNotifier {
       _saveSession();
       _topUpFeed();
       final started = DateTime.now();
+      final swapAt = djp?.swapAt;
+      var swapped = false;
       _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-        final t = DateTime.now().difference(started).inMilliseconds / lengthMs;
+        final elapsed = DateTime.now().difference(started);
+        final t = elapsed.inMilliseconds / lengthMs;
         if (t >= 1) {
           _endFade();
           return;
         }
-        final g = fadeGains(t);
+        // Обмен басов: низы переходят от уходящего к следующему на сильной доле посередине перехода
+        if (swapAt != null && !swapped && elapsed >= swapAt) {
+          swapped = true;
+          unawaited(_setLowCut(incoming, false));
+          unawaited(_setLowCut(old, true));
+        }
+        final g = dj ? djGains(t) : fadeGains(t);
         _outGain = g.$1;
         // Следующий трек входит на громкости уходящего и к концу перехода выходит на свою
         _inGain = g.$2 * (match + (1 - match) * t);
@@ -938,6 +978,64 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// Завершает переход: уходящий трек останавливается, у нового обычная громкость
+  // ---------- темп и басы в диджейском переходе ----------
+
+  /// Темп или фильтр басов у какого-то проигрывателя менялся: после перехода их нужно вернуть
+  bool _fxDirty = false;
+  double _pendingRate = 1.0;
+  Timer? _rateTimer;
+  final Set<Player> _cut = {};
+
+  /// Скорость проигрывателя; высота звука не меняется (mpv сам подтягивает её обратно)
+  Future<void> _setRate(Player p, double r) async {
+    try {
+      await p.setRate(r);
+    } catch (e) {
+      AppLog.warn('Переход: не удалось изменить темп', e);
+    }
+  }
+
+  /// Срезает низкие частоты (фильтр высоких) у проигрывателя или возвращает как было. Если сборка mpv без фильтров — молча пропускаем
+  Future<void> _setLowCut(Player p, bool on) async {
+    if (on == _cut.contains(p)) return; // фильтр уже в нужном состоянии: лишний раз цепочку звука не пересобираем
+    if (on) {
+      _cut.add(p);
+    } else {
+      _cut.remove(p);
+    }
+    try {
+      await (p.platform as dynamic).setProperty('af', on ? 'lavfi=[highpass=f=220]' : '');
+    } catch (e) {
+      AppLog.warn('Переход: не удалось поменять фильтр басов', e);
+    }
+  }
+
+  /// За несколько секунд возвращает темп играющего трека от [from] к родному
+  void _rampRate(double from) {
+    _rateTimer?.cancel();
+    final p = _p;
+    if ((from - 1).abs() < 0.002) {
+      unawaited(_setRate(p, 1.0));
+      return;
+    }
+    final started = DateTime.now();
+    const rampMs = 8000;
+    _rateTimer = Timer.periodic(const Duration(milliseconds: 250), (timer) {
+      if (!identical(_p, p)) {
+        timer.cancel();
+        return;
+      }
+      final x = DateTime.now().difference(started).inMilliseconds / rampMs;
+      if (x >= 1) {
+        timer.cancel();
+        _rateTimer = null;
+        unawaited(_setRate(p, 1.0));
+        return;
+      }
+      unawaited(_setRate(p, from + (1 - from) * x));
+    });
+  }
+
   void _endFade({bool stopIncoming = false}) {
     _fadeTimer?.cancel();
     _fadeTimer = null;
@@ -948,7 +1046,23 @@ class PlayerController extends ChangeNotifier {
     _outgoing = null;
     _inGain = 1;
     _outGain = 1;
-    if (old != null) unawaited(old.stop());
+    if (old != null) {
+      unawaited(old.stop());
+      if (_fxDirty) {
+        unawaited(_setRate(old, 1.0));
+        unawaited(_setLowCut(old, false));
+      }
+    }
+    if (_fxDirty) {
+      unawaited(_setLowCut(_p, false));
+      // Следующий трек играл с подогнанным темпом: возвращаем его к родному плавно, а не рывком
+      if (stopIncoming) {
+        unawaited(_setRate(_p, 1.0));
+      } else {
+        _rampRate(_pendingRate);
+      }
+    }
+    _pendingRate = 1.0;
     _normOut = 1;
     if (wasFading || old != null) unawaited(_p.setVolume(_scaled(volume * _normIn)));
     if (stopIncoming && old == null) unawaited(_q?.stop() ?? Future<void>.value());
@@ -1018,6 +1132,12 @@ class PlayerController extends ChangeNotifier {
       final media = await _mediaFor(t);
       if (seq != _openSeq) return; // пока готовили, включили другой трек
       cache.touch(t);
+      if (_fxDirty) {
+        _rateTimer?.cancel();
+        _rateTimer = null;
+        await _setRate(_p, 1.0);
+        await _setLowCut(_p, false);
+      }
       await _p.open(media, play: at == null && play);
       _openedAt = DateTime.now();
       if (at != null) {
