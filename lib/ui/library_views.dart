@@ -19,6 +19,7 @@ import 'suggest_field.dart';
 import 'collection_menu.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'uploader_filter.dart';
 import 'web_views.dart';
 import 'profile_view.dart';
 import 'widgets.dart';
@@ -66,8 +67,11 @@ class _ArtistsPageState extends State<ArtistsPage> {
     return ListenableBuilder(
       listenable: app.lib,
       builder: (context, _) {
-        final all = app.lib.artists;
+        final every = app.lib.artists;
         final q = foldText(_query.trim());
+        // «Кто загрузил»: исполнители, у которых есть треки выбранных людей
+        final by = loadUploaderFilter(app.settings, 'artists');
+        final all = by.isEmpty ? every : [for (final a in every) if (a.tracks.any((t) => passesUploaders(by, t.by))) a];
         final ls = ListSort.read(app.settings, 'artists', legacyDesc: app.settings.artistsDesc);
         final desc = ls.desc;
         final firstAt = ls.mode == 'first' ? {for (final a in all) a.key: firstUpload(a.tracks)} : const <String, String>{};
@@ -104,9 +108,9 @@ class _ArtistsPageState extends State<ArtistsPage> {
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 if (!LibraryFrame.on(context))
                   Text('Исполнители', style: display(36, weight: FontWeight.w700)),
-                if (all.isNotEmpty) ...[
+                if (every.isNotEmpty) ...[
                   // В «Медиатеке» общее число уже стоит под заголовком раздела; здесь остаётся лишь итог поиска
-                  if (!LibraryFrame.on(context) || q.isNotEmpty) ...[
+                  if (!LibraryFrame.on(context) || q.isNotEmpty || by.isNotEmpty) ...[
                     const SizedBox(height: 10),
                     Text(
                       q.isEmpty
@@ -134,13 +138,21 @@ class _ArtistsPageState extends State<ArtistsPage> {
                       app.lib.saveSettings();
                       setState(() {});
                     },
+                    filter: UploaderFilterButton(
+                      people: uploadersOf(every.expand((a) => a.tracks)),
+                      chosen: by,
+                      onChanged: (v) {
+                        saveUploaderFilter(app, 'artists', v);
+                        setState(() {});
+                      },
+                    ),
                     trailing: ViewControls(prefs: prefs, onChanged: () => setState(() {})),
                   ),
                 ],
               ]),
             ),
           ),
-          if (all.isEmpty)
+          if (every.isEmpty)
             const SliverFillRemaining(
               hasScrollBody: false,
               child: EmptyState(
@@ -149,11 +161,11 @@ class _ArtistsPageState extends State<ArtistsPage> {
                 text: 'Они появятся, когда в библиотеке будут треки.',
               ),
             ),
-          if (all.isNotEmpty && list.isEmpty)
+          if (every.isNotEmpty && list.isEmpty)
             SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.symmetric(horizontal: pad, vertical: 12),
-                child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
+                child: Text(q.isEmpty ? 'Среди выбранных людей исполнителей нет' : 'Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
               ),
             ),
           for (final row in rows)

@@ -9,6 +9,7 @@ import 'library_tabs.dart';
 import 'collection_menu.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'uploader_filter.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
 import 'library_home.dart';
@@ -54,9 +55,12 @@ class _AlbumsPageState extends State<AlbumsPage> {
       listenable: app.lib,
       builder: (context, _) {
         final ep = widget.kind == 'ep';
-        final all = ep ? app.lib.albums.where(isShortRelease).toList() : app.lib.albums;
+        final every = ep ? app.lib.albums.where(isShortRelease).toList() : app.lib.albums;
         final q = foldText(_query.trim());
         final sortId = ep ? 'eps' : 'albums';
+        // «Кто загрузил»: альбомы, в которых есть треки выбранных людей
+        final by = loadUploaderFilter(app.settings, sortId);
+        final all = by.isEmpty ? every : [for (final a in every) if (a.tracks.any((t) => passesUploaders(by, t.by))) a];
         final ls = ListSort.read(app.settings, sortId, legacyDesc: app.settings.albumsDesc);
         final desc = ls.desc;
         final firstAt = ls.mode == 'first' ? {for (final a in all) a.key: firstUpload(a.tracks)} : const <String, String>{};
@@ -88,9 +92,9 @@ class _AlbumsPageState extends State<AlbumsPage> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             if (!LibraryFrame.on(context))
               Text(ep ? 'Синглы и EP' : 'Альбомы', style: display(36, weight: FontWeight.w700)),
-            if (all.isNotEmpty) ...[
+            if (every.isNotEmpty) ...[
               // В «Медиатеке» общее число уже стоит под заголовком раздела; здесь остаётся лишь итог поиска
-              if (!LibraryFrame.on(context) || q.isNotEmpty) ...[
+              if (!LibraryFrame.on(context) || q.isNotEmpty || by.isNotEmpty) ...[
                 const SizedBox(height: 10),
                 Text(
                   q.isEmpty
@@ -118,12 +122,20 @@ class _AlbumsPageState extends State<AlbumsPage> {
                   app.lib.saveSettings();
                   setState(() {});
                 },
+                filter: UploaderFilterButton(
+                  people: uploadersOf(every.expand((a) => a.tracks)),
+                  chosen: by,
+                  onChanged: (v) {
+                    saveUploaderFilter(app, sortId, v);
+                    setState(() {});
+                  },
+                ),
                 trailing: ViewControls(prefs: prefs, onChanged: () => setState(() {})),
               ),
             ],
           ]),
         );
-        if (all.isEmpty) {
+        if (every.isEmpty) {
           return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             header,
             const Expanded(
@@ -141,7 +153,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
             SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.symmetric(horizontal: pad, vertical: 12),
-                child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
+                child: Text(q.isEmpty ? 'Среди выбранных людей альбомов нет' : 'Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
               ),
             ),
           SliverPadding(

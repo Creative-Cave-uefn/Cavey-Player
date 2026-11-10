@@ -22,6 +22,7 @@ import 'album_edit.dart';
 import 'album_missing.dart';
 import 'playlists_view.dart' show PlaylistCover;
 import 'device_export_ui.dart';
+import 'uploader_filter.dart';
 import 'theme.dart';
 import 'wave_view.dart';
 import 'widgets.dart';
@@ -425,6 +426,13 @@ class _TracksPageState extends State<TracksPage> {
   /// Включён фильтр «Мои загрузки»
   bool _mineOnly = false;
 
+  /// Выбранные в «Кто загрузил» (почты в нижнем регистре); пусто — фильтра нет
+  Set<String> _by = {};
+  String _memoBy = '';
+  List<Track>? _uploadersFor;
+  int _uploadersRev = -1;
+  List<Uploader> _uploaders = const [];
+
   List<Track> _rememberVisible(List<Track> tracks, LibraryController lib) {
     _memoTracks = widget.tracks;
     _memoVisible = tracks;
@@ -432,6 +440,7 @@ class _TracksPageState extends State<TracksPage> {
     _memoSort = _sort;
     _memoDesc = _desc;
     _memoMine = _mineOnly;
+    _memoBy = encodeUploaders(_by);
     _memoRevision = lib.revision;
     return tracks;
   }
@@ -665,7 +674,34 @@ class _TracksPageState extends State<TracksPage> {
   bool _sortLoaded = false;
 
   /// Ключ в настройках, под которым страница помнит свою сортировку: у каждого плейлиста и страницы свой
-  String get _sortKey => 'sort.${widget.playlistId != null ? 'pl:${widget.playlistId}' : widget.title}';
+  String get _pageKey => widget.playlistId != null ? 'pl:${widget.playlistId}' : widget.title;
+  String get _sortKey => 'sort.$_pageKey';
+
+  void _setMine(bool v) {
+    setState(() => _mineOnly = v);
+    final app = Services.of(context);
+    if (v) {
+      app.settings.view['filter.mine.$_pageKey'] = '1';
+    } else {
+      app.settings.view.remove('filter.mine.$_pageKey');
+    }
+    app.lib.viewChanged();
+  }
+
+  void _setBy(Set<String> v) {
+    setState(() => _by = v);
+    saveUploaderFilter(Services.of(context), _pageKey, v);
+  }
+
+  /// Кто из людей загрузил треки этой страницы (для окошка «Кто загрузил»)
+  List<Uploader> _uploadersNow(LibraryController lib) {
+    if (!identical(_uploadersFor, widget.tracks) || _uploadersRev != lib.revision) {
+      _uploadersFor = widget.tracks;
+      _uploadersRev = lib.revision;
+      _uploaders = uploadersOf(widget.tracks);
+    }
+    return _uploaders;
+  }
 
   bool get _isDefaultSort => _sort == (widget.defaultSort ?? '') && _desc == (widget.defaultSort != null);
 
@@ -674,7 +710,12 @@ class _TracksPageState extends State<TracksPage> {
     super.didChangeDependencies();
     if (_sortLoaded) return;
     _sortLoaded = true;
-    final saved = Services.of(context).settings.view[_sortKey];
+    final settings = Services.of(context).settings;
+    if (widget.mineFilter) {
+      _mineOnly = settings.view['filter.mine.$_pageKey'] == '1';
+      _by = loadUploaderFilter(settings, _pageKey);
+    }
+    final saved = settings.view[_sortKey];
     if (saved != null) {
       final i = saved.lastIndexOf('|');
       _sort = i < 0 ? saved : saved.substring(0, i);
@@ -698,12 +739,19 @@ class _TracksPageState extends State<TracksPage> {
 
   List<Track> _visible(LibraryController lib, String Function(String) nameOf, Map<String, int>? addedAt) {
     if (identical(_memoTracks, widget.tracks) && _memoVisible != null &&
-        _memoQuery == _query && _memoSort == _sort && _memoDesc == _desc && _memoMine == _mineOnly &&
+        _memoQuery == _query && _memoSort == _sort && _memoDesc == _desc && _memoMine == _mineOnly && _memoBy == encodeUploaders(_by) &&
         _memoRevision == lib.revision) {
       return _memoVisible!;
     }
     final q = _query.trim().toLowerCase();
-    final base = _mineOnly && widget.mineFilter ? [for (final t in widget.tracks) if (lib.isMyAccount(t.by)) t] : widget.tracks;
+    final filterMine = _mineOnly && widget.mineFilter;
+    final filterBy = _by.isNotEmpty && widget.mineFilter;
+    final base = filterMine || filterBy
+        ? [
+            for (final t in widget.tracks)
+              if ((!filterMine || lib.isMyAccount(t.by)) && (!filterBy || passesUploaders(_by, t.by))) t
+          ]
+        : widget.tracks;
     var list = q.isEmpty
         ? base
         : base
@@ -881,7 +929,8 @@ class _TracksPageState extends State<TracksPage> {
           }),
         );
 
-    Widget buttons(WrapAlignment align, {Widget? leading}) => uniformControls(context, Wrap(
+    Widget buttons(WrapAlignment align, {Widget? leading}) {
+      final leftRow = uniformControls(context, Wrap(
           spacing: 12,
           runSpacing: 10,
           alignment: align,
@@ -908,15 +957,26 @@ class _TracksPageState extends State<TracksPage> {
               icon: const Icon(Icons.shuffle_rounded, size: 18),
               label: const Text('Вперемешку'),
             ),
-            if (widget.mineFilter && widget.tracks.isNotEmpty)
-              FilterChip(
-                label: const Text('Мои загрузки'),
-                selected: _mineOnly,
-                onSelected: (v) => setState(() => _mineOnly = v),
-              ),
             ...widget.actions,
           ],
         ));
+        // Фильтры загрузок — у правого края ряда, левые кнопки при нехватке места переносятся
+        if (!widget.mineFilter || widget.tracks.isEmpty) return leftRow;
+        final right = Wrap(spacing: 12, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          UploaderFilterButton(people: _uploadersNow(app.lib), chosen: _by, onChanged: _setBy),
+          ToggleOutlineButton(
+            icon: Icons.person_outline_rounded,
+            label: 'Мои загрузки',
+            on: _mineOnly,
+            onPressed: () => _setMine(!_mineOnly),
+          ),
+        ]);
+        return uniformControls(context, Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(child: leftRow),
+          const SizedBox(width: 12),
+          right,
+        ]));
+      }
 
     final hero = widget.heroColor;
     final left = widget.heroLeft;

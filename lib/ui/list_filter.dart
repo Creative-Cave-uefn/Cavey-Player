@@ -68,6 +68,9 @@ class SearchSortBar extends StatelessWidget {
 
   /// Справа от кнопки сортировки (например, выбор вида)
   final Widget? trailing;
+
+  /// Фильтр, например «Кто загрузил»: сразу после кнопки сортировки
+  final Widget? filter;
   const SearchSortBar({
     super.key,
     required this.controller,
@@ -79,6 +82,7 @@ class SearchSortBar extends StatelessWidget {
     this.mode = 'name',
     this.onMode,
     this.trailing,
+    this.filter,
   });
 
   @override
@@ -140,6 +144,7 @@ class SearchSortBar extends StatelessWidget {
           }),
         ),
       ),
+      if (filter != null) ...[const SizedBox(width: 12), filter!],
       if (trailing != null) ...[const SizedBox(width: 16), trailing!],
     ]);
   }
