@@ -37,6 +37,7 @@ class _DjConsoleState extends State<_DjConsole> {
   double _cross = 0, _master = 0.70;
   String _status = 'Две независимые деки. Обычный плеер будет поставлен на паузу.';
   Timer? _refresh, _gainTimer;
+  bool _applyingGain = false, _gainDirty = false;
 
   @override
   void didChangeDependencies() {
@@ -90,11 +91,12 @@ class _DjConsoleState extends State<_DjConsole> {
       _cues[i] = start;
     });
     try {
-      final media = await _app.player.mediaForDj(t);
-      if (!mounted || _closing || serial != _sequence[i]) return;
       final p = _decks[i];
+      // Stop any previous audio before a potentially slow network lookup.
       await p.setVolume(0);
       await p.stop();
+      final media = await _app.player.mediaForDj(t);
+      if (!mounted || _closing || serial != _sequence[i]) return;
       await p.setRate(1);
       await p.open(media, play: false);
       try {
@@ -106,6 +108,9 @@ class _DjConsoleState extends State<_DjConsole> {
         _message('Дека ' + (i == 0 ? 'A' : 'B') + ': «' + t.title + '» загружена.');
       }
     } catch (e) {
+      if (mounted && serial == _sequence[i]) {
+        setState(() => _tracks[i] = null);
+      }
       _message('Ошибка загрузки «' + t.title + '»: ' + e.toString());
     } finally {
       if (mounted && serial == _sequence[i]) {
@@ -115,18 +120,34 @@ class _DjConsoleState extends State<_DjConsole> {
   }
 
   void _gain() {
-    if (_gainTimer != null || _closing) return;
+    _gainDirty = true;
+    if (_gainTimer != null || _applyingGain || _closing) return;
     _gainTimer = Timer(const Duration(milliseconds: 25), () {
       _gainTimer = null;
-      if (_closing) return;
-      final g = djCrossfaderGains(_cross, master: _master);
-      unawaited(Future.wait([
-        _decks[0].setVolume(g.$1 * 100),
-        _decks[1].setVolume(g.$2 * 100),
-      ]).then<void>((_) {}, onError: (Object e) {
-        _message('Громкость: ' + e.toString());
-      }));
+      if (!_closing) unawaited(_flushGain());
     });
+  }
+
+  // Volume writes are serialized. Rapid slider moves coalesce into the most
+  // recent value instead of racing old commands against new ones.
+  Future<void> _flushGain() async {
+    if (_applyingGain) return;
+    _applyingGain = true;
+    try {
+      while (_gainDirty && !_closing) {
+        _gainDirty = false;
+        final g = djCrossfaderGains(_cross, master: _master);
+        await Future.wait([
+          _decks[0].setVolume(g.$1 * 100),
+          _decks[1].setVolume(g.$2 * 100),
+        ]);
+      }
+    } catch (e) {
+      _message('Громкость: ' + e.toString());
+    } finally {
+      _applyingGain = false;
+      if (_gainDirty && !_closing) _gain();
+    }
   }
 
   Future<void> _playPause(int i) async {
