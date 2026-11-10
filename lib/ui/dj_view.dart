@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:djengine/djengine.dart';
+import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/material.dart';
 
 import '../app.dart';

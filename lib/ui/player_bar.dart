@@ -589,25 +589,7 @@ class _TopSeekState extends State<_TopSeek> {
                 final showMark = hx != null && hoverMs != null && (hx - dotX).abs() > 8;
                 final overlaps = showMark && (hx - dotX).abs() < 56;
                 final nearEnd = dotX > w - 54 || (showMark && hx > w - 54);
-                // Форма волны трека, если он уже разобран (в фоне, когда лежит в кэше): вместо тонкой линии
-                final cur = p.current;
-                final wave = cur == null ? const <int>[] : (p.mixer?.profileCached(cur.id)?.wave ?? const <int>[]);
                 return Stack(clipBehavior: Clip.none, children: [
-                  if (wave.isNotEmpty)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      top: 0,
-                      height: 14,
-                      child: IgnorePointer(
-                        child: AnimatedOpacity(
-                          opacity: on ? 1 : 0,
-                          duration: const Duration(milliseconds: 120),
-                          child: CustomPaint(painter: _WavePainter(wave, f.toDouble())),
-                        ),
-                      ),
-                    )
-                  else
                   Positioned(
                     left: 0,
                     right: 0,
@@ -961,31 +943,4 @@ class _PanelRow extends StatelessWidget {
       ]),
     );
   }
-}
-
-/// Форма волны трека на полосе перемотки: столбики по громкости, прослушанная часть ярче
-class _WavePainter extends CustomPainter {
-  final List<int> wave;
-  final double progress;
-  const _WavePainter(this.wave, this.progress);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final n = wave.length;
-    if (n == 0 || size.width <= 0) return;
-    final step = size.width / n;
-    final mid = size.height / 2;
-    final paint = Paint()
-      ..strokeWidth = (step * 0.62).clamp(1.0, 4.0).toDouble()
-      ..strokeCap = StrokeCap.round;
-    for (var i = 0; i < n; i++) {
-      final x = (i + 0.5) * step;
-      final amp = 2.0 + wave[i] / 255.0 * (size.height - 2.0);
-      paint.color = x / size.width <= progress ? const Color(0xF2FFFFFF) : const Color(0x55FFFFFF);
-      canvas.drawLine(Offset(x, mid - amp / 2), Offset(x, mid + amp / 2), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_WavePainter old) => old.progress != progress || !identical(old.wave, wave);
 }
