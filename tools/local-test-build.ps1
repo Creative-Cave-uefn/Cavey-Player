@@ -123,17 +123,12 @@ $slug = ($branch.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
 if (-not $slug) { $slug = 'branch' }
 
 if (-not $Version) {
-    # Автоматическая версия: 0.2.<последний номер сборки в GitHub>.<минуты с 9.11.2026>.
-    # Она новее любой версии из main на момент сборки и старше следующей сборки из CI,
-    # поэтому когда CI заработает, его сборки обновят эту тестовую.
-    $base = Capture 'gh' @('api', "repos/$PlayerRepo/actions/runs?per_page=1", '--jq', '.workflow_runs[0].run_number')
-    if ($base -notmatch '^\d+$') {
-        Warn 'Не удалось узнать номер последней сборки в GitHub, беру 464.'
-        $base = '464'
-    }
+    # Автоматическая версия: 0.3.1.<минуты с 9.11.2026>.
+    # Она новее стабильной 0.3.1 из main и старше будущей 0.3.2, поэтому после выхода 0.3.2
+    # обычное автообновление заменит тестовую сборку.
     $epoch = [DateTimeOffset]::new(2026, 11, 9, 0, 0, 0, [TimeSpan]::Zero).ToUnixTimeSeconds()
     $minutes = [int](([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $epoch) / 60)
-    $Version = "0.2.$base.$minutes"
+    $Version = "0.3.1.$minutes"
 }
 Write-Host "Ветка: $branch ($sha), версия: $Version"
 
