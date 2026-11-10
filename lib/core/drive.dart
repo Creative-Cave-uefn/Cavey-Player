@@ -698,6 +698,18 @@ class DriveApi {
     return [for (final f in (j['files'] as List? ?? const [])) (f as Map).cast<String, dynamic>()];
   }
 
+  /// Первый шаг передачи владения: назначает [newOwner] «ожидающим владельцем» файла. Вызывается от имени нынешнего владельца.
+  /// Письмо Google при этом не отправляется; сам перенос завершает принятие владения (в Cavey — через брокера)
+  Future<void> offerOwnership(String email, String fileId, String newOwner) async {
+    await send(
+      email,
+      'POST',
+      api('files/$fileId/permissions', {'sendNotificationEmail': 'false'}),
+      headers: {'Content-Type': 'application/json; charset=utf-8'},
+      body: utf8.encode(jsonEncode({'role': 'writer', 'type': 'user', 'emailAddress': newOwner, 'pendingOwner': true})),
+    );
+  }
+
   /// Даёт другому человеку доступ к файлу или папке. Google сам пришлёт ему письмо.
   Future<void> share(String email, String fileId, String withEmail, {String role = 'writer', String? message}) async {
     await send(

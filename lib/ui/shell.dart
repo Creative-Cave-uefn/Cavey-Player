@@ -39,6 +39,7 @@ import 'library_tabs.dart';
 import 'collection_menu.dart';
 import 'collection_page.dart';
 import 'device_export_ui.dart';
+import 'migration_ui.dart';
 import 'pin_drag.dart';
 import 'album_edit.dart';
 import 'queue_panel.dart';
@@ -171,6 +172,13 @@ class _ShellState extends State<Shell> {
       // Своя плашка вместо SnackBar: маленькая, по центру и над плеером, ничего не перекрывает
       _showToast(m);
     });
+    if (!_migrationOffered) {
+      _migrationOffered = true;
+      // Через несколько секунд после запуска, когда библиотека уже загрузилась
+      Timer(const Duration(seconds: 12), () {
+        if (mounted) offerMigrationAtStart(context);
+      });
+    }
     if (_askLib == null) {
       _askLib = Services.of(context).lib..addListener(_checkForeignDeletions);
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkForeignDeletions());
@@ -181,6 +189,7 @@ class _ShellState extends State<Shell> {
     }
   }
 
+  bool _migrationOffered = false;
   LibraryController? _askLib;
 
   void _checkForeignDeletions() {

@@ -2183,6 +2183,29 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
+  String? _hubOwner;
+
+  /// Почта владельца общей папки — аккаунта с подпиской, на чьём Диске должны лежать все файлы
+  Future<String?> hubOwnerEmail() async {
+    final cached = _hubOwner;
+    if (cached != null) return cached;
+    final hub = settings.hubId;
+    if (hub == null) return null;
+    try {
+      final owner = await _withHub((email) async {
+        final f = await drive.getFile(email, hub, fields: 'id,owners(emailAddress)');
+        final owners = f['owners'];
+        if (owners is List && owners.isNotEmpty && owners.first is Map) return '${(owners.first as Map)['emailAddress'] ?? ''}'.toLowerCase();
+        return '';
+      });
+      if (owner.isEmpty) return null;
+      return _hubOwner = owner;
+    } catch (e) {
+      AppLog.warn('Не узнал владельца общей папки', e);
+      return null;
+    }
+  }
+
   /// Адрес брокера и ограничения из cave-data/config.json (кэш на 10 минут)
   BrokerConfig? _brokerCfg;
   DateTime? _brokerCfgAt;

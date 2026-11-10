@@ -244,6 +244,21 @@ class UploadBroker {
     await _call(url, email, {'action': 'delete', 'fileId': fileId});
   }
 
+  /// Просит брокера принять владение файлами, на которые владелец библиотеки уже назначен «ожидающим владельцем».
+  /// Возвращает по каждому id итог: ok, already, not_yours, not_pending, bad_parent, bad_type, error
+  Future<Map<String, String>> adopt(String url, String email, List<String> ids) async {
+    try {
+      final r = await _call(url, email, {'action': 'adopt', 'fileIds': ids});
+      final raw = r['results'];
+      return {if (raw is Map) for (final e in raw.entries) '${e.key}': '${e.value}'};
+    } on BrokerException catch (e) {
+      if (e.code == 'bad_request' && e.message.contains('Неизвестное действие')) {
+        throw const BrokerException('outdated_broker', 'Брокер нужно обновить: владельцу библиотеки надо один раз заново развернуть скрипт (tools/broker/README.md).');
+      }
+      rethrow;
+    }
+  }
+
   Future<BrokerQuota> quota(String url, String email) async {
     final r = await _call(url, email, {'action': 'quota'});
     return BrokerQuota((r['free'] as num?)?.toInt(), (r['limit'] as num?)?.toInt(), (r['usage'] as num?)?.toInt() ?? 0);

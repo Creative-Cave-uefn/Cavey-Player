@@ -17,6 +17,7 @@ import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
 import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength, seekWaveMin, seekWaveMax;
+import 'migration_ui.dart';
 import 'theme.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
@@ -212,6 +213,8 @@ class _AccountsPageState extends State<AccountsPage> {
             ],
           'library' => const [
               LibrarySection(parts: {'folders'}),
+              gap,
+              MigrationSection(),
               gap,
               _CacheSection(),
               gap,
