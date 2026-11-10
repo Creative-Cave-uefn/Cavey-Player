@@ -6,6 +6,7 @@ import 'album_edit.dart';
 import 'list_filter.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
+import 'collection_menu.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'widgets.dart';
@@ -219,15 +220,4 @@ class _AlbumsPageState extends State<AlbumsPage> {
 }
 
 /// Меню альбома по правому клику, в точке клика
-Future<void> showAlbumMenu(BuildContext context, Album a, Offset at) async {
-  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-  final v = await showGlassMenu<String>(
-    context: context,
-    position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
-    items: [
-      const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
-    ],
-  );
-  if (!context.mounted) return;
-  if (v == 'edit') await editAlbumDialog(context, a);
-}
+Future<void> showAlbumMenu(BuildContext context, Album a, Offset at) => showCollectionMenu(context, at, album: a);

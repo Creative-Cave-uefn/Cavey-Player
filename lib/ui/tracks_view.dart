@@ -21,6 +21,7 @@ import 'share_dialog.dart';
 import 'album_edit.dart';
 import 'album_missing.dart';
 import 'playlists_view.dart' show PlaylistCover;
+import 'device_export_ui.dart';
 import 'theme.dart';
 import 'wave_view.dart';
 import 'widgets.dart';
@@ -1458,6 +1459,8 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
     const PopupMenuItem(value: 'plays', child: Text('Прослушивания…')),
     const PopupMenuDivider(),
     if (canSelect) PopupMenuItem(value: 'select', child: Text(selected ? 'Снять выбор' : 'Выбрать')),
+    const PopupMenuItem(value: 'export', child: Text('Скачать на устройство')),
+    if (Services.of(context).cache.has(track.id)) const PopupMenuItem(value: 'reveal', child: Text('Показать на устройстве')),
     const PopupMenuItem(value: 'redownload', child: Text('Перекачать трек…')),
     const PopupMenuItem(value: 'edit', child: Text('Изменить метаданные…')),
     const PopupMenuItem(value: 'hide', child: Text('Скрыть из библиотеки')),
@@ -1502,6 +1505,10 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
       app.lib.removeFromPlaylist(playlistId!, track.id);
     case 'album':
       NavScope.of(context).go(Nav('album', track.albumKey));
+    case 'export':
+      await exportToDevice(context, [track], title: track.title);
+    case 'reveal':
+      if (!await app.exporter.reveal(track)) app.lib.messages.add('Не удалось открыть Проводник');
     case 'redownload':
       await redownloadTrack(context, track);
     case 'edit':

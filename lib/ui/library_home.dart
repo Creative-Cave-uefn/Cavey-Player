@@ -8,6 +8,7 @@ import '../core/models.dart';
 import 'profile_view.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
+import 'collection_menu.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
@@ -283,6 +284,7 @@ class _AlbumTile extends StatelessWidget {
   Widget build(BuildContext context) => TileInk(
         onTap: () => NavScope.of(context).go(Nav('album', a.key)),
         onPlay: () => Services.of(context).player.playTracks(a.tracks, 0, inOrder: true),
+        onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, album: a),
         child: LayoutBuilder(
           builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 10),
@@ -306,6 +308,7 @@ class _ArtistTile extends StatelessWidget {
           final app = Services.of(context);
           app.player.playTracks(topTracksOf(app, a), 0);
         },
+        onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, artist: a),
         child: LayoutBuilder(
           builder: (context, box) => Column(children: [
             ArtistPhoto(

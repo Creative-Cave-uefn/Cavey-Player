@@ -11,6 +11,7 @@ import '../core/log.dart';
 import '../core/media_keys.dart';
 import '../core/share_link.dart';
 import '../core/models.dart';
+import '../core/pin_order.dart';
 import '../core/player.dart' show PlayerController;
 import '../core/updater.dart';
 import 'accounts_view.dart';
@@ -35,7 +36,10 @@ import 'widgets.dart';
 import 'glass_popup.dart';
 import 'library_home.dart';
 import 'library_tabs.dart';
+import 'collection_menu.dart';
 import 'collection_page.dart';
+import 'device_export_ui.dart';
+import 'pin_drag.dart';
 import 'album_edit.dart';
 import 'queue_panel.dart';
 
@@ -457,6 +461,11 @@ class _ShellState extends State<Shell> {
                   child: const NoticeTower(),
                 ),
               ),
+              Positioned(
+                left: ((MediaQuery.sizeOf(context).width < 860 || app.settings.viewOf('sidebar.mini', '0') == '1') ? 72.0 : 240.0) + 12 + 16,
+                bottom: 92 + 10,
+                child: const ExportCard(),
+              ),
               if (_dragging) const Positioned.fill(child: IgnorePointer(child: _DropOverlay())),
             ]),
           ),
@@ -817,6 +826,13 @@ class _Sidebar extends StatelessWidget {
             if (on('sidebar.showAr') && favs != null)
               for (final a in favs.artists) _SideEntry.artist(a),
           ];
+          // Закреплённые — наверху, в порядке закрепа
+          final pins = lib.pinned;
+          final pinSet = pins.toSet();
+          final split = splitPinned(entries, (e) => e.tokens, pins);
+          final shownEntries = [...split.pinned, ...split.rest];
+          final shownTokens = [for (final e in shownEntries) e.tokenIn(pinSet)];
+          void drop(String dragged, String target) => applyPinDrop(app, shownTokens, split.pinned.length, dragged, target);
           final unread = unreadNotices(app);
           final head = <Widget>[
             // Значок остаётся на месте (сдвигается на пару пикселей), название укатывается вправо
@@ -875,14 +891,22 @@ class _Sidebar extends StatelessWidget {
           Widget collection(bool compact) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 if (mode == 'covers')
                   _SideTiles(
-                    entries: entries,
+                    entries: shownEntries,
+                    pins: pinSet,
+                    onDrop: drop,
                     compact: compact,
                     current: cur,
                     cols: compact ? 1 : int.tryParse(app.settings.viewOf('sidebar.cols', '2'))?.clamp(2, 4) ?? 2,
                     names: !compact && on('sidebar.names'),
                   )
                 else
-                  for (final e in entries) _SideRow(entry: e, compact: compact, selected: cur.same(e.target), onTap: () => nav.go(e.target)),
+                  for (final e in shownEntries)
+                    PinDrag(
+                      token: e.tokenIn(pinSet),
+                      vertical: true,
+                      onDrop: drop,
+                      child: _SideRow(entry: e, compact: compact, selected: cur.same(e.target), pinned: pinSet.contains(e.tokenIn(pinSet)), onTap: () => nav.go(e.target)),
+                    ),
                 if (entries.isEmpty && !compact)
                   const Padding(
                     padding: EdgeInsets.fromLTRB(22, 4, 16, 0),
@@ -1131,6 +1155,16 @@ class _SideEntry {
   final Artist? artist;
   const _SideEntry(this.label, this.target, this.cover, {this.round = false, this.owner, this.playlist, this.album, this.artist});
 
+  /// Жетоны закрепа: у склеенного альбома их несколько
+  List<String> get tokens => playlist != null
+      ? [LibraryController.playlistPin(playlist!.id)]
+      : album != null
+          ? LibraryController.albumPins(album!).toList()
+          : [LibraryController.artistPin(artist!)];
+
+  /// Тот жетон, под которым пункт уже закреплён, иначе основной
+  String tokenIn(Set<String> pins) => tokens.firstWhere(pins.contains, orElse: () => tokens.first);
+
   factory _SideEntry.playlist(Playlist p) => _SideEntry(p.name, Nav('playlist', p.id),
       (size) => PlaylistCover(playlist: p, size: size, radius: 5), owner: p.by, playlist: p);
 
@@ -1148,67 +1182,18 @@ class _SideEntry {
       );
 }
 
-/// Правый клик по плейлисту, альбому или исполнителю в боковой панели: слушать, вперемешку, правка, приватность
-Future<void> _showSideMenu(BuildContext context, _SideEntry e, Offset at) async {
-  final app = Services.of(context);
-  final lib = app.lib;
-  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-  final p = e.playlist;
-  final mine = p != null && (p.by == lib.me || p.by.isEmpty);
-  final v = await showGlassMenu<String>(
-    context: context,
-    position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
-    items: [
-      const PopupMenuItem(value: 'play', child: Text('Слушать')),
-      const PopupMenuItem(value: 'shuffle', child: Text('Вперемешку')),
-      if (p != null || e.album != null) const PopupMenuDivider(),
-      if (p != null || e.album != null) const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
-      if (mine)
-        lib.isPlaylistPublic(p.id)
-            ? const PopupMenuItem(value: 'private', child: Text('Сделать приватным'))
-            : const PopupMenuItem(value: 'public', child: Text('Сделать открытым')),
-    ],
-  );
-  if (v == null || !context.mounted) return;
-  List<Track> tracks() {
-    if (p != null) return lib.playlistTracks(p.id);
-    if (e.album != null) return e.album!.tracks;
-    final a = e.artist!;
-    return topTracksOf(app, a);
-  }
-
-  switch (v) {
-    case 'play':
-    case 'shuffle':
-      final list = tracks();
-      if (list.isEmpty) {
-        lib.messages.add('Здесь пока нет треков');
-        return;
-      }
-      final shuffle = v == 'shuffle';
-      if (app.player.shuffle != shuffle) app.player.toggleShuffle();
-      app.player.playTracks(list, shuffle ? DateTime.now().microsecond % list.length : 0);
-    case 'edit':
-      if (p != null) {
-        final t = lib.playlistTracks(p.id);
-        await editPlaylistDialog(context, p, coverTrack: t.isEmpty ? null : t.firstWhere((x) => x.hasCover, orElse: () => t.first));
-      } else {
-        await editAlbumDialog(context, e.album!);
-      }
-    case 'public':
-    case 'private':
-      lib.setPlaylistPublic(p!.id, v == 'public');
-      lib.messages.add(v == 'public' ? 'Плейлист «${p.name}» теперь видят все друзья' : 'Плейлист «${p.name}» виден только вам');
-  }
-}
+/// Правый клик по плейлисту, альбому или исполнителю в боковой панели
+Future<void> _showSideMenu(BuildContext context, _SideEntry e, Offset at) =>
+    showCollectionMenu(context, at, playlist: e.playlist, album: e.album, artist: e.artist);
 
 /// Строка «Коллекции»: миниатюра и название
 class _SideRow extends StatelessWidget {
   final _SideEntry entry;
   final bool compact;
   final bool selected;
+  final bool pinned;
   final VoidCallback onTap;
-  const _SideRow({required this.entry, required this.compact, required this.selected, required this.onTap});
+  const _SideRow({required this.entry, required this.compact, required this.selected, required this.onTap, this.pinned = false});
 
   @override
   Widget build(BuildContext context) {
@@ -1233,6 +1218,7 @@ class _SideRow extends StatelessWidget {
               ),
               // Точка присутствия — только у чужих плейлистов: у собственных она ничего не говорит
               if (entry.owner != null && entry.owner!.isNotEmpty && entry.owner != Services.of(context).lib.me) FriendDot(entry.owner!, size: 7),
+              if (pinned) const Padding(padding: EdgeInsets.only(left: 6), child: PinMark(size: 13)),
               const SizedBox(width: 4),
             ],
           ],
@@ -1253,7 +1239,10 @@ class _SideTiles extends StatelessWidget {
   final Nav current;
   final int cols;
   final bool names;
-  const _SideTiles({required this.entries, required this.compact, required this.current, required this.cols, required this.names});
+  final Set<String> pins;
+  final void Function(String dragged, String target) onDrop;
+  const _SideTiles(
+      {required this.entries, required this.compact, required this.current, required this.cols, required this.names, required this.pins, required this.onDrop});
 
   @override
   Widget build(BuildContext context) {
@@ -1267,7 +1256,10 @@ class _SideTiles extends StatelessWidget {
           for (final e in entries)
             SizedBox(
               width: w,
-              child: Tooltip(
+              child: PinDrag(
+                token: e.tokenIn(pins),
+                onDrop: onDrop,
+                child: Tooltip(
                 message: e.label,
                 child: InkWell(
                   borderRadius: BorderRadius.circular(8),
@@ -1281,7 +1273,16 @@ class _SideTiles extends StatelessWidget {
                         borderRadius: e.round ? null : BorderRadius.circular(8),
                         border: current.same(e.target) ? Border.all(color: C.accent, width: 2) : null,
                       ),
-                      child: SizedBox.square(dimension: w, child: e.cover(w)),
+                      child: SizedBox.square(
+                        dimension: w,
+                        child: Stack(children: [
+                          Positioned.fill(child: e.cover(w)),
+                          if (pins.contains(e.tokenIn(pins)))
+                            const Positioned(right: 4, top: 4, child: DecoratedBox(
+                                decoration: BoxDecoration(color: Color(0x99000000), shape: BoxShape.circle),
+                                child: Padding(padding: EdgeInsets.all(3), child: PinMark(size: 12)))),
+                        ]),
+                      ),
                     ),
                     if (names) ...[
                       const SizedBox(height: 4),
@@ -1293,6 +1294,7 @@ class _SideTiles extends StatelessWidget {
                     ],
                   ]),
                 ),
+              ),
               ),
             ),
         ]);

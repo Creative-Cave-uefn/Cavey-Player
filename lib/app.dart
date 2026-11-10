@@ -16,6 +16,7 @@ import 'core/automix.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
+import 'core/device_export.dart';
 import 'core/dl/service.dart';
 import 'core/dl/tools.dart';
 import 'core/drive.dart';
@@ -69,6 +70,9 @@ class AppServices {
   late final PreviewPlayer preview;
   late final WaveService wave;
   late final KaraokeService karaoke;
+
+  /// «Скачать на устройство»: треки, альбомы и плейлисты обычными файлами в выбранную папку
+  late final DeviceExport exporter;
   late final MediaKeys mediaKeys;
 
   /// Ссылка caveplayer://track/…, пришедшая при запуске или от второй копии; окно её обрабатывает и очищает
@@ -178,6 +182,7 @@ class AppServices {
     );
     app = AppServices._(
         store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, jam, discord, downloads, tray, builtIn);
+    app.exporter = DeviceExport(lib, drive, cache);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));

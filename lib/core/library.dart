@@ -1952,6 +1952,50 @@ class LibraryController extends ChangeNotifier {
     return (playlists: pl, albums: al, artists: ar);
   }
 
+  // ---------- закреплённое в коллекции ----------
+
+  /// Жетоны закреплённых пунктов в порядке закрепа: fp:<плейлист>, fl:<ключ альбома>, fa:<ключ исполнителя>.
+  /// Хранятся в личных данных человека (edits['u:<почта>']['pins']), поэтому порядок один на всех его устройствах
+  List<String> get pinned {
+    final m = me;
+    if (m == null) return const [];
+    final raw = data.edits['u:$m']?['pins'] ?? '';
+    if (raw.isEmpty) return const [];
+    try {
+      final j = jsonDecode(raw);
+      if (j is List) return [for (final x in j) '$x'];
+    } catch (_) {}
+    return const [];
+  }
+
+  void setPinned(List<String> tokens) {
+    final m = me;
+    if (m == null) return;
+    setMeta({'u:$m': {'pins': tokens.isEmpty ? '' : jsonEncode(tokens)}});
+  }
+
+  static String playlistPin(String id) => 'fp:$id';
+  static String albumPin(Album a) => 'fl:${a.key.toLowerCase()}';
+  static String artistPin(Artist a) => 'fa:${a.key.toLowerCase()}';
+
+  /// Все жетоны альбома: после склейки альбом может быть закреплён под любым из старых ключей
+  static Iterable<String> albumPins(Album a) => {a.key, ...a.keys}.map((k) => 'fl:${k.toLowerCase()}');
+
+  bool isPinnedToken(Iterable<String> tokens) {
+    final set = pinned.toSet();
+    return tokens.any(set.contains);
+  }
+
+  void togglePinToken(Iterable<String> tokens) {
+    final list = pinned;
+    final set = tokens.toSet();
+    if (list.any(set.contains)) {
+      setPinned([for (final p in list) if (!set.contains(p)) p]);
+    } else {
+      setPinned([...list, tokens.first]);
+    }
+  }
+
   // ---------- папка с загруженными обложками ----------
 
   static const coversFolderName = 'cave-covers';

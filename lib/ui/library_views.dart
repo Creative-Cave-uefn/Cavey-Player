@@ -16,6 +16,7 @@ import 'list_filter.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
 import 'suggest_field.dart';
+import 'collection_menu.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
@@ -199,6 +200,7 @@ Widget _artistsSliver(BuildContext context, AppServices app, List<Artist> items,
               final app = Services.of(context);
               app.player.playTracks(topTracksOf(app, a), 0);
             },
+            onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, artist: a),
             child: LayoutBuilder(
               builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
                 Stack(children: [
@@ -238,6 +240,7 @@ Widget _artistsSliver(BuildContext context, AppServices app, List<Artist> items,
           return InkWell(
             borderRadius: BorderRadius.circular(8),
             onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
+            onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, artist: a),
             child: Padding(
               padding: const EdgeInsets.only(left: 12),
               child: Row(children: [

@@ -6,6 +6,7 @@ import 'glass_popup.dart';
 import 'list_filter.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
+import 'collection_menu.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -198,6 +199,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                           final list = app.lib.playlistTracks(p.id);
                           if (list.isNotEmpty) app.player.playTracks(list, 0);
                         },
+                        onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, playlist: p),
                         child: LayoutBuilder(
                           builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                             PlaylistCover(playlist: p, size: box.maxWidth, radius: 10),
@@ -218,6 +220,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                         return InkWell(
                           borderRadius: BorderRadius.circular(8),
                           onTap: () => NavScope.of(context).go(Nav('playlist', p.id)),
+                          onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, playlist: p),
                           child: Padding(
                             padding: const EdgeInsets.all(6),
                             child: Row(children: [
