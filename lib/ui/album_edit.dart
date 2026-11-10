@@ -8,10 +8,13 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
 import '../app.dart';
+import '../core/deezer_art.dart';
 import '../core/library.dart';
+import '../core/log.dart';
 import '../core/models.dart';
 import 'cover_picker.dart';
 import 'glass_popup.dart';
+import 'suggest_field.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -417,6 +420,128 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
   }
 }
 
+/// «Скачать обложку из Deezer» и «Заполнить из Deezer» в окне альбома. Пока не нажато «Сохранить», ничего не меняется
+class _AlbumDeezerActions extends StatefulWidget {
+  final Album album;
+  final TextEditingController title, artist, year;
+  final CoverChoice choice;
+  const _AlbumDeezerActions({required this.album, required this.title, required this.artist, required this.year, required this.choice});
+
+  @override
+  State<_AlbumDeezerActions> createState() => _AlbumDeezerActionsState();
+}
+
+class _AlbumDeezerActionsState extends State<_AlbumDeezerActions> {
+  bool _coverBusy = false, _fillBusy = false;
+  String _coverStatus = '', _fillStatus = '';
+
+  /// Исполнитель для поиска: из поля, иначе исполнитель альбома, иначе самый частый из треков
+  String get _who {
+    final typed = widget.artist.text.trim();
+    if (typed.isNotEmpty) return typed;
+    final a = widget.album;
+    if (a.artist != 'Разные исполнители') return a.artist;
+    return a.artists.firstOrNull ?? '';
+  }
+
+  Future<void> _cover() async {
+    if (_coverBusy) return;
+    final query = (_who, widget.title.text.trim());
+    if (query.$1.isEmpty || query.$2.isEmpty) {
+      setState(() => _coverStatus = 'Нужны название альбома и исполнитель.');
+      return;
+    }
+    setState(() {
+      _coverBusy = true;
+      _coverStatus = 'Ищу обложку в Deezer…';
+    });
+    try {
+      final art = await DeezerArt.find(artist: query.$1, title: '', album: query.$2).timeout(const Duration(seconds: 14));
+      if (!mounted) return;
+      if (query != (_who, widget.title.text.trim())) {
+        setState(() => _coverStatus = '');
+        return;
+      }
+      if (art == null) {
+        setState(() => _coverStatus = 'Обложка в Deezer не найдена.');
+        return;
+      }
+      widget.choice.pick(PickedCover(art.bytes, 'jpg'));
+      setState(() => _coverStatus = 'Обложка Deezer подставлена.');
+    } on TimeoutException {
+      if (mounted) setState(() => _coverStatus = 'Deezer не ответил. Попробуйте ещё раз.');
+    } catch (e, st) {
+      AppLog.error('Deezer: обложка альбома', e, st);
+      if (mounted) setState(() => _coverStatus = 'Не удалось загрузить обложку.');
+    } finally {
+      if (mounted) setState(() => _coverBusy = false);
+    }
+  }
+
+  Future<void> _fill() async {
+    if (_fillBusy) return;
+    final title = widget.title.text.trim();
+    if (title.isEmpty) {
+      setState(() => _fillStatus = 'Сначала впишите название альбома.');
+      return;
+    }
+    setState(() {
+      _fillBusy = true;
+      _fillStatus = 'Ищу альбом в Deezer…';
+    });
+    try {
+      final app = Services.of(context);
+      final names = [if (_who.isNotEmpty) _who, ...widget.album.artists.where((n) => n != _who)];
+      final found = await app.web.findAlbum(title, names, haveTitles: [for (final t in widget.album.tracks) t.title]).timeout(const Duration(seconds: 12));
+      if (!mounted) return;
+      if (found == null) {
+        setState(() => _fillStatus = 'Такой альбом в Deezer не найден.');
+        return;
+      }
+      widget.title.text = found.title;
+      if (found.artist.isNotEmpty) widget.artist.text = found.artist;
+      if (found.year.isNotEmpty) widget.year.text = found.year;
+      setState(() => _fillStatus = 'Название, исполнитель и год заполнены.');
+    } on TimeoutException {
+      if (mounted) setState(() => _fillStatus = 'Deezer не ответил. Попробуйте ещё раз.');
+    } catch (e, st) {
+      AppLog.error('Deezer: данные альбома', e, st);
+      if (mounted) setState(() => _fillStatus = 'Не удалось получить данные альбома.');
+    } finally {
+      if (mounted) setState(() => _fillBusy = false);
+    }
+  }
+
+  Widget _spin() => const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2));
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 10),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Wrap(spacing: 8, runSpacing: 6, children: [
+            OutlinedButton.icon(
+              onPressed: _coverBusy ? null : _cover,
+              icon: _coverBusy ? _spin() : const Icon(Icons.image_search_rounded, size: 18),
+              label: const Text('Скачать обложку из Deezer'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _fillBusy ? null : _fill,
+              icon: _fillBusy ? _spin() : const Icon(Icons.auto_fix_high_rounded, size: 18),
+              label: const Text('Заполнить из Deezer'),
+            ),
+          ]),
+          if (_coverStatus.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(_coverStatus, style: const TextStyle(color: C.muted, fontSize: 12)),
+          ],
+          if (_fillStatus.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(_fillStatus, style: const TextStyle(color: C.muted, fontSize: 12)),
+          ],
+        ]),
+      );
+}
+
 /// Окно «Альбом»: название, обложка, год, исполнитель альбома. Применяется ко всем трекам альбома
 Future<void> editAlbumDialog(BuildContext context, Album a) async {
   final lib = Services.of(context).lib;
@@ -447,6 +572,7 @@ Future<void> editAlbumDialog(BuildContext context, Album a) async {
               current: CoverImage(track: a.coverTrack, size: 120, radius: 0),
               canReset: lib.albumCover(a.key) != null,
             ),
+            _AlbumDeezerActions(album: a, title: title, artist: artist, year: year, choice: choice),
             const SizedBox(height: 18),
             const Text('Название', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
@@ -454,7 +580,12 @@ Future<void> editAlbumDialog(BuildContext context, Album a) async {
             const SizedBox(height: 14),
             const Text('Исполнитель альбома', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
-            TextField(controller: artist, decoration: const InputDecoration(hintText: 'Например, ATLUS Sound Team')),
+            SuggestField(
+              controller: artist,
+              multi: true,
+              source: () => libraryArtistSuggestions(lib),
+              decoration: const InputDecoration(hintText: 'Например, ATLUS Sound Team'),
+            ),
             const SizedBox(height: 14),
             const Text('Год', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),

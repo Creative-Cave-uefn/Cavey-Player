@@ -15,6 +15,7 @@ import 'batch_deezer.dart';
 import 'list_filter.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
+import 'suggest_field.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
@@ -802,11 +803,11 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
             const SizedBox(height: 14),
             const Text('Исполнитель', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
-            TextField(controller: artist),
+            SuggestField(controller: artist, multi: true, source: () => libraryArtistSuggestions(lib)),
             const SizedBox(height: 14),
             const Text('Альбом', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
-            TextField(controller: album),
+            SuggestField(controller: album, source: () => libraryAlbumSuggestions(lib)),
             const SizedBox(height: 14),
             const Text('Изменения увидят все друзья. Сам файл на Диске не меняется.',
                 style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
@@ -875,16 +876,19 @@ Future<bool> editTracksDialog(BuildContext context, List<Track> tracks) async {
             const SizedBox(height: 18),
             const Text('Исполнитель', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
-            TextField(
+            SuggestField(
               controller: artist,
+              multi: true,
+              source: () => libraryArtistSuggestions(lib),
               onChanged: (_) => artistDirty = true,
               decoration: InputDecoration(hintText: artistMixed ? 'Разные: оставить как есть' : null),
             ),
             const SizedBox(height: 14),
             const Text('Альбом', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
-            TextField(
+            SuggestField(
               controller: album,
+              source: () => libraryAlbumSuggestions(lib),
               onChanged: (_) => albumDirty = true,
               decoration: InputDecoration(hintText: albumMixed ? 'Разные: оставить как есть' : null),
             ),
