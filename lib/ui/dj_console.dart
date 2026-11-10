@@ -468,12 +468,12 @@ class _DeckWavePainter extends CustomPainter {
     final left = Paint()..color = C.accent;
     final right = Paint()..color = C.muted.withValues(alpha: 0.45);
     for (var i = 0; i < count; i++) {
-      final level = wave.isEmpty ? 0.10 : (wave[i] / 255).clamp(0.04, 1.0);
+      final level = (wave.isEmpty ? 0.10 : (wave[i] / 255).clamp(0.04, 1.0)).toDouble();
       final height = math.max(3.0, (size.height - 8) * level);
       canvas.drawRRect(
         RRect.fromRectAndRadius(
           Rect.fromLTWH(i * step, (size.height - height) / 2,
-            math.max(1, step - 1), height),
+            math.max(1.0, step - 1), height),
           const Radius.circular(1)),
         i / count <= progress ? left : right);
     }
