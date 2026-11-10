@@ -4,14 +4,14 @@
 #   powershell -ExecutionPolicy Bypass -File tools\publish-release.ps1
 #
 # Параметры:
-#   -Branch   что вливать в main (по умолчанию feature/beta-9)
+#   -Branch   что вливать в main (по умолчанию feature/beta-10)
 #   -Version  номер версии (по умолчанию: последний стабильный релиз + 1)
 #   -SkipChecks  не гонять flutter analyze и flutter test при сборке
 #
 # Скрипт останавливается и спрашивает перед каждым необратимым шагом: пуш в main и публикация релиза.
 
 param(
-    [string]$Branch = 'feature/beta-9',
+    [string]$Branch = 'feature/beta-10',
     [string]$Version = '',
     [switch]$SkipChecks
 )
@@ -45,7 +45,7 @@ GitOk checkout $Branch
 GitOk pull --ff-only
 GitOk checkout main
 GitOk pull --ff-only
-& git merge --no-ff $Branch -m "Бета 9: влита ветка $Branch"
+& git merge --no-ff $Branch -m "Влита ветка $Branch"
 if ($LASTEXITCODE -ne 0) {
     & git merge --abort 2>$null
     Fail 'Слияние дало конфликты, оно отменено. Пришлите вывод выше, ничего не запушено.'
