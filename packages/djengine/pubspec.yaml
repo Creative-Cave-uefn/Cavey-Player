@@ -1,0 +1,19 @@
+name: djengine
+description: Звуковой движок DJ-пульта Cave Player (две деки, микшер, эквалайзер, эффекты). Нативная часть на C++, вызывается через FFI.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.3.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.0
+
+flutter:
+  plugin:
+    platforms:
+      windows:
+        ffiPlugin: true

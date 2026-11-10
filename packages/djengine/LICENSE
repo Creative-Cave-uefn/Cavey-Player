@@ -1,0 +1,4 @@
+Движок DJ-пульта (src/djengine.cpp, src/dsp.hpp, lib/) — часть Cave Player.
+
+Вывод звука использует miniaudio (src/miniaudio.h) Дэвида Рида: общественное достояние или MIT-0 на выбор;
+полный текст лицензии — в конце файла src/miniaudio.h.

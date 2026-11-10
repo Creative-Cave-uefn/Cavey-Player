@@ -16,6 +16,7 @@ import 'core/automix.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
+import 'core/djdecks.dart';
 import 'core/dl/service.dart';
 import 'core/dl/tools.dart';
 import 'core/drive.dart';
@@ -76,6 +77,9 @@ class AppServices {
   late final SimIndex sim;
   late final ListenBrainz listenBrainz;
   late final MixBook mixBook;
+
+  /// DJ-пульт: две деки, микшер, эффекты и АвтоDJ
+  late final DjDecks djDecks;
   late final KaraokeService karaoke;
   late final MediaKeys mediaKeys;
 
@@ -198,6 +202,23 @@ class AppServices {
     player.mixBook = app.mixBook;
     unawaited(mixer.preload()); // сохранённые разборы звука — в память, в фоне
     app.sim = SimIndex(lib, () => player.mixer);
+    app.djDecks = DjDecks(
+      dir: store.sub('dj'),
+      tools: Tools(store.sub('tools')),
+      cache: cache,
+      mixer: mixer,
+      settings: settings,
+      saveSettings: () => unawaited(lib.saveSettings()),
+      pool: () {
+        final fromQueue = [for (final id in player.queue) if (lib.data.tracks[id] != null) lib.data.tracks[id]!];
+        return fromQueue.length >= 2 ? fromQueue : lib.allTracks;
+      },
+      songOf: app.sim.song,
+      pauseMain: () {
+        if (player.playing) unawaited(player.pause());
+      },
+      mainTrack: () => player.current,
+    );
     app.listenBrainz = ListenBrainz(settings, player)..start();
     final tempo = <String, double?>{};
     player.tempoOf = (t) {
@@ -312,6 +333,7 @@ class AppServices {
       await jam.shutdown();
     } catch (_) {}
     try {
+      djDecks.dispose();
       await player.flushSession();
       await wave.flush();
       await lib.flushNow();

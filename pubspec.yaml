@@ -29,6 +29,9 @@ dependencies:
   # Своя копия плагина: возвращает кнопки миниатюры после того, как окно спрятали и показали
   windows_taskbar:
     path: packages/windows_taskbar
+  # Звуковой движок DJ-пульта: нативная библиотека на C++ (FFI), собирается вместе с программой
+  djengine:
+    path: packages/djengine
 
 dev_dependencies:
   flutter_test:

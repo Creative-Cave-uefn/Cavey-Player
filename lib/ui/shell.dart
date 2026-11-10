@@ -31,6 +31,7 @@ import 'tracks_view.dart';
 import 'web_pages.dart';
 import 'web_views.dart';
 import 'wave_view.dart';
+import 'dj_view.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
 import 'library_home.dart';
@@ -569,6 +570,8 @@ class _ShellState extends State<Shell> {
         return CinemaPage(key: const ValueKey('cinema'), compact: compact);
       case 'wave':
         return WavePage(key: const ValueKey('wave'), compact: compact);
+      case 'dj':
+        return DjPage(key: const ValueKey('dj'), compact: compact);
       case 'new':
         return NewReleasesPage(key: const ValueKey('new'), compact: compact);
       case 'websearch':
@@ -844,6 +847,7 @@ class _Sidebar extends StatelessWidget {
             item(Icons.library_music_outlined, 'Медиатека', const Nav('all'),
                 also: const ['albums', 'artists', 'recent', 'songs', 'playlists', 'collection']),
             item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
+            item(Icons.album_outlined, 'DJ-пульт', const Nav('dj')),
             const SizedBox(height: 14),
             item(Icons.travel_explore_rounded, 'Поиск в интернете', const Nav('websearch')),
             item(Icons.new_releases_outlined, 'Новинки', const Nav('new')),

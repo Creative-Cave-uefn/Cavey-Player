@@ -1484,6 +1484,8 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
     PopupMenuItem(value: 'like', child: Text(liked ? 'Убрать из любимого' : 'Добавить в любимое')),
     const PopupMenuItem(value: 'queue', child: Text('Добавить в очередь')),
     const PopupMenuItem(value: 'wave', child: Text('Моя волна по треку')),
+    const PopupMenuItem(value: 'deckA', child: Text('Загрузить в деку A (DJ-пульт)')),
+    const PopupMenuItem(value: 'deckB', child: Text('Загрузить в деку B (DJ-пульт)')),
     const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
     if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
     const PopupMenuDivider(),
@@ -1521,6 +1523,11 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
   switch (v) {
     case 'wave':
       startWaveFrom(context, track);
+    case 'deckA':
+    case 'deckB':
+      final deck = v == 'deckA' ? 0 : 1;
+      unawaited(app.djDecks.load(deck, track));
+      app.lib.messages.add('«${track.title}» загружается в деку ${deck == 0 ? 'A' : 'B'}');
     case 'queue':
       app.player.addToQueue(track);
       app.lib.messages.add('«${track.title}» добавлен в очередь');
