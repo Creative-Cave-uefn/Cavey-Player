@@ -127,16 +127,27 @@ class PlayerBar extends StatelessWidget {
                     cursor: SystemMouseCursors.click,
                     child: GestureDetector(
                       onTap: () => NavScope.of(context).go(Nav('album', t.albumKey)),
-                      child: ShaderMask(
-                        // Правая часть обложки растворяется
-                        shaderCallback: (r) => const LinearGradient(
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                          colors: [Colors.white, Colors.white, Color(0x00FFFFFF)],
-                          stops: [0.0, 0.58, 1.0],
-                        ).createShader(r),
-                        blendMode: BlendMode.dstIn,
-                        child: CoverImage(track: t, size: 104, height: 74, radius: 0, fill: true),
+                      // Обложка крупнее и сдвинута влево: скруглённый левый край капсулы обрезает её саму, а не показывает
+                      // фон по краям — у картинок плохого качества иначе были видны дуги капсулы
+                      child: SizedBox(
+                        width: 104,
+                        height: 74,
+                        child: OverflowBox(
+                          alignment: Alignment.centerRight,
+                          minWidth: 0,
+                          maxWidth: 120,
+                          child: ShaderMask(
+                            // Правая часть обложки растворяется
+                            shaderCallback: (r) => const LinearGradient(
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                              colors: [Colors.white, Colors.white, Color(0x00FFFFFF)],
+                              stops: [0.0, 0.62, 1.0],
+                            ).createShader(r),
+                            blendMode: BlendMode.dstIn,
+                            child: CoverImage(track: t, size: 120, height: 74, radius: 0, fill: true),
+                          ),
+                        ),
                       ),
                     ),
                   ),

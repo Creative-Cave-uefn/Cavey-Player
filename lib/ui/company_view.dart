@@ -615,6 +615,29 @@ class NowListeningSidebar extends StatefulWidget {
 class _NowListeningSidebarState extends State<NowListeningSidebar> {
   bool _open = false;
 
+  // Узкая панель: список не раздвигает её, а всплывает окошком над значком, пока курсор на значке или на окошке
+  final _portal = OverlayPortalController();
+  final _link = LayerLink();
+  Timer? _closeTimer;
+
+  void _popEnter() {
+    _closeTimer?.cancel();
+    if (!_portal.isShowing) _portal.show();
+  }
+
+  void _popLeave() {
+    _closeTimer?.cancel();
+    _closeTimer = Timer(const Duration(milliseconds: 180), () {
+      if (mounted && _portal.isShowing) _portal.hide();
+    });
+  }
+
+  @override
+  void dispose() {
+    _closeTimer?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
@@ -635,6 +658,63 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
           for (final g in jamGroups) ...g.people,
           if (jam.active) ...jam.participants,
         }.where((e) => e != me).toList();
+        if (compact) {
+          return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (jam.active) JamStrip(compact: true),
+            for (final g in jamGroups) JamGroupCard(key: ValueKey('jg-${g.id}'), group: g, compact: true),
+            OverlayPortal(
+              controller: _portal,
+              overlayChildBuilder: (_) => Align(
+                alignment: Alignment.topLeft,
+                child: CompositedTransformFollower(
+                  link: _link,
+                  targetAnchor: Alignment.topRight,
+                  followerAnchor: Alignment.bottomLeft,
+                  child: live.isEmpty
+                      ? const SizedBox.shrink()
+                      : MouseRegion(
+                          onEnter: (_) => _popEnter(),
+                          onExit: (_) => _popLeave(),
+                          child: Padding(
+                            padding: const EdgeInsets.only(left: 6),
+                            child: SizedBox(
+                              width: 290,
+                              child: GlassPanel(
+                                radius: 16,
+                                tint: C.glassLight,
+                                blur: 32,
+                                padding: const EdgeInsets.symmetric(vertical: 6),
+                                child: Material(
+                                  type: MaterialType.transparency,
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(maxHeight: 320),
+                                    child: SingleChildScrollView(
+                                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                        for (final m in live) _ListenerTile(key: ValueKey('pop-${m.email}'), member: m, compact: false),
+                                      ]),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              child: CompositedTransformTarget(
+                link: _link,
+                child: MouseRegion(
+                  onEnter: (_) => _popEnter(),
+                  onExit: (_) => _popLeave(),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Center(child: Icon(Icons.headphones_rounded, size: 18, color: live.isEmpty ? C.faint : C.muted)),
+                  ),
+                ),
+              ),
+            ),
+          ]);
+        }
         return MouseRegion(
           onEnter: (_) => setState(() => _open = true),
           onExit: (_) => setState(() => _open = false),
