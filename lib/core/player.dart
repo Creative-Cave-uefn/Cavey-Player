@@ -1200,6 +1200,10 @@ class PlayerController extends ChangeNotifier {
   void invalidateStream(String id) => _proxy.invalidate(id);
 
   /// Что открывать в проигрывателе: сохранённый трек играет с диска, остальные — потоком с Google Диска через прокси
+  /// Authorized media source for the two independent live DJ decks.
+  /// Reuses the existing local cache and streaming proxy.
+  Future<Media> mediaForDj(Track t) => _mediaFor(t);
+
   Future<Media> _mediaFor(Track t) async {
     final local = cache.fileFor(t.id);
     if (cache.has(t.id) && local.existsSync()) return Media(local.path);
