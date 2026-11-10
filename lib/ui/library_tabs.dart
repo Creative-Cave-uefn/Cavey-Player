@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/store.dart' show Settings;
 import 'shell.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -16,6 +17,28 @@ const libraryTabs = <(String, Nav)>[
   ('Коллекция', Nav('collection')),
   ('Недавно добавленное', Nav('recent')),
 ];
+
+String _tabCode(Nav n) => '${n.kind}|${n.id ?? ''}';
+
+/// Вкладка «Медиатеки», открытая в прошлый раз (хранится в настройках на этом компьютере)
+Nav lastLibraryTab(Settings settings) {
+  final raw = settings.view['library.tab'];
+  if (raw != null) {
+    for (final (_, nav) in libraryTabs) {
+      if (_tabCode(nav) == raw) return nav;
+    }
+  }
+  return const Nav('all');
+}
+
+/// Запоминает вкладку, на которую перешли; false — вкладка не менялась
+bool rememberLibraryTab(Settings settings, Nav n) {
+  if (!libraryTabs.any((t) => t.$2.same(n))) return false;
+  final code = _tabCode(n);
+  if (settings.view['library.tab'] == code) return false;
+  settings.view['library.tab'] = code;
+  return true;
+}
 
 /// Страница — одна из вкладок медиатеки
 bool isLibraryTab(Nav n) => libraryTabs.any((t) => t.$2.same(n)) || (n.kind == 'albums' && n.id == null);

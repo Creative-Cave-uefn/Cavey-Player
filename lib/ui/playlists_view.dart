@@ -182,7 +182,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
           ]);
         }
         String sub(Playlist p) => '${lib.firstNameOf(p.by)} · ${countTracks(p.items.length)}';
-        return CustomScrollView(slivers: [
+        return CustomScrollView(key: const PageStorageKey('library:playlists'), slivers: [
           SliverToBoxAdapter(child: header),
           SliverPadding(
             padding: EdgeInsets.fromLTRB(pad, 0, pad, 32),

@@ -172,6 +172,15 @@ class _ShellState extends State<Shell> {
       // Своя плашка вместо SnackBar: маленькая, по центру и над плеером, ничего не перекрывает
       _showToast(m);
     });
+    if (!_tabRestored) {
+      _tabRestored = true;
+      final last = lastLibraryTab(Services.of(context).settings);
+      if (!last.same(_nav.value)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _nav.value.same(const Nav('all'))) _nav.value = last;
+        });
+      }
+    }
     if (!_migrationOffered) {
       _migrationOffered = true;
       // Через несколько секунд после запуска, когда библиотека уже загрузилась
@@ -190,6 +199,7 @@ class _ShellState extends State<Shell> {
   }
 
   bool _migrationOffered = false;
+  bool _tabRestored = false;
   LibraryController? _askLib;
 
   void _checkForeignDeletions() {
@@ -277,6 +287,9 @@ class _ShellState extends State<Shell> {
   }
 
   void _onNavForScroll() {
+    // Какая вкладка Медиатеки открыта — запоминаем: «Медиатека» слева и запуск приложения вернут её
+    final app = Services.of(context);
+    if (rememberLibraryTab(app.settings, _nav.value)) unawaited(app.lib.saveSettings());
     if (_scrollNav != null && !_nav.value.same(_scrollNav!)) {
       _scrollTopVisible.value = false;
       _pagePos = null;
@@ -867,8 +880,8 @@ class _Sidebar extends StatelessWidget {
                 ]),
               ),
             ),
-            item(Icons.library_music_outlined, 'Медиатека', const Nav('all'),
-                also: const ['albums', 'artists', 'recent', 'songs', 'playlists', 'collection']),
+            item(Icons.library_music_outlined, 'Медиатека', lastLibraryTab(app.settings),
+                also: const ['all', 'albums', 'artists', 'recent', 'songs', 'playlists', 'collection']),
             item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
             const SizedBox(height: 14),
             item(Icons.travel_explore_rounded, 'Поиск в интернете', const Nav('websearch')),

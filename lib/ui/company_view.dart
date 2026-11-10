@@ -41,7 +41,7 @@ class CompanyPage extends StatelessWidget {
         final now = social.listeningNow;
         final chart = social.chart();
         final feed = social.feed;
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
+        return ListView(key: const PageStorageKey('page:company'), padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Text('Участники', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 18),
           _People(),

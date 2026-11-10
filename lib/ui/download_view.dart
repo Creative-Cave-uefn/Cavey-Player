@@ -83,7 +83,7 @@ class _DownloadPageState extends State<DownloadPage> {
         final dl = app.downloads;
         final sources = app.lib.data.sources;
         final target = sources.any((s) => s.id == _target) ? _target : (sources.any((s) => s.id == app.settings.hubId) ? app.settings.hubId : sources.firstOrNull?.id);
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
+        return ListView(key: const PageStorageKey('page:download'), padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Text('Скачать', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
           Text(

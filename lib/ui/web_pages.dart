@@ -759,7 +759,7 @@ class _WebSearchPageState extends State<WebSearchPage> {
   @override
   Widget build(BuildContext context) {
     final pad = widget.compact ? 20.0 : 36.0;
-    return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
+    return ListView(key: const PageStorageKey('page:websearch'), padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
       Text('Поиск в интернете', style: display(36, weight: FontWeight.w700)),
       const SizedBox(height: 10),
       const Text('Треки, альбомы и исполнители из Deezer: послушать отрывок и скачать в библиотеку.',

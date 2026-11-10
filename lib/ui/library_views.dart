@@ -101,7 +101,7 @@ class _ArtistsPageState extends State<ArtistsPage> {
           if (favs.isNotEmpty && rest.isNotEmpty) 'Все исполнители',
           if (rest.isNotEmpty) rest,
         ];
-        return CustomScrollView(slivers: [
+        return CustomScrollView(key: const PageStorageKey('library:artists'), slivers: [
           SliverToBoxAdapter(
             child: Padding(
               padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 18),

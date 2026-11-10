@@ -147,7 +147,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
             ),
           ]);
         }
-        return CustomScrollView(slivers: [
+        return CustomScrollView(key: PageStorageKey('library:albums:${widget.kind ?? ''}'), slivers: [
           SliverToBoxAdapter(child: header),
           if (albums.isEmpty)
             SliverToBoxAdapter(

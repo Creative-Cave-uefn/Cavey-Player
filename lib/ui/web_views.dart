@@ -410,7 +410,7 @@ class _NewReleasesPageState extends State<NewReleasesPage> {
         final list = q.isEmpty
             ? all
             : [for (final r in all) if (foldText(r.album.title).contains(q) || foldText(r.album.artist).contains(q)) r];
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
+        return ListView(key: const PageStorageKey('page:new'), padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Row(children: [
             Expanded(child: Text('Новинки', style: display(36, weight: FontWeight.w700))),
             IconButton(

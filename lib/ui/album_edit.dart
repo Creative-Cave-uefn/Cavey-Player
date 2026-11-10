@@ -317,7 +317,10 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
         autofocus: true,
         child: Material(
           type: MaterialType.transparency,
-          child: Stack(children: [
+          // Приближенная или наклонённая обложка рисуется за границами окна просмотра (Overlay такое не обрезает):
+          // без обрезки она заезжала бы на верхнюю панель окна, которая лежит выше
+          child: ClipRect(
+            child: Stack(children: [
             Positioned.fill(
               child: FutureBuilder<Uint8List?>(
                 future: widget.bytes,
@@ -414,6 +417,7 @@ class _CoverViewerState extends State<_CoverViewer> with SingleTickerProviderSta
             ),
             Positioned(left: 0, right: 0, bottom: 16, child: Center(child: _controls())),
           ]),
+          ),
         ),
       ),
     );

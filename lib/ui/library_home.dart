@@ -199,7 +199,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         final topArtists = shelves.artists;
         final shortShelf = shelves.short;
 
-        return ListView(padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 40), children: [
+        return ListView(key: const PageStorageKey('library:home'), padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 40), children: [
           // Внутри «Медиатеки» счётчики стоят под её заголовком (library_tabs.dart); своё место они нужны только без рамки
           if (!LibraryFrame.on(context)) ...[
             Text('Медиатека', style: display(36, weight: FontWeight.w700)),
