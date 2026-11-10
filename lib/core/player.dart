@@ -10,6 +10,7 @@ import 'auth.dart';
 import 'crossfade.dart';
 import 'drive.dart';
 import 'library.dart';
+import 'mixbook.dart';
 import 'log.dart';
 import 'models.dart';
 import 'store.dart';
@@ -309,6 +310,7 @@ class PlayerController extends ChangeNotifier {
   /// Переключатель остаётся рабочим: его можно включить снова
   Future<void> playTracks(List<Track> list, int start, {String? playlistId, bool inOrder = false}) async {
     if (list.isEmpty) return;
+    _previewOverride = null;
     if (inOrder) shuffle = false;
     feeder = null; // выбрали что-то сами — волна выключается
     sourcePlaylist = playlistId;
@@ -626,21 +628,80 @@ class PlayerController extends ChangeNotifier {
   /// Длина плавного перехода сейчас: в джеме — у организатора, иначе моя настройка
   int get crossfadeSecNow => jamXfSec ?? settings.crossfadeSec;
 
+  /// Ручные переходы пар треков («Микс»)
+  MixBook? mixBook;
+
+  /// Переход, который сейчас предпрослушивается из редактора: пока он не доиграл, берётся вместо сохранённого
+  ({String from, String to, TransitionPref pref})? _previewOverride;
+
+  /// Ручная настройка перехода [from] → [to]; null — автоматический. В джеме действуют настройки организатора
+  TransitionPref? _prefFor(String from, String to) {
+    if (jamXfSec != null) return null;
+    final o = _previewOverride;
+    if (o != null && o.from == from && o.to == to) return o.pref;
+    return mixBook?.get(from, to);
+  }
+
   /// План умного перехода с текущего трека на следующий; null — профили ещё не готовы, переход обычный
   MixPlan? _smartPlan() {
     final m = mixer, cur = current, ni = _autoNextIndex();
-    if (!smartMix || m == null || cur == null || ni == null) return null;
+    if (m == null || cur == null || ni == null) return null;
+    final pref = _prefFor(cur.id, queue[ni]);
+    final manual = pref != null && pref.mode == TransitionMode.manual;
+    if (!smartMix && !manual) return null;
     final a = m.profile(cur.id), b = m.profile(queue[ni]);
     if (a == null || b == null) return null;
     // Профиль от другого файла (трек заменили) — не доверяем
     if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
-    return MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur), dj: _djMix);
+    final auto = MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur), dj: _djMix);
+    return manual ? MixPlan.manual(a, b, pref!, auto: auto) : auto;
+  }
+
+  /// Переход между текущим треком и следующим настроен вручную (или хоть как-то задан)
+  TransitionPref? get _nextPref {
+    final cur = current, ni = _autoNextIndex();
+    return cur == null || ni == null ? null : _prefFor(cur.id, queue[ni]);
+  }
+
+  /// «Свести сейчас»: начать переход на следующий трек прямо сейчас, не дожидаясь конца. Темп и доли — по тем же правилам
+  Future<void> mixNow() async {
+    if (_fading || !playing || _autoNextIndex() == null) return;
+    var plan = _smartPlan();
+    if (plan == null) {
+      await _startCrossfade();
+      return;
+    }
+    var start = position.value + plan.preroll + const Duration(milliseconds: 250);
+    final g = plan.grid;
+    if (g != null) {
+      // Ближайшая доля уходящего трека
+      final k = ((start.inMilliseconds - g.$1) / g.$2).ceil();
+      start = Duration(milliseconds: (g.$1 + k * g.$2).round());
+    }
+    final length = plan.dj ? plan.length : Duration(seconds: math.max(4, crossfadeSecNow));
+    plan = MixPlan(start, length, plan.inStart, plan.inGain,
+        dj: plan.dj, rate: plan.rate, swapAt: plan.swapAt, grid: plan.grid, offsetMs: plan.offsetMs, preroll: plan.preroll);
+    await _startCrossfade(plan);
+  }
+
+  /// Предпрослушивание перехода из редактора: играет [a] за несколько секунд до перехода и сводит с [b] с настройками [pref]
+  Future<bool> previewTransition(Track a, Track b, TransitionPref pref) async {
+    final m = mixer;
+    final pa = m?.profile(a.id), pb = m?.profile(b.id);
+    if (pa == null || pb == null) return false;
+    final auto = MixPlan.make(pa, pb, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), dj: _djMix);
+    final plan = pref.mode == TransitionMode.manual ? MixPlan.manual(pa, pb, pref, auto: auto) : auto;
+    final from = Duration(milliseconds: math.max(0, plan.start.inMilliseconds - plan.preroll.inMilliseconds - 8000));
+    await playTracks([a, b], 0, inOrder: true);
+    _previewOverride = (from: a.id, to: b.id, pref: pref);
+    await seek(from);
+    return true;
   }
 
   /// Профили звука текущего и следующего трека — считаем заранее, пока трек играет
   void _prepareMix() {
     final m = mixer;
-    final needMix = smartMix && crossfadeSecNow > 0;
+    final needMix = (smartMix && crossfadeSecNow > 0) || _nextPref?.mode == TransitionMode.manual;
     if (m == null || !(needMix || normalize)) return;
     final cur = current;
     if (cur != null) {
@@ -765,9 +826,13 @@ class PlayerController extends ChangeNotifier {
     final prev = _prevPos;
     _prevPos = d;
     if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
-    if (crossfadeSecNow <= 0 || _autoNextIndex() == null) return;
-    // Профили смотрим только ближе к концу трека — не на каждом тике позиции
-    final plan = duration - d < Duration(seconds: djStyle ? 180 : 60) ? _smartPlan() : null;
+    if (_autoNextIndex() == null) return;
+    final pref = _nextPref;
+    if (pref != null && pref.mode == TransitionMode.cut) return; // этот переход — без перехода: трек доиграет сам
+    final manual = pref != null && pref.mode == TransitionMode.manual;
+    if (crossfadeSecNow <= 0 && !manual) return;
+    // Профили смотрим только ближе к концу трека — не на каждом тике позиции. У ручного перехода начало может быть где угодно
+    final plan = manual || duration - d < Duration(seconds: djStyle ? 180 : 60) ? _smartPlan() : null;
     _maybePrepare(d, plan);
     final step = d - prev;
     // Диджейский переход запускает следующий трек чуть раньше (без звука), поэтому и отсчёт начинается раньше
@@ -1096,6 +1161,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _endFade({bool stopIncoming = false}) {
+    _previewOverride = null;
     _stopClocks();
     _fadeTimer?.cancel();
     _fadeTimer = null;

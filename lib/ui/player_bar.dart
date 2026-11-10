@@ -111,6 +111,12 @@ class PlayerBar extends StatelessWidget {
                 color: p.repeat == RepeatSetting.off ? C.muted : C.accent,
               ),
             ),
+          if (!compact)
+            IconButton(
+              tooltip: 'Свести сейчас: начать переход на следующий трек',
+              onPressed: t == null || !p.playing ? null : () => unawaited(p.mixNow()),
+              icon: const Icon(Icons.swap_horiz_rounded, size: 22, color: C.muted),
+            ),
         ]);
 
         // Слева без плашки: обложка у самого края капсулы, чуть крупнее и будто выглядывает из-за неё —

@@ -10,6 +10,7 @@ import 'audio_cache.dart';
 import 'beats.dart';
 import 'dj.dart';
 import 'dl/tools.dart';
+import 'mixbook.dart';
 import 'log.dart';
 
 // Умный переход между треками (как «Automix» в Spotify). Готовых библиотек для Flutter нет,
@@ -296,6 +297,57 @@ class MixPlan {
       Duration(milliseconds: tail - start),
       Duration(milliseconds: inStart),
       math.pow(10, diff / 20).toDouble(),
+    );
+  }
+
+  /// Переход, настроенный вручную. Что не задано ([TransitionPref.outMs], [TransitionPref.inMs]), берётся из автоматического
+  /// плана [auto] (если он есть) или считается заново. Длина не выходит за конец уходящего трека
+  static MixPlan manual(MixProfile out, MixProfile inn, TransitionPref pref, {MixPlan? auto}) {
+    final tail = out.durationMs;
+    final dj = pref.style == 'dj';
+    final ob = out.bpm, ib = inn.bpm;
+    final oh = out.tailBarMs ?? out.tailBeatMs, ih = inn.headBarMs ?? inn.headBeatMs;
+    final grid = ob != null && ib != null && oh != null && ih != null && ob >= 60 && ob <= 200 && ib >= 60 && ib <= 200;
+
+    // Темп: подгоняем, если просят и разница разумная (до 25 %)
+    var rate = 1.0;
+    if (dj && pref.sync && grid) {
+      var best = double.infinity;
+      for (final m in const [0.5, 1.0, 2.0]) {
+        final r = bo * m / bi;
+        if ((r - 1).abs() < (best - 1).abs()) best = r;
+      }
+      if ((best - 1).abs() <= 0.25) rate = best;
+    }
+    final useGrid = dj && grid;
+    // Ниже эти значения нужны, только когда сетка есть (useGrid); иначе в расчёт не попадают
+    final bo = ob ?? 120.0, bi = ib ?? 120.0, ho = oh ?? 0, hi = ih ?? 0;
+
+    // Где начать в уходящем: заданное вручную, иначе автоматическое, иначе за длину до конца
+    final lenMs = dj ? (grid ? (pref.bars * 4 * 60000 / bo).round() : pref.bars * 2000) : pref.seconds * 1000;
+    var start = pref.outMs ?? auto?.start.inMilliseconds ?? math.max(0, out.endMs - lenMs);
+    if (useGrid) start = snapToBeat(start, ho, bo, durationMs: tail);
+    start = start.clamp(0, math.max(0, tail - 500)).toInt();
+    final len = math.min(lenMs, math.max(500, tail - start));
+
+    // С какого места начать следующий: заданное вручную, иначе после тишины в начале
+    var enter = pref.inMs ?? math.min(inn.introMs, 8000);
+    if (useGrid) enter = snapToBeat(enter, hi, bi, durationMs: inn.durationMs);
+    enter = enter.clamp(0, math.max(0, inn.durationMs - 500)).toInt();
+
+    final diff = (out.loudDb - inn.loudDb).clamp(-6.0, 6.0);
+    final pre = Duration(milliseconds: useGrid ? math.min(700, (enter / rate).floor()) : 0);
+    return MixPlan(
+      Duration(milliseconds: start),
+      Duration(milliseconds: len),
+      Duration(milliseconds: enter),
+      math.pow(10, diff / 20).toDouble(),
+      dj: useGrid,
+      rate: useGrid ? rate : 1.0,
+      swapAt: useGrid && pref.bass && len >= 3000 ? Duration(milliseconds: (len / 2).round()) : null,
+      grid: useGrid ? (ho.toDouble(), 60000 / bo, hi.toDouble(), 60000 / bi) : null,
+      offsetMs: pref.offsetMs,
+      preroll: pre,
     );
   }
 

@@ -22,6 +22,7 @@ import 'core/drive.dart';
 import 'core/jam.dart';
 import 'core/library.dart';
 import 'core/listenbrainz.dart';
+import 'core/mixbook.dart';
 import 'core/lyric_sources.dart';
 import 'core/perf.dart';
 import 'core/log.dart';
@@ -74,6 +75,7 @@ class AppServices {
   /// Похожесть треков по локальным данным (для радио и АвтоDJ) и скробблинг в ListenBrainz
   late final SimIndex sim;
   late final ListenBrainz listenBrainz;
+  late final MixBook mixBook;
   late final KaraokeService karaoke;
   late final MediaKeys mediaKeys;
 
@@ -192,6 +194,8 @@ class AppServices {
         if (id == player.current?.id) player.refreshNormalize();
       };
     player.mixer = mixer;
+    app.mixBook = MixBook(File('${store.sub('mixbook').path}${Platform.pathSeparator}transitions.json'));
+    player.mixBook = app.mixBook;
     unawaited(mixer.preload()); // сохранённые разборы звука — в память, в фоне
     app.sim = SimIndex(lib, () => player.mixer);
     app.listenBrainz = ListenBrainz(settings, player)..start();
