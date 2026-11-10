@@ -1,0 +1,244 @@
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:cave_player/core/automix.dart';
+import 'package:cave_player/core/beats.dart';
+import 'package:cave_player/core/dj.dart';
+
+/// Звук для проверок: моно, 4 кГц, 16 бит
+class _Pcm {
+  final ByteData data;
+  final int n;
+  _Pcm(int seconds)
+      : n = seconds * beatRate,
+        data = ByteData(seconds * beatRate * 2);
+
+  void add(int i, double v) {
+    if (i < 0 || i >= n) return;
+    final cur = data.getInt16(i * 2, Endian.little) / 32768.0;
+    data.setInt16(i * 2, ((cur + v).clamp(-1.0, 1.0) * 32767).round(), Endian.little);
+  }
+
+  Uint8List get bytes => data.buffer.asUint8List();
+}
+
+/// Ровная бочка на каждой доле, первая — на [first] секунде; чуть шума, чтобы не было идеальной тишины
+Uint8List kicks(double bpm, int seconds, {double first = 0.7}) {
+  final p = _Pcm(seconds);
+  final period = 60.0 / bpm;
+  var seed = 12345;
+  double noise() {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return (seed / 0x7fffffff - 0.5) * 0.02;
+  }
+
+  for (var i = 0; i < p.n; i++) {
+    p.add(i, noise());
+  }
+  for (var t = first; t < seconds - 0.2; t += period) {
+    final at = (t * beatRate).round();
+    for (var k = 0; k < 480; k++) {
+      p.add(at + k, math.sin(2 * math.pi * 60 * k / beatRate) * math.exp(-k / 120.0) * 0.8);
+    }
+  }
+  return p.bytes;
+}
+
+/// Аккорды в заданной тональности: [chords] — пары (смещение корня от тоники, терция)
+Uint8List chords(int tonic, List<(int, int)> chords, {int seconds = 40}) {
+  final p = _Pcm(seconds);
+  final segment = p.n ~/ 16;
+  for (var s = 0; s < 16; s++) {
+    final (root, third) = chords[s % chords.length];
+    for (final iv in [0, third, 7]) {
+      final midi = 48 + (tonic + root + iv) % 12;
+      final f0 = 440 * math.pow(2, (midi - 69) / 12);
+      for (var i = s * segment; i < (s + 1) * segment; i++) {
+        final t = i / beatRate;
+        var v = 0.0;
+        for (final h in [1, 2, 3, 4]) {
+          if (f0 * h < 1900) v += math.sin(2 * math.pi * f0 * h * t) / h;
+        }
+        p.add(i, v * 0.12);
+      }
+    }
+  }
+  return p.bytes;
+}
+
+/// Расстояние между двумя положениями на сетке с периодом [period] (мс)
+double _phaseGap(int a, int b, double period) {
+  final d = ((a - b) % period + period) % period;
+  return math.min(d, period - d);
+}
+
+void main() {
+  group('темп и доли', () {
+    for (final bpm in [90.0, 120.0, 140.0]) {
+      test('находит ${bpm.round()} ударов в минуту', () {
+        final a = analyzePcm(kicks(bpm, 60));
+        expect(a.bpm, isNotNull);
+        expect(a.bpmConfidence, greaterThan(0.1));
+        // Темп мог прийти вдвое больше или меньше: для подбора это одно и то же
+        expect(bpmStretch(a.bpm!, bpm), lessThan(0.02));
+      });
+    }
+
+    test('доли стоят там, где бьёт бочка', () {
+      final a = analyzePcm(kicks(120, 60));
+      expect(a.headBeatMs, isNotNull);
+      expect(a.tailBeatMs, isNotNull);
+      // Первая бочка на 700 мс, период 500 мс
+      expect(_phaseGap(a.headBeatMs!, 700, 500), lessThan(40));
+      expect(_phaseGap(a.tailBeatMs!, 700, 500), lessThan(40));
+    });
+
+    test('шум без ритма не даёт уверенного темпа', () {
+      final p = _Pcm(60);
+      var seed = 99;
+      for (var i = 0; i < p.n; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        p.add(i, (seed / 0x7fffffff - 0.5) * 0.4);
+      }
+      final a = analyzePcm(p.bytes);
+      expect(a.bpmConfidence, lessThan(0.1));
+      expect(a.headBeatMs, isNull);
+    });
+
+    test('слишком короткий трек не разбирается', () {
+      final a = analyzePcm(kicks(120, 1));
+      expect(a.bpm, isNull);
+      expect(a.key, isNull);
+    });
+
+    test('привязка к доле: ближайшая точка сетки', () {
+      expect(snapToBeat(1230, 200, 120), 1200); // сетка 200, 700, 1200 …
+      expect(snapToBeat(1480, 200, 120), 1700);
+      expect(snapToBeat(100, 200, 120), 200);
+      expect(snapToBeat(5000, 200, 120, durationMs: 3000), 3000);
+      expect(snapToBeat(4321, 0, 0), 4321); // темпа нет — не трогаем
+    });
+  });
+
+  group('тональность', () {
+    test('до мажор → 8B', () {
+      final a = analyzePcm(chords(0, const [(0, 4), (5, 4), (7, 4), (0, 4)]));
+      expect(a.key, '8B');
+      expect(a.keyConfidence, greaterThan(0.5));
+    });
+
+    test('ля минор → 8A', () {
+      // A = 9; i – iv – V – i
+      final a = analyzePcm(chords(9, const [(0, 3), (5, 3), (7, 4), (0, 3)]));
+      expect(a.key, '8A');
+    });
+
+    test('ре мажор → 10B', () {
+      final a = analyzePcm(chords(2, const [(0, 4), (5, 4), (7, 4), (0, 4)]));
+      expect(a.key, '10B');
+    });
+
+    test('запись Camelot по тонике', () {
+      expect(camelotOf(0, false), '8B'); // C
+      expect(camelotOf(9, true), '8A'); // Am
+      expect(camelotOf(6, false), '2B'); // F#
+      expect(camelotOf(3, true), '5A'); // D#m
+    });
+  });
+
+  group('форма волны', () {
+    test('столько столбиков, сколько задано, и самый громкий — 255', () {
+      final w = analyzePcm(kicks(120, 30)).wave;
+      expect(w.length, waveBuckets);
+      expect(w.reduce(math.max), 255);
+      expect(w.every((v) => v >= 0 && v <= 255), isTrue);
+    });
+  });
+
+  group('профиль трека', () {
+    const base = MixProfile(durationMs: 200000, introMs: 1000, outroMs: 190000, endMs: 198000, loudDb: -14);
+
+    test('JSON туда и обратно с темпом, тональностью, долями и волной', () {
+      final p = base.withAnalysis(
+        AudioAnalysis(bpm: 128, bpmConfidence: 0.6, headBeatMs: 250, tailBeatMs: 120, key: '8A', keyConfidence: 0.7, wave: [0, 10, 255, 128]),
+        genre: 'house',
+      );
+      final back = MixProfile.fromJson(p.toJson())!;
+      expect(back.v, MixProfile.version);
+      expect(back.bpm, 128);
+      expect(back.headBeatMs, 250);
+      expect(back.tailBeatMs, 120);
+      expect(back.key, '8A');
+      expect(back.wave, [0, 10, 255, 128]);
+      expect(back.genre, 'house');
+    });
+
+    test('старый профиль без новых полей читается и считается устаревшим', () {
+      final old = MixProfile.fromJson({'d': 1000, 'i': 0, 'o': 900, 'e': 1000, 'l': -12})!;
+      expect(old.v, 1);
+      expect(old.bpm, isNull);
+      expect(old.wave, isEmpty);
+      expect(old.v < MixProfile.version, isTrue);
+    });
+
+    test('теги файла важнее своего разбора, спорящая сетка долей отбрасывается', () {
+      const a = AudioAnalysis(bpm: 100, bpmConfidence: 0.5, headBeatMs: 100, tailBeatMs: 50, key: '3B', keyConfidence: 0.9);
+      final tagged = base.withAnalysis(a, tagBpm: 128, tagKey: 'Am');
+      expect(tagged.bpm, 128);
+      expect(tagged.key, '8A');
+      expect(tagged.headBeatMs, isNull); // 128 и 100 расходятся: сетке 100 верить нельзя
+      final agree = base.withAnalysis(a, tagBpm: 101);
+      expect(agree.bpm, 101);
+      expect(agree.headBeatMs, 100);
+    });
+
+    test('неуверенный темп и тональность в профиль не попадают', () {
+      const a = AudioAnalysis(bpm: 133, bpmConfidence: 0.05, headBeatMs: 10, key: '1A', keyConfidence: 0.3);
+      final p = base.withAnalysis(a);
+      expect(p.bpm, isNull);
+      expect(p.key, isNull);
+      expect(p.headBeatMs, isNull);
+    });
+
+    test('теги из текста ffmpeg: темп, тональность, жанр', () {
+      const text = ';FFMETADATA1\ntitle=Song\nTBPM=127,5\nTKEY=Am\nGENRE=Deep House\n';
+      final r = MixAnalyzer.parseTagText(text);
+      expect(r.$1, 127.5);
+      expect(r.$2, 'Am');
+      expect(r.$3, 'deep house');
+      final none = MixAnalyzer.parseTagText('title=x\nartist=y\n');
+      expect(none.$1, isNull);
+      expect(none.$2, isNull);
+      expect(none.$3, '');
+    });
+  });
+
+  group('переход по долям', () {
+    test('старт на доле уходящего, вход на доле следующего', () {
+      const out = MixProfile(
+          durationMs: 200000, introMs: 0, outroMs: 190000, endMs: 198000, loudDb: -12, v: 2, bpm: 120, headBeatMs: 200, tailBeatMs: 130);
+      const inn = MixProfile(
+          durationMs: 200000, introMs: 700, outroMs: 190000, endMs: 198000, loudDb: -12, v: 2, bpm: 121, headBeatMs: 420, tailBeatMs: 130);
+      final plan = MixPlan.make(out, inn, maxSec: 8);
+      expect(_phaseGap(plan.start.inMilliseconds, 130, 500), lessThan(1));
+      // Следующий входит на своей доле: 420 + k·(60000/121)
+      expect(_phaseGap(plan.inStart.inMilliseconds, 420, 60000 / 121), lessThan(2));
+      expect(plan.inStart.inMilliseconds, greaterThanOrEqualTo(700));
+      // Конец перехода не сдвинулся: он по-прежнему там, где трек уходит в тишину
+      expect((plan.start + plan.length).inMilliseconds, out.endMs);
+    });
+
+    test('темпы сильно расходятся — по долям не выравниваем', () {
+      const out = MixProfile(
+          durationMs: 200000, introMs: 0, outroMs: 190000, endMs: 198000, loudDb: -12, v: 2, bpm: 120, headBeatMs: 200, tailBeatMs: 130);
+      const inn = MixProfile(
+          durationMs: 200000, introMs: 700, outroMs: 190000, endMs: 198000, loudDb: -12, v: 2, bpm: 150, headBeatMs: 420, tailBeatMs: 130);
+      final plain = MixPlan.make(
+          MixProfile(durationMs: out.durationMs, introMs: 0, outroMs: out.outroMs, endMs: out.endMs, loudDb: -12, bpm: 120), inn,
+          maxSec: 8);
+      final plan = MixPlan.make(out, inn, maxSec: 8);
+      expect(plan.inStart, plain.inStart);
+    });
+  });
+}

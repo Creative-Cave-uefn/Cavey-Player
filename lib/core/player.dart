@@ -78,6 +78,9 @@ class CrossfadeInfo {
 abstract class QueueFeeder {
   List<String> more(int n);
 
+  /// Заголовок раздела очереди, который пополняется из этого источника («Далее в волне», «Далее в радио»)
+  String get label;
+
   /// Трек сменился: [listened] — сколько он играл, [skipped] — переключили сами, а не доиграл
   void heard(Track t, Duration listened, {required bool skipped});
 }
@@ -420,6 +423,25 @@ class PlayerController extends ChangeNotifier {
   void attachFeeder(QueueFeeder f) {
     feeder = f;
     notifyListeners();
+  }
+
+  /// Меняет источник бесконечной очереди, не трогая то, что уже в очереди (радио по очереди, АвтоDJ).
+  /// null — очередь больше не пополняется сама
+  void useFeeder(QueueFeeder? f) {
+    feeder = f;
+    if (f != null) _topUpFeed();
+    notifyListeners();
+  }
+
+  /// Ставит следующие за текущим треки в новом порядке (АвтоDJ выстроил их по темпу и тональности).
+  /// Остаётся только то, что в [ids]; прежнее деление на «поставил сам» и «подобрано» сбрасывается
+  void reorderUpcoming(List<String> ids) {
+    if (index < 0) return;
+    final head = queue.take(index + 1).toList();
+    queue = [...head, for (final id in ids) if (lib.data.tracks[id] != null) id];
+    _origin = List.of(queue);
+    userAhead = 0;
+    _queueChanged();
   }
 
   /// Заменяет всё, что дальше видимых следующих треков (например, сменили характер волны)

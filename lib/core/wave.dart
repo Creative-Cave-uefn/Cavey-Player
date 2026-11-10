@@ -4,12 +4,14 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
 
+import 'dj.dart';
 import 'dl/service.dart';
 import 'lastfm.dart';
 import 'library.dart';
 import 'log.dart';
 import 'models.dart';
 import 'player.dart';
+import 'radio.dart';
 import 'social.dart';
 import 'store.dart';
 import 'web_info.dart';
@@ -331,6 +333,8 @@ class WaveInputs {
   final Map<String, double>? mood; // выбрано настроение: трек → насколько подходит (0..1)
   final Map<String, double> bpm; // известный темп треков (Д6)
   final double? curBpm; // темп играющего сейчас трека
+  final Map<String, Camelot> keys; // тональность треков по разбору звука (АвтоDJ)
+  final Camelot? curKey; // тональность играющего сейчас трека
 
   /// Контекст волны: '' — обычная, 'custom' — своя подборка, иначе id настроения.
   /// Бан, пропуски и минусы исполнителям действуют только в том контексте, где их поставили
@@ -355,6 +359,8 @@ class WaveInputs {
     this.mood,
     this.bpm = const {},
     this.curBpm,
+    this.keys = const {},
+    this.curKey,
   }) : taste = taste ?? WaveTaste();
 }
 
@@ -436,6 +442,9 @@ class WaveEngine {
       r = (r - r.roundToDouble()).abs() < r.abs() ? r - r.roundToDouble() : r;
       w *= 1 - min(0.35, r.abs() * 0.5);
     }
+    // Тональность по кругу Camelot: рядом — слегка поощряем, далеко — слегка штрафуем (как в АвтоDJ)
+    final ck = x.curKey, tk = x.keys[t.id];
+    if (ck != null && tk != null) w *= 0.8 + 0.4 * Camelot.compat(ck, tk);
     if (x.taste.upvoted.contains(t.id)) w *= 1.6;
     w *= pow(0.45, x.taste.skipsOf(t.id, x.ctx));
     return max(w, 0.002);
@@ -728,7 +737,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     if (mood != null) unawaited(_loadTags());
     final found = await _learnFrom(t);
     if (!active || player.current?.id != t.id) return;
-    if (found > 0) player.refillFeed(keep: (id) => trials.containsKey(id));
+    // То же без интернета: по тегам, плейлистам, жанру, темпу и тональности. Работает, даже когда Last.fm недоступен
+    final local = _learnLocal(t);
+    if (found + local > 0) player.refillFeed(keep: (id) => trials.containsKey(id));
     // В библиотеке почти нет похожих — значит, их надо скачать, не дожидаясь очереди
     if (found < 3) _maybeDiscover(force: true);
     notifyListeners();
@@ -869,13 +880,26 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         if (r > 0) return min(1.0, r);
         if (r < 0) return 0; // сама песня помечена как «не то»
       }
-      return t.artists.map((a) => fit(a.toLowerCase())).fold<double>(0, (a, b) => a > b ? a : b);
+      final art = t.artists.map((a) => fit(a.toLowerCase())).fold<double>(0, (a, b) => a > b ? a : b);
+      // Тегов Last.fm нет (недоступен или не знает исполнителя): смотрим на звук и жанр самого трека
+      if (art <= unknown + 1e-9) {
+        final loc = _localMood(t, m);
+        if (loc != null) return loc;
+      }
+      return art;
     }
 
     return {
       for (final t in tracks)
         if (fitTrack(t) case final v when v > 0) t.id: v
     };
+  }
+
+  /// Подходит ли трек под настроение по темпу, громкости, тональности и жанру из разбора звука; null — трек не разобран
+  double? _localMood(Track t, WaveMood m) {
+    final p = player.mixer?.profileCached(t.id);
+    if (p == null) return null;
+    return moodFitLocal(m.id, m.tags, m.anti, bpm: p.bpm, key: Camelot.parse(p.key), loudDb: p.loudDb, genre: p.genre);
   }
 
   /// Теги исполнителей библиотеки: сначала тех, у кого больше треков. Хранятся, повторно не спрашиваем
@@ -1079,6 +1103,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     if (_inputsDirty && (stale || _inputsTrials != trials.length) || _inputsTrials != trials.length) {
       _rebuildInputs();
     }
+    _refreshTempo();
     return WaveInputs(
       ctx: _ctx,
       likeBoost: _tuneK,
@@ -1093,9 +1118,43 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       boost: _boost,
       focus: _focus,
       mood: _moodMap(_cTracks),
-      bpm: _bpms,
-      curBpm: player.current == null ? null : _bpms[player.current!.id],
+      bpm: _tempoMap,
+      curBpm: player.current == null ? null : (_tempoMap[player.current!.id] ?? _bpms[player.current!.id]),
+      keys: _keyMap,
+      curKey: player.current == null ? null : _keyMap[player.current!.id],
     );
+  }
+
+  // ---------- темп и тональность из разбора звука ----------
+
+  Map<String, double> _tempoMap = const {};
+  Map<String, Camelot> _keyMap = const {};
+  DateTime _tempoAt = DateTime.fromMillisecondsSinceEpoch(0);
+  int _tempoCount = -1;
+
+  /// Темп и тональность всех разобранных треков библиотеки. Пересобираем, когда появились новые разборы
+  void _refreshTempo() {
+    final m = player.mixer;
+    final count = m?.profileCount ?? 0;
+    if (count == _tempoCount && DateTime.now().difference(_tempoAt) < const Duration(minutes: 2)) return;
+    _tempoCount = count;
+    _tempoAt = DateTime.now();
+    final bpm = <String, double>{};
+    final keys = <String, Camelot>{};
+    if (m != null) {
+      for (final t in _cTracks) {
+        final p = m.profileCached(t.id);
+        if (p == null) continue;
+        final b = p.bpm;
+        if (b != null) bpm[t.id] = b;
+        final k = Camelot.parse(p.key);
+        if (k != null) keys[t.id] = k;
+      }
+    }
+    // Темп из Deezer — для тех, кого ещё не разобрали
+    _bpms.forEach((id, b) => bpm.putIfAbsent(id, () => b));
+    _tempoMap = bpm;
+    _keyMap = keys;
   }
 
   void _rebuildInputs() {
@@ -1147,6 +1206,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   }
 
   // ---------- QueueFeeder ----------
+
+  @override
+  String get label => 'Далее в волне';
 
   @override
   List<String> more(int n) {
@@ -1248,6 +1310,31 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       if (_good.length > 10) _good.removeAt(0);
     }
     _save();
+  }
+
+  late final SimIndex _sim = SimIndex(lib, () => player.mixer);
+
+  /// Похожие на трек (и на два последних дослушанных) по тому, что известно локально: один альбом и исполнитель,
+  /// общие плейлисты, жанр из тегов, эпоха, темп и тональность. Прибавка слабее, чем от Last.fm, и не выше 0,6:
+  /// иначе волна ходила бы только по альбому. Возвращает, сколько похожих нашлось
+  int _learnLocal(Track t) {
+    try {
+      final sims = _sim.similarTo([t.id, ..._good.reversed.take(2)]);
+      var n = 0;
+      sims.forEach((id, v) {
+        if (id == t.id) return;
+        final x = min(0.6, v * 0.7);
+        if (x < 0.1) return;
+        if ((_boost[id] ?? 0) < x) _boost[id] = x;
+        n++;
+      });
+      if (n > similarInLibrary) similarInLibrary = n;
+      AppLog.info('Моя волна: похожие на «${t.title}» по локальным данным: $n');
+      return n;
+    } catch (e) {
+      AppLog.warn('Моя волна: локальный подбор похожих', e);
+      return 0;
+    }
   }
 
   /// Похожие на трек по Last.fm: те, что есть в библиотеке, получают прибавку к весу.

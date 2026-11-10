@@ -198,7 +198,7 @@ class _AccountsPageState extends State<AccountsPage> {
           ],
         ];
         final List<Widget> page = switch (tab) {
-          'playback' => const [_PlaybackSection(), gap, _KaraokeSection()],
+          'playback' => const [_PlaybackSection(), gap, _AutoDjSection(), gap, _KaraokeSection()],
           'look' => const [_AccentSection(), gap, _SeekEdgeSection(), gap, _LookSection()],
           'account' => [
               ...accountsBlock,
@@ -1101,6 +1101,172 @@ class _KaraokeSection extends StatelessWidget {
         ],
       ]),
     );
+  }
+}
+
+/// АвтоDJ (подбор по темпу и тональности) и скробблинг в ListenBrainz
+class _AutoDjSection extends StatefulWidget {
+  const _AutoDjSection();
+  @override
+  State<_AutoDjSection> createState() => _AutoDjSectionState();
+}
+
+class _AutoDjSectionState extends State<_AutoDjSection> {
+  final _token = TextEditingController();
+  bool _inited = false;
+  bool _busy = false;
+  String _msg = '';
+
+  @override
+  void dispose() {
+    _token.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveToken(AppServices app) async {
+    final t = _token.text.trim();
+    if (t.isEmpty) {
+      app.settings.view.remove('lb.token');
+      await app.lib.saveSettings();
+      if (mounted) setState(() => _msg = 'ListenBrainz отключён');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _msg = '';
+    });
+    final user = await app.listenBrainz.validate(t);
+    if (!mounted) return;
+    if (user == null) {
+      setState(() {
+        _busy = false;
+        _msg = 'Токен не принят или нет связи с ListenBrainz';
+      });
+      return;
+    }
+    app.settings.view['lb.token'] = t;
+    await app.lib.saveSettings();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _msg = 'Подключено: ${user.isEmpty ? 'ListenBrainz' : user}';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    if (!_inited) {
+      _inited = true;
+      _token.text = app.settings.view['lb.token'] ?? '';
+    }
+    final bpm = app.settings.viewNum('dj.bpm', 25).clamp(5, 50).toDouble();
+    final avoid = app.settings.viewNum('dj.avoid', 60).clamp(0, 240).toDouble();
+    final mixer = app.player.mixer;
+    final lb = app.listenBrainz;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const HintHeading('АвтоDJ', null),
+      const SizedBox(height: 4),
+      const Text(
+        'Кнопка «АвтоDJ» есть у каждого плейлиста и альбома, а в панели очереди — радио и перестановка. '
+        'Следующий трек подбирается по темпу (двойной и половинный считаются своими) и по тональности на круге Camelot. '
+        'Темп и тональность берутся из тегов файла, а если их нет — считаются по звуку, когда трек в кэше.',
+        style: TextStyle(color: C.muted, fontSize: 13, height: 1.5),
+      ),
+      const SizedBox(height: 8),
+      Row(children: [
+        const SizedBox(width: 170, child: Text('Разница в темпе')),
+        Expanded(
+          child: Slider(
+            value: bpm,
+            min: 5,
+            max: 50,
+            divisions: 9,
+            label: 'до ${bpm.round()} %',
+            onChanged: (v) => setState(() => app.settings.view['dj.bpm'] = '${v.round()}'),
+            onChangeEnd: (_) => app.lib.saveSettings(),
+          ),
+        ),
+        SizedBox(width: 80, child: Text('до ${bpm.round()} %', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+      ]),
+      Row(children: [
+        const SizedBox(width: 170, child: Text('Не повторять треки')),
+        Expanded(
+          child: Slider(
+            value: avoid,
+            min: 0,
+            max: 240,
+            divisions: 16,
+            label: avoid == 0 ? 'можно сразу' : '${avoid.round()} мин',
+            onChanged: (v) => setState(() => app.settings.view['dj.avoid'] = '${v.round()}'),
+            onChangeEnd: (_) => app.lib.saveSettings(),
+          ),
+        ),
+        SizedBox(
+          width: 80,
+          child: Text(avoid == 0 ? 'можно' : '${avoid.round()} мин', textAlign: TextAlign.right, style: const TextStyle(color: C.muted)),
+        ),
+      ]),
+      HintSwitch(
+        contentPadding: EdgeInsets.zero,
+        value: app.settings.viewOf('dj.key', '1') == '1',
+        onChanged: (v) {
+          setState(() => app.settings.view['dj.key'] = v ? '1' : '0');
+          app.lib.saveSettings();
+        },
+        title: 'Учитывать тональность',
+        hint: 'Тональности рядом на круге Camelot (например, 8A и 9A или 8A и 8B) звучат вместе, дальние «режут слух».',
+      ),
+      if (mixer != null) ...[
+        const SizedBox(height: 4),
+        ValueListenableBuilder<int>(
+          valueListenable: mixer.pending,
+          builder: (context, left, _) => Text(
+            left > 0
+                ? 'Разбор звука: осталось треков — $left. Идёт в фоне.'
+                : 'Разобрано треков: ${mixer.profileCount}. Новые разбираются по мере прослушивания.',
+            style: const TextStyle(color: C.faint, fontSize: 12),
+          ),
+        ),
+      ],
+      const SizedBox(height: 20),
+      const HintHeading('ListenBrainz', null),
+      const SizedBox(height: 4),
+      const Text(
+        'Открытая история прослушиваний, как Last.fm: по ней строятся рекомендации. Токен — на странице listenbrainz.org/settings. '
+        'Трек засчитывается, когда прослушана половина или четыре минуты.',
+        style: TextStyle(color: C.muted, fontSize: 13, height: 1.5),
+      ),
+      const SizedBox(height: 10),
+      TextField(
+        controller: _token,
+        obscureText: true,
+        decoration: const InputDecoration(labelText: 'Токен пользователя ListenBrainz', isDense: true),
+      ),
+      const SizedBox(height: 10),
+      Wrap(spacing: 10, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+        FilledButton.icon(
+          onPressed: _busy ? null : () => _saveToken(app),
+          icon: const Icon(Icons.check_rounded, size: 18),
+          label: const Text('Сохранить и проверить'),
+        ),
+        if (_busy) const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+      ]),
+      if (_msg.isNotEmpty || lb.status.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        Text(_msg.isNotEmpty ? _msg : lb.status, style: const TextStyle(color: C.muted, fontSize: 12)),
+      ],
+      if (lb.token.isNotEmpty)
+        HintSwitch(
+          contentPadding: EdgeInsets.zero,
+          value: app.settings.viewOf('lb.on', '1') == '1',
+          onChanged: (v) {
+            setState(() => app.settings.view['lb.on'] = v ? '1' : '0');
+            app.lib.saveSettings();
+          },
+          title: 'Отправлять прослушивания',
+        ),
+    ]);
   }
 }
 

@@ -24,6 +24,7 @@ import 'theme.dart';
 import 'wave_view.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
+import 'dj_menu.dart';
 
 /// Ctrl+F: каждое увеличение просит открытый список треков поставить курсор в поиск
 final searchRequests = ValueNotifier<int>(0);
@@ -896,6 +897,7 @@ class _TracksPageState extends State<TracksPage> {
               icon: const Icon(Icons.shuffle_rounded, size: 18),
               label: const Text('Вперемешку'),
             ),
+            DjMenuButton(tracks: visible, name: widget.title),
             ...widget.actions,
           ],
         ));
