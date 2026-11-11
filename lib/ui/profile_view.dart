@@ -310,7 +310,6 @@ class _Banner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final covers = Services.of(context).covers;
     return LayoutBuilder(builder: (context, box) {
       // Карточка со скруглёнными углами и отступом от краёв: раньше баннер упирался в панель и шапку окна
       const margin = 12.0;
