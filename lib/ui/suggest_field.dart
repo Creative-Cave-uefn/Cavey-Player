@@ -4,11 +4,11 @@ import 'package:flutter/services.dart';
 import '../core/library.dart' show LibraryController;
 import '../core/models.dart';
 import '../core/suggest.dart';
+import 'glass_popup.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-/// Поле ввода с выпадающим под ним списком подсказок (3–4 строки, дальше прокрутка).
-/// Список раскладывается в самой форме, а не поверх неё, поэтому работает внутри диалогов с прокруткой.
+/// Поле ввода со списком подсказок (3–4 строки, дальше прокрутка) в окошке справа от поля: окно правки не меняет размер.
 /// Первая строка — «Создать «…»», если такого значения ещё нет; клавиши: ↑ ↓ — выбор, Enter — подставить, Esc — закрыть
 class SuggestField extends StatefulWidget {
   final TextEditingController controller;
@@ -44,6 +44,8 @@ class _SuggestFieldState extends State<SuggestField> {
   static const _rowHeight = 46.0;
   final _focus = FocusNode();
   final _scroll = ScrollController();
+  final _portal = OverlayPortalController();
+  final _link = LayerLink();
   List<Suggestion>? _all;
   bool _open = false;
   int _hot = -1;
@@ -52,6 +54,10 @@ class _SuggestFieldState extends State<SuggestField> {
   void initState() {
     super.initState();
     _focus.addListener(_focusChanged);
+    // Окошко подсказок живёт в слое поверх окна; показывает или прячет его сам список строк
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !_portal.isShowing) _portal.show();
+    });
   }
 
   @override
@@ -66,20 +72,6 @@ class _SuggestFieldState extends State<SuggestField> {
     setState(() {
       _open = _focus.hasFocus;
       _hot = -1;
-    });
-    if (_open) _reveal();
-  }
-
-  /// Чтобы список был виден целиком внутри прокручиваемого диалога
-  void _reveal() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_open) return;
-      Scrollable.maybeOf(context)?.position.ensureVisible(
-            context.findRenderObject()!,
-            alignment: 0.2,
-            duration: const Duration(milliseconds: 160),
-            curve: Curves.easeOutCubic,
-          );
     });
   }
 
@@ -150,86 +142,113 @@ class _SuggestFieldState extends State<SuggestField> {
     return const Icon(Icons.person_outline_rounded, size: 20, color: C.muted);
   }
 
-  @override
-  Widget build(BuildContext context) {
+  /// Список подсказок: окошко справа от поля, вне окна правки, чтобы само окно не прыгало
+  Widget _popup(BuildContext context) {
     final rows = _open ? _rows() : const <_Row>[];
+    if (rows.isEmpty) return const SizedBox.shrink();
     final shown = rows.length.clamp(0, 4);
-    return Focus(
-      onKeyEvent: _key,
-      skipTraversal: true,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        TextField(
-          controller: widget.controller,
-          focusNode: _focus,
-          autofocus: widget.autofocus,
-          decoration: widget.decoration,
-          onTap: () {
-            if (!_open) setState(() => _open = true);
-          },
-          onChanged: (v) {
-            widget.onChanged?.call(v);
-            setState(() {
-              _open = true;
-              _hot = -1;
-            });
-            if (_scroll.hasClients) _scroll.jumpTo(0);
-          },
-        ),
-        AnimatedSize(
-          duration: const Duration(milliseconds: 140),
-          curve: Curves.easeOutCubic,
-          alignment: Alignment.topCenter,
-          child: shown == 0
-              ? const SizedBox(width: double.infinity)
-              : TextFieldTapRegion(
-                  child: Container(
-                    margin: const EdgeInsets.only(top: 4),
-                    height: shown * _rowHeight,
-                    decoration: BoxDecoration(
-                      color: C.panelRaised,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: C.line),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: Scrollbar(
+    const width = 300.0;
+    const gap = 14.0;
+    // Справа от поля, а если там нет места — слева
+    var right = true;
+    final box = this.context.findRenderObject();
+    if (box is RenderBox && box.attached && box.hasSize) {
+      final edge = box.localToGlobal(Offset(box.size.width, 0)).dx;
+      right = edge + gap + width <= MediaQuery.sizeOf(context).width - 8;
+    }
+    return Align(
+      alignment: Alignment.topLeft,
+      child: CompositedTransformFollower(
+        link: _link,
+        targetAnchor: right ? Alignment.topRight : Alignment.topLeft,
+        followerAnchor: right ? Alignment.topLeft : Alignment.topRight,
+        offset: Offset(right ? gap : -gap, 0),
+        child: TextFieldTapRegion(
+          child: SizedBox(
+            width: width,
+            child: GlassPanel(
+              radius: 14,
+              tint: C.glassLight,
+              blur: 32,
+              padding: EdgeInsets.zero,
+              child: Material(
+                type: MaterialType.transparency,
+                child: SizedBox(
+                  height: shown * _rowHeight,
+                  child: Scrollbar(
+                    controller: _scroll,
+                    thumbVisibility: rows.length > 4,
+                    child: ListView.builder(
                       controller: _scroll,
-                      thumbVisibility: rows.length > 4,
-                      child: ListView.builder(
-                        controller: _scroll,
-                        padding: EdgeInsets.zero,
-                        itemExtent: _rowHeight,
-                        itemCount: rows.length,
-                        itemBuilder: (_, i) {
-                          final r = rows[i];
-                          return InkWell(
-                            canRequestFocus: false,
-                            onTap: () => _pick(r),
-                            child: Container(
-                              color: i == _hot ? C.hover : null,
-                              padding: const EdgeInsets.symmetric(horizontal: 10),
-                              child: Row(children: [
-                                SizedBox(width: 30, child: Center(child: _leading(r))),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                    Text(r.text,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(fontSize: 14, color: r.create ? C.accent : C.text)),
-                                    if (!r.create && (r.s?.sub ?? '').isNotEmpty)
-                                      Text(r.s!.sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: C.faint)),
-                                  ]),
-                                ),
-                              ]),
-                            ),
-                          );
-                        },
-                      ),
+                      padding: EdgeInsets.zero,
+                      itemExtent: _rowHeight,
+                      itemCount: rows.length,
+                      itemBuilder: (_, i) {
+                        final r = rows[i];
+                        return InkWell(
+                          canRequestFocus: false,
+                          onTap: () => _pick(r),
+                          child: Container(
+                            color: i == _hot ? C.hover : null,
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            child: Row(children: [
+                              SizedBox(width: 30, child: Center(child: _leading(r))),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Text(r.text,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(fontSize: 14, color: r.create ? C.accent : C.text)),
+                                  if (!r.create && (r.s?.sub ?? '').isNotEmpty)
+                                    Text(r.s!.sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: C.faint)),
+                                ]),
+                              ),
+                            ]),
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ),
+              ),
+            ),
+          ),
         ),
-      ]),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Focus(
+      onKeyEvent: _key,
+      skipTraversal: true,
+      child: OverlayPortal(
+        controller: _portal,
+        overlayChildBuilder: _popup,
+        child: CompositedTransformTarget(
+          link: _link,
+          child: TextField(
+            controller: widget.controller,
+            focusNode: _focus,
+            autofocus: widget.autofocus,
+            // Без явной декорации поле рисовалось без серой заливки, как в остальных полях окна
+            decoration: widget.decoration ?? const InputDecoration(),
+            onTap: () {
+              if (!_open) setState(() => _open = true);
+            },
+            onChanged: (v) {
+              widget.onChanged?.call(v);
+              setState(() {
+                _open = true;
+                _hot = -1;
+              });
+              if (_scroll.hasClients) _scroll.jumpTo(0);
+            },
+          ),
+        ),
+      ),
     );
   }
 }

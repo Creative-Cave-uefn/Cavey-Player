@@ -205,9 +205,11 @@ class AlbumPage extends StatelessWidget {
               onSelected: (v) {
                 if (v == 'edit') editAlbumDialog(context, album);
                 if (v == 'order') app.lib.resetAlbumOrder(albumKey);
+                if (v == 'export') exportToDevice(context, List<Track>.of(album.tracks), folderName: album.title, withArtist: false);
               },
               itemBuilder: (_) => [
                 const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
+                const PopupMenuItem(value: 'export', child: Text('Скачать альбом на устройство')),
                 if (app.lib.hasAlbumOrder(albumKey)) const PopupMenuItem(value: 'order', child: Text('Вернуть порядок по номерам')),
               ],
             ),
@@ -280,6 +282,8 @@ class PlaylistPage extends StatelessWidget {
               onSelected: (v) async {
                 if (v == 'edit') {
                   await editPlaylistDialog(context, p, coverTrack: coverTrack);
+                } else if (v == 'export') {
+                  await exportToDevice(context, List<Track>.of(tracks), folderName: p.name);
                 } else if (v == 'public') {
                   lib.setPlaylistPublic(p.id, true);
                   lib.messages.add('Плейлист «${p.name}» теперь видят все друзья');
@@ -304,6 +308,7 @@ class PlaylistPage extends StatelessWidget {
                       ? const PopupMenuItem(value: 'private', child: Text('Сделать приватным'))
                       : const PopupMenuItem(value: 'public', child: Text('Сделать открытым')),
                 const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
+                const PopupMenuItem(value: 'export', child: Text('Скачать плейлист на устройство')),
                 const PopupMenuItem(value: 'delete', child: Text('Удалить плейлист')),
               ],
             ),

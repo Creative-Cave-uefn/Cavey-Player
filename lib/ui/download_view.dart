@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
@@ -20,7 +21,6 @@ class DownloadPage extends StatefulWidget {
 
 class _DownloadPageState extends State<DownloadPage> {
   final _input = TextEditingController();
-  String? _target;
   /// Галочка «Сделать плейлист» хранится в настройках, поэтому не сбрасывается при смене вкладки
   bool _makePlaylist = true;
 
@@ -58,10 +58,141 @@ class _DownloadPageState extends State<DownloadPage> {
 
   void _start() {
     final app = Services.of(context);
-    final target = _target ?? app.settings.hubId;
+    final target = app.settings.hubId ?? app.lib.data.sources.firstOrNull?.id;
     if (target == null || _input.text.trim().isEmpty) return;
     app.downloads.enqueue(_input.text, target, makePlaylist: _makePlaylist);
     _input.clear();
+  }
+
+  /// Скачать в папку на компьютере: в библиотеку и на Диск не попадает
+  Future<void> _startToDevice() async {
+    final app = Services.of(context);
+    final text = _input.text.trim();
+    if (text.isEmpty) return;
+    final last = app.settings.viewOf('export.dir', '');
+    final dir = await getDirectoryPath(initialDirectory: last.isEmpty ? null : last, confirmButtonText: 'Сохранить сюда');
+    if (dir == null || !mounted) return;
+    app.settings.view['export.dir'] = dir;
+    app.lib.viewChanged();
+    final source = app.settings.hubId ?? app.lib.data.sources.firstOrNull?.id ?? '';
+    app.downloads.enqueue(text, source, makePlaylist: false, deviceDir: dir);
+    _input.clear();
+  }
+
+  Widget _inputPanel(BuildContext context, AppServices app, DownloadService dl, String? target) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      if (app.lib.uploadQueue.count > 0) ...[
+        _PendingUploads(queue: app.lib.uploadQueue, onRetry: () => app.lib.retryPendingUploads(manual: true)),
+        const SizedBox(height: 16),
+      ],
+      Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          TextField(
+            controller: _input,
+            autofocus: true,
+            decoration: InputDecoration(
+              hintText: app.settings.downloadProvider == 'bandcamp' ? 'Ссылка Bandcamp на трек или альбом' : 'Ссылка или «Исполнитель - Название»',
+              prefixIcon: const Icon(Icons.link_rounded, size: 18),
+              suffixIcon: IconButton(
+                tooltip: 'Вставить из буфера',
+                icon: const Icon(Icons.content_paste_rounded, size: 18),
+                onPressed: _paste,
+              ),
+            ),
+            onSubmitted: (_) => _start(),
+          ),
+          const SizedBox(height: 14),
+          Wrap(spacing: 12, runSpacing: 10, children: [
+            FilledButton.icon(
+              onPressed: target == null ? null : _start,
+              icon: const Icon(Icons.download_rounded, size: 18),
+              label: const Text('Скачать в плеер'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _startToDevice,
+              icon: const Icon(Icons.computer_rounded, size: 18),
+              label: const Text('Скачать на устройство'),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          DropdownButtonFormField<String>(
+            value: app.settings.downloadProvider,
+            decoration: const InputDecoration(labelText: 'Источник музыки'),
+            items: const [
+              DropdownMenuItem(value: 'youtube', child: Text('YouTube')),
+              DropdownMenuItem(value: 'deezer', child: Text('Deezer')),
+              DropdownMenuItem(value: 'full', child: Text('Универсальный поиск и ссылки')),
+              DropdownMenuItem(value: 'sockseek', child: Text('Soulseek / Sockseek')),
+              DropdownMenuItem(value: 'bandcamp', child: Text('Bandcamp')),
+            ],
+            onChanged: dl.busy ? null : (value) {
+              if (value == null) return;
+              setState(() => app.settings.downloadProvider = value);
+              app.lib.saveSettings();
+            },
+          ),
+          const SizedBox(height: 10),
+          InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () => _setMakePlaylist(!_makePlaylist),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: Checkbox(
+                    value: _makePlaylist,
+                    activeColor: C.accent,
+                    checkColor: C.accentInk,
+                    onChanged: (v) => _setMakePlaylist(v ?? true),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Flexible(
+                  child: Text('Сделать плейлист в Cavey (для ссылок на плейлисты)', style: TextStyle(color: C.muted)),
+                ),
+              ]),
+            ),
+          ),
+        ]),
+      ),
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(
+          child: Text(
+            dl.installing
+                ? 'Устанавливаю программы для скачивания…'
+                : 'yt-dlp: ${dl.toolsVersion.isEmpty ? '…' : dl.toolsVersion}. Программы ставятся сами при первом скачивании.',
+            style: const TextStyle(color: C.faint, fontSize: 13),
+          ),
+        ),
+        TextButton.icon(
+          onPressed: dl.busy ? null : dl.updateTools,
+          icon: const Icon(Icons.refresh_rounded, size: 16),
+          label: const Text('Обновить yt-dlp'),
+        ),
+      ]),
+    ]);
+  }
+
+  Widget _jobsPanel(BuildContext context, DownloadService dl) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Row(children: [
+        Expanded(child: Text('Задания', style: display(20))),
+        if (dl.jobs.any((j) => j.state == JobState.done || j.state == JobState.failed || j.state == JobState.cancelled))
+          TextButton(onPressed: dl.clearFinished, child: const Text('Убрать завершённые')),
+      ]),
+      const SizedBox(height: 10),
+      if (dl.jobs.isEmpty)
+        const Padding(
+          padding: EdgeInsets.only(top: 4),
+          child: Text('Здесь появятся скачивания: вставьте ссылку слева.', style: TextStyle(color: C.faint)),
+        ),
+      for (final j in dl.jobs) _JobCard(key: ObjectKey(j), job: j),
+    ]);
   }
 
   Future<void> _paste() async {
@@ -82,7 +213,8 @@ class _DownloadPageState extends State<DownloadPage> {
       builder: (context, _) {
         final dl = app.downloads;
         final sources = app.lib.data.sources;
-        final target = sources.any((s) => s.id == _target) ? _target : (sources.any((s) => s.id == app.settings.hubId) ? app.settings.hubId : sources.firstOrNull?.id);
+        // Всё скачивается в одну общую папку библиотеки
+        final target = sources.any((s) => s.id == app.settings.hubId) ? app.settings.hubId : sources.firstOrNull?.id;
         return ListView(key: const PageStorageKey('page:download'), padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Text('Скачать', style: display(36, weight: FontWeight.w700)),
           const SizedBox(height: 10),
@@ -100,125 +232,20 @@ class _DownloadPageState extends State<DownloadPage> {
           Text('Активный источник: ${switch (app.settings.downloadProvider) { 'full' => 'Полный поиск', 'deezer' => 'Deezer', 'bandcamp' => 'Bandcamp', 'sockseek' => 'Soulseek', _ => 'YouTube' }}. Переключить можно в настройках аккаунта.',
               style: const TextStyle(color: C.faint, fontSize: 13)),
           const SizedBox(height: 18),
-          if (app.lib.uploadQueue.count > 0) ...[
-            _PendingUploads(queue: app.lib.uploadQueue, onRetry: () => app.lib.retryPendingUploads(manual: true)),
-            const SizedBox(height: 16),
-          ],
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              Row(children: [
-                Expanded(
-                  child: TextField(
-                    controller: _input,
-                    autofocus: true,
-                    decoration: InputDecoration(
-                      hintText: app.settings.downloadProvider == 'bandcamp' ? 'Ссылка Bandcamp на трек или альбом' : 'Ссылка или «Исполнитель - Название»',
-                      prefixIcon: const Icon(Icons.link_rounded, size: 18),
-                      suffixIcon: IconButton(
-                        tooltip: 'Вставить из буфера',
-                        icon: const Icon(Icons.content_paste_rounded, size: 18),
-                        onPressed: _paste,
-                      ),
-                    ),
-                    onSubmitted: (_) => _start(),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                FilledButton.icon(
-                  onPressed: target == null ? null : _start,
-                  icon: const Icon(Icons.download_rounded, size: 18),
-                  label: const Text('Скачать'),
-                ),
-              ]),
-              const SizedBox(height: 14),
-              DropdownButtonFormField<String>(
-                value: app.settings.downloadProvider,
-                decoration: const InputDecoration(labelText: 'Источник музыки'),
-                items: const [
-                  DropdownMenuItem(value: 'youtube', child: Text('YouTube')),
-                   DropdownMenuItem(value: 'deezer', child: Text('Deezer')),
-                   DropdownMenuItem(value: 'full', child: Text('Универсальный поиск и ссылки')),
-                  DropdownMenuItem(value: 'sockseek', child: Text('Soulseek / Sockseek')),
-                  DropdownMenuItem(value: 'bandcamp', child: Text('Bandcamp')),
-                ],
-                onChanged: dl.busy ? null : (value) {
-                  if (value == null) return;
-                  setState(() => app.settings.downloadProvider = value);
-                  app.lib.saveSettings();
-                },
-              ),
-              const SizedBox(height: 14),
-              const SizedBox(height: 14),
-              Wrap(spacing: 12, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
-                const Text('Куда положить:', style: TextStyle(color: C.muted)),
-                if (sources.isEmpty)
-                  const Text('сначала добавьте папку с музыкой', style: TextStyle(color: C.danger))
-                else
-                  DropdownButton<String>(
-                    value: target,
-                    dropdownColor: C.raised,
-                    underline: const SizedBox.shrink(),
-                    items: [
-                      for (final s in sources)
-                        DropdownMenuItem(value: s.id, child: Text(s.id == app.settings.hubId ? '${s.name} (общая папка)' : s.name)),
-                    ],
-                    onChanged: (v) => setState(() => _target = v),
-                  ),
-                const Text('Альбомы и плейлисты — в отдельную подпапку.', style: TextStyle(color: C.faint, fontSize: 13)),
-              ]),
-              const SizedBox(height: 6),
-              InkWell(
-                borderRadius: BorderRadius.circular(6),
-                onTap: () => _setMakePlaylist(!_makePlaylist),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: Checkbox(
-                        value: _makePlaylist,
-                        activeColor: C.accent,
-                        checkColor: C.accentInk,
-                        onChanged: (v) => _setMakePlaylist(v ?? true),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Flexible(
-                      child: Text('Сделать плейлист в Cavey (для ссылок на плейлисты)', style: TextStyle(color: C.muted)),
-                    ),
-                  ]),
-                ),
-              ),
-            ]),
-          ),
-          const SizedBox(height: 14),
-          Row(children: [
-            Expanded(
-              child: Text(
-                dl.installing
-                    ? 'Устанавливаю программы для скачивания…'
-                    : 'yt-dlp: ${dl.toolsVersion.isEmpty ? '…' : dl.toolsVersion}. Программы ставятся сами при первом скачивании.',
-                style: const TextStyle(color: C.faint, fontSize: 13),
-              ),
-            ),
-            TextButton.icon(
-              onPressed: dl.busy ? null : dl.updateTools,
-              icon: const Icon(Icons.refresh_rounded, size: 16),
-              label: const Text('Обновить yt-dlp'),
-            ),
-          ]),
-          const SizedBox(height: 26),
-          if (dl.jobs.isNotEmpty)
-            Row(children: [
-              Expanded(child: Text('Задания', style: display(20))),
-              if (dl.jobs.any((j) => j.state == JobState.done || j.state == JobState.failed || j.state == JobState.cancelled))
-                TextButton(onPressed: dl.clearFinished, child: const Text('Убрать завершённые')),
-            ]),
-          const SizedBox(height: 10),
-          for (final j in dl.jobs) _JobCard(key: ObjectKey(j), job: j),
+          // Две половины: слева ввод и кнопки, справа задания
+          LayoutBuilder(builder: (context, box) {
+            final wide = box.maxWidth >= 860;
+            final left = _inputPanel(context, app, dl, target);
+            final right = _jobsPanel(context, dl);
+            if (!wide) {
+              return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [left, const SizedBox(height: 26), right]);
+            }
+            return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(child: left),
+              const SizedBox(width: 28),
+              Expanded(child: right),
+            ]);
+          }),
         ]);
       },
     );
@@ -303,7 +330,7 @@ class _JobCardState extends State<_JobCard> {
             padding: const EdgeInsets.only(top: 4),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(
-                job.folderName.isEmpty ? label : '$label, в «${job.folderName}»',
+                job.deviceDir != null ? '$label, на устройство: ${job.deviceDir}' : (job.folderName.isEmpty ? label : '$label, в «${job.folderName}»'),
                 style: TextStyle(color: color, fontSize: 13),
               ),
               if (job.state == JobState.running) ...[

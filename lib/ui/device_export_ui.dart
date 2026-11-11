@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/device_export.dart';
 import '../core/models.dart';
+import 'glass_popup.dart';
 import 'theme.dart';
 
 /// «Скачать на устройство»: спрашивает папку (последняя запоминается) и запускает выгрузку.
@@ -39,9 +40,13 @@ class ExportCard extends StatelessWidget {
       builder: (context, _) {
         final jobs = app.exporter.jobs;
         if (jobs.isEmpty) return const SizedBox.shrink();
-        return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          for (final j in jobs.take(3)) _JobCard(job: j, key: ValueKey(j)),
-        ]);
+        // Material нужен тексту: вне Scaffold без него шрифт по умолчанию и жёлтое подчёркивание
+        return Material(
+          type: MaterialType.transparency,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            for (final j in jobs.take(3)) _JobCard(job: j, key: ValueKey(j)),
+          ]),
+        );
       },
     );
   }
@@ -61,16 +66,19 @@ class _JobCard extends StatelessWidget {
         final status = job.finished
             ? (job.failed > 0 ? 'Сохранено ${job.done} из ${job.total}' : 'Сохранено: ${job.done} из ${job.total}')
             : 'Сохраняю ${job.done + job.failed + 1} из ${job.total}';
-        return Container(
-          width: 320,
-          margin: const EdgeInsets.only(top: 8),
-          padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
-          decoration: BoxDecoration(color: C.panelRaised, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
+        // Та же стеклянная карточка, что у остальных уведомлений приложения
+        return Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: SizedBox(
+            width: 330,
+            child: GlassPanel(
+          radius: 16,
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 10),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
             Row(children: [
               Icon(job.finished ? Icons.check_circle_rounded : Icons.download_rounded, size: 18, color: C.accent),
               const SizedBox(width: 8),
-              Expanded(child: Text(job.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14))),
+              Expanded(child: Text(job.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.text, fontWeight: FontWeight.w600, fontSize: 14))),
               IconButton(
                 tooltip: job.finished ? 'Закрыть' : 'Отменить',
                 iconSize: 18,
@@ -100,6 +108,8 @@ class _JobCard extends StatelessWidget {
                 ),
               ),
           ]),
+            ),
+          ),
         );
       },
     );

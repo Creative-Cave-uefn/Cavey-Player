@@ -25,7 +25,7 @@ var ALLOWED_EXT = {
   mp3: 1, flac: 1, m4a: 1, aac: 1, ogg: 1, opus: 1, wav: 1, wma: 1, aiff: 1, aif: 1, alac: 1, ape: 1,
   jpg: 1, jpeg: 1, png: 1, webp: 1, json: 1
 };
-var API_VERSION = 2;
+var API_VERSION = 3;
 var ADOPT_BATCH = 20; // файлов за один запрос adopt
 
 function props_() { return PropertiesService.getScriptProperties(); }
@@ -290,7 +290,12 @@ function adopt_(req, email) {
   if (email === me) return fail_('bad_request', 'Вы и есть владелец библиотеки: переносить нечего');
   var ids = (req.fileIds || []).map(String).slice(0, ADOPT_BATCH);
   if (!ids.length) return fail_('bad_request', 'Не указаны файлы');
+  // Собственный идентификатор разрешения: чужие адреса в списке прав обычному «редактору» Google не показывает,
+  // поэтому искать своё право по почте ненадёжно. Принимаем владение прямо по этому идентификатору
+  var myPid = '';
+  try { myPid = Drive.About.get({ fields: 'user(permissionId)' }).user.permissionId; } catch (err) { log_('adopt_about', email, String(err)); }
   var results = {};
+  var details = {};
   for (var i = 0; i < ids.length; i++) {
     var id = ids[i];
     try {
@@ -302,31 +307,54 @@ function adopt_(req, email) {
       if (f.mimeType === 'application/vnd.google-apps.folder') { results[id] = 'bad_type'; continue; }
       var owner = String((f.owners && f.owners.length && f.owners[0].emailAddress) || '').toLowerCase();
       if (owner === me) { results[id] = 'already'; continue; }
-      if (owner !== email) { results[id] = 'not_yours'; continue; }
-      var perms = Drive.Permissions.list(id, {
-        fields: 'permissions(id,emailAddress,role,pendingOwner)',
-        supportsAllDrives: true
-      }).permissions || [];
-      var perm = null;
-      for (var j = 0; j < perms.length; j++) {
-        if (String(perms[j].emailAddress || '').toLowerCase() === me && perms[j].pendingOwner) { perm = perms[j]; break; }
+      if (owner !== email) { results[id] = 'not_yours'; details[id] = 'владелец файла: ' + owner; continue; }
+      var pid = myPid;
+      if (!pid) {
+        // запасной путь: ищем своё право в списке
+        var perms = Drive.Permissions.list(id, { fields: 'permissions(id,emailAddress,role,pendingOwner)', supportsAllDrives: true }).permissions || [];
+        for (var j = 0; j < perms.length; j++) {
+          if (perms[j].pendingOwner && (!perms[j].emailAddress || String(perms[j].emailAddress).toLowerCase() === me)) { pid = perms[j].id; break; }
+        }
       }
-      if (!perm) { results[id] = 'not_pending'; continue; }
-      Drive.Permissions.update({ role: 'owner' }, id, perm.id, { transferOwnership: true, supportsAllDrives: true });
+      if (!pid) { results[id] = 'not_pending'; details[id] = 'не найдено ожидающее право владельца'; continue; }
+      try {
+        Drive.Permissions.update({ role: 'owner' }, id, pid, { transferOwnership: true, supportsAllDrives: true });
+      } catch (err) {
+        results[id] = 'transfer_failed';
+        details[id] = String(err).slice(0, 300);
+        log_('adopt_fail', email, id + ' ' + details[id]);
+        continue;
+      }
+      // Проверяем, что владелец действительно сменился: иначе не считаем файл перенесённым
+      var after = Drive.Files.get(id, { fields: 'owners(emailAddress)', supportsAllDrives: true });
+      var nowOwner = String((after.owners && after.owners.length && after.owners[0].emailAddress) || '').toLowerCase();
+      if (nowOwner !== me) {
+        results[id] = 'not_transferred';
+        details[id] = 'владелец после запроса: ' + nowOwner;
+        log_('adopt_fail', email, id + ' ' + details[id]);
+        continue;
+      }
       var props = f.properties || {};
       props.cave_uploader = owner;
       if (!props.cave_uploaded_at) props.cave_uploaded_at = f.createdTime;
       props.cave_adopted_at = new Date().toISOString();
-      // modifiedTime сохраняем, чтобы приложения не перечитывали теги всех перенесённых файлов
-      Drive.Files.update({ properties: props, modifiedTime: f.modifiedTime }, id, null, { supportsAllDrives: true });
+      try {
+        // modifiedTime сохраняем, чтобы приложения не перечитывали теги всех перенесённых файлов
+        Drive.Files.update({ properties: props, modifiedTime: f.modifiedTime }, id, null, { supportsAllDrives: true });
+      } catch (err) {
+        // Владение уже передано; без свойств файл останется «старым», но вернётся в перенос как «already»
+        log_('adopt_props_fail', email, id + ' ' + err);
+        details[id] = 'владелец сменён, свойства не записаны: ' + String(err).slice(0, 200);
+      }
       results[id] = 'ok';
     } catch (err) {
       log_('adopt_fail', email, id + ' ' + err);
       results[id] = 'error';
+      details[id] = String(err).slice(0, 300);
     }
   }
   log_('adopt', email, JSON.stringify(results).slice(0, 400));
-  return json_({ ok: true, results: results });
+  return json_({ ok: true, api: API_VERSION, results: results, details: details });
 }
 
 // ───────────────────────── Журнал ─────────────────────────

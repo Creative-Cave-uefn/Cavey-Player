@@ -245,12 +245,21 @@ class UploadBroker {
   }
 
   /// Просит брокера принять владение файлами, на которые владелец библиотеки уже назначен «ожидающим владельцем».
-  /// Возвращает по каждому id итог: ok, already, not_yours, not_pending, bad_parent, bad_type, error
-  Future<Map<String, String>> adopt(String url, String email, List<String> ids) async {
+  /// Возвращает по каждому id итог (ok, already, not_yours, not_pending, transfer_failed, not_transferred, bad_parent,
+  /// bad_type, error) и, для неудач, пояснение брокера
+  Future<({Map<String, String> results, Map<String, String> details})> adopt(String url, String email, List<String> ids) async {
     try {
       final r = await _call(url, email, {'action': 'adopt', 'fileIds': ids});
+      // Брокер версии 2 принимал владение по почте и не проверял итог: его надо заменить на версию 3
+      if (((r['api'] as num?)?.toInt() ?? 0) < 3) {
+        throw const BrokerException('outdated_broker', 'Брокер нужно обновить: владельцу библиотеки надо один раз заново развернуть скрипт (tools/broker/README.md).');
+      }
       final raw = r['results'];
-      return {if (raw is Map) for (final e in raw.entries) '${e.key}': '${e.value}'};
+      final det = r['details'];
+      return (
+        results: {if (raw is Map) for (final e in raw.entries) '${e.key}': '${e.value}'},
+        details: {if (det is Map) for (final e in det.entries) '${e.key}': '${e.value}'},
+      );
     } on BrokerException catch (e) {
       if (e.code == 'bad_request' && e.message.contains('Неизвестное действие')) {
         throw const BrokerException('outdated_broker', 'Брокер нужно обновить: владельцу библиотеки надо один раз заново развернуть скрипт (tools/broker/README.md).');

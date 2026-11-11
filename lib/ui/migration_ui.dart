@@ -13,31 +13,12 @@ Future<void> offerMigrationAtStart(BuildContext context) async {
   final app = Services.of(context);
   final stats = await app.migration.offerAtStart();
   if (stats == null || !context.mounted) return;
+  // Окно появляется само, поэтому экран заблокирован (вне окна не закрыть), а кнопки оживают через 2 секунды:
+  // случайное нажатие в момент появления ничего не запустит
   final go = await showGlassDialog<bool>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text('Освободить место на вашем Диске', style: display(18)),
-      content: SizedBox(
-        width: 440,
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(
-            'Ранее на ваш Google Диск были загружены треки (${stats.count}), которые можно перенести на общий диск, '
-            'чтобы освободить ${formatBytes(stats.bytes)} вашего Google-хранилища.',
-            style: const TextStyle(height: 1.45),
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'Файлы не копируются и не перекачиваются: у них просто меняется владелец, поэтому плейлисты, лайки, '
-            'статистика и офлайн-копии остаются на месте. Перенос идёт в фоне, Cavey можно пользоваться как обычно.',
-            style: TextStyle(color: C.faint, fontSize: 12.5, height: 1.45),
-          ),
-        ]),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Позже', style: TextStyle(color: C.muted))),
-        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Перенести')),
-      ],
-    ),
+    barrierDismissible: false,
+    builder: (ctx) => PopScope(canPop: false, child: _MigrationOffer(stats: stats)),
   );
   if (go == true) {
     unawaited(app.migration.run());
@@ -120,7 +101,8 @@ class _MigrationSectionState extends State<MigrationSection> {
                 Text(m.error!, style: const TextStyle(color: C.danger, fontSize: 13)),
               ] else if (!m.running && m.failed > 0) ...[
                 const SizedBox(height: 8),
-                Text('Не удалось перенести: ${m.failed}. Повторите позже.', style: const TextStyle(color: C.danger, fontSize: 13)),
+                Text('Не удалось перенести: ${m.failed}.${m.lastProblem == null ? ' Повторите позже.' : '\n${m.lastProblem}'}',
+                    style: const TextStyle(color: C.danger, fontSize: 13)),
               ],
               if (iAmOwner && all.isNotEmpty) ...[
                 const SizedBox(height: 16),
@@ -143,6 +125,76 @@ class _MigrationSectionState extends State<MigrationSection> {
           },
         );
       },
+    );
+  }
+}
+
+/// Окно предложения переноса: кнопки неактивны первые две секунды и показывают обратный отсчёт
+class _MigrationOffer extends StatefulWidget {
+  final MigrationStats stats;
+  const _MigrationOffer({required this.stats});
+
+  @override
+  State<_MigrationOffer> createState() => _MigrationOfferState();
+}
+
+class _MigrationOfferState extends State<_MigrationOffer> {
+  static const _delay = Duration(seconds: 2);
+  final _shown = Stopwatch()..start();
+  Timer? _tick;
+
+  Duration get _left => _delay - _shown.elapsed;
+  bool get _armed => _left <= Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(milliseconds: 200), (t) {
+      if (!mounted) return;
+      setState(() {});
+      if (_armed) t.cancel();
+    });
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  String _label(String text) => _armed ? text : '$text (${(_left.inMilliseconds / 1000).ceil()})';
+
+  @override
+  Widget build(BuildContext context) {
+    final stats = widget.stats;
+    return AlertDialog(
+      title: Text('Освободить место на вашем Диске', style: display(18)),
+      content: SizedBox(
+        width: 440,
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+            'Ранее на ваш Google Диск были загружены треки (${stats.count}), которые можно перенести на общий диск, '
+            'чтобы освободить ${formatBytes(stats.bytes)} вашего Google-хранилища.',
+            style: const TextStyle(height: 1.45),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'Файлы не копируются и не перекачиваются: у них просто меняется владелец, поэтому плейлисты, лайки, '
+            'статистика и офлайн-копии остаются на месте. Перенос идёт в фоне, Cavey можно пользоваться как обычно.',
+            style: TextStyle(color: C.faint, fontSize: 12.5, height: 1.45),
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _armed ? () => Navigator.pop(context, false) : null,
+          child: Text(_label('Позже'), style: TextStyle(color: _armed ? C.muted : C.faint)),
+        ),
+        FilledButton(
+          onPressed: _armed ? () => Navigator.pop(context, true) : null,
+          child: Text(_label('Перенести')),
+        ),
+      ],
     );
   }
 }

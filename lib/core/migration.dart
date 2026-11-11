@@ -34,6 +34,9 @@ class LibraryMigration extends ChangeNotifier {
   bool _loaded = false;
 
   bool running = false;
+
+  /// Первая причина, по которой файл не перенесли (для показа в настройках)
+  String? lastProblem;
   int total = 0, moved = 0, failed = 0;
   String status = '';
   String? error;
@@ -104,6 +107,7 @@ class LibraryMigration extends ChangeNotifier {
     if (running) return;
     running = true;
     error = null;
+    lastProblem = null;
     moved = 0;
     failed = 0;
     status = 'Готовлюсь…';
@@ -138,6 +142,7 @@ class LibraryMigration extends ChangeNotifier {
                 offered.add(t.id);
               } on DriveException catch (e) {
                 AppLog.warn('Перенос: не удалось предложить «${t.title}» (${e.status})', e);
+                lastProblem ??= 'Google не разрешил назначить владельца (${e.status}): ${e.message}';
                 failed++;
               }
             }
@@ -146,15 +151,17 @@ class LibraryMigration extends ChangeNotifier {
           await Future.wait([for (var k = 0; k < 4; k++) worker()]);
           if (offered.isEmpty) continue;
           // Шаг 2: брокер принимает владение
-          final results = await lib.broker.adopt(cfg.url, account, offered);
+          final answer = await lib.broker.adopt(cfg.url, account, offered);
           for (final id in offered) {
-            final r = results[id] ?? 'error';
+            final r = answer.results[id] ?? 'error';
             if (r == 'ok' || r == 'already') {
               _done.add(id);
               moved++;
             } else {
               failed++;
-              AppLog.warn('Перенос: брокер ответил «$r» для $id');
+              final why = answer.details[id];
+              AppLog.warn('Перенос: брокер ответил «$r» для $id${why == null ? '' : ' ($why)'}');
+              lastProblem ??= '${_reasonText(r)}${why == null ? '' : ': $why'}';
             }
           }
           await _save();
@@ -172,13 +179,22 @@ class LibraryMigration extends ChangeNotifier {
       await _save();
       notifyListeners();
       if (error == null && moved > 0) {
-        lib.messages.add('Перенесено на диск владельца: $moved ${failed > 0 ? '(не удалось: $failed)' : ''}'.trim());
+        lib.messages.add('Перенесено на диск владельца: $moved${failed > 0 ? ' (не удалось: $failed${lastProblem == null ? '' : ' — $lastProblem'})' : ''}');
       } else if (error != null) {
         lib.messages.add('Перенос не завершён: $error');
       }
     }
   }
 }
+
+String _reasonText(String code) => switch (code) {
+      'transfer_failed' => 'Google не принял передачу владения',
+      'not_transferred' => 'Владелец файла не сменился',
+      'not_pending' => 'Владелец библиотеки не назначен ожидающим владельцем',
+      'not_yours' => 'Файл принадлежит не вам',
+      'bad_parent' => 'Файл вне папки библиотеки',
+      _ => 'Ошибка переноса ($code)',
+    };
 
 /// Сколько файлов за один запрос к брокеру (должно быть не больше ADOPT_BATCH в Code.gs)
 class BrokerBatch {

@@ -78,7 +78,6 @@ String safeFileName(String raw, {int max = 140}) {
 /// Совпавшие имена получают « (2)», « (3)»
 List<String> exportFileNames(List<Track> tracks, List<String> exts, {bool numbered = false, bool withArtist = true}) {
   final width = tracks.length >= 100 ? 3 : 2;
-  final multiDisc = numbered && tracks.map((t) => t.disc ?? 1).toSet().length > 1;
   final used = <String>{};
   final out = <String>[];
   for (var i = 0; i < tracks.length; i++) {
@@ -86,8 +85,8 @@ List<String> exportFileNames(List<Track> tracks, List<String> exts, {bool number
     final base = withArtist && t.artist.isNotEmpty ? '${t.displayArtist} - ${t.title}' : t.title;
     String prefix = '';
     if (numbered) {
-      final no = (t.no != null && t.no! > 0 && !multiDisc) ? t.no! : i + 1;
-      prefix = '${no.toString().padLeft(width, '0')}. ';
+      // Номер — место в списке, как в плеере и в самом альбоме, а не тег файла: в тегах у докачанных альбомов бывают пропуски (1, 3, 4 … 63, 72)
+      prefix = '${(i + 1).toString().padLeft(width, '0')}. ';
     }
     final ext = exts[i];
     final stem = safeFileName('$prefix$base', max: 150);
