@@ -607,6 +607,16 @@ class PlayerController extends ChangeNotifier {
   /// Умный переход: профили звука треков и темп трека (если известен)
   MixAnalyzer? mixer;
   double? Function(Track t)? tempoOf;
+
+  /// Уточнение DJ-плана по разбору звука (фразы, вокал, громкость); null — как есть. Аргументы: план, профили, id треков
+  MixPlan Function(MixPlan plan, MixProfile a, MixProfile b, String fromId, String toId)? refinePlan;
+
+  /// Автоматический план перехода с учётом разбора звука
+  MixPlan _autoPlan(MixProfile a, MixProfile b, String fromId, String toId, {double? bpm}) {
+    final plan = MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: bpm, dj: _djMix);
+    final r = refinePlan;
+    return r == null ? plan : r(plan, a, b, fromId, toId);
+  }
   bool get smartMix => jamSmart ?? settings.viewOf('mix.smart', '1') == '1';
 
   /// Диджейский стиль перехода: подгонка темпа, переход на целое число тактов, обмен басов (в джеме действует стиль организатора — обычный)
@@ -653,7 +663,7 @@ class PlayerController extends ChangeNotifier {
     if (a == null || b == null) return null;
     // Профиль от другого файла (трек заменили) — не доверяем
     if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
-    final auto = MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur), dj: _djMix);
+    final auto = _autoPlan(a, b, cur.id, queue[ni], bpm: tempoOf?.call(cur));
     return manual ? MixPlan.manual(a, b, pref, auto: auto) : auto;
   }
 
@@ -689,7 +699,7 @@ class PlayerController extends ChangeNotifier {
     final m = mixer;
     final pa = m?.profile(a.id), pb = m?.profile(b.id);
     if (pa == null || pb == null) return false;
-    final auto = MixPlan.make(pa, pb, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), dj: _djMix);
+    final auto = _autoPlan(pa, pb, a.id, b.id);
     final plan = pref.mode == TransitionMode.manual ? MixPlan.manual(pa, pb, pref, auto: auto) : auto;
     final from = Duration(milliseconds: math.max(0, plan.start.inMilliseconds - plan.preroll.inMilliseconds - 8000));
     await playTracks([a, b], 0, inOrder: true);

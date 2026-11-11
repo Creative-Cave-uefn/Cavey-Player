@@ -148,6 +148,21 @@ class _IntelBodyState extends State<_IntelBody> {
       ],
       HintSwitch(
         contentPadding: EdgeInsets.zero,
+        value: intel.planEnabled,
+        onChanged: intel.setPlanEnabled,
+        title: 'Умные DJ-переходы',
+        hint: 'В DJ-стиле переход привязывается к границе фразы, учитывает вокал и выравнивает громкость по LUFS. '
+            'Нужен разбор «Весь трек» у обоих треков; без него переход как раньше.',
+      ),
+      HintSwitch(
+        contentPadding: EdgeInsets.zero,
+        value: intel.cutEnabled,
+        onChanged: intel.planEnabled ? intel.setCutEnabled : null,
+        title: 'Резкие стыки',
+        hint: 'Когда оба трека на полной энергии или вокал мешал бы наложению, смена идёт за полдоли на границе фразы, без плавного наложения.',
+      ),
+      HintSwitch(
+        contentPadding: EdgeInsets.zero,
         value: intel.syncEnabled,
         onChanged: intel.setSyncEnabled,
         title: 'Общий индекс на Диске',

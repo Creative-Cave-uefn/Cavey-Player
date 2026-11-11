@@ -204,6 +204,17 @@ class AppServices {
     app.sim = SimIndex(lib, () => player.mixer);
     app.intel = IntelService(dir: store.sub('intel'), lib: lib, drive: drive, cache: cache, tools: Tools(store.sub('tools')));
     unawaited(app.intel.open()); // индекс читается и разбор идёт в фоне: запуск приложения не ждёт
+    player.refinePlan = app.intel.refinePlan;
+    // Играющий и следующий трек разбираются в первую очередь: для DJ-перехода нужны данные именно по ним
+    String? intelSeen;
+    player.addListener(() {
+      final cur = player.current?.id;
+      if (cur == null || cur == intelSeen) return;
+      intelSeen = cur;
+      final ni = player.index + 1;
+      if (ni >= 0 && ni < player.queue.length) app.intel.prioritize(player.queue[ni]);
+      app.intel.prioritize(cur);
+    });
     app.listenBrainz = ListenBrainz(settings, player)..start();
     final tempo = <String, double?>{};
     player.tempoOf = (t) {

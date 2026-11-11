@@ -6,12 +6,14 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 
 import '../audio_cache.dart';
+import '../automix.dart';
 import '../dl/tools.dart';
 import '../drive.dart';
 import '../library.dart';
 import '../log.dart';
 import '../models.dart';
 import 'analyze.dart';
+import 'dj_plan.dart';
 import 'features.dart' show intelFft, intelRate;
 import 'intel_store.dart';
 import 'record.dart';
@@ -59,6 +61,35 @@ class IntelService extends ChangeNotifier {
 
   /// 'full' — весь трек (нужен для сетки долей и фраз), 'fast' — четыре отрывка по 16 секунд
   String get mode => lib.settings.viewOf('intel.mode', 'full') == 'fast' ? 'fast' : 'full';
+
+  /// Уточнять DJ-переходы по разбору звука (границы фраз, вокал, LUFS)
+  bool get planEnabled => lib.settings.viewOf('intel.plan', '1') == '1';
+
+  /// Разрешить резкие стыки (hard cut) на границе фразы, когда оба трека на полной энергии или вокал мешает наложению
+  bool get cutEnabled => lib.settings.viewOf('intel.cut', '1') == '1';
+
+  void setPlanEnabled(bool on) {
+    _set('intel.plan', on ? '1' : '0');
+    _notify();
+  }
+
+  void setCutEnabled(bool on) {
+    _set('intel.cut', on ? '1' : '0');
+    _notify();
+  }
+
+  /// Уточняет план DJ-перехода [plan] между [from] и [to] по их разбору. Любая ошибка или нехватка данных — план остаётся как был
+  MixPlan refinePlan(MixPlan plan, MixProfile a, MixProfile b, String from, String to) {
+    if (!planEnabled || !plan.dj) return plan;
+    try {
+      final r = DjPlanner.refine(plan, a, b, store.get(from), store.get(to), allowCut: cutEnabled);
+      if (r.kind != DjKind.unchanged || r.notes.isNotEmpty) AppLog.info('DJ-переход: ${r.notes.join('; ')}');
+      return r.plan;
+    } catch (e) {
+      AppLog.info('DJ-переход: уточнение не удалось ($e), план без изменений');
+      return plan;
+    }
+  }
 
   void _set(String key, String value) {
     lib.settings.view[key] = value;
