@@ -2,10 +2,81 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../core/audio_format.dart';
 import '../core/device_export.dart';
 import '../core/models.dart';
 import 'glass_popup.dart';
 import 'theme.dart';
+
+/// Формат для локальной загрузки. Если включено «Спрашивать формат при каждой загрузке» — показывает окно выбора
+/// (выбранное становится форматом по умолчанию), иначе берёт формат из настроек. null — пользователь отказался
+Future<String?> chooseExportFormat(BuildContext context) async {
+  final app = Services.of(context);
+  if (!exportAskOf(app.settings)) return exportFormatOf(app.settings);
+  var format = exportFormatOf(app.settings);
+  var ask = true;
+  final ok = await showGlassDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setState) => AlertDialog(
+        title: Text('В каком формате сохранить?', style: display(18)),
+        content: SizedBox(
+          width: 420,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            for (final f in exportFormats)
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => setState(() => format = f),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+                  child: Row(children: [
+                    Icon(format == f ? Icons.radio_button_checked_rounded : Icons.radio_button_unchecked_rounded,
+                        size: 20, color: format == f ? C.accent : C.muted),
+                    const SizedBox(width: 12),
+                    Expanded(child: Text(exportFormatLabel(f), style: const TextStyle(fontSize: 15))),
+                  ]),
+                ),
+              ),
+            const SizedBox(height: 6),
+            InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => setState(() => ask = !ask),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                child: Row(children: [
+                  Icon(ask ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded, size: 22, color: ask ? C.accent : C.muted),
+                  const SizedBox(width: 12),
+                  const Expanded(child: Text('Спрашивать формат при каждой загрузке')),
+                ]),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Выбранный формат станет форматом по умолчанию. Его можно изменить в «Настройки» → «Основное».',
+              style: TextStyle(color: C.faint, fontSize: 12.5, height: 1.4),
+            ),
+            if (format != 'original') ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Треки перекодируются (при первом использовании скачается FFmpeg). Из сжатого файла качество лучше не станет, поэтому для FLAC и WAV файл будет больше, но не чище.',
+                style: TextStyle(color: C.faint, fontSize: 12.5, height: 1.4),
+              ),
+            ],
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: C.muted))),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Дальше')),
+        ],
+      ),
+    ),
+  );
+  if (ok != true) return null;
+  app.settings.view['export.format'] = format;
+  app.settings.view['export.ask'] = ask ? '1' : '0';
+  app.lib.viewChanged();
+  return format;
+}
 
 /// «Скачать на устройство»: спрашивает папку (последняя запоминается) и запускает выгрузку.
 /// [folderName] — для альбома и плейлиста: файлы лягут в подпапку с этим названием и будут пронумерованы
@@ -16,6 +87,8 @@ Future<void> exportToDevice(BuildContext context, List<Track> tracks,
     app.lib.messages.add('Здесь пока нет треков');
     return;
   }
+  final format = await chooseExportFormat(context);
+  if (format == null || !context.mounted) return;
   final last = app.settings.viewOf('export.dir', '');
   final dir = await getDirectoryPath(
     initialDirectory: last.isEmpty ? null : last,
@@ -24,7 +97,7 @@ Future<void> exportToDevice(BuildContext context, List<Track> tracks,
   if (dir == null) return;
   app.settings.view['export.dir'] = dir;
   app.lib.viewChanged();
-  app.exporter.start(tracks, dir, folderName: folderName, numbered: numbered ?? folderName != null, withArtist: withArtist, title: title);
+  app.exporter.start(tracks, dir, folderName: folderName, numbered: numbered ?? folderName != null, withArtist: withArtist, title: title, format: format);
   app.lib.messages.add(folderName == null ? 'Сохраняю на устройство…' : 'Сохраняю «$folderName» на устройство…');
 }
 

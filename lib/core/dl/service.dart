@@ -10,7 +10,9 @@ import 'package:flutter/foundation.dart';
 
 import '../audio_cache.dart';
 import '../covers.dart';
+import '../audio_format.dart';
 import '../device_export.dart' show safeFileName;
+import 'tools.dart';
 import '../library.dart';
 import '../log.dart';
 import '../models.dart';
@@ -33,6 +35,9 @@ class DownloadJob {
 
   /// «Скачать на устройство»: файлы кладутся в эту папку на компьютере, на Диск и в библиотеку не попадают
   final String? deviceDir;
+
+  /// Формат файлов на устройстве: 'original' или 'mp3' / 'flac' / 'wav' (перекодируются через ffmpeg)
+  final String deviceFormat;
   String title;
   JobState state = JobState.queued;
   bool cancelRequested = false;
@@ -65,7 +70,7 @@ class DownloadJob {
 
   DownloadJob(this.input, this.sourceId, this.folderName,
       {this.folderId, this.path = '', this.quiet = false, this.makePlaylist = true,
-       this.onTrack, this.replaceTrackId, this.intoAlbum, this.intoAlbumArtist, this.deviceDir}) : title = input;
+       this.onTrack, this.replaceTrackId, this.intoAlbum, this.intoAlbumArtist, this.deviceDir, this.deviceFormat = 'original'}) : title = input;
 
   String get target => folderId ?? sourceId;
   void add(String line) {
@@ -136,13 +141,13 @@ class DownloadService extends ChangeNotifier {
 
   DownloadJob? enqueue(String input, String sourceId,
       {String? folderId, String path = '', bool quiet = false,
-       void Function(Track)? onTrack, bool makePlaylist = true, String? intoAlbum, String? intoAlbumArtist, String? deviceDir}) {
+       void Function(Track)? onTrack, bool makePlaylist = true, String? intoAlbum, String? intoAlbumArtist, String? deviceDir, String deviceFormat = 'original'}) {
     final value = input.trim();
     if (value.isEmpty) return null;
     final source = lib.data.sources.where((s) => s.id == sourceId).firstOrNull;
     final job = DownloadJob(value, sourceId, source?.name ?? 'Cavey',
       folderId: folderId, path: path, quiet: quiet, onTrack: onTrack,
-      makePlaylist: makePlaylist, intoAlbum: intoAlbum, intoAlbumArtist: intoAlbumArtist, deviceDir: deviceDir);
+      makePlaylist: makePlaylist, intoAlbum: intoAlbum, intoAlbumArtist: intoAlbumArtist, deviceDir: deviceDir, deviceFormat: deviceFormat);
     jobs.insert(0, job);
     notifyListeners();
     unawaited(_pump());
@@ -534,18 +539,25 @@ class DownloadService extends ChangeNotifier {
   /// Метка «файл на устройстве» в идентификаторах, которые заняты у загрузчика вместо id Диска
   static const _deviceMark = 'device:';
 
-  /// Копирует скачанный файл в [dir], не затирая одноимённые: «Имя (2).mp3»
-  Future<String> _copyToDevice(File f, String dir) async {
+  /// Копирует скачанный файл в [dir], не затирая одноимённые: «Имя (2).mp3».
+  /// [format] не 'original' — файл перекодируется в mp3 / flac / wav (если он уже в этом формате, просто копируется)
+  Future<String> _copyToDevice(File f, String dir, {String format = 'original'}) async {
     await Directory(dir).create(recursive: true);
     final name = f.uri.pathSegments.last;
     final dot = name.lastIndexOf('.');
     final stem = dot > 0 ? name.substring(0, dot) : name;
-    final ext = dot > 0 ? name.substring(dot) : '';
-    var dest = File('$dir${Platform.pathSeparator}$name');
+    var ext = dot > 0 ? name.substring(dot) : '';
+    final convert = format != 'original' && ext.toLowerCase() != '.$format';
+    if (convert) ext = '.$format';
+    var dest = File('$dir${Platform.pathSeparator}$stem$ext');
     for (var n = 2; await dest.exists(); n++) {
       dest = File('$dir${Platform.pathSeparator}$stem ($n)$ext');
     }
-    await f.copy(dest.path);
+    if (convert) {
+      await convertAudio(Tools(_toolsDir), f, dest, format);
+    } else {
+      await f.copy(dest.path);
+    }
     return dest.path;
   }
 
@@ -639,7 +651,7 @@ class DownloadService extends ChangeNotifier {
         if (job.deviceDir != null) {
           final folder = call['folderId'] as String?;
           final dir = folder != null && folder.startsWith(_deviceMark) ? folder.substring(_deviceMark.length) : job.deviceDir!;
-          final saved = await _copyToDevice(f, dir);
+          final saved = await _copyToDevice(f, dir, format: job.deviceFormat);
           job.touch();
           return '$_deviceMark$saved';
         }

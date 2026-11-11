@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -8,6 +9,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/covers.dart' show CoverService;
 import '../core/library.dart';
+import '../core/log.dart';
 import '../core/models.dart';
 import '../core/social.dart';
 import 'ambient.dart';
@@ -157,13 +159,18 @@ class _ProfileLayoutState extends State<ProfileLayout> {
     if (old.bannerFileId != widget.bannerFileId) _loadStrip();
   }
 
-  /// Цвета верхней кромки баннера → верхняя полоса окна. Баннер мог ещё не догрузиться: пробуем снова по сигналу обложек
+  Timer? _stripRetry;
+  int _stripTries = 0;
+
+  /// Цвета верхней кромки баннера → верхняя полоса окна. Баннер мог ещё не догрузиться: пробуем снова и по сигналу обложек,
+  /// и по таймеру (сигнал мог прийти раньше, чем копия легла в память, и больше не повториться)
   Future<void> _loadStrip() async {
     final id = widget.bannerFileId;
     final covers = _covers;
     if (id == null || covers == null) {
       _stripFor = null;
       _stripSeq++;
+      _stripRetry?.cancel();
       WidgetsBinding.instance.addPostFrameCallback((_) => StripTint.release(this));
       return;
     }
@@ -171,14 +178,29 @@ class _ProfileLayoutState extends State<ProfileLayout> {
     final seq = ++_stripSeq;
     final bytes = covers.peekFile(id, px: 64);
     if (bytes == null) {
-      covers.forFile(id, px: 64); // запускаем загрузку; сигнал обложек вернёт нас сюда
+      covers.forFile(id, px: 64); // запускаем загрузку
+      _retryStrip();
       return;
     }
     final list = await StripTint.sample(bytes);
-    if (!mounted || seq != _stripSeq || list == null) return;
+    if (!mounted || seq != _stripSeq) return;
+    if (list == null) {
+      AppLog.info('Верхняя полоса: не удалось взять цвета баннера $id');
+      _retryStrip();
+      return;
+    }
     _stripFor = id;
+    _stripRetry?.cancel();
     StripTint.claim(this, list);
     _onScroll();
+  }
+
+  void _retryStrip() {
+    if (_stripTries >= 14 || (_stripRetry?.isActive ?? false)) return;
+    _stripTries++;
+    _stripRetry = Timer(Duration(milliseconds: 600 + _stripTries * 400), () {
+      if (mounted) _loadStrip();
+    });
   }
 
   /// На какой высоте прокрутки баннер исчезает совсем
@@ -187,6 +209,7 @@ class _ProfileLayoutState extends State<ProfileLayout> {
   @override
   void dispose() {
     _covers?.removeListener(_loadStrip);
+    _stripRetry?.cancel();
     _stripSeq++;
     final me = this;
     WidgetsBinding.instance.addPostFrameCallback((_) => StripTint.release(me));
@@ -887,7 +910,18 @@ class UserProfilePage extends StatelessWidget {
               if (id == null) return null;
               // Маленькая копия (как у обложки трека): подходит и та, что уже загрузил сам баннер на странице (640 px).
               // Запрос оригинала упирался в «отказ помнится 5 минут» и не видел уже готовой копии — фон оставался без баннера
-              return app.covers.peekFile(id, px: 160) ?? await app.covers.forFile(id, px: 160);
+              final covers = app.covers;
+              final hit = covers.peekFile(id, px: 160) ?? await covers.forFile(id, px: 160);
+              if (hit != null) return hit;
+              // Не вышло сразу (баннер ещё качает сама страница или недавний отказ): ждём, пока копия появится в памяти.
+              // Если не дождались — фон на время цвета друга, а потом он сам повторит попытку
+              for (var i = 0; i < 12; i++) {
+                await Future<void>.delayed(const Duration(milliseconds: 500));
+                final late = covers.peekFile(id, px: 160);
+                if (late != null) return late;
+              }
+              AppLog.info('Фон профиля: баннер $id не загрузился за 6 секунд');
+              return null;
             },
             color: friendColor(email),
           ),

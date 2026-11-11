@@ -27,6 +27,12 @@ Future<void> showCollectionMenu(BuildContext context, Offset at, {Playlist? play
       const PopupMenuItem(value: 'shuffle', child: Text('Вперемешку')),
       const PopupMenuDivider(),
       if (p != null || album != null) const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
+      // Исполнителя можно отметить любимым (то же сердечко, что в «Исполнителях» и на плитке)
+      if (artist != null)
+        PopupMenuItem(
+          value: 'fav',
+          child: Text(lib.isFavArtist(artist.key) ? 'Убрать из любимых исполнителей' : 'В любимые исполнители'),
+        ),
       PopupMenuItem(value: 'pin', child: Text(pinned ? 'Открепить' : 'Закрепить')),
       const PopupMenuItem(value: 'export', child: Text('Скачать на устройство')),
       if (mine)
@@ -60,6 +66,8 @@ Future<void> showCollectionMenu(BuildContext context, Offset at, {Playlist? play
       } else {
         await editAlbumDialog(context, album!);
       }
+    case 'fav':
+      lib.toggleFavArtist(artist!.key);
     case 'pin':
       lib.togglePinToken(tokens);
     case 'export':

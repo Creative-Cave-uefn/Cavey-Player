@@ -1,6 +1,8 @@
 import 'dart:convert';
 
+import 'package:cave_player/core/audio_format.dart';
 import 'package:cave_player/core/device_export.dart';
+import 'package:cave_player/core/image_tools.dart' show isGifBytes;
 import 'package:cave_player/core/library.dart';
 import 'package:cave_player/core/migration.dart';
 import 'package:cave_player/core/models.dart';
@@ -239,6 +241,41 @@ void main() {
       expect(colors[0].r, greaterThan(colors[1].r)); // слева красный, справа синий
       expect(colors[1].b, greaterThan(colors[0].b));
       expect(colors[0].r, lessThan(0.6)); // затемнён
+    });
+  });
+
+  group('Формат загрузки на устройство', () {
+    test('по умолчанию «как есть» и вопрос каждый раз; сохранённые значения читаются', () {
+      final s = Settings();
+      expect(exportFormatOf(s), 'original');
+      expect(exportAskOf(s), isTrue);
+      s.view['export.format'] = 'flac';
+      s.view['export.ask'] = '0';
+      expect(exportFormatOf(s), 'flac');
+      expect(exportAskOf(s), isFalse);
+      s.view['export.format'] = 'ogg';
+      expect(exportFormatOf(s), 'original');
+    });
+
+    test('аргументы ffmpeg: кодек по формату, обложка только не для WAV', () {
+      final mp3 = convertArgs('a.audio', 'a.mp3', 'mp3');
+      expect(mp3, containsAllInOrder(['-c:a', 'libmp3lame']));
+      expect(mp3, contains('0:v:0?'));
+      final wav = convertArgs('a.mp3', 'a.wav', 'wav');
+      expect(wav, containsAllInOrder(['-c:a', 'pcm_s16le']));
+      expect(wav, contains('-vn'));
+      expect(convertArgs('a', 'a.flac', 'flac', cover: false), contains('-vn'));
+    });
+
+    test('расширение определяется по началу файла', () {
+      expect(sniffAudioExt([0x66, 0x4C, 0x61, 0x43]), 'flac');
+      expect(sniffAudioExt([0x49, 0x44, 0x33, 4]), 'mp3');
+      expect(sniffAudioExt([0x52, 0x49, 0x46, 0x46]), 'wav');
+    });
+
+    test('GIF узнаётся по заголовку', () {
+      expect(isGifBytes([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0]), isTrue);
+      expect(isGifBytes([0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0]), isFalse);
     });
   });
 }

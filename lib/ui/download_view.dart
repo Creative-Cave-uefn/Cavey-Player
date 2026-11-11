@@ -10,6 +10,7 @@ import '../core/dl/service.dart';
 import '../core/log.dart';
 import '../core/upload_queue.dart';
 import 'accounts_view.dart' show GlassSelect;
+import 'device_export_ui.dart' show chooseExportFormat;
 import 'shell.dart';
 import 'theme.dart';
 
@@ -71,13 +72,15 @@ class _DownloadPageState extends State<DownloadPage> {
     final app = Services.of(context);
     final text = _input.text.trim();
     if (text.isEmpty) return;
+    final format = await chooseExportFormat(context);
+    if (format == null || !mounted) return;
     final last = app.settings.viewOf('export.dir', '');
     final dir = await getDirectoryPath(initialDirectory: last.isEmpty ? null : last, confirmButtonText: 'Сохранить сюда');
     if (dir == null || !mounted) return;
     app.settings.view['export.dir'] = dir;
     app.lib.viewChanged();
     final source = app.settings.hubId ?? app.lib.data.sources.firstOrNull?.id ?? '';
-    app.downloads.enqueue(text, source, makePlaylist: false, deviceDir: dir);
+    app.downloads.enqueue(text, source, makePlaylist: false, deviceDir: dir, deviceFormat: format);
     _input.clear();
   }
 

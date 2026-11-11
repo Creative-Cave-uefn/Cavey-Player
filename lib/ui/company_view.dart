@@ -670,6 +670,9 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
                   link: _link,
                   targetAnchor: Alignment.topRight,
                   followerAnchor: Alignment.bottomLeft,
+                  // Окошко стоит выше значка с небольшим зазором и не лежит под курсором; с зазором в 6 px окошко
+                  // не закрывается: переход курсора на него закрывающий таймер переживает
+                  offset: const Offset(0, -6),
                   child: live.isEmpty
                       ? const SizedBox.shrink()
                       : MouseRegion(

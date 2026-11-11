@@ -103,6 +103,8 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   final _nav = NavController();
   final _gesture = MouseGesture();
+  /// Фокус оболочки: через него до обработчика клавиш доходят пробел, стрелки и M/L
+  final _keyFocus = FocusNode(debugLabel: 'shell-keys');
   StreamSubscription<String>? _msgs;
   bool _dragging = false;
   String? _toast;
@@ -157,6 +159,30 @@ class _ShellState extends State<Shell> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    FocusManager.instance.addListener(_keepKeyFocus);
+  }
+
+  /// Фокус ушёл «в никуда» (поле ввода исчезло или потеряло фокус, закрылось окно): возвращаем его оболочке,
+  /// иначе клавиши до неё не доходят и пробел перестаёт ставить паузу
+  void _keepKeyFocus() {
+    if (!mounted || _keyFocus.hasPrimaryFocus) return;
+    final f = FocusManager.instance.primaryFocus;
+    if (f != null && f is! FocusScopeNode) return;
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _keyFocus.hasPrimaryFocus) return;
+      final cur = FocusManager.instance.primaryFocus;
+      if (cur != null && cur is! FocusScopeNode) return;
+      final r = ModalRoute.of(context);
+      if (r != null && !r.isCurrent) return;
+      _keyFocus.requestFocus();
+    });
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _nav.removeListener(_onNavForScroll);
@@ -191,6 +217,8 @@ class _ShellState extends State<Shell> {
     if (_askLib == null) {
       _askLib = Services.of(context).lib..addListener(_checkForeignDeletions);
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkForeignDeletions());
+      // Подстраховка: если окно вопроса пропустили или оно было закрыто мимо кнопок, спрашиваем снова
+      _askTimer = Timer.periodic(const Duration(minutes: 2), (_) => _checkForeignDeletions());
     }
     if (_linkSource == null) {
       _linkSource = Services.of(context).incomingLink..addListener(_onLink);
@@ -202,9 +230,21 @@ class _ShellState extends State<Shell> {
   bool _tabRestored = false;
   LibraryController? _askLib;
 
+  Timer? _askTimer;
+  int _askLogged = -1;
+
   void _checkForeignDeletions() {
     final lib = _askLib;
-    if (!mounted || lib == null || lib.foreignDeletions.isEmpty) return;
+    if (!mounted || lib == null) return;
+    final n = lib.foreignDeletions.length;
+    if (n == 0) {
+      _askLogged = -1;
+      return;
+    }
+    if (n != _askLogged) {
+      _askLogged = n;
+      AppLog.info('Чужие удаления моих файлов, жду ответа: $n');
+    }
     askForeignDeletions(context, lib);
   }
 
@@ -298,6 +338,9 @@ class _ShellState extends State<Shell> {
 
   @override
   void dispose() {
+    FocusManager.instance.removeListener(_keepKeyFocus);
+    _askTimer?.cancel();
+    _keyFocus.dispose();
     if (shellNav.value == _nav) shellNav.value = null;
     _nav.removeListener(_onNavForScroll);
     _scrollTopVisible.dispose();
@@ -334,6 +377,7 @@ class _ShellState extends State<Shell> {
         child: Focus(
         onKeyEvent: (node, e) => _onKey(e),
         child: Focus(
+          focusNode: _keyFocus,
           autofocus: true,
           child: DropTarget(
             onDragEntered: (_) => setState(() => _dragging = true),
@@ -516,7 +560,7 @@ class _ShellState extends State<Shell> {
       if (t is RenderEditable) return;
       if (t is RenderTapRegion && t.groupId == EditableText) return;
     }
-    FocusManager.instance.primaryFocus?.unfocus();
+    _keyFocus.requestFocus();
   }
 
   KeyEventResult _onKey(KeyEvent e) {

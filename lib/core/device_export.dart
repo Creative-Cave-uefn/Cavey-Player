@@ -7,10 +7,14 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import 'audio_cache.dart';
+import 'audio_format.dart';
+import 'dl/tools.dart';
 import 'drive.dart';
 import 'library.dart';
 import 'log.dart';
 import 'models.dart';
+
+export 'audio_format.dart' show sniffAudioExt, extFromName;
 
 
 /// Открывает папку в Проводнике
@@ -20,42 +24,6 @@ Future<void> openFolder(String dir) async {
   } catch (e) {
     AppLog.warn('Открыть папку', e);
   }
-}
-
-/// Расширение по началу файла: у копий в кэше своего расширения нет
-String sniffAudioExt(List<int> head) {
-  bool starts(List<int> p, [int at = 0]) {
-    if (head.length < at + p.length) return false;
-    for (var i = 0; i < p.length; i++) {
-      if (head[at + i] != p[i]) return false;
-    }
-    return true;
-  }
-
-  if (starts([0x49, 0x44, 0x33])) return 'mp3'; // ID3
-  if (starts([0x66, 0x4C, 0x61, 0x43])) return 'flac'; // fLaC
-  if (starts([0x4F, 0x67, 0x67, 0x53])) return 'ogg'; // OggS
-  if (starts([0x52, 0x49, 0x46, 0x46])) return 'wav'; // RIFF
-  if (starts([0x66, 0x74, 0x79, 0x70], 4)) return 'm4a'; // ftyp
-  if (starts([0x30, 0x26, 0xB2, 0x75])) return 'wma';
-  if (head.length > 1 && head[0] == 0xFF && (head[1] & 0xE0) == 0xE0) return 'mp3'; // кадр MPEG без ID3
-  return 'mp3';
-}
-
-String extFromName(String name, [String mime = '']) {
-  final dot = name.lastIndexOf('.');
-  if (dot > 0 && dot >= name.length - 6) {
-    final e = name.substring(dot + 1).toLowerCase();
-    if (RegExp(r'^[a-z0-9]{2,5}$').hasMatch(e)) return e;
-  }
-  return switch (mime) {
-    'audio/mpeg' => 'mp3',
-    'audio/flac' || 'audio/x-flac' => 'flac',
-    'audio/mp4' || 'audio/x-m4a' || 'audio/aac' => 'm4a',
-    'audio/ogg' => 'ogg',
-    'audio/wav' || 'audio/x-wav' => 'wav',
-    _ => '',
-  };
 }
 
 const _reserved = {
@@ -119,7 +87,8 @@ class DeviceExport extends ChangeNotifier {
   final LibraryController lib;
   final DriveApi drive;
   final AudioCache cache;
-  DeviceExport(this.lib, this.drive, this.cache);
+  final Tools tools;
+  DeviceExport(this.lib, this.drive, this.cache, this.tools);
 
   final List<ExportJob> jobs = [];
 
@@ -132,12 +101,14 @@ class DeviceExport extends ChangeNotifier {
   }
 
   /// Запускает выгрузку. [folderName] — подпапка (альбом, плейлист); без неё файлы кладутся прямо в [baseDir]
-  ExportJob start(List<Track> tracks, String baseDir, {String? folderName, bool numbered = false, bool withArtist = true, String? title}) {
+  /// [format] — 'original' (как есть) или 'mp3' / 'flac' / 'wav': остальные перекодируются через ffmpeg
+  ExportJob start(List<Track> tracks, String baseDir,
+      {String? folderName, bool numbered = false, bool withArtist = true, String? title, String format = 'original'}) {
     final dir = folderName == null ? baseDir : '$baseDir${Platform.pathSeparator}${safeFileName(folderName)}';
     final job = ExportJob(title ?? folderName ?? (tracks.length == 1 ? tracks.first.title : '${tracks.length} треков'), dir, tracks.length);
     jobs.add(job);
     notifyListeners();
-    unawaited(_run(job, tracks, numbered, withArtist));
+    unawaited(_run(job, tracks, numbered, withArtist, format));
     return job;
   }
 
@@ -163,10 +134,12 @@ class DeviceExport extends ChangeNotifier {
     return 'mp3';
   }
 
-  Future<void> _run(ExportJob job, List<Track> tracks, bool numbered, bool withArtist) async {
+  Future<void> _run(ExportJob job, List<Track> tracks, bool numbered, bool withArtist, String format) async {
     try {
       await Directory(job.dir).create(recursive: true);
-      final exts = await Future.wait([for (final t in tracks) _extFor(t)]);
+      final srcExts = await Future.wait([for (final t in tracks) _extFor(t)]);
+      // Имя файла — с расширением того формата, в котором он будет сохранён
+      final exts = [for (final e in srcExts) format == 'original' ? e : format];
       final names = exportFileNames(tracks, exts, numbered: numbered, withArtist: withArtist);
       // Не затираем то, что уже лежит в папке
       for (var i = 0; i < names.length; i++) {
@@ -191,7 +164,7 @@ class DeviceExport extends ChangeNotifier {
           job.current = t.title;
           job.changed();
           try {
-            await _copyOne(t, target);
+            await _copyOne(t, target, srcExts[i], format);
             job.files.add(target.path);
             job.done++;
           } catch (e, st) {
@@ -222,17 +195,33 @@ class DeviceExport extends ChangeNotifier {
     }
   }
 
-  Future<void> _copyOne(Track t, File target) async {
+  Future<void> _copyOne(Track t, File target, String srcExt, String format) async {
+    final convert = format != 'original' && format != srcExt;
     if (cache.has(t.id)) {
       final src = cache.fileFor(t.id);
       if (await src.exists() && await src.length() > 0) {
-        await src.copy(target.path);
+        if (convert) {
+          await convertAudio(tools, src, target, format);
+        } else {
+          await src.copy(target.path);
+        }
         return;
       }
     }
     final email = await lib.accessFor(t.source);
-    await drive.downloadToFile(email, t.id, target, expectedModified: t.modified);
-    if (!await target.exists() || await target.length() == 0) throw StateError('Пустой файл');
+    // Для перекодирования сначала скачиваем исходник рядом, потом убираем его
+    final raw = convert ? File('${target.path}.src') : target;
+    try {
+      await drive.downloadToFile(email, t.id, raw, expectedModified: t.modified);
+      if (!await raw.exists() || await raw.length() == 0) throw StateError('Пустой файл');
+      if (convert) await convertAudio(tools, raw, target, format);
+    } finally {
+      if (convert) {
+        try {
+          if (await raw.exists()) await raw.delete();
+        } catch (_) {}
+      }
+    }
   }
 
   /// Проводник с выделенным файлом сохранённого офлайн трека

@@ -1,11 +1,49 @@
 // Сжатие картинок: при загрузке на Диск и для уменьшенных копий в кэше.
 // Работает в отдельном изоляте, чтобы окно не подвисало.
 
+import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
+
+/// GIF по первым байтам («GIF87a», «GIF89a»)
+bool isGifBytes(List<int> b) => b.length > 6 && b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x38;
+
+/// Предел размера картинки, которую берём по ссылке, и анимированной GIF
+const maxLinkedImageBytes = 25 * 1024 * 1024;
+const maxGifBytes = 10 * 1024 * 1024;
+
+/// Скачивает картинку по ссылке http(s). Бросает понятную ошибку (FormatException / HttpException / TimeoutException)
+Future<Uint8List> downloadImageBytes(String url) async {
+  final uri = Uri.tryParse(url.trim());
+  if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https') || uri.host.isEmpty) {
+    throw const FormatException('Нужна ссылка на картинку вида https://…');
+  }
+  final client = http.Client();
+  try {
+    final req = http.Request('GET', uri)
+      ..headers['User-Agent'] = 'Mozilla/5.0 Cavey-Player'
+      ..headers['Accept'] = 'image/*,*/*;q=0.8';
+    final res = await client.send(req).timeout(const Duration(seconds: 15));
+    if (res.statusCode != 200) throw HttpException('Сайт ответил ${res.statusCode}');
+    final len = res.contentLength;
+    if (len != null && len > maxLinkedImageBytes) throw const FormatException('Файл слишком большой (больше 25 МБ)');
+    final out = BytesBuilder(copy: false);
+    await for (final chunk in res.stream.timeout(const Duration(seconds: 20))) {
+      out.add(chunk);
+      if (out.length > maxLinkedImageBytes) throw const FormatException('Файл слишком большой (больше 25 МБ)');
+    }
+    final bytes = out.takeBytes();
+    if (bytes.isEmpty) throw const FormatException('Пустой ответ');
+    return bytes;
+  } finally {
+    client.close();
+  }
+}
 
 class _Job {
   final Uint8List bytes;

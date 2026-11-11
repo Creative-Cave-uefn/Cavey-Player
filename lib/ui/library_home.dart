@@ -302,12 +302,20 @@ class _ArtistTile extends StatelessWidget {
   const _ArtistTile(this.a);
 
   @override
-  Widget build(BuildContext context) => TileInk(
+  Widget build(BuildContext context) {
+    final lib = Services.of(context).lib;
+    return ListenableBuilder(listenable: lib, builder: (context, _) => _tile(context, lib));
+  }
+
+  Widget _tile(BuildContext context, LibraryController lib) => TileInk(
         onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
         onPlay: () {
           final app = Services.of(context);
           app.player.playTracks(topTracksOf(app, a), 0);
         },
+        favorite: lib.isFavArtist(a.key),
+        onFavorite: () => lib.toggleFavArtist(a.key),
+        favoriteOnCircle: true,
         onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, artist: a),
         child: LayoutBuilder(
           builder: (context, box) => Column(children: [

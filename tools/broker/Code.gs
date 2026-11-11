@@ -23,7 +23,7 @@ var MIN_FREE_BYTES = 200 * 1024 * 1024; // запас, который остав
 var RATE_LIMIT = 300;                   // запросов begin на человека в час (альбом = десятки файлов и обложек)
 var ALLOWED_EXT = {
   mp3: 1, flac: 1, m4a: 1, aac: 1, ogg: 1, opus: 1, wav: 1, wma: 1, aiff: 1, aif: 1, alac: 1, ape: 1,
-  jpg: 1, jpeg: 1, png: 1, webp: 1, json: 1
+  jpg: 1, jpeg: 1, png: 1, webp: 1, gif: 1, json: 1
 };
 var API_VERSION = 3;
 var ADOPT_BATCH = 20; // файлов за один запрос adopt

@@ -1583,7 +1583,9 @@ class LibraryController extends ChangeNotifier {
   /// ему придёт предложение с причиной [reason] (dup, bad, tags, other) и комментарием [note];
   /// для дубликатов [keep] — копия, которая остаётся.
   void deleteTracks(Iterable<Track> list, {String reason = 'other', String note = '', Track? keep}) {
-    final ids = {for (final t in list) t.id: t.by};
+    // Загрузивший неизвестен (старые записи без «by»): файл числим за владельцем библиотеки, иначе его не удалил бы никто
+    // и он навсегда остался бы на Диске
+    final ids = {for (final t in list) t.id: _uploaderOf(t.by)};
     if (ids.isEmpty) return;
     final names = {for (final t in list) t.id: '${t.displayArtist} — ${t.title}'};
     final info = {
@@ -1599,6 +1601,8 @@ class LibraryController extends ChangeNotifier {
     AppLog.info('Удаление с Диска: ${ids.length} (причина: $reason)');
     unawaited(processDeletions());
   }
+
+  String _uploaderOf(String by) => by.isNotEmpty ? by : (settings.hubEmail ?? '').toLowerCase();
 
   /// Объединить копии в [keep] (лайки, плейлисты, прослушивания переходят на неё) и удалить остальные
   void mergeAndDelete(Track keep, Iterable<Track> copies) {
@@ -1627,7 +1631,7 @@ class LibraryController extends ChangeNotifier {
   Map<String, String> get foreignDeletions {
     return {
       for (final e in data.deleted.entries)
-        if (isMyAccount(e.value) &&
+        if (isMyAccount(_uploaderOf(e.value)) &&
             (data.deletedBy[e.key] ?? '').isNotEmpty &&
             !isMyAccount(data.deletedBy[e.key]!))
           e.key: data.deletedBy[e.key]!
@@ -1679,7 +1683,7 @@ class LibraryController extends ChangeNotifier {
     try {
       final hubOwner = (settings.hubEmail ?? '').toLowerCase();
       for (final e in Map.of(data.deleted).entries) {
-        final uploader = e.value.toLowerCase();
+        final uploader = _uploaderOf(e.value).toLowerCase();
         final by = (data.deletedBy[e.key] ?? '').toLowerCase();
         final upAcc = accounts.accounts.where((a) => a.email.toLowerCase() == uploader).firstOrNull;
         final ownerAcc = hubOwner.isEmpty ? null : accounts.accounts.where((a) => a.email.toLowerCase() == hubOwner).firstOrNull;

@@ -186,7 +186,7 @@ class AppServices {
     );
     app = AppServices._(
         store, settings, accounts, drive, lib, player, covers, updater, cache, lyrics, social, jam, discord, downloads, tray, builtIn);
-    app.exporter = DeviceExport(lib, drive, cache);
+    app.exporter = DeviceExport(lib, drive, cache, Tools(store.sub('tools')));
     app.migration = LibraryMigration(lib, store);
     app.web = WebInfoService(store.sub('web'), lib);
     app.preview = PreviewPlayer(player);

@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'audio_format.dart';
 import 'drive.dart';
 import 'library.dart';
 import 'log.dart';
@@ -33,7 +34,13 @@ class AudioCache extends ChangeNotifier {
 
   AudioCache(this.dir, this.drive, this.lib, this.settings);
 
-  File fileFor(String id) => File('${dir.path}${Platform.pathSeparator}$id.audio');
+  /// Расширение, под которым трек лежит в кэше (по содержимому: mp3, flac, m4a…). Пока файл докачивается, он «.audio»
+  final Map<String, String> _ext = {};
+
+  static const _cacheExts = {'audio', 'mp3', 'flac', 'ogg', 'wav', 'm4a', 'wma'};
+
+  /// Файл трека в кэше: «<id>.mp3», «<id>.flac» и т.д. — как обычный аудиофайл, а не безымянный «.audio»
+  File fileFor(String id) => File('${dir.path}${Platform.pathSeparator}$id.${_ext[id] ?? 'audio'}');
   bool has(String id) => _have.contains(id);
   bool isDownloading(String id) => _active.contains(id) || _queue.contains(id);
   int get pending => _queue.length + _active.length;
@@ -41,9 +48,13 @@ class AudioCache extends ChangeNotifier {
   Future<void> init() async {
     try {
       await for (final e in dir.list()) {
-        if (e is File && e.path.endsWith('.audio')) {
-          final name = e.uri.pathSegments.last;
-          _have.add(name.substring(0, name.length - 6));
+        final name = e is File ? e.uri.pathSegments.last : '';
+        final dot = name.lastIndexOf('.');
+        final ext = dot > 0 ? name.substring(dot + 1).toLowerCase() : '';
+        if (e is File && _cacheExts.contains(ext)) {
+          final id = name.substring(0, dot);
+          _have.add(id);
+          if (ext != 'audio') _ext[id] = ext;
           sizeBytes += await e.length();
         } else if (e is File && (e.path.endsWith('.part') || e.path.endsWith('.part.version'))) {
           // Keep valid recent partial downloads so the next launch resumes
@@ -58,6 +69,35 @@ class AudioCache extends ChangeNotifier {
     }
     lib.addListener(_schedulePinSync);
     _schedulePinSync();
+    // Файлы, сохранённые прежними версиями как «.audio», переименовываем по их настоящему формату
+    unawaited(_renameLegacy());
+  }
+
+  Future<void> _renameLegacy() async {
+    for (final id in [for (final id in _have) if (!_ext.containsKey(id)) id]) {
+      if (_active.contains(id)) continue;
+      await _settleExt(id);
+    }
+  }
+
+  /// Переименовывает «<id>.audio» в «<id>.<настоящий формат>». Занятый плеером файл остаётся как есть до следующего раза
+  Future<void> _settleExt(String id) async {
+    final old = File('${dir.path}${Platform.pathSeparator}$id.audio');
+    try {
+      if (!await old.exists()) return;
+      final raf = await old.open();
+      String ext;
+      try {
+        ext = sniffAudioExt(await raf.read(12));
+      } finally {
+        await raf.close();
+      }
+      final next = File('${dir.path}${Platform.pathSeparator}$id.$ext');
+      await old.rename(next.path);
+      _ext[id] = ext;
+    } catch (e) {
+      AppLog.warn('Аудиокэш: не удалось переименовать файл по формату', e);
+    }
   }
 
   /// Трек начал играть: отмечаем использование и докачиваем, если его ещё нет
@@ -107,6 +147,8 @@ class AudioCache extends ChangeNotifier {
     if (t == null) return;
     try {
       final email = await lib.accessFor(t.source);
+      // Докачиваем в «.audio», а настоящее расширение ставим, когда файл целиком на диске
+      _ext.remove(id);
       final f = fileFor(id);
       await drive.downloadToFile(email, id, f, expectedModified: t.modified);
       if (_invalidateAfterDownload.remove(id)) {
@@ -114,11 +156,12 @@ class AudioCache extends ChangeNotifier {
         if (await f.exists()) await f.delete();
         return;
       }
+      await _settleExt(id);
       _have.add(id);
       _failed.remove(id);
       _failureCount.remove(id);
       _retryAt.remove(id);
-      sizeBytes += await f.length();
+      sizeBytes += await fileFor(id).length();
       await _evict();
     } catch (e) {
       _failed.add(id);
@@ -175,6 +218,7 @@ class AudioCache extends ChangeNotifier {
           final length = await f.length();
           await f.delete();
           sizeBytes -= length;
+          _ext.remove(id);
         }
       } catch (e) {
         // Windows may lock a currently playing file. Remote replacement already
@@ -285,7 +329,9 @@ class AudioCache extends ChangeNotifier {
       try {
         await f.delete();
         final name = f.uri.pathSegments.last;
-        _have.remove(name.substring(0, name.length - 6));
+        final id = name.substring(0, name.lastIndexOf('.'));
+        _have.remove(id);
+        _ext.remove(id);
         sizeBytes -= len;
       } catch (_) {}
     }
@@ -302,6 +348,7 @@ class AudioCache extends ChangeNotifier {
         final len = await f.length();
         await f.delete();
         _have.remove(id);
+        _ext.remove(id);
         sizeBytes -= len;
       } catch (_) {}
     }

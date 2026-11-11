@@ -56,7 +56,8 @@ Future<void> editProfileDialog(BuildContext context) async {
             const SizedBox(height: 22),
             const Text('Баннер', style: TextStyle(fontWeight: FontWeight.w600)),
             const SizedBox(height: 4),
-            const Text('Фон шапки вашей страницы.', style: TextStyle(color: C.faint, fontSize: 12)),
+            const Text('Фон шапки вашей страницы. JPG, JFIF, PNG, WebP или GIF: GIF будет двигаться, но не кадрируется (до 10 МБ).',
+                style: TextStyle(color: C.faint, fontSize: 12)),
             const SizedBox(height: 10),
             _ImageField(
               choice: banner,
@@ -187,11 +188,22 @@ class _ImageField extends StatelessWidget {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               OutlinedButton.icon(
                 onPressed: () async {
-                  final p = await pickCoverFile(context, title: cropTitle, aspect: aspect, outWidth: outWidth, round: round);
+                  final p = await pickCoverFile(context,
+                      title: cropTitle, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: true);
                   if (p != null) choice.pick(p);
                 },
                 icon: const Icon(Icons.image_outlined, size: 18),
                 label: const Text('Выбрать файл…'),
+              ),
+              const SizedBox(height: 6),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final p = await pickCoverFromUrl(context,
+                      title: cropTitle, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: true);
+                  if (p != null) choice.pick(p);
+                },
+                icon: const Icon(Icons.link_rounded, size: 18),
+                label: const Text('Вставить ссылку…'),
               ),
               if (canReset && !choice.reset)
                 TextButton(onPressed: choice.clear, child: const Text('Убрать', style: TextStyle(color: C.muted))),

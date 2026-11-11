@@ -594,7 +594,23 @@ class TileInk extends StatefulWidget {
   /// Если задано — по наведению появляется кнопка воспроизведения
   final VoidCallback? onPlay;
   final double radius;
-  const TileInk({super.key, required this.child, required this.onTap, this.onSecondaryTapUp, this.onPlay, this.radius = 12});
+
+  /// «В любимое»: сердечко в углу обложки появляется по наведению; у отмеченного остаётся всегда.
+  /// [favorite] — отмечено ли сейчас, [onFavorite] — переключить. [favoriteOnCircle] — фото круглое: сердечко ближе к центру
+  final bool favorite;
+  final VoidCallback? onFavorite;
+  final bool favoriteOnCircle;
+  const TileInk({
+    super.key,
+    required this.child,
+    required this.onTap,
+    this.onSecondaryTapUp,
+    this.onPlay,
+    this.radius = 12,
+    this.favorite = false,
+    this.onFavorite,
+    this.favoriteOnCircle = false,
+  });
 
   /// Отступ подсветки от обложки и текста
   static const pad = 8.0;
@@ -622,6 +638,35 @@ class _TileInkState extends State<TileInk> {
             onSecondaryTapUp: widget.onSecondaryTapUp,
             child: Padding(padding: const EdgeInsets.all(TileInk.pad), child: widget.child),
           ),
+          if (widget.onFavorite != null && side > 80)
+            Positioned(
+              // у круглого фото угол квадрата пустой: сердечко ставим на дугу круга
+              right: TileInk.pad + (widget.favoriteOnCircle ? side * 0.1 : 8),
+              top: TileInk.pad + (widget.favoriteOnCircle ? side * 0.1 : 8),
+              child: IgnorePointer(
+                ignoring: !(_hover || widget.favorite),
+                child: AnimatedOpacity(
+                  opacity: (_hover || widget.favorite) ? 1 : 0,
+                  duration: const Duration(milliseconds: 140),
+                  child: Tooltip(
+                    message: widget.favorite ? 'Убрать из любимого' : 'В любимое',
+                    child: GestureDetector(
+                      onTap: widget.onFavorite,
+                      child: Container(
+                        width: 34,
+                        height: 34,
+                        decoration: const BoxDecoration(color: Color(0x88000000), shape: BoxShape.circle),
+                        child: Icon(
+                          widget.favorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                          size: 20,
+                          color: widget.favorite ? C.accent : Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           if (widget.onPlay != null && side > button * 2)
             Positioned(
               right: TileInk.pad + 8,
