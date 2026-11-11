@@ -10,14 +10,18 @@ import 'record.dart';
 // Чистая функция без обращений к диску и сети: звук приходит байтами, результат — запись. Поэтому её можно
 // запускать в изоляте и проверять тестами на синтетических сигналах.
 
-/// Один кусок звука: тот же участок трека в двух видах
+/// Один кусок звука: тот же участок трека в двух-трёх видах
 class AudioChunk {
   /// Моно, [intelRate] Гц, 16 бит (little-endian) — для тембра, тональности и энергии
   final Uint8List pcm22;
 
-  /// Моно, 4 кГц, 16 бит — для темпа и долей (так же считает beats.dart)
+  /// Моно (L+R)/2, 4 кГц, 16 бит — для темпа и долей (так же считает beats.dart)
   final Uint8List pcm4;
-  const AudioChunk(this.pcm22, this.pcm4);
+
+  /// Боковой канал (L−R)/2, 4 кГц, 16 бит — только для ширины стерео. null — не декодировался
+  /// (источник сам моно, старая версия декодера или сбой ffmpeg — не критично, остальной разбор не зависит от этого)
+  final Uint8List? pcm4Side;
+  const AudioChunk(this.pcm22, this.pcm4, [this.pcm4Side]);
 }
 
 /// Что нужно знать, чтобы разобрать трек
@@ -182,6 +186,33 @@ SegmentStats _segment(FrameSet f, int from, int to, double onsetDensity, int sil
 
 int _frameMs(int frame) => (frame * intelHop * 1000 / intelRate).round();
 
+double _sumSquares(Uint8List pcm, int sampleCount) {
+  final data = ByteData.sublistView(pcm);
+  var s = 0.0;
+  for (var i = 0; i < sampleCount; i++) {
+    final v = data.getInt16(i * 2, Endian.little) / 32768.0;
+    s += v * v;
+  }
+  return s;
+}
+
+/// Ширина стерео по всем кускам трека: RMS бокового (L−R)/2 к RMS среднего (L+R)/2, в линейных единицах.
+/// null — ни у одного куска не декодировался боковой канал (источник сам моно, старый декодер, сбой ffmpeg)
+double? _stereoWidthOf(List<AudioChunk> chunks) {
+  var sumSide = 0.0, sumMid = 0.0, samples = 0;
+  for (final c in chunks) {
+    final side = c.pcm4Side;
+    if (side == null) continue;
+    final n = math.min(side.length, c.pcm4.length) ~/ 2;
+    if (n < 1000) continue; // короче 0,25 с — нечего измерять
+    sumSide += _sumSquares(side, n);
+    sumMid += _sumSquares(c.pcm4, n);
+    samples += n;
+  }
+  if (samples < 4000 || sumMid <= 1e-9) return null; // меньше секунды суммарно, или средний канал — тишина
+  return math.sqrt(sumSide / sumMid).clamp(0.0, 3.0).toDouble();
+}
+
 /// Собирает запись признаков из звука
 TrackFeatures analyzeAudio(AnalysisInput input) {
   final sets = <FrameSet>[for (final c in input.chunks) computeFrames(pcmToFloat(c.pcm22))];
@@ -223,6 +254,7 @@ TrackFeatures analyzeAudio(AnalysisInput input) {
       timbreDrift: 0,
       lufs: input.lufs,
       lra: input.lra,
+      stereoWidth: _stereoWidthOf(input.chunks),
       flags: flags,
     );
   }
@@ -348,6 +380,7 @@ TrackFeatures analyzeAudio(AnalysisInput input) {
     timbreDrift: drift,
     lufs: input.lufs,
     lra: input.lra,
+    stereoWidth: _stereoWidthOf(input.chunks),
     intro: intro,
     outro: outro,
     flags: flags,

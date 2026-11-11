@@ -533,6 +533,29 @@ class IntelService extends ChangeNotifier {
       );
 
   /// Весь трек одним проходом: звук для тембра, звук для темпа и громкость по BS.1770
+  /// Боковой канал (L−R)/2 на 4 кГц, отдельным процессом ffmpeg — чтобы его сбой (источник сам моно,
+  /// нестандартная раскладка каналов, что угодно) никак не повлиял на основной разбор. null — не получилось,
+  /// это не критично: ширина стерео просто не посчитается для этого куска
+  Future<Uint8List?> _decodeSide(File src, {double? startSec, double? lenSec}) async {
+    final w = _w('side.raw');
+    try {
+      _clean([w]);
+      await Tools.run(tools.ffmpeg.path, [
+        '-y', '-v', 'error', ..._threads,
+        if (startSec != null) ...['-ss', math.max(0.0, startSec).toStringAsFixed(2)],
+        if (lenSec != null) ...['-t', '$lenSec'],
+        '-i', src.path,
+        '-map', '0:a:0', '-af', 'pan=mono|c0=0.5*c0-0.5*c1', '-ar', '4000', '-f', 's16le', w.path,
+      ]);
+      if (!w.existsSync() || w.lengthSync() < 2000) return null;
+      return await w.readAsBytes();
+    } catch (_) {
+      return null;
+    } finally {
+      _clean([w]);
+    }
+  }
+
   Future<AnalysisInput> _decodeFull(Track t, File src, String rev, double? known) async {
     final w22 = _w('a22.raw'), w4 = _w('a4.raw');
     double? lufs, lra;
@@ -565,13 +588,14 @@ class IntelService extends ChangeNotifier {
       if (!ok) return _stub(t, rev, known, 'full');
       final b22 = await w22.readAsBytes();
       final b4 = await w4.readAsBytes();
+      final side = await _decodeSide(src);
       final decoded = b22.length / 2 / intelRate;
       return AnalysisInput(
         trackId: t.id,
         revision: rev,
         mode: 'full',
         durationSec: known ?? decoded,
-        chunks: [AudioChunk(b22, b4)],
+        chunks: [AudioChunk(b22, b4, side)],
         lufs: lufs,
         lra: lra,
         decodeGap: known != null && decoded < known * 0.85,
@@ -602,7 +626,8 @@ class IntelService extends ChangeNotifier {
         final b4 = await w4.readAsBytes();
         // Отрывок короче 15 секунд для темпа не годится, а для тембра — годится; оставляем только полные
         if (b22.length ~/ 2 < intelFft * 4 || b4.length < 3200) continue;
-        chunks.add(AudioChunk(Uint8List.fromList(b22), Uint8List.fromList(b4)));
+        final side = await _decodeSide(src, startSec: s, lenSec: len);
+        chunks.add(AudioChunk(Uint8List.fromList(b22), Uint8List.fromList(b4), side));
       }
     } finally {
       _clean([w22, w4]);

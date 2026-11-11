@@ -53,8 +53,8 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
   int _focusTick = 0;
   int? _focusIndex;
 
-  // Фильтры на карте: тональность (номер по кругу Camelot, null — все), диапазон BPM, только «Весь трек»
-  int? _keyFilter;
+  // Фильтры на карте: диапазон по кругу Camelot (1…12, края — без фильтра), диапазон BPM, только «Весь трек»
+  RangeValues _keyRange = const RangeValues(1, 12);
   final _bpmLoCtrl = TextEditingController();
   final _bpmHiCtrl = TextEditingController();
   bool _onlyFull = false;
@@ -108,7 +108,9 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
   Set<int> get _hidden {
     final loTxt = _bpmLoCtrl.text.trim(), hiTxt = _bpmHiCtrl.text.trim();
     final lo = double.tryParse(loTxt), hi = double.tryParse(hiTxt);
-    if (_keyFilter == null && lo == null && hi == null && !_onlyFull) return const {};
+    final keyLo = _keyRange.start.round(), keyHi = _keyRange.end.round();
+    final keyActive = keyLo > 1 || keyHi < 12;
+    if (!keyActive && lo == null && hi == null && !_onlyFull) return const {};
     final out = <int>{};
     for (var i = 0; i < _points.length; i++) {
       final f = _points[i].f;
@@ -116,9 +118,9 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
         out.add(i);
         continue;
       }
-      if (_keyFilter != null) {
+      if (keyActive) {
         final k = Camelot.parse(f.key);
-        if (k == null || !f.keyReliable || k.n != _keyFilter) {
+        if (k == null || !f.keyReliable || k.n < keyLo || k.n > keyHi) {
           out.add(i);
           continue;
         }
@@ -189,6 +191,14 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
   void _selectId(String id, {bool focus = true}) {
     final i = _indexOfId(id);
     if (i >= 0) _select(i, focus: focus);
+  }
+
+  /// Выбрать трек из результатов поиска: очищает строку поиска, иначе панель справа так и осталась бы
+  /// списком найденного вместо похожих выбранного трека
+  void _pickFromSearch(int i) {
+    _select(i, focus: true);
+    _search.clear();
+    _onSearch('');
   }
 
   Future<void> _playGroup() async {
@@ -295,18 +305,29 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
                 child: Text('Обложки появляются, когда в окне остаётся не больше ~120 треков: приблизьте нужный участок.',
                     style: TextStyle(color: C.faint, fontSize: 12)),
               ),
-            const SizedBox(height: 8),
-            Wrap(spacing: 8, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
-              const Text('Фильтр:', style: TextStyle(color: C.faint, fontSize: 13)),
-              const Text('тональность', style: TextStyle(color: C.faint, fontSize: 12)),
-              ChoiceChip(label: const Text('Все'), selected: _keyFilter == null, onSelected: (_) => setState(() => _keyFilter = null)),
-              for (var n = 1; n <= 12; n++)
-                ChoiceChip(
-                  label: Text('$n'),
-                  selected: _keyFilter == n,
-                  onSelected: (_) => setState(() => _keyFilter = _keyFilter == n ? null : n),
+            const SizedBox(height: 4),
+            Row(children: [
+              const Text('Фильтр: тональность (круг Camelot)', style: TextStyle(color: C.faint, fontSize: 13)),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 220,
+                child: RangeSlider(
+                  min: 1,
+                  max: 12,
+                  divisions: 11,
+                  values: _keyRange,
+                  labels: RangeLabels('${_keyRange.start.round()}', '${_keyRange.end.round()}'),
+                  onChanged: (v) => setState(() => _keyRange = v),
                 ),
-              const SizedBox(width: 10),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                _keyRange.start.round() == 1 && _keyRange.end.round() == 12 ? 'все' : '${_keyRange.start.round()}–${_keyRange.end.round()}',
+                style: const TextStyle(color: C.faint, fontSize: 12),
+              ),
+            ]),
+            const SizedBox(height: 4),
+            Wrap(spacing: 8, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
               const Text('BPM', style: TextStyle(color: C.faint, fontSize: 12)),
               SizedBox(
                 width: 56,
@@ -376,7 +397,7 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
                                 points: _points,
                                 tracks: app.lib.data.tracks,
                                 selected: sel,
-                                onPick: (i) => _select(i, focus: true),
+                                onPick: _pickFromSearch,
                               )
                             : selPoint == null
                                 ? const Center(child: Text('Выберите точку или найдите трек', style: TextStyle(color: C.faint)))

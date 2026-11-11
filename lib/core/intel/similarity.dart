@@ -75,7 +75,7 @@ class TransitionFit {
 
 const int _timbreDims = 34;
 const int _harmonyDims = 12;
-const int _dynDims = 6;
+const int _dynDims = 7;
 
 const Map<SimilarityMode, List<double>> _weights = {
   // timbre, harmony, rhythm, dynamics
@@ -94,7 +94,7 @@ List<double> _timbreOf(TrackFeatures f) => [
       ...f.contrast,
     ];
 
-List<double> _dynOf(TrackFeatures f) => [f.rmsDb, f.dynamicRangeDb, f.bassRatio, f.midRatio, f.energyStdDb, f.lufs ?? f.rmsDb];
+List<double> _dynOf(TrackFeatures f) => [f.rmsDb, f.dynamicRangeDb, f.bassRatio, f.midRatio, f.energyStdDb, f.lufs ?? f.rmsDb, f.stereoWidth ?? 0.0];
 
 double _clamp01(double v) => v < 0 ? 0.0 : (v > 1 ? 1.0 : v);
 

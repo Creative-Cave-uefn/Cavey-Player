@@ -236,6 +236,11 @@ class TrackFeatures {
   final double? lufs; // интегральная громкость по BS.1770, если удалось измерить
   final double? lra; // диапазон громкости, LU
 
+  /// Ширина стерео: RMS бокового канала (L−R)/2 к RMS среднего (L+R)/2, по всему разобранному звуку.
+  /// 0 — практически моно, ~0,3–0,6 — типичная поп-запись, выше — сильно разнесённый микс. null — боковой канал
+  /// не декодировался (источник сам moно, старый декодер до этой версии анализатора, или сбой ffmpeg — не критично)
+  final double? stereoWidth;
+
   final SegmentStats? intro;
   final SegmentStats? outro;
   final List<String> flags;
@@ -274,6 +279,7 @@ class TrackFeatures {
     required this.timbreDrift,
     this.lufs,
     this.lra,
+    this.stereoWidth,
     this.intro,
     this.outro,
     this.flags = const [],
@@ -333,6 +339,7 @@ class TrackFeatures {
         'en': _rl([rmsDb, dynamicRangeDb, bassRatio, midRatio, energyStdDb, timbreDrift], 3),
         if (lufs != null) 'lu': _r(lufs!, 1),
         if (lra != null) 'lr': _r(lra!, 1),
+        if (stereoWidth != null) 'sw': _r(stereoWidth!, 3),
         if (intro != null) 'in': intro!.toJson(),
         if (outro != null) 'out': outro!.toJson(),
         if (flags.isNotEmpty) 'q': flags,
@@ -384,6 +391,7 @@ class TrackFeatures {
         timbreDrift: env[5],
         lufs: _dn(j['lu']),
         lra: _dn(j['lr']),
+        stereoWidth: _dn(j['sw']),
         intro: SegmentStats.fromJson(j['in']),
         outro: SegmentStats.fromJson(j['out']),
         flags: q is List ? [for (final x in q) '$x'] : const [],
