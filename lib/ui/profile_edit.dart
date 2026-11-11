@@ -5,6 +5,8 @@ import 'cover_picker.dart';
 import 'theme.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
+import 'profile_view.dart' show bannerPicture;
+import '../core/library.dart' show LibraryController;
 
 /// Окно «Мой профиль»: ник, аватарка и баннер. Картинки кадрируются мышью и ложатся в общую папку на Диске.
 Future<void> editProfileDialog(BuildContext context) async {
@@ -15,6 +17,8 @@ Future<void> editProfileDialog(BuildContext context) async {
   final nick = TextEditingController(text: lib.profileNick(me) ?? '');
   final avatar = CoverChoice();
   final banner = CoverChoice();
+  final startBlur = lib.profileBannerBlur(me);
+  final blur = ValueNotifier<double>(startBlur);
   final googleName = lib.data.members[me] ?? me.split('@').first;
   final ok = await showGlassDialog<bool>(
     context: context,
@@ -55,6 +59,7 @@ Future<void> editProfileDialog(BuildContext context) async {
             const SizedBox(height: 10),
             _ImageField(
               choice: banner,
+              blur: blur,
               width: 270,
               height: 90,
               round: false,
@@ -70,6 +75,35 @@ Future<void> editProfileDialog(BuildContext context) async {
                     )
                   : CoverImage(track: null, fileId: lib.profileBanner(me), label: '', size: 270, radius: 0),
             ),
+            const SizedBox(height: 14),
+            // Предпросмотр — сам баннер выше: он меняется вместе с ползунком
+            ListenableBuilder(
+              listenable: Listenable.merge([blur, banner]),
+              builder: (context, _) {
+                final hasBanner = banner.picked != null || (lib.profileBanner(me) != null && !banner.reset);
+                return Opacity(
+                  opacity: hasBanner ? 1 : 0.45,
+                  child: Row(children: [
+                    const Text('Размытие', style: TextStyle(color: C.muted, fontSize: 13)),
+                    Expanded(
+                      child: Slider(
+                        value: blur.value,
+                        min: 0,
+                        max: LibraryController.maxBannerBlur,
+                        divisions: 24,
+                        label: blur.value == 0 ? 'нет' : blur.value.toStringAsFixed(0),
+                        onChanged: hasBanner ? (v) => blur.value = v : null,
+                      ),
+                    ),
+                    SizedBox(
+                      width: 34,
+                      child: Text(blur.value == 0 ? 'нет' : blur.value.toStringAsFixed(0),
+                          textAlign: TextAlign.right, style: const TextStyle(color: C.faint, fontSize: 12.5)),
+                    ),
+                  ]),
+                );
+              },
+            ),
           ]),
         ),
       ),
@@ -80,16 +114,21 @@ Future<void> editProfileDialog(BuildContext context) async {
     ),
   );
   final text = nick.text.trim();
+  final newBlur = blur.value;
   nick.dispose();
+  blur.dispose();
   if (ok != true || !context.mounted) return;
   final av = await avatar.commit(context);
   if (!context.mounted) return;
   final bn = await banner.commit(context);
-  lib.setProfile(nick: text, avatar: av, banner: bn);
+  lib.setProfile(nick: text, avatar: av, banner: bn, bannerBlur: (newBlur - startBlur).abs() > 0.01 ? newBlur : null);
 }
 
 class _ImageField extends StatelessWidget {
   final CoverChoice choice;
+
+  /// Для баннера: размытие, которое сейчас выбрано, — предпросмотр показывает итог (с тем же затемнением, что на странице)
+  final ValueListenable<double>? blur;
   final double width;
   final double height;
   final bool round;
@@ -99,6 +138,7 @@ class _ImageField extends StatelessWidget {
   final bool canReset;
   final Widget current;
   const _ImageField({
+    this.blur,
     required this.choice,
     required this.width,
     required this.height,
@@ -127,7 +167,18 @@ class _ImageField extends StatelessWidget {
         } else {
           preview = current;
         }
-        final box = SizedBox(width: width, height: height, child: preview);
+        final b = blur;
+        final shown = b == null || choice.reset || (choice.picked == null && !canReset)
+            ? preview
+            : ValueListenableBuilder<double>(
+                valueListenable: b,
+                builder: (_, v, __) => Stack(fit: StackFit.expand, children: [
+                  // в окне баннер в три раза меньше, чем на странице, — размытие уменьшаем так же
+                  ClipRect(child: bannerPicture(blur: v * 0.35, child: preview)),
+                  ColoredBox(color: Colors.black.withValues(alpha: 0.4)),
+                ]),
+              );
+        final box = SizedBox(width: width, height: height, child: shown);
         return Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
           round ? ClipOval(child: box) : ClipRRect(borderRadius: BorderRadius.circular(8), child: box),
           const SizedBox(width: 18),

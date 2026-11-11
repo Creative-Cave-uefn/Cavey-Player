@@ -87,6 +87,65 @@ class AmbientScope {
   }
 }
 
+/// Цвета верхней кромки баннера профиля: по ним верхняя полоса окна (с кнопками) подкрашивается и размывается,
+/// чтобы баннер не обрывался под ней. Пока страница не просит — полоса обычная
+class StripTint {
+  /// Цвета слева направо; null — подкраски нет
+  static final ValueNotifier<List<Color>?> colors = ValueNotifier(null);
+
+  /// 0…1: насколько баннер ещё виден (уезжает при прокрутке — подкраска гаснет вместе с ним)
+  static final ValueNotifier<double> fade = ValueNotifier(1);
+  static Object? _owner;
+
+  static void claim(Object owner, List<Color>? list) {
+    _owner = owner;
+    colors.value = list;
+  }
+
+  static void release(Object owner) {
+    if (!identical(_owner, owner)) return;
+    _owner = null;
+    colors.value = null;
+    fade.value = 1;
+  }
+
+  /// Цвета верхних строк картинки: [count] полосок слева направо. Затемнены так же, как сам баннер на странице
+  static Future<List<Color>?> sample(Uint8List bytes, {int count = 12, double dim = 0.6}) async {
+    try {
+      final codec = await ui.instantiateImageCodec(bytes, targetWidth: count * 4);
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      final img = frame.image;
+      final data = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final w = img.width;
+      final h = img.height;
+      img.dispose();
+      if (data == null || w == 0 || h == 0) return null;
+      final rows = math.max(1, math.min(3, h));
+      final out = <Color>[];
+      for (var i = 0; i < count; i++) {
+        var r = 0, g = 0, b = 0, n = 0;
+        final x0 = (i * w / count).floor();
+        final x1 = math.max(x0 + 1, ((i + 1) * w / count).floor());
+        for (var y = 0; y < rows; y++) {
+          for (var x = x0; x < x1 && x < w; x++) {
+            final o = (y * w + x) * 4;
+            r += data.getUint8(o);
+            g += data.getUint8(o + 1);
+            b += data.getUint8(o + 2);
+            n++;
+          }
+        }
+        if (n == 0) return null;
+        out.add(Color.fromARGB(255, (r / n * dim).round(), (g / n * dim).round(), (b / n * dim).round()));
+      }
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
 /// Ставится на страницу: пока она открыта, по всему окну мягко светится [color]. Сам ничего не рисует
 class AmbientGlow extends StatefulWidget {
   final Color? color;
@@ -267,10 +326,14 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
     // Обложка догрузилась позже, чем трек включился: фон без картинки пробует ещё раз
     void coversReady() {
       final k = _key;
-      if (_image != null || _color != null || k == null) return;
-      // Сигналы от обложек частые (прокрутка списков) — повторяем не чаще раза в 8 секунд
+      if (k == null) return;
+      // Вместо нужной картинки (баннер профиля) сейчас запасной цвет: баннер мог догрузиться — смотрим сразу
+      final showingFallback = _attemptsFor == k;
+      if (!showingFallback && (_image != null || _color != null)) return;
+      // Сигналы от обложек частые (прокрутка списков) — повторяем не чаще раза в 8 секунд (для запасного цвета — в 1,5)
       final last = _retried[k];
-      if (last != null && DateTime.now().difference(last) < const Duration(seconds: 8)) return;
+      final gap = showingFallback ? const Duration(milliseconds: 1500) : const Duration(seconds: 8);
+      if (last != null && DateTime.now().difference(last) < gap) return;
       _retried[k] = DateTime.now();
       _key = null;
       _sync();

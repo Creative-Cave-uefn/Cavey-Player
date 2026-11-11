@@ -5,6 +5,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../app.dart';
 import '../core/window_style.dart';
+import 'ambient.dart' show StripTint;
 import 'shell.dart';
 import 'theme.dart';
 
@@ -73,7 +74,10 @@ class _WindowBarState extends State<WindowBar> with WindowListener {
     return RepaintBoundary(
         child: SizedBox(
       height: WindowBar.height,
-      child: Row(children: [
+      child: Stack(children: [
+        // На странице человека с баннером: полоса подкрашена цветами верхней кромки баннера и продолжает его вверх
+        const Positioned.fill(child: _BannerStrip()),
+        Row(children: [
         // Слева: настройки, «Назад» и «Вперёд» — на одном уровне с кнопками окна
         const _NavButtons(),
         Expanded(
@@ -92,8 +96,52 @@ class _WindowBarState extends State<WindowBar> with WindowListener {
           onTap: _toggleMax,
         ),
         _CaptionButton(icon: Icons.close_rounded, tooltip: 'Закрыть', danger: true, onTap: () => windowManager.close()),
+        ]),
       ]),
     ));
+  }
+}
+
+/// Подкраска верхней полосы окна по баннеру профиля ([StripTint]); без баннера ничего не рисует
+class _BannerStrip extends StatelessWidget {
+  const _BannerStrip();
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: ValueListenableBuilder<List<Color>?>(
+        valueListenable: StripTint.colors,
+        builder: (context, colors, _) {
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 500),
+            child: colors == null
+                ? const SizedBox.shrink(key: ValueKey('none'))
+                : ValueListenableBuilder<double>(
+                    key: ValueKey(colors),
+                    valueListenable: StripTint.fade,
+                    builder: (context, fade, _) => Opacity(
+                      opacity: fade,
+                      child: ShaderMask(
+                        blendMode: BlendMode.dstIn,
+                        shaderCallback: (r) => const LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          // у верхнего края слабее, к баннеру — полный цвет: полоса словно продолжает баннер вверх
+                          colors: [Color(0x40FFFFFF), Colors.white],
+                          stops: [0.0, 1.0],
+                        ).createShader(r),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(colors: [for (final c in colors) c.withValues(alpha: 0.9)]),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+          );
+        },
+      ),
+    );
   }
 }
 

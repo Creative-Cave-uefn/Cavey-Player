@@ -1,7 +1,8 @@
 import 'dart:async';
 
-import 'package:flutter/gestures.dart' show kBackMouseButton, kForwardMouseButton, kSecondaryMouseButton, PointerDeviceKind;
+import 'package:flutter/gestures.dart' show HitTestResult, kBackMouseButton, kForwardMouseButton, kSecondaryMouseButton, PointerDeviceKind;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderEditable;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/services.dart';
 
@@ -318,6 +319,7 @@ class _ShellState extends State<Shell> {
       child: Listener(
         behavior: HitTestBehavior.translucent,
         onPointerDown: (e) {
+          _dropTextFocusOnOutsideTap(e);
           if (e.buttons & kBackMouseButton != 0) _nav.back();
           if (e.buttons & kForwardMouseButton != 0) _nav.forward();
           if (e.kind == PointerDeviceKind.mouse && e.buttons == kSecondaryMouseButton) _gesture.start(e.position);
@@ -501,6 +503,20 @@ class _ShellState extends State<Shell> {
     final ctx = FocusManager.instance.primaryFocus?.context;
     if (ctx == null) return false;
     return ctx.widget is EditableText || ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
+  /// Клик мимо поля ввода снимает с него фокус: иначе поле (например, поиск) держало фокус и «Пробел» ставил пробел в нём,
+  /// а не паузу. Клики по самому полю и по его подсказкам (TextFieldTapRegion) фокус не трогают
+  void _dropTextFocusOnOutsideTap(PointerDownEvent e) {
+    if (!_typing()) return;
+    final hit = HitTestResult();
+    WidgetsBinding.instance.hitTestInView(hit, e.position, e.viewId);
+    for (final entry in hit.path) {
+      final t = entry.target;
+      if (t is RenderEditable) return;
+      if (t is RenderTapRegion && t.groupId == EditableText) return;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
   }
 
   KeyEventResult _onKey(KeyEvent e) {

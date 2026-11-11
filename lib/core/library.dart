@@ -1833,14 +1833,24 @@ class LibraryController extends ChangeNotifier {
   String? profileAvatar(String email) => _metaValue('u:$email', 'av');
   String? profileBanner(String email) => _metaValue('u:$email', 'bn');
 
+  static const defaultBannerBlur = 6.0;
+  static const maxBannerBlur = 24.0;
+
+  /// Размытие баннера (сигма): 0 — резкий, по умолчанию 6
+  double profileBannerBlur(String email) {
+    final v = double.tryParse(_metaValue('u:$email', 'bb') ?? '');
+    return (v ?? defaultBannerBlur).clamp(0.0, maxBannerBlur).toDouble();
+  }
+
   /// Меняет только свой профиль. Значение '' возвращает прежнее (имя из Google, цветной кружок, обычную шапку)
-  void setProfile({String? nick, String? avatar, String? banner}) {
+  void setProfile({String? nick, String? avatar, String? banner, double? bannerBlur}) {
     final m = me;
     if (m == null) return;
     final f = <String, String>{
       if (nick != null) 'nick': nick,
       if (avatar != null) 'av': avatar,
       if (banner != null) 'bn': banner,
+      if (bannerBlur != null) 'bb': bannerBlur.clamp(0.0, maxBannerBlur).toStringAsFixed(1),
     };
     setMeta({'u:$m': f});
   }

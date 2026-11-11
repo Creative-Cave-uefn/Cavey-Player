@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:cave_player/core/device_export.dart';
 import 'package:cave_player/core/library.dart';
 import 'package:cave_player/core/migration.dart';
@@ -6,6 +8,7 @@ import 'package:cave_player/core/pin_order.dart';
 import 'package:cave_player/core/store.dart';
 import 'package:cave_player/core/suggest.dart';
 import 'package:cave_player/core/text_fold.dart';
+import 'package:cave_player/ui/ambient.dart' show StripTint;
 import 'package:cave_player/ui/library_tabs.dart';
 import 'package:cave_player/ui/shell.dart' show Nav;
 import 'package:cave_player/ui/uploader_filter.dart';
@@ -136,6 +139,12 @@ void main() {
       expect(exportFileNames(ts, ['mp3', 'mp3'], numbered: true), ['01. X - One.mp3', '02. X - Two.mp3']);
     });
 
+    test('номер файла — место в списке, как в плеере, а не тег с пропусками', () {
+      final ts = [tr('A', no: 1), tr('B', no: 3), tr('C', no: 63), tr('D', no: 72)];
+      expect(exportFileNames(ts, ['mp3', 'mp3', 'mp3', 'mp3'], numbered: true, withArtist: false),
+          ['01. A.mp3', '02. B.mp3', '03. C.mp3', '04. D.mp3']);
+    });
+
     test('одинаковые имена получают номер', () {
       final ts = [tr('Same', artist: 'X'), tr('Same', artist: 'X')];
       expect(exportFileNames(ts, ['mp3', 'mp3']), ['X - Same.mp3', 'X - Same (2).mp3']);
@@ -211,6 +220,25 @@ void main() {
     test('разные альбомы не склеиваются', () {
       final g = byKey([tr('1', artist: 'X', album: 'One'), tr('2', artist: 'X', album: 'Two')]);
       expect(mergeAlbumGroups(g).length, 2);
+    });
+  });
+
+  group('Профиль', () {
+    test('размытие баннера: по умолчанию 6, предел задан', () {
+      expect(LibraryController.defaultBannerBlur, 6);
+      expect(LibraryController.maxBannerBlur, greaterThan(LibraryController.defaultBannerBlur));
+    });
+
+    testWidgets('цвета верхней кромки баннера берутся слева направо и затемняются', (tester) async {
+      // PNG 2×1: красный и синий пиксели
+      final png = base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGP4z8DAwPAfAAcAAf9+CLHQAAAAAElFTkSuQmCC');
+      final colors = await tester.runAsync(() => StripTint.sample(png, count: 2, dim: 0.5));
+      expect(colors, isNotNull);
+      expect(colors!.length, 2);
+      expect(colors[0].r, greaterThan(colors[1].r)); // слева красный, справа синий
+      expect(colors[1].b, greaterThan(colors[0].b));
+      expect(colors[0].r, lessThan(0.6)); // затемнён
     });
   });
 }
