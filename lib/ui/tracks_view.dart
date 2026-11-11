@@ -458,15 +458,6 @@ class _TracksPageState extends State<TracksPage> {
   String? _storageId;
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_storageId == null) {
-      final nav = context.getInheritedWidgetOfExactType<NavScope>()?.nav.value;
-      _storageId = nav == null ? '' : '${nav.kind}/${nav.id ?? ''}';
-    }
-  }
-
-  @override
   void initState() {
     super.initState();
     searchRequests.addListener(_focusSearch);
@@ -723,6 +714,10 @@ class _TracksPageState extends State<TracksPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    if (_storageId == null) {
+      final nav = context.getInheritedWidgetOfExactType<NavScope>()?.nav.value;
+      _storageId = nav == null ? '' : '${nav.kind}/${nav.id ?? ''}';
+    }
     if (_sortLoaded) return;
     _sortLoaded = true;
     final settings = Services.of(context).settings;
