@@ -11,6 +11,7 @@ import '../core/intel/similarity.dart';
 import '../core/intel/viz.dart';
 import '../core/models.dart';
 import 'theme.dart';
+import 'widgets.dart' show CoverImage;
 
 // Отладочные экраны анализа звука: карта схожести библиотеки и спектрограмма трека с отметками долей, фраз, энергии и вокала.
 
@@ -40,11 +41,17 @@ class _SoundMapDialog extends StatefulWidget {
 class _SoundMapDialogState extends State<_SoundMapDialog> {
   List<MapPoint> _points = const [];
   List<Color> _colors = const [];
+  List<String> _hay = const []; // строка для поиска у каждой точки: название, исполнитель, альбом (нижний регистр)
   _ColorBy _by = _ColorBy.key;
   int? _sel;
   List<SimilarityHit> _near = const [];
   bool _ready = false;
+  bool _covers = false;
   double _eLo = -30, _eHi = -10;
+  final _search = TextEditingController();
+  List<int> _found = const [];
+  int _focusTick = 0;
+  int? _focusIndex;
 
   AppServices get app => Services.of(context);
 
@@ -55,6 +62,13 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
     _ready = true;
     final index = app.intel.index;
     _points = projectMap(index);
+    _hay = [
+      for (final p in _points)
+        () {
+          final t = app.lib.data.tracks[p.id];
+          return t == null ? '' : '${t.title} ${t.displayArtist} ${t.album}'.toLowerCase();
+        }()
+    ];
     final e = [for (final p in _points) p.f.rmsDb]..sort();
     if (e.length >= 5) {
       _eLo = e[(e.length * 0.05).floor()];
@@ -62,6 +76,12 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
       if (_eHi - _eLo < 1) _eHi = _eLo + 1;
     }
     _recolor();
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
   }
 
   void _recolor() {
@@ -84,18 +104,46 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
     }
   }
 
-  void _select(int? i) {
+  /// Поиск по названию, исполнителю и альбому: все слова запроса должны встретиться
+  void _onSearch(String q) {
+    final words = q.toLowerCase().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
     setState(() {
-      _sel = i;
-      _near = i == null
-          ? const []
-          : app.intel.index.similar(seeds: [_points[i].id], limit: 12, mode: SimilarityMode.sound);
+      if (words.isEmpty) {
+        _found = const [];
+        return;
+      }
+      final out = <int>[];
+      for (var i = 0; i < _hay.length; i++) {
+        final h = _hay[i];
+        if (h.isEmpty) continue;
+        var ok = true;
+        for (final w in words) {
+          if (!h.contains(w)) {
+            ok = false;
+            break;
+          }
+        }
+        if (ok) out.add(i);
+      }
+      _found = out;
     });
   }
 
-  void _selectId(String id) {
+  /// Выбрать точку; [focus] — ещё и подвести к ней карту
+  void _select(int? i, {bool focus = false}) {
+    setState(() {
+      _sel = i;
+      _near = i == null ? const [] : app.intel.index.similar(seeds: [_points[i].id], limit: 12, mode: SimilarityMode.sound);
+      if (focus && i != null) {
+        _focusIndex = i;
+        _focusTick++;
+      }
+    });
+  }
+
+  void _selectId(String id, {bool focus = true}) {
     final i = _indexOfId(id);
-    if (i >= 0) _select(i);
+    if (i >= 0) _select(i, focus: focus);
   }
 
   Future<void> _playGroup() async {
@@ -118,6 +166,7 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
     final sel = _sel;
     final selPoint = sel == null ? null : _points[sel];
     final selTrack = selPoint == null ? null : app.lib.data.tracks[selPoint.id];
+    final searching = _search.text.trim().isNotEmpty;
     return Dialog(
       backgroundColor: C.panel,
       insetPadding: const EdgeInsets.all(24),
@@ -132,7 +181,35 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
               Text('Карта схожести', style: display(20)),
               const SizedBox(width: 12),
               Text('${_points.length} треков', style: const TextStyle(color: C.faint, fontSize: 13)),
-              const Spacer(),
+              const SizedBox(width: 18),
+              Expanded(
+                child: SizedBox(
+                  height: 38,
+                  child: TextField(
+                    controller: _search,
+                    onChanged: _onSearch,
+                    style: const TextStyle(fontSize: 14),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      hintText: 'Найти трек: название, исполнитель, альбом',
+                      prefixIcon: const Icon(Icons.search_rounded, size: 18),
+                      suffixIcon: searching
+                          ? IconButton(
+                              icon: const Icon(Icons.close_rounded, size: 16),
+                              onPressed: () {
+                                _search.clear();
+                                _onSearch('');
+                              },
+                            )
+                          : null,
+                      filled: true,
+                      fillColor: C.raised,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
               IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close_rounded)),
             ]),
             const SizedBox(height: 6),
@@ -142,7 +219,7 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
               style: TextStyle(color: C.muted, fontSize: 13, height: 1.4),
             ),
             const SizedBox(height: 10),
-            Wrap(spacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+            Wrap(spacing: 8, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
               const Text('Цвет:', style: TextStyle(color: C.faint, fontSize: 13)),
               for (final e in const [(_ColorBy.key, 'Тональность'), (_ColorBy.energy, 'Громкость'), (_ColorBy.tempo, 'Темп')])
                 ChoiceChip(
@@ -154,8 +231,21 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
                   }),
                 ),
               const SizedBox(width: 6),
+              FilterChip(
+                avatar: const Icon(Icons.image_rounded, size: 16),
+                label: const Text('Обложки вместо точек'),
+                selected: _covers,
+                onSelected: (v) => setState(() => _covers = v),
+              ),
+              const SizedBox(width: 6),
               _Legend(by: _by, eLo: _eLo, eHi: _eHi),
             ]),
+            if (_covers)
+              const Padding(
+                padding: EdgeInsets.only(top: 6),
+                child: Text('Обложки появляются, когда в окне остаётся не больше ~120 треков: приблизьте нужный участок.',
+                    style: TextStyle(color: C.faint, fontSize: 12)),
+              ),
             const SizedBox(height: 10),
             Expanded(
               child: _points.length < 3
@@ -173,7 +263,12 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
                               colors: _colors,
                               selected: sel,
                               near: [for (final h in _near) _indexOfId(h.id)].where((i) => i >= 0).toList(),
+                              found: _found.length > 300 ? const [] : _found,
                               accent: accent,
+                              covers: _covers,
+                              tracks: app.lib.data.tracks,
+                              focusIndex: _focusIndex,
+                              focusTick: _focusTick,
                               onSelect: _select,
                             ),
                           ),
@@ -182,17 +277,25 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
                       const SizedBox(width: 14),
                       SizedBox(
                         width: 320,
-                        child: selPoint == null
-                            ? const Center(child: Text('Выберите точку', style: TextStyle(color: C.faint)))
-                            : _SidePanel(
-                                point: selPoint,
-                                track: selTrack,
-                                near: _near,
+                        child: searching
+                            ? _SearchResults(
+                                found: _found,
+                                points: _points,
                                 tracks: app.lib.data.tracks,
-                                onPick: _selectId,
-                                onPlay: _playGroup,
-                                onSpectro: selTrack == null ? null : () => showTrackSpectrogram(context, selTrack),
-                              ),
+                                selected: sel,
+                                onPick: (i) => _select(i, focus: true),
+                              )
+                            : selPoint == null
+                                ? const Center(child: Text('Выберите точку или найдите трек', style: TextStyle(color: C.faint)))
+                                : _SidePanel(
+                                    point: selPoint,
+                                    track: selTrack,
+                                    near: _near,
+                                    tracks: app.lib.data.tracks,
+                                    onPick: _selectId,
+                                    onPlay: _playGroup,
+                                    onSpectro: selTrack == null ? null : () => showTrackSpectrogram(context, selTrack),
+                                  ),
                       ),
                     ]),
             ),
@@ -266,57 +369,166 @@ class _Legend extends StatelessWidget {
   }
 }
 
-class _MapCanvas extends StatelessWidget {
+/// Карта с масштабом и сдвигом. Режим обложек: вместо точек обложки треков, но только пока в окне их не больше [_coverCap]
+/// (иначе их сотни наложились бы друг на друга и тормозили); выбранный трек и его соседи всегда с обложками
+class _MapCanvas extends StatefulWidget {
   final List<MapPoint> points;
   final List<Color> colors;
   final int? selected;
   final List<int> near;
+  final List<int> found;
   final Color accent;
+  final bool covers;
+  final Map<String, Track> tracks;
+  final int? focusIndex;
+  final int focusTick;
   final ValueChanged<int?> onSelect;
   const _MapCanvas({
     required this.points,
     required this.colors,
     required this.selected,
     required this.near,
+    required this.found,
     required this.accent,
+    required this.covers,
+    required this.tracks,
+    required this.focusIndex,
+    required this.focusTick,
     required this.onSelect,
   });
+
+  @override
+  State<_MapCanvas> createState() => _MapCanvasState();
+}
+
+const int _coverCap = 120;
+
+class _MapCanvasState extends State<_MapCanvas> {
+  final _ctrl = TransformationController();
+  Size _size = Size.zero;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Offset _pos(MapPoint p, Size size) => Offset(
+        24 + (p.x + 1) / 2 * (size.width - 48),
+        24 + (1 - (p.y + 1) / 2) * (size.height - 48),
+      );
+
+  @override
+  void didUpdateWidget(_MapCanvas old) {
+    super.didUpdateWidget(old);
+    final i = widget.focusIndex;
+    if (i != null && widget.focusTick != old.focusTick && _size != Size.zero) _centerOn(i);
+  }
+
+  /// Подвести карту к точке: масштаб не меньше 5, точка в центре окна
+  void _centerOn(int i) {
+    final c = _pos(widget.points[i], _size);
+    final s = math.max(5.0, _ctrl.value.getMaxScaleOnAxis());
+    final tx = _size.width / 2 - c.dx * s;
+    final ty = _size.height / 2 - c.dy * s;
+    _ctrl.value = Matrix4(s, 0, 0, 0, 0, s, 0, 0, 0, 0, 1, 0, tx, ty, 0, 1);
+  }
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(builder: (context, box) {
       final size = Size(box.maxWidth, box.maxHeight);
-      Offset pos(MapPoint p) => Offset(
-            24 + (p.x + 1) / 2 * (size.width - 48),
-            24 + (1 - (p.y + 1) / 2) * (size.height - 48),
-          );
+      _size = size;
       return InteractiveViewer(
+        transformationController: _ctrl,
         minScale: 0.8,
-        maxScale: 14,
+        maxScale: 40,
         boundaryMargin: const EdgeInsets.all(400),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTapUp: (d) {
-            // Ближайшая точка в пределах 14 пикселей (в координатах карты: при приближении точка «ближе», зона та же)
-            var best = -1;
-            var bestD = 14.0 * 14.0;
-            for (var i = 0; i < points.length; i++) {
-              final o = pos(points[i]) - d.localPosition;
-              final dd = o.dx * o.dx + o.dy * o.dy;
-              if (dd < bestD) {
-                bestD = dd;
-                best = i;
+        child: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (context, _) {
+            final m = _ctrl.value;
+            final scale = m.getMaxScaleOnAxis();
+            // Окно в координатах карты
+            final view = MatrixUtils.transformRect(Matrix4.inverted(m), Offset.zero & size).inflate(20 / scale);
+            final inView = <int>[];
+            if (widget.covers) {
+              for (var i = 0; i < widget.points.length; i++) {
+                if (view.contains(_pos(widget.points[i], size))) {
+                  inView.add(i);
+                  if (inView.length > _coverCap) break;
+                }
               }
             }
-            onSelect(best < 0 ? null : best);
+            final showCovers = widget.covers && inView.length <= _coverCap;
+            final withCover = <int>{
+              if (showCovers) ...inView,
+              if (widget.covers && widget.selected != null) widget.selected!,
+              if (widget.covers) ...widget.near,
+            };
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTapUp: (d) {
+                // Зона попадания — 14 пикселей на экране: в координатах карты она сжимается с масштабом
+                final r = (withCover.isEmpty ? 14.0 : 20.0) / scale;
+                var best = -1;
+                var bestD = r * r;
+                for (var i = 0; i < widget.points.length; i++) {
+                  final o = _pos(widget.points[i], size) - d.localPosition;
+                  final dd = o.dx * o.dx + o.dy * o.dy;
+                  if (dd < bestD) {
+                    bestD = dd;
+                    best = i;
+                  }
+                }
+                widget.onSelect(best < 0 ? null : best);
+              },
+              child: SizedBox(
+                width: size.width,
+                height: size.height,
+                child: Stack(clipBehavior: Clip.none, children: [
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: _MapPainter(
+                        points: widget.points,
+                        colors: widget.colors,
+                        selected: widget.selected,
+                        near: widget.near,
+                        found: widget.found,
+                        accent: widget.accent,
+                        scale: scale,
+                        hideDots: withCover,
+                        pos: (p) => _pos(p, size),
+                      ),
+                    ),
+                  ),
+                  for (final i in withCover)
+                    () {
+                      final isSel = i == widget.selected;
+                      // Размер на экране: 40 пикселей, у выбранного 56; в координатах карты делим на масштаб
+                      final px = (isSel ? 56.0 : 40.0) / scale;
+                      final c = _pos(widget.points[i], size);
+                      return Positioned(
+                        key: ValueKey('cv_${widget.points[i].id}'),
+                        left: c.dx - px / 2,
+                        top: c.dy - px / 2,
+                        width: px,
+                        height: px,
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(math.max(1.0, 5.0 / scale)),
+                              border: Border.all(color: isSel ? widget.accent : widget.colors[i], width: (isSel ? 2.5 : 1.5) / scale),
+                            ),
+                            child: CoverImage(track: widget.tracks[widget.points[i].id], size: px, radius: math.max(1.0, 4.0 / scale)),
+                          ),
+                        ),
+                      );
+                    }(),
+                ]),
+              ),
+            );
           },
-          child: SizedBox(
-            width: size.width,
-            height: size.height,
-            child: CustomPaint(
-              painter: _MapPainter(points: points, colors: colors, selected: selected, near: near, accent: accent, pos: pos),
-            ),
-          ),
         ),
       );
     });
@@ -328,14 +540,20 @@ class _MapPainter extends CustomPainter {
   final List<Color> colors;
   final int? selected;
   final List<int> near;
+  final List<int> found;
   final Color accent;
+  final double scale;
+  final Set<int> hideDots;
   final Offset Function(MapPoint) pos;
   _MapPainter({
     required this.points,
     required this.colors,
     required this.selected,
     required this.near,
+    required this.found,
     required this.accent,
+    required this.scale,
+    required this.hideDots,
     required this.pos,
   });
 
@@ -344,52 +562,125 @@ class _MapPainter extends CustomPainter {
     // Сетка из тонких линий: ориентир при сдвиге и масштабе
     final grid = Paint()
       ..color = const Color(0x10FFFFFF)
-      ..strokeWidth = 1;
+      ..strokeWidth = 1 / scale;
     for (var i = 1; i < 8; i++) {
       canvas.drawLine(Offset(size.width * i / 8, 0), Offset(size.width * i / 8, size.height), grid);
       canvas.drawLine(Offset(0, size.height * i / 8), Offset(size.width, size.height * i / 8), grid);
     }
+    // Размеры рисуем в экранных пикселях: делим на масштаб, чтобы точки не раздувались при приближении
+    final k = 1 / scale;
     final dim = selected != null;
     final dot = Paint();
     for (var i = 0; i < points.length; i++) {
+      if (hideDots.contains(i)) continue;
       dot.color = colors[i].withValues(alpha: dim ? 0.45 : 0.85);
-      canvas.drawCircle(pos(points[i]), 2.6, dot);
+      canvas.drawCircle(pos(points[i]), 2.6 * math.min(1.0, k * 2.0 + 0.4), dot);
+    }
+    // Найденные поиском: кольцо
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6 * k
+      ..color = accent;
+    for (final i in found) {
+      canvas.drawCircle(pos(points[i]), 7 * k, ring);
     }
     final sel = selected;
     if (sel != null) {
       final c = pos(points[sel]);
       final line = Paint()
         ..color = accent.withValues(alpha: 0.35)
-        ..strokeWidth = 1;
+        ..strokeWidth = 1 * k;
       for (final i in near) {
         canvas.drawLine(c, pos(points[i]), line);
       }
       for (final i in near) {
+        if (hideDots.contains(i)) continue;
         dot.color = colors[i];
-        canvas.drawCircle(pos(points[i]), 4.2, dot);
+        canvas.drawCircle(pos(points[i]), 4.2 * k, dot);
         canvas.drawCircle(
             pos(points[i]),
-            5.6,
+            5.6 * k,
             Paint()
               ..style = PaintingStyle.stroke
-              ..strokeWidth = 1.2
+              ..strokeWidth = 1.2 * k
               ..color = Colors.white70);
       }
-      canvas.drawCircle(c, 9, Paint()..color = accent.withValues(alpha: 0.25));
-      canvas.drawCircle(c, 5.5, Paint()..color = colors[sel]);
-      canvas.drawCircle(
-          c,
-          7,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 2
-            ..color = accent);
+      if (!hideDots.contains(sel)) {
+        canvas.drawCircle(c, 9 * k, Paint()..color = accent.withValues(alpha: 0.25));
+        canvas.drawCircle(c, 5.5 * k, Paint()..color = colors[sel]);
+        canvas.drawCircle(
+            c,
+            7 * k,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2 * k
+              ..color = accent);
+      }
     }
   }
 
   @override
   bool shouldRepaint(_MapPainter old) =>
-      old.selected != selected || old.colors != colors || old.near != near || old.points != points || old.accent != accent;
+      old.selected != selected ||
+      old.colors != colors ||
+      old.near != near ||
+      old.found != found ||
+      old.points != points ||
+      old.accent != accent ||
+      old.scale != scale ||
+      old.hideDots != hideDots;
+}
+
+/// Результаты поиска справа от карты: обложка, название, исполнитель; клик подводит карту к точке
+class _SearchResults extends StatelessWidget {
+  final List<int> found;
+  final List<MapPoint> points;
+  final Map<String, Track> tracks;
+  final int? selected;
+  final ValueChanged<int> onPick;
+  const _SearchResults({required this.found, required this.points, required this.tracks, required this.selected, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    if (found.isEmpty) {
+      return const Center(child: Text('Ничего не найдено среди разобранных треков', style: TextStyle(color: C.faint)));
+    }
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Найдено: ${found.length}${found.length > 60 ? ' (показаны первые 60)' : ''}', style: const TextStyle(color: C.faint, fontSize: 12)),
+      const SizedBox(height: 6),
+      Expanded(
+        child: ListView.builder(
+          itemCount: math.min(60, found.length),
+          itemBuilder: (context, n) {
+            final i = found[n];
+            final t = tracks[points[i].id];
+            return InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => onPick(i),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: i == selected ? C.raised : null,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
+                child: Row(children: [
+                  CoverImage(track: t, size: 38, radius: 5),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(t?.title ?? points[i].id, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, height: 1.25)),
+                      if (t != null && t.displayArtist.isNotEmpty)
+                        Text(t.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 12)),
+                    ]),
+                  ),
+                ]),
+              ),
+            );
+          },
+        ),
+      ),
+    ]);
+  }
 }
 
 class _SidePanel extends StatelessWidget {
@@ -414,10 +705,18 @@ class _SidePanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final f = point.f;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(track == null ? point.id : track!.title,
-          maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, height: 1.25)),
-      if (track != null && track!.displayArtist.isNotEmpty)
-        Text(track!.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        CoverImage(track: track, size: 64, radius: 8),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(track == null ? point.id : track!.title,
+                maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, height: 1.25)),
+            if (track != null && track!.displayArtist.isNotEmpty)
+              Text(track!.displayArtist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
+          ]),
+        ),
+      ]),
       const SizedBox(height: 8),
       _FeatureChips(f: f),
       const SizedBox(height: 10),
@@ -449,10 +748,12 @@ class _SidePanel extends StatelessWidget {
               borderRadius: BorderRadius.circular(8),
               onTap: () => onPick(h.id),
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
                 child: Row(children: [
+                  CoverImage(track: t, size: 34, radius: 5),
+                  const SizedBox(width: 8),
                   SizedBox(
-                    width: 38,
+                    width: 36,
                     child: Text('${(h.score.clamp(0.0, 1.0) * 100).round()}%',
                         style: const TextStyle(color: C.muted, fontSize: 13, fontWeight: FontWeight.w600)),
                   ),
