@@ -205,6 +205,16 @@ class _ImageField extends StatelessWidget {
                 icon: const Icon(Icons.link_rounded, size: 18),
                 label: const Text('Вставить ссылку…'),
               ),
+              const SizedBox(height: 6),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final p = await pickCoverFromClipboard(context,
+                      title: cropTitle, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: true);
+                  if (p != null) choice.pick(p);
+                },
+                icon: const Icon(Icons.content_paste_rounded, size: 18),
+                label: const Text('Вставить из буфера'),
+              ),
               if (canReset && !choice.reset)
                 TextButton(onPressed: choice.clear, child: const Text('Убрать', style: TextStyle(color: C.muted))),
               if (choice.changed)

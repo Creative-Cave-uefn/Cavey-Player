@@ -70,6 +70,47 @@ Future<PickedCover?> pickCoverFromUrl(
       title: title, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: keepAnimation);
 }
 
+/// Картинка из буфера обмена (скопированное изображение или файл), затем те же шаги, что и для файла.
+/// Если в буфере ссылка на картинку, берётся она. null — отмена или не вышло
+Future<PickedCover?> pickCoverFromClipboard(
+  BuildContext context, {
+  String title = 'Кадрирование обложки',
+  double aspect = 1,
+  int outWidth = 800,
+  bool round = false,
+  bool keepAnimation = false,
+}) async {
+  final app = Services.of(context);
+  Uint8List? bytes;
+  var name = 'буфер.png';
+  try {
+    final clip = await readClipboardImage();
+    if (clip != null) {
+      bytes = clip.bytes;
+      name = clip.name;
+    } else {
+      final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text?.trim() ?? '';
+      if (RegExp(r'^https?://\S+$').hasMatch(text)) {
+        app.lib.messages.add('Скачиваю картинку по ссылке из буфера…');
+        bytes = await downloadImageBytes(text);
+        name = Uri.tryParse(text)?.pathSegments.lastOrNull ?? 'картинка';
+      }
+    }
+  } catch (e) {
+    AppLog.warn('Обложка из буфера: не вышло', e);
+    final why = e is FormatException ? e.message : (e is TimeoutException ? 'не дождался ответа' : '$e');
+    app.lib.messages.add('Не получилось взять картинку из буфера: $why');
+    return null;
+  }
+  if (bytes == null) {
+    app.lib.messages.add('В буфере нет картинки: скопируйте изображение, файл-картинку или ссылку на неё');
+    return null;
+  }
+  if (!context.mounted) return null;
+  return prepareCover(context, bytes, name,
+      title: title, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: keepAnimation);
+}
+
 /// Общие шаги для файла и ссылки: проверка, кадрирование, сжатие в JPEG (GIF без кадрирования, если [keepAnimation])
 Future<PickedCover?> prepareCover(
   BuildContext context,
@@ -139,7 +180,6 @@ Future<String?> _askImageUrl(BuildContext context) async {
     ),
   );
   final text = field.text.trim();
-  field.dispose();
   return ok == true && text.isNotEmpty ? text : null;
 }
 
@@ -257,6 +297,15 @@ class CoverEditorView extends StatelessWidget {
                   },
                   icon: const Icon(Icons.link_rounded, size: 18),
                   label: const Text('Вставить ссылку…'),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final p = await pickCoverFromClipboard(context);
+                    if (p != null) choice.pick(p);
+                  },
+                  icon: const Icon(Icons.content_paste_rounded, size: 18),
+                  label: const Text('Вставить из буфера'),
                 ),
                 if (canReset && !choice.reset) ...[
                   const SizedBox(height: 8),

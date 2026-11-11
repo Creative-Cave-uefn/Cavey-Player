@@ -2,6 +2,7 @@
 // Работает в отдельном изоляте, чтобы окно не подвисало.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -147,4 +148,48 @@ bool _sameArt(List<Uint8List> pair) {
     }
   }
   return sum / (16 * 16 * 3) < 24;
+}
+
+/// Картинка из буфера обмена Windows: скопированное изображение (из браузера, скриншот, редактор) или файл-картинка,
+/// скопированный в Проводнике. null — в буфере картинки нет. Бросает исключение, если PowerShell недоступен
+Future<({Uint8List bytes, String name})?> readClipboardImage() async {
+  if (!Platform.isWindows) return null;
+  final tmp = File('${Directory.systemTemp.path}${Platform.pathSeparator}cave-clip-${DateTime.now().microsecondsSinceEpoch}.png');
+  final path = tmp.path.replaceAll("'", "''");
+  final script = '''
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
+  \$f = [System.Windows.Forms.Clipboard]::GetFileDropList()
+  if (\$f.Count -gt 0) { Write-Output ('FILE:' + \$f[0]); exit 0 }
+}
+if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
+  \$i = [System.Windows.Forms.Clipboard]::GetImage()
+  if (\$i -ne \$null) { \$i.Save('$path', [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'IMG'; exit 0 }
+}
+Write-Output 'NONE'
+''';
+  try {
+    final r = await Process.run(
+      'powershell',
+      ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    ).timeout(const Duration(seconds: 15));
+    final out = '${r.stdout}'.trim().split('\n').last.trim();
+    if (out == 'IMG' && await tmp.exists()) return (bytes: await tmp.readAsBytes(), name: 'буфер.png');
+    if (out.startsWith('FILE:')) {
+      final f = File(out.substring(5));
+      final ext = f.path.contains('.') ? f.path.split('.').last.toLowerCase() : '';
+      if (const ['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'webp', 'bmp', 'gif'].contains(ext) && await f.exists()) {
+        if (await f.length() > maxLinkedImageBytes) throw const FormatException('файл слишком большой');
+        return (bytes: await f.readAsBytes(), name: f.uri.pathSegments.last);
+      }
+    }
+    return null;
+  } finally {
+    try {
+      if (await tmp.exists()) await tmp.delete();
+    } catch (_) {}
+  }
 }

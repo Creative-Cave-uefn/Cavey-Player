@@ -2002,18 +2002,35 @@ Future<void> showPlaysDialog(BuildContext context, Track track) {
 /// «Перекачать трек»: на выбор — заменить аудио файлом с компьютера или найти новую версию через загрузчик Cavey
 Future<void> redownloadTrack(BuildContext context, Track track) async {
   final app = Services.of(context);
+  final link = TextEditingController();
   final choice = await showGlassDialog<String>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text('Перекачать «${track.title}»', style: display(18)),
       content: SizedBox(
         width: 400,
-        child: Text(
-          'Аудио заменится в том же файле Google Диска: ID, ссылки, лайки, плейлисты и ручные метаданные сохранятся. '
-          'Для замены нужны права записи в файл. Старую аудиозапись после замены вернуть не получится.\n\n'
-          'Откуда взять новое аудио?',
-          style: const TextStyle(color: C.muted, height: 1.45),
-        ),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text(
+            'Аудио заменится в том же файле Google Диска: ID, ссылки, лайки, плейлисты и ручные метаданные сохранятся. '
+            'Для замены нужны права записи в файл. Старую аудиозапись после замены вернуть не получится.\n\n'
+            'Откуда взять новое аудио?',
+            style: TextStyle(color: C.muted, height: 1.45),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: link,
+            decoration: const InputDecoration(
+              labelText: 'Ссылка на трек (необязательно)',
+              hintText: 'https://…',
+              prefixIcon: Icon(Icons.link_rounded, size: 18),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Для «Найти через загрузчик». Ссылку получит загрузчик; если оставить поле пустым, он возьмёт за основу имеющиеся метаданные трека: исполнителя и название.',
+            style: TextStyle(color: C.faint, fontSize: 12.5, height: 1.4),
+          ),
+        ]),
       ),
       actionsOverflowButtonSpacing: 8,
       actions: [
@@ -2031,9 +2048,14 @@ Future<void> redownloadTrack(BuildContext context, Track track) async {
       ],
     ),
   );
+  final url = link.text.trim();
   if (choice == null || !context.mounted) return;
   if (choice == 'search') {
-    final job = app.downloads.enqueueReplacement(track);
+    if (url.isNotEmpty && !RegExp(r'^https?://\S+$', caseSensitive: false).hasMatch(url)) {
+      app.lib.messages.add('Ссылка должна начинаться с http:// или https://');
+      return;
+    }
+    final job = app.downloads.enqueueReplacement(track, url: url);
     app.lib.messages.add(job == null
         ? 'Этот трек уже перекачивается или у него не указаны исполнитель и название.'
         : 'Перекачивание «${track.title}» добавлено в очередь загрузок');

@@ -154,13 +154,17 @@ class DownloadService extends ChangeNotifier {
     return job;
   }
 
-  DownloadJob? enqueueReplacement(Track track) {
-    if (track.artist.trim().isEmpty || track.title.trim().isEmpty) return null;
+  /// [url] — необязательная ссылка на нужную версию трека: её получает загрузчик вместо поиска по исполнителю и названию.
+  /// Метаданные трека (исполнитель, название, альбом, год) в любом случае берутся из библиотеки
+  DownloadJob? enqueueReplacement(Track track, {String? url}) {
+    final link = (url ?? '').trim();
+    if (link.isEmpty && (track.artist.trim().isEmpty || track.title.trim().isEmpty)) return null;
     if (jobs.any((j) => j.replaceTrackId == track.id &&
         (j.state == JobState.queued || j.state == JobState.running))) return null;
     final source = lib.data.sources.where((s) => s.id == track.source).firstOrNull;
-    final job = DownloadJob('${track.artist} - ${track.title}', track.source,
+    final job = DownloadJob(link.isNotEmpty ? link : '${track.artist} - ${track.title}', track.source,
         source?.name ?? 'Cavey', replaceTrackId: track.id, path: track.path);
+    if (link.isNotEmpty) job.title = '${track.artist} - ${track.title}';
     jobs.insert(0, job);
     notifyListeners();
     unawaited(_pump());
@@ -929,6 +933,7 @@ class DownloadService extends ChangeNotifier {
         final dot = name.lastIndexOf('.');
         request.addAll({
           'replaceTrackId': t.id,
+          if (RegExp(r'^https?://', caseSensitive: false).hasMatch(job.input)) 'sourceUrl': job.input,
           'originalExt': dot < 0 ? '' : name.substring(dot),
           'artist': t.artist, 'requestedTitle': t.title,
           'album': t.album, 'albumArtist': t.albumArtist,
