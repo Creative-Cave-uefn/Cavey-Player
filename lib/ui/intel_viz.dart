@@ -53,6 +53,12 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
   int _focusTick = 0;
   int? _focusIndex;
 
+  // Фильтры на карте: тональность (номер по кругу Camelot, null — все), диапазон BPM, только «Весь трек»
+  int? _keyFilter;
+  final _bpmLoCtrl = TextEditingController();
+  final _bpmHiCtrl = TextEditingController();
+  bool _onlyFull = false;
+
   AppServices get app => Services.of(context);
 
   @override
@@ -60,6 +66,9 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
     super.didChangeDependencies();
     if (_ready) return;
     _ready = true;
+    final s = app.lib.settings;
+    _by = _ColorBy.values[(int.tryParse(s.viewOf('intel.map.color', '0')) ?? 0).clamp(0, _ColorBy.values.length - 1)];
+    _covers = s.viewOf('intel.map.covers', '0') == '1';
     final index = app.intel.index;
     _points = projectMap(index);
     _hay = [
@@ -81,11 +90,47 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
   @override
   void dispose() {
     _search.dispose();
+    _bpmLoCtrl.dispose();
+    _bpmHiCtrl.dispose();
     super.dispose();
+  }
+
+  void _saveMapSetting(String key, String value) {
+    app.lib.settings.view[key] = value;
+    unawaited(app.lib.saveSettings());
   }
 
   void _recolor() {
     _colors = [for (final p in _points) _colorOf(p.f)];
+  }
+
+  /// Индексы точек, не прошедших текущие фильтры (тональность, BPM, «только Весь трек»): их прячем с карты
+  Set<int> get _hidden {
+    final loTxt = _bpmLoCtrl.text.trim(), hiTxt = _bpmHiCtrl.text.trim();
+    final lo = double.tryParse(loTxt), hi = double.tryParse(hiTxt);
+    if (_keyFilter == null && lo == null && hi == null && !_onlyFull) return const {};
+    final out = <int>{};
+    for (var i = 0; i < _points.length; i++) {
+      final f = _points[i].f;
+      if (_onlyFull && f.hasFlag(TrackFeatures.flagPartial)) {
+        out.add(i);
+        continue;
+      }
+      if (_keyFilter != null) {
+        final k = Camelot.parse(f.key);
+        if (k == null || !f.keyReliable || k.n != _keyFilter) {
+          out.add(i);
+          continue;
+        }
+      }
+      if (lo != null || hi != null) {
+        if (!f.tempoReliable || f.bpm == null || (lo != null && f.bpm! < lo) || (hi != null && f.bpm! > hi)) {
+          out.add(i);
+          continue;
+        }
+      }
+    }
+    return out;
   }
 
   Color _colorOf(TrackFeatures f) {
@@ -228,6 +273,7 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
                   onSelected: (_) => setState(() {
                     _by = e.$1;
                     _recolor();
+                    _saveMapSetting('intel.map.color', '${_ColorBy.values.indexOf(_by)}');
                   }),
                 ),
               const SizedBox(width: 6),
@@ -235,7 +281,10 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
                 avatar: const Icon(Icons.image_rounded, size: 16),
                 label: const Text('Обложки вместо точек'),
                 selected: _covers,
-                onSelected: (v) => setState(() => _covers = v),
+                onSelected: (v) => setState(() {
+                  _covers = v;
+                  _saveMapSetting('intel.map.covers', v ? '1' : '0');
+                }),
               ),
               const SizedBox(width: 6),
               _Legend(by: _by, eLo: _eLo, eHi: _eHi),
@@ -246,6 +295,49 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
                 child: Text('Обложки появляются, когда в окне остаётся не больше ~120 треков: приблизьте нужный участок.',
                     style: TextStyle(color: C.faint, fontSize: 12)),
               ),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
+              const Text('Фильтр:', style: TextStyle(color: C.faint, fontSize: 13)),
+              const Text('тональность', style: TextStyle(color: C.faint, fontSize: 12)),
+              ChoiceChip(label: const Text('Все'), selected: _keyFilter == null, onSelected: (_) => setState(() => _keyFilter = null)),
+              for (var n = 1; n <= 12; n++)
+                ChoiceChip(
+                  label: Text('$n'),
+                  selected: _keyFilter == n,
+                  onSelected: (_) => setState(() => _keyFilter = _keyFilter == n ? null : n),
+                ),
+              const SizedBox(width: 10),
+              const Text('BPM', style: TextStyle(color: C.faint, fontSize: 12)),
+              SizedBox(
+                width: 56,
+                height: 32,
+                child: TextField(
+                  controller: _bpmLoCtrl,
+                  onChanged: (_) => setState(() {}),
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(fontSize: 13),
+                  decoration: const InputDecoration(isDense: true, hintText: 'от', contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6)),
+                ),
+              ),
+              const Text('…', style: TextStyle(color: C.faint, fontSize: 12)),
+              SizedBox(
+                width: 56,
+                height: 32,
+                child: TextField(
+                  controller: _bpmHiCtrl,
+                  onChanged: (_) => setState(() {}),
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(fontSize: 13),
+                  decoration: const InputDecoration(isDense: true, hintText: 'до', contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6)),
+                ),
+              ),
+              const SizedBox(width: 6),
+              FilterChip(
+                label: const Text('Только «Весь трек»'),
+                selected: _onlyFull,
+                onSelected: (v) => setState(() => _onlyFull = v),
+              ),
+            ]),
             const SizedBox(height: 10),
             Expanded(
               child: _points.length < 3
@@ -266,6 +358,7 @@ class _SoundMapDialogState extends State<_SoundMapDialog> {
                               found: _found.length > 300 ? const [] : _found,
                               accent: accent,
                               covers: _covers,
+                              hidden: _hidden,
                               tracks: app.lib.data.tracks,
                               focusIndex: _focusIndex,
                               focusTick: _focusTick,
@@ -379,6 +472,9 @@ class _MapCanvas extends StatefulWidget {
   final List<int> found;
   final Color accent;
   final bool covers;
+
+  /// Индексы точек, отсечённых фильтрами (тональность, BPM, «только Весь трек»): не рисуются и не кликаются
+  final Set<int> hidden;
   final Map<String, Track> tracks;
   final int? focusIndex;
   final int focusTick;
@@ -391,6 +487,7 @@ class _MapCanvas extends StatefulWidget {
     required this.found,
     required this.accent,
     required this.covers,
+    required this.hidden,
     required this.tracks,
     required this.focusIndex,
     required this.focusTick,
@@ -454,6 +551,7 @@ class _MapCanvasState extends State<_MapCanvas> {
             final inView = <int>[];
             if (widget.covers) {
               for (var i = 0; i < widget.points.length; i++) {
+                if (widget.hidden.contains(i)) continue;
                 if (view.contains(_pos(widget.points[i], size))) {
                   inView.add(i);
                   if (inView.length > _coverCap) break;
@@ -474,6 +572,7 @@ class _MapCanvasState extends State<_MapCanvas> {
                 var best = -1;
                 var bestD = r * r;
                 for (var i = 0; i < widget.points.length; i++) {
+                  if (widget.hidden.contains(i)) continue;
                   final o = _pos(widget.points[i], size) - d.localPosition;
                   final dd = o.dx * o.dx + o.dy * o.dy;
                   if (dd < bestD) {
@@ -497,7 +596,7 @@ class _MapCanvasState extends State<_MapCanvas> {
                         found: widget.found,
                         accent: widget.accent,
                         scale: scale,
-                        hideDots: withCover,
+                        hideDots: widget.hidden.isEmpty ? withCover : {...withCover, ...widget.hidden},
                         pos: (p) => _pos(p, size),
                       ),
                     ),

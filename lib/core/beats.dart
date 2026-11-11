@@ -361,6 +361,15 @@ const List<int> _camMinor = [5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10];
 /// Запись Camelot для тоники [tonic] (0 — C … 11 — B)
 String camelotOf(int tonic, bool minor) => '${(minor ? _camMinor : _camMajor)[tonic % 12]}${minor ? 'A' : 'B'}';
 
+/// Обратное к [camelotOf]: тоника (0 — C … 11 — B) по номеру на круге Camelot. null — такого номера нет (1…12)
+int? tonicOf(int n, bool minor) {
+  final t = minor ? _camMinor : _camMajor;
+  for (var i = 0; i < 12; i++) {
+    if (t[i] == n) return i;
+  }
+  return null;
+}
+
 double _corr(List<double> a, List<double> b) {
   var ma = 0.0, mb = 0.0;
   for (var i = 0; i < 12; i++) {

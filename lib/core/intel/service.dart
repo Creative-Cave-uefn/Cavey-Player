@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -7,6 +8,7 @@ import 'package:flutter/foundation.dart';
 
 import '../audio_cache.dart';
 import '../automix.dart';
+import '../dj.dart' show Camelot, bpmStretch;
 import '../dl/tools.dart';
 import '../drive.dart';
 import '../library.dart';
@@ -636,6 +638,188 @@ class IntelService extends ChangeNotifier {
     return (i, lra);
   }
 
+  // ---------- отчёт качества ----------
+
+  static String _pct(int a, int b) => b == 0 ? '—' : '${(100 * a / b).round()}%';
+  String _hashId(String id) => (id.hashCode & 0xFFFFFF).toRadixString(16).padLeft(6, '0');
+
+  /// Текстовый отчёт о качестве разбора и подбора — числовая проверка без прослушивания, без переразбора и без
+  /// скачивания недостающих треков (теги файлов читаются только у уже закэшированных). [hashNames] (по умолчанию
+  /// включено) заменяет названия и исполнителей короткими хешами id, чтобы отчёт можно было переслать не раскрывая библиотеку
+  Future<String> buildQualityReport({bool hashNames = true, int tagSample = 40, int precisionSample = 60}) async {
+    final tracks = lib.allTracks;
+    final recs = store.records.toList();
+    final buf = StringBuffer();
+    String name(String id) {
+      if (hashNames) return '#${_hashId(id)}';
+      final t = lib.data.tracks[id];
+      return t == null ? id : '${t.displayArtist} — ${t.title}';
+    }
+
+    buf.writeln('Отчёт о качестве — Audio Intelligence');
+    buf.writeln(hashNames ? '(названия треков хешированы; снимите галочку «Хешировать названия», чтобы увидеть настоящие)' : '(названия треков показаны как есть)');
+    buf.writeln();
+
+    buf.writeln('== Здоровье индекса ==');
+    buf.writeln('Треков в библиотеке: ${tracks.length}; с разбором: ${recs.length} (${_pct(recs.length, tracks.length)})');
+    if (recs.isNotEmpty) {
+      var full = 0, rhythmOk = 0, keyOk = 0, loudOk = 0;
+      final flags = <String, int>{};
+      for (final r in recs) {
+        if (!r.hasFlag(TrackFeatures.flagPartial)) full++;
+        if (r.tempoReliable) rhythmOk++;
+        if (r.keyReliable) keyOk++;
+        if (r.lufs != null) loudOk++;
+        for (final f in r.flags) {
+          flags[f] = (flags[f] ?? 0) + 1;
+        }
+      }
+      buf.writeln('  Разобраны целиком: $full (${_pct(full, recs.length)}), отрывками или частично: ${recs.length - full}');
+      buf.writeln('  Надёжный темп: $rhythmOk (${_pct(rhythmOk, recs.length)})');
+      buf.writeln('  Надёжная тональность: $keyOk (${_pct(keyOk, recs.length)})');
+      buf.writeln('  Громкость (LUFS) измерена: $loudOk (${_pct(loudOk, recs.length)})');
+      if (flags.isNotEmpty) {
+        buf.writeln('  Флаги:');
+        for (final e in flags.entries.toList()..sort((a, b) => b.value.compareTo(a.value))) {
+          buf.writeln('    ${e.key}: ${e.value}');
+        }
+      }
+    }
+    buf.writeln();
+
+    final idx = index;
+    buf.writeln('== Возможные «хабы» (похожи на всё подряд — попадают в чужие соседи слишком часто) ==');
+    if (idx.count >= 8) {
+      final hubs = [for (var i = 0; i < idx.count; i++) (i, idx.centralityAt(i))]..sort((a, b) => b.$2.compareTo(a.$2));
+      final shown = hubs.where((e) => e.$2 > 0).take(15).toList();
+      if (shown.isEmpty) {
+        buf.writeln('  Явных хабов не найдено (или библиотека больше 4000 треков — центральность не считается).');
+      } else {
+        for (final (i, c) in shown) {
+          buf.writeln('  ${name(idx.recordAt(i).trackId)}: ${c.toStringAsFixed(3)}');
+        }
+      }
+    } else {
+      buf.writeln('  Слишком мало треков в индексе для оценки.');
+    }
+    buf.writeln();
+
+    buf.writeln('== Темп и тональность против тегов файлов ==');
+    buf.writeln('  Проверяются только уже закэшированные треки, чтобы отчёт не скачивал библиотеку.');
+    final tags = await _checkTags(recs, tagSample);
+    buf.writeln('  Файлов с тегом темпа проверено: ${tags.bpmChecked}, совпало (±3%, с учётом ×2/÷2): ${tags.bpmMatch} (${_pct(tags.bpmMatch, tags.bpmChecked)})');
+    buf.writeln('  Файлов с распознанным тегом тональности (Camelot, Open Key или обычная запись вроде «Am», «F#m») проверено: ${tags.keyChecked}, совпало: ${tags.keyMatch} (${_pct(tags.keyMatch, tags.keyChecked)})');
+    if (tags.keySkippedFormat > 0) {
+      buf.writeln('  Тег тональности не распознан парсером — не сравнивался: ${tags.keySkippedFormat}');
+    }
+    buf.writeln();
+
+    buf.writeln('== Точность подбора: треки того же альбома среди первых 10 похожих (прокси-метрика) ==');
+    final prec = _albumPrecision(idx, precisionSample);
+    if (prec == null) {
+      buf.writeln('  Недостаточно альбомов с несколькими треками в индексе для оценки.');
+    } else {
+      buf.writeln('  Посчитано по ${prec.seeds} исходным трекам из альбомов с ≥2 треками в индексе.');
+      buf.writeln('  Среднее число треков того же альбома среди первых 10 похожих: ${prec.avgHit.toStringAsFixed(2)}');
+      buf.writeln('  Что дал бы случайный выбор 10 треков из той же библиотеки: ${prec.avgRandom.toStringAsFixed(2)}');
+      buf.writeln('  Разница: ${(prec.avgHit - prec.avgRandom).toStringAsFixed(2)} (чем больше нуля, тем подбор лучше случайного)');
+    }
+    return buf.toString();
+  }
+
+  /// Сверка темпа и тональности с тегами файла (их вписывают Mixxx, Traktor, Beatport и другие), только у уже
+  /// закэшированных треков. Темп сравнивается с учётом удвоения/половины (как при сведении); тональность — через
+  /// Camelot.parse, который понимает и Camelot, и Open Key, и обычную запись («Am», «F#m») — не распознанные теги пропускаются
+  Future<_TagCheck> _checkTags(List<TrackFeatures> recs, int sample) async {
+    final out = _TagCheck();
+    if (!canAnalyzeHere) return out; // ffmpeg здесь не ставился
+    final candidates = recs.where((r) => cache.has(r.trackId) && cache.fileFor(r.trackId).existsSync()).toList();
+    if (candidates.isEmpty) return out;
+    candidates.shuffle(math.Random(7)); // детерминированно при том же составе кэша, но не по порядку библиотеки
+    try {
+      await _ensureTools();
+    } catch (_) {
+      return out;
+    }
+    await _work.create(recursive: true);
+    final tagFile = _w('quality_tags.txt');
+    for (final r in candidates.take(sample)) {
+      final src = cache.fileFor(r.trackId);
+      try {
+        if (tagFile.existsSync()) await tagFile.delete();
+        await Tools.run(tools.ffmpeg.path, ['-y', '-v', 'error', '-i', src.path, '-f', 'ffmetadata', tagFile.path]);
+        if (!tagFile.existsSync()) continue;
+        final text = utf8.decode(await tagFile.readAsBytes(), allowMalformed: true);
+        final parsed = MixAnalyzer.parseTagText(text);
+        final tagBpm = parsed.$1, tagKey = parsed.$2;
+        if (tagBpm != null && tagBpm > 0 && r.tempoReliable) {
+          out.bpmChecked++;
+          if (bpmStretch(r.bpm!, tagBpm) <= 0.03) out.bpmMatch++;
+        }
+        if (tagKey != null && tagKey.isNotEmpty && r.keyReliable) {
+          final want = Camelot.parse(tagKey);
+          final have = Camelot.parse(r.key);
+          if (want == null) {
+            out.keySkippedFormat++;
+          } else if (have != null) {
+            out.keyChecked++;
+            if (have.n == want.n && have.minor == want.minor) out.keyMatch++;
+          }
+        }
+      } catch (_) {
+        // отдельный файл не прочитался — пропускаем, отчёт не прерываем
+      }
+    }
+    try {
+      if (tagFile.existsSync()) await tagFile.delete();
+    } catch (_) {}
+    return out;
+  }
+
+  /// Прокси-метрика точности подбора: средняя доля треков того же альбома среди первых 10 похожих
+  /// у исходных треков из альбомов с ≥2 записями в индексе, против того, что дал бы случайный выбор
+  _AlbumPrecision? _albumPrecision(IntelIndex idx, int sample) {
+    if (idx.count < 20) return null;
+    final byAlbum = <String, List<int>>{};
+    for (var i = 0; i < idx.count; i++) {
+      final t = lib.data.tracks[idx.recordAt(i).trackId];
+      if (t == null || t.album.trim().isEmpty) continue;
+      final k = '${t.albumArtist.trim().toLowerCase()}::${t.album.trim().toLowerCase()}';
+      (byAlbum[k] ??= []).add(i);
+    }
+    final albumSizeOf = <int, int>{};
+    for (final list in byAlbum.values) {
+      if (list.length < 2) continue;
+      for (final i in list) {
+        albumSizeOf[i] = list.length;
+      }
+    }
+    if (albumSizeOf.isEmpty) return null;
+    final seeds = albumSizeOf.keys.toList()..shuffle(math.Random(11));
+    final n = idx.count;
+    var sumHit = 0.0, sumRandom = 0.0, used = 0;
+    for (final i in seeds.take(sample)) {
+      final seedId = idx.recordAt(i).trackId;
+      final t0 = lib.data.tracks[seedId];
+      if (t0 == null) continue;
+      final key0 = '${t0.albumArtist.trim().toLowerCase()}::${t0.album.trim().toLowerCase()}';
+      final hits = idx.similar(seeds: [seedId], limit: 10);
+      if (hits.isEmpty) continue;
+      var hit = 0;
+      for (final h in hits) {
+        final t = lib.data.tracks[h.id];
+        if (t == null) continue;
+        if ('${t.albumArtist.trim().toLowerCase()}::${t.album.trim().toLowerCase()}' == key0) hit++;
+      }
+      sumHit += hit;
+      // Случайный выбор 10 из оставшихся n−1 треков: ожидание совпадений по альбому ~ гипергеометрическое среднее
+      sumRandom += 10 * (albumSizeOf[i]! - 1) / math.max(1, n - 1);
+      used++;
+    }
+    if (used == 0) return null;
+    return _AlbumPrecision(used, sumHit / used, sumRandom / used);
+  }
+
   @override
   void dispose() {
     _disposed = true;
@@ -645,4 +829,14 @@ class IntelService extends ChangeNotifier {
     unawaited(store.close());
     super.dispose();
   }
+}
+
+class _TagCheck {
+  int bpmChecked = 0, bpmMatch = 0, keyChecked = 0, keyMatch = 0, keySkippedFormat = 0;
+}
+
+class _AlbumPrecision {
+  final int seeds;
+  final double avgHit, avgRandom;
+  const _AlbumPrecision(this.seeds, this.avgHit, this.avgRandom);
 }

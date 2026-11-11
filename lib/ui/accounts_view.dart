@@ -334,8 +334,56 @@ class _DebugSection extends StatelessWidget {
 }
 
 /// Анализ звука для отладки: карта схожести библиотеки и спектрограмма играющего трека
-class _IntelDebugSection extends StatelessWidget {
+class _IntelDebugSection extends StatefulWidget {
   const _IntelDebugSection();
+  @override
+  State<_IntelDebugSection> createState() => _IntelDebugSectionState();
+}
+
+class _IntelDebugSectionState extends State<_IntelDebugSection> {
+  bool _building = false;
+  bool _hashNames = true;
+
+  Future<void> _buildReport() async {
+    final app = Services.of(context);
+    setState(() => _building = true);
+    String text;
+    try {
+      text = await app.intel.buildQualityReport(hashNames: _hashNames);
+    } catch (e) {
+      text = 'Не получилось построить отчёт: $e';
+    }
+    if (!mounted) return;
+    setState(() => _building = false);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Отчёт качества — Анализ звука'),
+        content: SizedBox(
+          width: 640,
+          height: 480,
+          child: SingleChildScrollView(child: SelectableText(text, style: const TextStyle(fontSize: 13, height: 1.5))),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              final loc = await getSaveLocation(suggestedName: 'quality-report.txt');
+              if (loc == null) return;
+              try {
+                await File(loc.path).writeAsString(text);
+                if (ctx.mounted) Services.of(ctx).lib.messages.add('Отчёт сохранён: ${loc.path}');
+              } catch (e) {
+                if (ctx.mounted) Services.of(ctx).lib.messages.add('Не получилось сохранить: $e');
+              }
+            },
+            child: const Text('Сохранить в файл'),
+          ),
+          TextButton(onPressed: () => Clipboard.setData(ClipboardData(text: text)), child: const Text('Скопировать')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрыть')),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -347,11 +395,12 @@ class _IntelDebugSection extends StatelessWidget {
         const SizedBox(height: 8),
         Text(
           'В индексе записей: ${app.intel.indexed}. Карта показывает, как библиотека раскладывается по звучанию, '
-          'спектрограмма — один трек с долями, фразами, энергией и вокалом.',
+          'спектрограмма — один трек с долями, фразами, энергией и вокалом. Отчёт качества — числовая проверка '
+          'разбора и подбора (без прослушивания и без переразбора).',
           style: const TextStyle(color: C.muted, fontSize: 13, height: 1.5),
         ),
         const SizedBox(height: 12),
-        Wrap(spacing: 10, runSpacing: 8, children: [
+        Wrap(spacing: 10, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
           FilledButton.tonalIcon(
             onPressed: () => showSoundMap(context),
             icon: const Icon(Icons.bubble_chart_rounded, size: 18),
@@ -368,6 +417,16 @@ class _IntelDebugSection extends StatelessWidget {
             },
             icon: const Icon(Icons.graphic_eq_rounded, size: 18),
             label: const Text('Спектрограмма играющего трека'),
+          ),
+          OutlinedButton.icon(
+            onPressed: _building ? null : _buildReport,
+            icon: const Icon(Icons.fact_check_rounded, size: 18),
+            label: Text(_building ? 'Считаю…' : 'Отчёт качества'),
+          ),
+          FilterChip(
+            label: const Text('Хешировать названия'),
+            selected: _hashNames,
+            onSelected: (v) => setState(() => _hashNames = v),
           ),
         ]),
       ]),
