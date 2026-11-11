@@ -453,6 +453,19 @@ class _TracksPageState extends State<TracksPage> {
   String? _anchor; // от него считается диапазон по Shift
   List<Track> _visibleNow = const [];
 
+  /// Какой странице принадлежит список: по названию ключ не годится — у исполнителя и его одноимённого альбома
+  /// (или у альбома и плейлиста с тем же названием) он совпадал, и страницы затирали положение прокрутки друг друга
+  String? _storageId;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_storageId == null) {
+      final nav = context.getInheritedWidgetOfExactType<NavScope>()?.nav.value;
+      _storageId = nav == null ? '' : '${nav.kind}/${nav.id ?? ''}';
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1127,7 +1140,7 @@ class _TracksPageState extends State<TracksPage> {
             );
         final list = CustomScrollView(
             // Вернулись назад — список на том же месте
-            key: PageStorageKey('tracks:${widget.title}:${widget.playlistId ?? ''}'),
+            key: PageStorageKey('tracks:${_storageId ?? ''}:${widget.title}:${widget.playlistId ?? ''}'),
             slivers: [
           SliverToBoxAdapter(child: header),
           if (banner != null) SliverToBoxAdapter(child: banner),
