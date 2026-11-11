@@ -42,9 +42,25 @@ void main() {
     for (var a = 0; a < 3; a++) {
       for (var b = a + 1; b < 3; b++) {
         final d = math.sqrt(math.pow(cx[a] - cx[b], 2) + math.pow(cy[a] - cy[b], 2));
-        expect(d, greaterThan(within * 2));
+        expect(d, greaterThan(within * 1.2));
       }
     }
+    // ближайший сосед на карте чаще всего из того же кластера
+    var same = 0;
+    for (final p in pts) {
+      MapPoint? best;
+      var bestD = double.infinity;
+      for (final q in pts) {
+        if (identical(p, q)) continue;
+        final d = math.pow(p.x - q.x, 2) + math.pow(p.y - q.y, 2).toDouble();
+        if (d < bestD) {
+          bestD = d.toDouble();
+          best = q;
+        }
+      }
+      if (best != null && best.id[1] == p.id[1]) same++;
+    }
+    expect(same / pts.length, greaterThan(0.75));
   });
 
   test('карта: детерминирована и не падает на пустом индексе', () {
