@@ -141,7 +141,7 @@ class IntelService extends ChangeNotifier {
 
   bool get paused => _paused;
   bool get running => _running;
-  bool get canRun => canAnalyzeHere && enabled && !_noTool;
+  bool get canRun => canAnalyzeHere && enabled && !_noTool && _opened;
   int get total => _total;
 
   /// Сколько треков библиотеки уже разобрано
@@ -300,7 +300,8 @@ class IntelService extends ChangeNotifier {
 
   /// Поставить трек первым (например, тот, что играет сейчас)
   void prioritize(String id) {
-    if (!canRun) return;
+    // До первой сверки с общим индексом ничего не запускаем: на старте приложения разбор не должен соревноваться с загрузкой
+    if (!canRun || !_syncedOnce) return;
     final rec = store.get(id);
     final t = lib.data.tracks[id];
     if (t == null || (rec != null && rec.isCurrentFor(revisionOf(t)))) return;
