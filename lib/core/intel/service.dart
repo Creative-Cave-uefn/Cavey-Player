@@ -19,6 +19,7 @@ import 'intel_store.dart';
 import 'record.dart';
 import 'similarity.dart';
 import 'sync.dart';
+import 'viz.dart';
 
 // Audio Intelligence Engine: локальный разбор оригинальных записей, общий индекс признаков и подбор похожих.
 //
@@ -464,6 +465,46 @@ class IntelService extends ChangeNotifier {
           } catch (_) {}
         }
       }
+    }
+  }
+
+  /// Спектрограмма трека для просмотра (отладка). Звук из кэша плеера или временной загрузки, не больше первых 12 минут.
+  /// Работает только там, где есть ffmpeg (Windows)
+  Future<SpectroData> spectrogramFor(Track t, {void Function(String status)? onStatus}) async {
+    if (!canAnalyzeHere) throw Exception('Спектрограмма считается только на компьютере с Windows');
+    await _ensureTools();
+    await _work.create(recursive: true);
+    final cached = cache.fileFor(t.id);
+    var src = cached;
+    final temp = File('${_work.path}${_sep}viz.audio');
+    final raw = File('${_work.path}${_sep}viz.raw');
+    var downloaded = false;
+    try {
+      if (!(cache.has(t.id) && cached.existsSync())) {
+        for (final f in [temp, File('${temp.path}.part'), File('${temp.path}.part.version')]) {
+          if (f.existsSync()) f.deleteSync();
+        }
+        onStatus?.call('Скачиваю трек…');
+        final email = await lib.accessFor(t.source);
+        await drive.downloadToFile(email, t.id, temp, expectedModified: t.modified);
+        src = temp;
+        downloaded = true;
+      }
+      onStatus?.call('Декодирую звук…');
+      _clean([raw]);
+      await Tools.run(tools.ffmpeg.path, [
+        '-y', '-v', 'error', '-nostats', '-t', '720', '-i', src.path,
+        '-map', '0:a:0', '-ac', '1', '-ar', '$intelRate', '-f', 's16le', raw.path,
+      ]);
+      if (!raw.existsSync() || raw.lengthSync() < intelRate) throw Exception('Не получилось декодировать звук');
+      onStatus?.call('Считаю спектр…');
+      final bytes = await raw.readAsBytes();
+      final d = await computeSpectrogramInIsolate(bytes);
+      if (d.frames == 0) throw Exception('Трек слишком короткий');
+      return d;
+    } finally {
+      _clean([raw]);
+      if (downloaded) _clean([temp, File('${temp.path}.part'), File('${temp.path}.part.version')]);
     }
   }
 

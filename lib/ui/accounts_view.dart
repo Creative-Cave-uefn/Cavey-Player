@@ -17,6 +17,7 @@ import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
 import 'intel_panel.dart';
+import 'intel_viz.dart';
 import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength, seekWaveMin, seekWaveMax;
 import 'theme.dart';
 import 'widgets.dart';
@@ -325,8 +326,52 @@ class _DebugSection extends StatelessWidget {
       SizedBox(height: 32),
       _WaveDebugSection(),
       SizedBox(height: 32),
+      _IntelDebugSection(),
+      SizedBox(height: 32),
       _LogSection(),
     ]);
+  }
+}
+
+/// Анализ звука для отладки: карта схожести библиотеки и спектрограмма играющего трека
+class _IntelDebugSection extends StatelessWidget {
+  const _IntelDebugSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return ListenableBuilder(
+      listenable: app.intel,
+      builder: (context, _) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Анализ звука', style: display(17)),
+        const SizedBox(height: 8),
+        Text(
+          'В индексе записей: ${app.intel.indexed}. Карта показывает, как библиотека раскладывается по звучанию, '
+          'спектрограмма — один трек с долями, фразами, энергией и вокалом.',
+          style: const TextStyle(color: C.muted, fontSize: 13, height: 1.5),
+        ),
+        const SizedBox(height: 12),
+        Wrap(spacing: 10, runSpacing: 8, children: [
+          FilledButton.tonalIcon(
+            onPressed: () => showSoundMap(context),
+            icon: const Icon(Icons.bubble_chart_rounded, size: 18),
+            label: const Text('Карта схожести'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () {
+              final t = app.player.current;
+              if (t == null) {
+                app.lib.messages.add('Включите трек: спектрограмма строится для играющего.');
+                return;
+              }
+              showTrackSpectrogram(context, t);
+            },
+            icon: const Icon(Icons.graphic_eq_rounded, size: 18),
+            label: const Text('Спектрограмма играющего трека'),
+          ),
+        ]),
+      ]),
+    );
   }
 }
 

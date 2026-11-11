@@ -109,6 +109,27 @@ class IntelIndex {
 
   Iterable<TrackFeatures> get all => _rec;
 
+  /// Запись по порядковому номеру (для карты)
+  TrackFeatures recordAt(int i) => _rec[i];
+
+  /// Длина вектора [embeddingInto]: тембр, гармония, динамика и ритмическая плотность
+  static const int embeddingDims = _timbreDims + _harmonyDims + _dynDims + 1;
+
+  /// Нормализованный по библиотеке вектор признаков записи [i]; по нему строится карта схожести
+  void embeddingInto(int i, Float64List out) {
+    var k = 0;
+    for (var d = 0; d < _timbreDims; d++) {
+      out[k++] = _timbre[i * _timbreDims + d];
+    }
+    for (var d = 0; d < _harmonyDims; d++) {
+      out[k++] = _harmony[i * _harmonyDims + d];
+    }
+    for (var d = 0; d < _dynDims; d++) {
+      out[k++] = _dyn[i * _dynDims + d];
+    }
+    out[k] = _onset[i];
+  }
+
   /// Пересобирает индекс из записей (по одной на трек). Нормализация считается по этим записям
   void rebuild(Iterable<TrackFeatures> records) {
     _rec = List<TrackFeatures>.of(records);
