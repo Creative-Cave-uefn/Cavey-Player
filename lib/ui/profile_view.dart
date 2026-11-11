@@ -302,6 +302,9 @@ class _ProfileLayoutState extends State<ProfileLayout> {
   }
 }
 
+/// Слабее этого размытия баннер берётся в оригинальном размере, а не в уменьшенной копии 640 px
+const _sharpBannerBelow = 9.0;
+
 /// Баннер профиля вместо градиента: немного затемнён и размыт, чтобы текст поверх читался; низ плавно уходит в фон
 class _Banner extends StatelessWidget {
   final String fileId;
@@ -356,8 +359,9 @@ class _Banner extends StatelessWidget {
                 child: Stack(fit: StackFit.expand, children: [
                   bannerPicture(
                     blur: blur,
-                    // Размытый баннер читается и с копии в 640 px, с диска она грузится мгновенно; без размытия нужна чётче
-                    child: CoverImage(track: null, fileId: fileId, label: '', size: w, height: h, radius: 0, maxPx: blur < 1 ? 1600 : 640),
+                    // Сильно размытому баннеру хватает копии в 640 px (грузится мгновенно). При слабом размытии копия
+                    // растягивается и сквозь блюр видны «лесенки», поэтому берём оригинал
+                    child: CoverImage(track: null, fileId: fileId, label: '', size: w, height: h, radius: 0, maxPx: blur < _sharpBannerBelow ? null : 640),
                   ),
                   ColoredBox(color: Colors.black.withValues(alpha: 0.4)),
                 ]),
@@ -880,7 +884,10 @@ class UserProfilePage extends StatelessWidget {
             'user:$email:${lib.profileBanner(email)}:${lib.profileAvatar(email)}',
             bytes: () async {
               final id = lib.profileBanner(email) ?? lib.profileAvatar(email);
-              return id == null ? null : app.covers.forFile(id);
+              if (id == null) return null;
+              // Маленькая копия (как у обложки трека): подходит и та, что уже загрузил сам баннер на странице (640 px).
+              // Запрос оригинала упирался в «отказ помнится 5 минут» и не видел уже готовой копии — фон оставался без баннера
+              return app.covers.peekFile(id, px: 160) ?? await app.covers.forFile(id, px: 160);
             },
             color: friendColor(email),
           ),
