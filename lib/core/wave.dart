@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
 
 import 'dj.dart';
 import 'dl/service.dart';
+import 'intel/service.dart' show IntelService;
 import 'lastfm.dart';
 import 'library.dart';
 import 'log.dart';
@@ -328,7 +329,8 @@ class WaveInputs {
   final Map<String, List<String>> related; // исполнитель → похожие (ключи)
   final WaveTaste taste;
   final Map<String, double> session; // поправки за эту волну: пропустил — меньше, дослушал — больше
-  final Map<String, double> boost; // трек → насколько он похож на недавно дослушанные (0..1, по Last.fm)
+  final Map<String, double> boost; // трек → насколько он похож на недавно дослушанные (0..1, по Last.fm и по звуку)
+  final Map<String, double> audioNeg; // трек → насколько он по звуку похож на недавно пропущенные (0..1)
   final Set<String> focus; // своя подборка: только эти исполнители и похожие на них (пусто — все)
   final Map<String, double>? mood; // выбрано настроение: трек → насколько подходит (0..1)
   final Map<String, double> bpm; // известный темп треков (Д6)
@@ -355,6 +357,7 @@ class WaveInputs {
     WaveTaste? taste,
     this.session = const {},
     this.boost = const {},
+    this.audioNeg = const {},
     this.focus = const {},
     this.mood,
     this.bpm = const {},
@@ -430,6 +433,9 @@ class WaveEngine {
     };
     // Похож на то, что вы только что дослушали, — держим настроение
     w *= 1 + 2.5 * (x.boost[t.id] ?? 0);
+    // Звучит как то, что только что пропустили, — слегка отодвигаем (не больше чем вдвое)
+    final an = x.audioNeg[t.id];
+    if (an != null) w *= 1 - 0.5 * min(0.6, an) / 0.6;
     // Своя подборка исполнителей: остальные почти не звучат
     if (x.focus.isNotEmpty && !t.artists.any((a) => x.focus.contains(a.toLowerCase()))) w *= 0.04;
     // Настроение: неподходящие треки отходят далеко на второй план
@@ -581,6 +587,11 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   final List<String> _recent = [];
   final Map<String, List<String>> _related = {}; // исполнитель → похожие исполнители
   final Map<String, double> _boost = {}; // трек библиотеки → похожесть на недавно дослушанные
+  final Map<String, double> _audioNeg = {}; // трек библиотеки → похожесть по звуку на недавно пропущенные
+
+  /// Признаки звука (если подключены): по ним волна находит треки, звучащие как дослушанные, и обходит звучащие как пропущенные.
+  /// Без них или без разбора у части треков волна работает как раньше
+  IntelService? intel;
   final List<String> _good = []; // недавно дослушанные треки: от них ищем похожие
   Timer? _saveTimer;
   Timer? _sweepTimer;
@@ -752,6 +763,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     if (m != null) mode = m;
     _session.clear();
     _boost.clear();
+    _audioNeg.clear();
     _applyCustom();
     // Понравившееся в волне раньше — сразу ориентир для похожих
     final seeds = List.of(taste.seeds)..shuffle();
@@ -777,6 +789,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     }
     _remember([t.id]);
     _boost.clear();
+    _audioNeg.clear();
     custom.clear();
     await _learnFrom(t, wait: const Duration(seconds: 3)); // похожие на него — сразу в первую очередь
     _lastTrack = t.id;
@@ -1116,6 +1129,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       taste: taste,
       session: _session,
       boost: _boost,
+      audioNeg: _audioNeg,
       focus: _focus,
       mood: _moodMap(_cTracks),
       bpm: _tempoMap,
@@ -1254,6 +1268,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   @override
   void heard(Track t, Duration listened, {required bool skipped}) {
     taste.decay();
+    _audioNeg.updateAll((_, v) => v * 0.97);
+    _audioNeg.removeWhere((_, v) => v < 0.05);
     final keys = [for (final a in t.artists) a.toLowerCase()];
     final total = Duration(milliseconds: t.durationMs ?? 0);
     final early = skipped && listened < const Duration(seconds: 30);
@@ -1277,6 +1293,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         });
       }
       taste.addSkip(t.id, _ctx);
+      _learnAudioNeg(t);
       // Д1: основной штраф получает сам трек (skips). Исполнителя заметно наказываем,
       // только когда пропущены минимум две его разные песни. Всё это — только для текущего контекста
       // (настроения), и со временем забывается
@@ -1314,6 +1331,21 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   late final SimIndex _sim = SimIndex(lib, () => player.mixer);
 
+  /// Пропустили трек в самом начале: треки, звучащие очень похоже, получают небольшой штраф (пока не забудется)
+  void _learnAudioNeg(Track t) {
+    try {
+      final sims = intel?.similarMap([t.id], floor: 0.7, limit: 80) ?? const <String, double>{};
+      sims.forEach((id, v) {
+        if (id == t.id) return;
+        final x = min(0.6, (v - 0.6) * 1.5);
+        if (x < 0.1) return;
+        if ((_audioNeg[id] ?? 0) < x) _audioNeg[id] = x;
+      });
+    } catch (e) {
+      AppLog.warn('Моя волна: штраф за похожее на пропущенное', e);
+    }
+  }
+
   /// Похожие на трек (и на два последних дослушанных) по тому, что известно локально: один альбом и исполнитель,
   /// общие плейлисты, жанр из тегов, эпоха, темп и тональность. Прибавка слабее, чем от Last.fm, и не выше 0,6:
   /// иначе волна ходила бы только по альбому. Возвращает, сколько похожих нашлось
@@ -1324,6 +1356,15 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       sims.forEach((id, v) {
         if (id == t.id) return;
         final x = min(0.6, v * 0.7);
+        if (x < 0.1) return;
+        if ((_boost[id] ?? 0) < x) _boost[id] = x;
+        n++;
+      });
+      // Похожие по звуку (тембр, гармония, ритм, энергия из разбора аудио): прибавка мягкая, как и у локальных данных
+      final audio = intel?.similarMap([t.id, ..._good.reversed.take(2)], floor: 0.45) ?? const <String, double>{};
+      audio.forEach((id, v) {
+        if (id == t.id) return;
+        final x = min(0.6, (v - 0.35) * 1.2);
         if (x < 0.1) return;
         if ((_boost[id] ?? 0) < x) _boost[id] = x;
         n++;

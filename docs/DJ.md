@@ -28,3 +28,9 @@ Click the **tune** icon on the player bar to open two independent decks.
 - There is no separate headphone output routing, recording, jog wheel, MIDI or dedicated audio limiter in this version. Keep the master below clipping.
 - New pure-math tests: test/dj_live_math_test.dart. Imported DJ tests: test/beats_test.dart, test/dj_test.dart, test/mixbook_test.dart.
 - **Validation note:** this repository's Windows GitHub Action currently marks its \`checks\` job failed in a few seconds with no job steps/log attached, even for a no-change branch pointing at main. Consequently, this branch has not yet been compiled or verified by Flutter's analyzer on a runner. Run \`flutter analyze\` and \`flutter test\` in a working Flutter 3.27.4 environment before merging.
+
+## Audio Intelligence (признаки звука для сведения)
+
+Данные для DJ — сетка долей по всему треку, границы фраз, громкость (LUFS), кривые энергии и «присутствия вокала» по секундам,
+признаки вступления и концовки — считаются фоновым разбором и лежат в общем индексе. Подробности и формат: [AUDIO_INTELLIGENCE.md](AUDIO_INTELLIGENCE.md).
+Планировщик переходов их пока не использует: это следующий этап.

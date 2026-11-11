@@ -16,6 +16,7 @@ import '../core/store.dart' show Settings;
 import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
+import 'intel_panel.dart';
 import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength, seekWaveMin, seekWaveMax;
 import 'theme.dart';
 import 'widgets.dart';
@@ -1229,6 +1230,8 @@ class _AutoDjSectionState extends State<_AutoDjSection> {
           ),
         ),
       ],
+      const SizedBox(height: 20),
+      const IntelPanel(),
       const SizedBox(height: 20),
       const HintHeading('ListenBrainz', null),
       const SizedBox(height: 4),

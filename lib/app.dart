@@ -13,6 +13,7 @@ import 'core/wave.dart';
 import 'core/app_icon.dart';
 import 'core/audio_cache.dart';
 import 'core/automix.dart';
+import 'core/intel/service.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
@@ -74,6 +75,9 @@ class AppServices {
 
   /// Похожесть треков по локальным данным (для радио и АвтоDJ) и скробблинг в ListenBrainz
   late final SimIndex sim;
+
+  /// Audio Intelligence: локальный разбор звука, общий индекс признаков и подбор похожих по звуку
+  late final IntelService intel;
   late final ListenBrainz listenBrainz;
   late final MixBook mixBook;
   late final KaraokeService karaoke;
@@ -198,6 +202,8 @@ class AppServices {
     player.mixBook = app.mixBook;
     unawaited(mixer.preload()); // сохранённые разборы звука — в память, в фоне
     app.sim = SimIndex(lib, () => player.mixer);
+    app.intel = IntelService(dir: store.sub('intel'), lib: lib, drive: drive, cache: cache, tools: Tools(store.sub('tools')));
+    unawaited(app.intel.open()); // индекс читается и разбор идёт в фоне: запуск приложения не ждёт
     app.listenBrainz = ListenBrainz(settings, player)..start();
     final tempo = <String, double?>{};
     player.tempoOf = (t) {
@@ -207,6 +213,7 @@ class AppServices {
       return null;
     };
     app.wave = await WaveService.open(store, lib, player, social, app.web, downloads);
+    app.wave.intel = app.intel;
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
@@ -315,6 +322,9 @@ class AppServices {
       await player.flushSession();
       await wave.flush();
       await lib.flushNow();
+    } catch (_) {}
+    try {
+      await intel.store.flush(); // готовые результаты разбора звука не теряются при выходе
     } catch (_) {}
     await AppLog.flush();
     try {
