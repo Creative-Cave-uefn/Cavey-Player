@@ -17,6 +17,10 @@ bool isGifBytes(List<int> b) => b.length > 6 && b[0] == 0x47 && b[1] == 0x49 && 
 const maxLinkedImageBytes = 25 * 1024 * 1024;
 const maxGifBytes = 10 * 1024 * 1024;
 
+/// Сколько ждать загрузки картинки на Диск: обычная обложка — 90 секунд, на каждый мегабайт сверх первого ещё 25 (GIF бывает до 10 МБ,
+/// а по медленному каналу 45 секунд на такой файл не хватало)
+Duration coverUploadTimeout(int bytes) => Duration(seconds: 90 + 25 * (bytes / 1048576).ceil());
+
 /// Скачивает картинку по ссылке http(s). Бросает понятную ошибку (FormatException / HttpException / TimeoutException)
 Future<Uint8List> downloadImageBytes(String url) async {
   final uri = Uri.tryParse(url.trim());

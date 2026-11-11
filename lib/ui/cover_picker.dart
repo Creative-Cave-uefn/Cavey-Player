@@ -192,7 +192,7 @@ class CoverChoice extends ChangeNotifier {
     for (var attempt = 0; attempt < 3; attempt++) {
       try {
         if (attempt > 0) await Future<void>.delayed(Duration(seconds: attempt * 2));
-        final id = await app.lib.uploadCover(p.bytes, p.ext).timeout(const Duration(seconds: 45));
+        final id = await app.lib.uploadCover(p.bytes, p.ext).timeout(coverUploadTimeout(p.bytes.length) + const Duration(seconds: 15));
         await app.covers.seed(id, p.bytes);
         return id;
       } catch (e) {
