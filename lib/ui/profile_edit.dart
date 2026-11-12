@@ -120,8 +120,6 @@ Future<void> editProfileDialog(BuildContext context) async {
   nick.dispose();
   blur.dispose();
   if (ok != true || !context.mounted) return;
-  final me = lib.me;
-  if (me == null) return;
   final blurChanged = (newBlur - startBlur).abs() > 0.01;
   final nickChanged = text != (lib.profileNick(me) ?? '');
   lib.setProfile(
