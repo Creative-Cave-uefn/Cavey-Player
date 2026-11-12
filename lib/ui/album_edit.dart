@@ -6,6 +6,7 @@ import 'package:flutter/gestures.dart' show PointerScrollEvent;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 
 import '../app.dart';
 import '../core/deezer_art.dart';
@@ -16,6 +17,7 @@ import 'cover_picker.dart';
 import 'glass_popup.dart';
 import 'suggest_field.dart';
 import 'theme.dart';
+import 'web_pages.dart' show netCover;
 import 'widgets.dart';
 
 /// Большая обложка в шапке альбома или плейлиста: клик — посмотреть на весь экран,
@@ -23,6 +25,9 @@ import 'widgets.dart';
 class HeaderCover extends StatefulWidget {
   final Track? track;
   final String? fileId;
+
+  /// Обложка из интернета (альбом, которого нет в библиотеке)
+  final String? url;
   final String? label;
   final double size;
   final VoidCallback? onEdit;
@@ -35,6 +40,7 @@ class HeaderCover extends StatefulWidget {
     required this.track,
     required this.size,
     this.fileId,
+    this.url,
     this.label,
     this.onEdit,
     this.editTooltip = 'Изменить',
@@ -56,7 +62,7 @@ class _HeaderCoverState extends State<HeaderCover> {
     final from = box != null && box.hasSize ? box.localToGlobal(Offset.zero) & box.size : null;
     setState(() => _flying = true);
     try {
-      await showCoverViewer(context, track: widget.track, fileId: widget.fileId, from: from, fromRadius: 12);
+      await showCoverViewer(context, track: widget.track, fileId: widget.fileId, url: widget.url, from: from, fromRadius: 12);
     } finally {
       if (mounted) setState(() => _flying = false);
     }
@@ -64,7 +70,7 @@ class _HeaderCoverState extends State<HeaderCover> {
 
   @override
   Widget build(BuildContext context) {
-    final canView = widget.track != null || widget.fileId != null;
+    final canView = widget.track != null || widget.fileId != null || (widget.url ?? '').isNotEmpty;
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
@@ -77,7 +83,9 @@ class _HeaderCoverState extends State<HeaderCover> {
               onTap: canView ? _view : null,
               child: Opacity(
                 opacity: _flying ? 0 : 1,
-                child: widget.grid.length == 4 && widget.fileId == null
+                child: (widget.url ?? '').isNotEmpty
+                    ? netCover(widget.url!, widget.size, radius: 12)
+                    : widget.grid.length == 4 && widget.fileId == null
                     ? CoverGrid(tracks: widget.grid, size: widget.size, radius: 12)
                     : CoverImage(track: widget.track, fileId: widget.fileId, label: widget.label, size: widget.size, radius: 12),
               ),
@@ -118,11 +126,13 @@ class _HeaderCoverState extends State<HeaderCover> {
 
 /// Обложка на весь экран: колесо или ползунок под ней — масштаб, зажатая левая кнопка — двигать.
 /// Пока картинка не приближена, она слегка наклоняется в сторону курсора. Закрывается по Esc или клику по пустому месту
-Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId, Rect? from, double fromRadius = 0}) {
+Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId, String? url, Rect? from, double fromRadius = 0}) {
   final covers = Services.of(context).covers;
-  final Future<Uint8List?> bytes = (fileId != null
-          ? covers.forFile(fileId)
-          : (track != null ? covers.forTrack(track) : Future<Uint8List?>.value(null)))
+  final Future<Uint8List?> bytes = (url != null && url.isNotEmpty
+          ? http.get(Uri.parse(url)).then((r) => r.statusCode == 200 && r.bodyBytes.isNotEmpty ? r.bodyBytes : null)
+          : fileId != null
+              ? covers.forFile(fileId)
+              : (track != null ? covers.forTrack(track) : Future<Uint8List?>.value(null)))
       // Если картинка так и не пришла, окно не должно висеть с крутилкой вечно
       .timeout(const Duration(seconds: 25), onTimeout: () => null)
       .catchError((Object _) => null);
@@ -138,7 +148,7 @@ Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId
     // Обложка вылетает из шапки в центр и так же возвращается; фон темнеет вместе с ней
     transitionDuration: const Duration(milliseconds: 340),
     pageBuilder: (ctx, anim, __) =>
-        _CoverViewer(bytes: bytes, fallback: _fallbackCover(context, track, fileId), anim: anim, from: from, fromRadius: fromRadius, onGone: () {
+        _CoverViewer(bytes: bytes, fallback: _fallbackCover(context, track, fileId, url), anim: anim, from: from, fromRadius: fromRadius, onGone: () {
       if (!gone.isCompleted) gone.complete();
     }),
     transitionBuilder: (ctx, a, _, child) => child,
@@ -149,7 +159,8 @@ Future<void> showCoverViewer(BuildContext context, {Track? track, String? fileId
 }
 
 /// Пока крупная картинка грузится (или не загрузилась), показываем ту, что уже есть на экране
-Widget? _fallbackCover(BuildContext context, Track? track, String? fileId) {
+Widget? _fallbackCover(BuildContext context, Track? track, String? fileId, [String? url]) {
+  if ((url ?? '').isNotEmpty) return netCover(url!, 480, radius: 0);
   if (track == null && fileId == null) return null;
   return CoverImage(track: track, fileId: fileId, size: 480, radius: 0);
 }
@@ -429,7 +440,11 @@ class _AlbumDeezerActions extends StatefulWidget {
   final Album album;
   final TextEditingController title, artist, year;
   final CoverChoice choice;
-  const _AlbumDeezerActions({required this.album, required this.title, required this.artist, required this.year, required this.choice});
+
+  /// Кнопка «Из Deezer» стоит рядом с обложкой, а поиск ведёт это окно
+  final DeezerCoverHook hook;
+  const _AlbumDeezerActions(
+      {required this.album, required this.title, required this.artist, required this.year, required this.choice, required this.hook});
 
   @override
   State<_AlbumDeezerActions> createState() => _AlbumDeezerActionsState();
@@ -438,6 +453,18 @@ class _AlbumDeezerActions extends StatefulWidget {
 class _AlbumDeezerActionsState extends State<_AlbumDeezerActions> {
   bool _coverBusy = false, _fillBusy = false;
   String _coverStatus = '', _fillStatus = '';
+
+  @override
+  void initState() {
+    super.initState();
+    widget.hook.run = _cover;
+  }
+
+  @override
+  void dispose() {
+    if (widget.hook.run == _cover) widget.hook.run = null;
+    super.dispose();
+  }
 
   /// Исполнитель для поиска: из поля, иначе исполнитель альбома, иначе самый частый из треков
   String get _who {
@@ -455,6 +482,7 @@ class _AlbumDeezerActionsState extends State<_AlbumDeezerActions> {
       setState(() => _coverStatus = 'Нужны название альбома и исполнитель.');
       return;
     }
+    widget.hook.busy.value = true;
     setState(() {
       _coverBusy = true;
       _coverStatus = 'Ищу обложку в Deezer…';
@@ -478,6 +506,7 @@ class _AlbumDeezerActionsState extends State<_AlbumDeezerActions> {
       AppLog.error('Deezer: обложка альбома', e, st);
       if (mounted) setState(() => _coverStatus = 'Не удалось загрузить обложку.');
     } finally {
+      widget.hook.busy.value = false;
       if (mounted) setState(() => _coverBusy = false);
     }
   }
@@ -522,18 +551,11 @@ class _AlbumDeezerActionsState extends State<_AlbumDeezerActions> {
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(top: 10),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Wrap(spacing: 8, runSpacing: 6, children: [
-            OutlinedButton.icon(
-              onPressed: _coverBusy ? null : _cover,
-              icon: _coverBusy ? _spin() : const Icon(Icons.image_search_rounded, size: 18),
-              label: const Text('Скачать обложку из Deezer'),
-            ),
-            OutlinedButton.icon(
-              onPressed: _fillBusy ? null : _fill,
-              icon: _fillBusy ? _spin() : const Icon(Icons.auto_fix_high_rounded, size: 18),
-              label: const Text('Заполнить из Deezer'),
-            ),
-          ]),
+          OutlinedButton.icon(
+            onPressed: _fillBusy ? null : _fill,
+            icon: _fillBusy ? _spin() : const Icon(Icons.auto_fix_high_rounded, size: 18),
+            label: const Text('Заполнить из Deezer'),
+          ),
           if (_coverStatus.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(_coverStatus, style: const TextStyle(color: C.muted, fontSize: 12)),
@@ -563,6 +585,7 @@ Future<void> editAlbumDialog(BuildContext context, Album a) async {
   final year = TextEditingController(text: initYear);
   final artist = TextEditingController(text: initArtist);
   final choice = CoverChoice();
+  final hook = DeezerCoverHook();
   final ok = await showGlassDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
@@ -575,8 +598,8 @@ Future<void> editAlbumDialog(BuildContext context, Album a) async {
               choice: choice,
               current: CoverImage(track: a.coverTrack, size: 120, radius: 0),
               canReset: lib.albumCover(a.key) != null,
+              deezer: hook,
             ),
-            _AlbumDeezerActions(album: a, title: title, artist: artist, year: year, choice: choice),
             const SizedBox(height: 18),
             const Text('Название', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
@@ -601,10 +624,10 @@ Future<void> editAlbumDialog(BuildContext context, Album a) async {
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(4)],
               ),
             ),
+            _AlbumDeezerActions(album: a, title: title, artist: artist, year: year, choice: choice, hook: hook),
             const SizedBox(height: 14),
             Text(
-              'Изменится у всех ${countTracks(a.tracks.length)} альбома, и это увидят все друзья. '
-              'Исполнители отдельных треков не меняются. Сами файлы на Диске остаются как были.',
+              'Обложка изменится у всех ${countTracks(a.tracks.length)} в альбоме. Исполнители отдельных треков не меняются.',
               style: const TextStyle(color: C.faint, fontSize: 12, height: 1.4),
             ),
           ]),
@@ -622,7 +645,6 @@ Future<void> editAlbumDialog(BuildContext context, Album a) async {
     lib.messages.add('Название альбома не может быть пустым');
     return;
   }
-  final cover = context.mounted ? await choice.commit(context) : null;
   final y = year.text.trim();
   final ar = artist.text.trim();
   lib.editAlbum(
@@ -630,9 +652,19 @@ Future<void> editAlbumDialog(BuildContext context, Album a) async {
     title: t != initTitle ? t : null,
     year: y != initYear ? y : null,
     albumArtist: ar != initArtist ? ar : null,
-    cover: cover,
   );
-  lib.messages.add('Альбом «$t» обновлён');
+  if (!context.mounted || !choice.changed) return;
+  // Новая обложка видна сразу, на Диск грузится в фоне
+  final firstId = a.tracks.first.id;
+  choice.save(
+    context,
+    label: 'Обложка альбома «$t»',
+    shown: [for (final id in {...lib.albumCoverMetaIds(a), 'album:${lib.data.tracks[firstId]?.albumKey ?? a.key}'}) (id, 'cv')],
+    apply: (id, token) {
+      final key = lib.data.tracks[firstId]?.albumKey ?? a.key;
+      lib.setAlbumCover(key, id, token: token);
+    },
+  );
 }
 
 /// Окно «Плейлист»: название и обложка
@@ -653,7 +685,8 @@ Future<void> editPlaylistDialog(BuildContext context, Playlist p, {Track? coverT
               choice: choice,
               current: CoverImage(track: coverTrack, fileId: own, label: p.name, size: 120, radius: 0),
               canReset: own != null,
-              note: 'Обложку и название увидят все, кому виден плейлист.',
+              layout: CoverEditorLayout.column,
+              resetText: 'Внутри будут обложки первых 4 треков',
             ),
             const SizedBox(height: 18),
             const Text('Название', style: TextStyle(color: C.muted, fontSize: 13)),
@@ -671,6 +704,11 @@ Future<void> editPlaylistDialog(BuildContext context, Playlist p, {Track? coverT
   if (ok != true) return;
   final n = name.text.trim();
   if (n.isNotEmpty && n != p.name) lib.renamePlaylist(p.id, n);
-  final cover = context.mounted ? await choice.commit(context) : null;
-  if (cover != null) lib.setPlaylistCover(p.id, cover);
+  if (!context.mounted || !choice.changed) return;
+  choice.save(
+    context,
+    label: 'Обложка плейлиста «${n.isEmpty ? p.name : n}»',
+    shown: [('pl:${p.id}', 'cv')],
+    apply: (id, token) => lib.setPlaylistCover(p.id, id, token: token),
+  );
 }

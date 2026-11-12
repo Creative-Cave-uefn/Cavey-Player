@@ -71,7 +71,13 @@ class _ArtistsPageState extends State<ArtistsPage> {
         final q = foldText(_query.trim());
         // «Кто загрузил»: исполнители, у которых есть треки выбранных людей
         final by = loadUploaderFilter(app.settings, 'artists');
-        final all = by.isEmpty ? every : [for (final a in every) if (a.tracks.any((t) => passesUploaders(by, t.by))) a];
+        final mineOnly = loadMineFilter(app.settings, 'artists');
+        final all = by.isEmpty && !mineOnly
+            ? every
+            : [
+                for (final a in every)
+                  if (a.tracks.any((t) => passesUploaders(by, t.by) && (!mineOnly || app.lib.isMyAccount(t.by)))) a
+              ];
         final ls = ListSort.read(app.settings, 'artists', legacyDesc: app.settings.artistsDesc);
         final desc = ls.desc;
         final firstAt = ls.mode == 'first' ? {for (final a in all) a.key: firstUpload(a.tracks)} : const <String, String>{};
@@ -113,7 +119,7 @@ class _ArtistsPageState extends State<ArtistsPage> {
                   if (!LibraryFrame.on(context)) ...[
                     const SizedBox(height: 10),
                     Text(
-                      q.isEmpty && by.isEmpty
+                      q.isEmpty && by.isEmpty && !mineOnly
                           ? '${all.length} ${plural(all.length, 'исполнитель', 'исполнителя', 'исполнителей')}'
                           : 'Найдено ${list.length} из ${every.length}',
                       style: const TextStyle(color: C.muted, fontSize: 15),
@@ -143,6 +149,15 @@ class _ArtistsPageState extends State<ArtistsPage> {
                       chosen: by,
                       onChanged: (v) {
                         saveUploaderFilter(app, 'artists', v);
+                        setState(() {});
+                      },
+                    ),
+                    mine: ToggleOutlineButton(
+                      icon: Icons.person_outline_rounded,
+                      label: 'Мои загрузки',
+                      on: mineOnly,
+                      onPressed: () {
+                        saveMineFilter(app, 'artists', !mineOnly);
                         setState(() {});
                       },
                     ),
@@ -323,6 +338,8 @@ class RecentPage extends StatelessWidget {
           compact: compact,
           // Поиск в одном ряду с «Слушать» и «Вперемешку», как на вкладке «Все песни»
           searchInBanner: true,
+          actions: libraryActions(context),
+          mineFilter: true,
           empty: const EmptyState(
             icon: Icons.schedule_rounded,
             title: 'Пока пусто',
@@ -643,12 +660,16 @@ class _DeezerCoverLookup extends StatefulWidget {
   final TextEditingController album;
   final CoverChoice choice;
 
+  /// Кнопка «Из Deezer» стоит рядом с обложкой, а поиск ведёт это окно
+  final DeezerCoverHook hook;
+
   const _DeezerCoverLookup({
     required this.track,
     required this.title,
     required this.artist,
     required this.album,
     required this.choice,
+    required this.hook,
   });
 
   @override
@@ -661,6 +682,18 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
   String coverStatus = '';
   String metadataStatus = '';
 
+  @override
+  void initState() {
+    super.initState();
+    widget.hook.run = _lookupCover;
+  }
+
+  @override
+  void dispose() {
+    if (widget.hook.run == _lookupCover) widget.hook.run = null;
+    super.dispose();
+  }
+
   (String, String, String) get _fields => (
     widget.artist.text.trim(),
     widget.title.text.trim(),
@@ -671,6 +704,7 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
   Future<void> _lookupCover() async {
     if (coverSearching) return;
     final query = _fields;
+    widget.hook.busy.value = true;
     setState(() {
       coverSearching = true;
       coverStatus = 'Ищу обложку в Deezer…';
@@ -705,6 +739,7 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
         setState(() => coverStatus = 'Не удалось загрузить обложку.');
       }
     } finally {
+      widget.hook.busy.value = false;
       if (mounted) setState(() => coverSearching = false);
     }
   }
@@ -756,26 +791,15 @@ class _DeezerCoverLookupState extends State<_DeezerCoverLookup> {
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.only(top: 10),
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Wrap(spacing: 8, runSpacing: 6, children: [
-        OutlinedButton.icon(
-          onPressed: coverSearching ? null : () => _lookupCover(),
-          icon: coverSearching
-              ? const SizedBox.square(
-                  dimension: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-              : const Icon(Icons.image_search_rounded, size: 18),
-          label: const Text('Найти обложку в Deezer'),
-        ),
-        OutlinedButton.icon(
-          onPressed: metadataSearching ? null : _fillMetadata,
-          icon: metadataSearching
-              ? const SizedBox.square(
-                  dimension: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-              : const Icon(Icons.auto_fix_high_rounded, size: 18),
-          label: const Text('Заполнить из Deezer'),
-        ),
-      ]),
+      OutlinedButton.icon(
+        onPressed: metadataSearching ? null : _fillMetadata,
+        icon: metadataSearching
+            ? const SizedBox.square(
+                dimension: 16,
+                child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.auto_fix_high_rounded, size: 18),
+        label: const Text('Заполнить из Deezer'),
+      ),
       if (coverStatus.isNotEmpty) ...[
         const SizedBox(height: 6),
         Text(coverStatus, style: const TextStyle(color: C.muted, fontSize: 12)),
@@ -796,6 +820,7 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
   final artist = TextEditingController(text: t.artist);
   final album = TextEditingController(text: t.album);
   final choice = CoverChoice();
+  final hook = DeezerCoverHook();
   final albumHasOwn = lib.albumCover(t.albumKey) != null;
   final ok = await showGlassDialog<bool>(
     context: context,
@@ -810,8 +835,8 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
               current: CoverImage(track: t, size: 120, radius: 0),
               canReset: t.customCover != null,
               note: albumHasOwn ? 'У альбома есть общая обложка. Отдельная обложка трека имеет приоритет.' : null,
+              deezer: hook,
             ),
-            _DeezerCoverLookup(track: t, title: title, artist: artist, album: album, choice: choice),
             const SizedBox(height: 18),
             const Text('Название', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
@@ -824,9 +849,7 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
             const Text('Альбом', style: TextStyle(color: C.muted, fontSize: 13)),
             const SizedBox(height: 6),
             SuggestField(controller: album, source: () => libraryAlbumSuggestions(lib)),
-            const SizedBox(height: 14),
-            const Text('Изменения увидят все друзья. Сам файл на Диске не меняется.',
-                style: TextStyle(color: C.faint, fontSize: 12, height: 1.4)),
+            _DeezerCoverLookup(track: t, title: title, artist: artist, album: album, choice: choice, hook: hook),
           ]),
         ),
       ),
@@ -841,8 +864,15 @@ Future<void> editTrackDialog(BuildContext context, Track t) async {
     lib.messages.add('Название не может быть пустым');
     return;
   }
-  final cover = context.mounted ? await choice.commit(context) : null;
-  lib.editTrack(t.id, title: title.text.trim(), artist: artist.text.trim(), album: album.text.trim(), cover: cover);
+  lib.editTrack(t.id, title: title.text.trim(), artist: artist.text.trim(), album: album.text.trim());
+  if (!context.mounted || !choice.changed) return;
+  final name = title.text.trim();
+  choice.save(
+    context,
+    label: 'Обложка «$name»',
+    shown: [(t.id, 'cv')],
+    apply: (id, token) => lib.editTracks([t.id], {'cv': id}, token: token),
+  );
 }
 
 /// Правка сразу нескольких треков: исполнитель, альбом и обложка. Меняется только то, что тронули.
@@ -962,18 +992,24 @@ Future<bool> editTracksDialog(BuildContext context, List<Track> tracks) async {
           'Недоступные изображения пропущены.');
     }
   }
-  if (choice.changed) {
-    final sharedCover = context.mounted ? await choice.commit(context) : null;
-    if (sharedCover != null) commonFields['cv'] = sharedCover;
-  }
   if (commonFields.isNotEmpty) {
     for (final t in tracks) {
       perTrack.putIfAbsent(t.id, () => <String, String>{}).addAll(commonFields);
     }
   }
   perTrack.removeWhere((_, fields) => fields.isEmpty);
-  if (perTrack.isEmpty) return false;
-  lib.setMeta(perTrack);
-  lib.messages.add('Изменено: ${countTracks(perTrack.length)}');
+  final coverChanged = choice.changed && context.mounted;
+  if (perTrack.isEmpty && !coverChanged) return false;
+  if (perTrack.isNotEmpty) lib.setMeta(perTrack, label: 'Метаданные: ${countTracks(tracks.length)}');
+  if (coverChanged) {
+    // Общая обложка видна сразу, на Диск грузится в фоне
+    choice.save(
+      context,
+      label: 'Обложка: ${countTracks(tracks.length)}',
+      shown: [for (final t in tracks) (t.id, 'cv')],
+      apply: (id, token) => lib.editTracks([for (final t in tracks) t.id], {'cv': id}, token: token),
+    );
+  }
+  lib.messages.add('Изменено: ${countTracks(tracks.length)}');
   return true;
 }

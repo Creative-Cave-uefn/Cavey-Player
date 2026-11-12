@@ -17,6 +17,7 @@ import 'profile_view.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'web_views.dart';
+import 'album_edit.dart' show HeaderCover;
 import 'widgets.dart';
 
 // ---------- общие кусочки ----------
@@ -668,7 +669,7 @@ class _WebAlbumPageState extends State<WebAlbumPage> {
         final have = app.web.inLibrary(a.artist.toLowerCase(), a);
         return ListView(padding: EdgeInsets.fromLTRB(pad, 40, pad, 40), children: [
           Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            netCover(a.cover, size, radius: 12),
+            HeaderCover(track: null, url: a.cover, size: size),
             const SizedBox(width: 28),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

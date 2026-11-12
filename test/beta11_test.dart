@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:cave_player/core/album_order.dart';
 import 'package:cave_player/core/audio_format.dart';
 import 'package:cave_player/core/device_export.dart';
 import 'package:cave_player/core/image_tools.dart' show isGifBytes;
@@ -7,6 +8,7 @@ import 'package:cave_player/core/library.dart';
 import 'package:cave_player/core/migration.dart';
 import 'package:cave_player/core/models.dart';
 import 'package:cave_player/core/pin_order.dart';
+import 'package:cave_player/core/save_tracker.dart';
 import 'package:cave_player/core/store.dart';
 import 'package:cave_player/core/suggest.dart';
 import 'package:cave_player/core/text_fold.dart';
@@ -276,6 +278,51 @@ void main() {
     test('GIF узнаётся по заголовку', () {
       expect(isGifBytes([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0]), isTrue);
       expect(isGifBytes([0xFF, 0xD8, 0xFF, 0xE0, 0, 0, 0, 0]), isFalse);
+    });
+  });
+
+  group('Раунд 5', () {
+    test('SaveTracker: показывает, что сохраняется, и затихает после конца', () {
+      final t = SaveTracker();
+      var calls = 0;
+      t.addListener(() => calls++);
+      expect(t.busy, isFalse);
+      final a = t.begin('Обложка «Альбом»');
+      final b = t.begin('Метаданные трека');
+      expect(t.busy, isTrue);
+      expect(t.labels, ['Обложка «Альбом»', 'Метаданные трека']);
+      t.end(a);
+      expect(t.labels, ['Метаданные трека']);
+      t.end(a); // повторный конец ничего не ломает и не шумит
+      expect(calls, 3);
+      t.end(b);
+      expect(t.busy, isFalse);
+    });
+
+    test('порядок Deezer: найденные по порядку Deezer, остальные в конец как были', () {
+      final mine = [('c', 'Gamma'), ('x', 'Не из Deezer'), ('a', 'Alpha'), ('b', 'Beta'), ('y', 'Ещё одна')];
+      final order = deezerOrder(mine, ['Alpha', 'Beta', 'Gamma', 'Delta']);
+      expect(order, ['a', 'b', 'c', 'x', 'y']);
+    });
+
+    test('порядок Deezer: одинаковые названия занимают разные места по очереди', () {
+      final mine = [('1', 'Intro'), ('2', 'Song'), ('3', 'Intro')];
+      final order = deezerOrder(mine, ['Intro', 'Song', 'Intro']);
+      expect(order, ['1', '2', '3']);
+      expect(deezerOrder([('1', 'Song'), ('2', 'Intro')], ['Intro', 'Song']), ['2', '1']);
+    });
+
+    test('порядок Deezer: пометка feat. не мешает совпадению', () {
+      final order = deezerOrder([('1', 'B'), ('2', 'A (feat. X)')], ['A', 'B']);
+      expect(order, ['2', '1']);
+    });
+
+    test('«Мои загрузки» запоминается отдельно для каждой вкладки', () {
+      final s = Settings();
+      expect(loadMineFilter(s, 'albums'), isFalse);
+      s.view['filter.mine.albums'] = '1';
+      expect(loadMineFilter(s, 'albums'), isTrue);
+      expect(loadMineFilter(s, 'artists'), isFalse);
     });
   });
 }

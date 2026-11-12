@@ -120,10 +120,24 @@ Future<void> editProfileDialog(BuildContext context) async {
   nick.dispose();
   blur.dispose();
   if (ok != true || !context.mounted) return;
-  final av = await avatar.commit(context);
-  if (!context.mounted) return;
-  final bn = await banner.commit(context);
-  lib.setProfile(nick: text, avatar: av, banner: bn, bannerBlur: (newBlur - startBlur).abs() > 0.01 ? newBlur : null);
+  final me = lib.me;
+  if (me == null) return;
+  final blurChanged = (newBlur - startBlur).abs() > 0.01;
+  final nickChanged = text != (lib.profileNick(me) ?? '');
+  lib.setProfile(
+    nick: text,
+    bannerBlur: blurChanged ? newBlur : null,
+    label: nickChanged || blurChanged ? 'Профиль' : null,
+  );
+  // Картинки видны сразу, а на Диск грузятся в фоне; не вышло — вернётся прежняя
+  avatar.save(context,
+      label: 'Аватарка',
+      shown: [('u:$me', 'av')],
+      apply: (id, token) => lib.setProfile(avatar: id, token: token, label: token == null ? 'Аватарка' : null));
+  banner.save(context,
+      label: 'Баннер профиля',
+      shown: [('u:$me', 'bn')],
+      apply: (id, token) => lib.setProfile(banner: id, token: token, label: token == null ? 'Баннер профиля' : null));
 }
 
 class _ImageField extends StatelessWidget {

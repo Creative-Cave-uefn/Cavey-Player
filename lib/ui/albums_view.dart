@@ -58,7 +58,13 @@ class _AlbumsPageState extends State<AlbumsPage> {
         final sortId = ep ? 'eps' : 'albums';
         // «Кто загрузил»: альбомы, в которых есть треки выбранных людей
         final by = loadUploaderFilter(app.settings, sortId);
-        final all = by.isEmpty ? every : [for (final a in every) if (a.tracks.any((t) => passesUploaders(by, t.by))) a];
+        final mineOnly = loadMineFilter(app.settings, sortId);
+        final all = by.isEmpty && !mineOnly
+            ? every
+            : [
+                for (final a in every)
+                  if (a.tracks.any((t) => passesUploaders(by, t.by) && (!mineOnly || app.lib.isMyAccount(t.by)))) a
+              ];
         final ls = ListSort.read(app.settings, sortId, legacyDesc: app.settings.albumsDesc);
         final desc = ls.desc;
         final firstAt = ls.mode == 'first' ? {for (final a in all) a.key: firstUpload(a.tracks)} : const <String, String>{};
@@ -95,7 +101,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
               if (!LibraryFrame.on(context)) ...[
                 const SizedBox(height: 10),
                 Text(
-                  q.isEmpty && by.isEmpty
+                  q.isEmpty && by.isEmpty && !mineOnly
                       ? '${all.length} ${plural(all.length, 'альбом', 'альбома', 'альбомов')}'
                       : 'Найдено ${albums.length} из ${every.length}',
                   style: const TextStyle(color: C.muted, fontSize: 15),
@@ -125,6 +131,15 @@ class _AlbumsPageState extends State<AlbumsPage> {
                   chosen: by,
                   onChanged: (v) {
                     saveUploaderFilter(app, sortId, v);
+                    setState(() {});
+                  },
+                ),
+                mine: ToggleOutlineButton(
+                  icon: Icons.person_outline_rounded,
+                  label: 'Мои загрузки',
+                  on: mineOnly,
+                  onPressed: () {
+                    saveMineFilter(app, sortId, !mineOnly);
                     setState(() {});
                   },
                 ),

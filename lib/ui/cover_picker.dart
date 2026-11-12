@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:crypto/crypto.dart' show sha1;
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -218,31 +219,80 @@ class CoverChoice extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Загружает выбранное на Диск. Возвращает значение для поля обложки:
-  /// id картинки, пустую строку («вернуть исходную») или null, если менять нечего или загрузка не вышла
-  Future<String?> commit(BuildContext context) async {
-    if (reset) return '';
+  /// Правка обложки, которую надо сделать после «Сохранить»: возвращает null, если менять нечего.
+  /// Картинка сразу показывается у [shown] ('альбом|поле'…), на Диск грузится в фоне, а [apply] получает id загруженной
+  /// картинки (или '' для «вернуть исходную») и токен сохранения, который нужно передать в lib.setMeta
+  void save(BuildContext context,
+      {required String label, required List<(String, String)> shown, required void Function(String coverId, int? token) apply}) {
+    if (reset) {
+      apply('', null);
+      return;
+    }
     final p = picked;
-    if (p == null) return null;
-    final app = Services.of(context);
-    app.lib.messages.add('Загружаю обложку…');
-    // Первая попытка нередко упирается в разовый сбой Диска (тогда обложку приходилось отправлять второй раз):
-    // повторяем сами до трёх раз с паузой
+    if (p == null) return;
+    unawaited(saveCoverInBackground(Services.of(context), p, label: label, shown: shown, apply: apply));
+  }
+}
+
+/// Меняет обложку «в фоне»: новая картинка сразу видна везде в приложении, внизу справа горит значок сохранения,
+/// на Диск картинка грузится позже. Не вышло — прежняя обложка возвращается и приходит сообщение об ошибке
+Future<void> saveCoverInBackground(
+  AppServices app,
+  PickedCover p, {
+  required String label,
+  required List<(String, String)> shown,
+  required void Function(String coverId, int? token) apply,
+}) async {
+  final lib = app.lib;
+  final temp = 'local-${sha1.convert(p.bytes)}';
+  final token = lib.beginSave(label);
+  try {
+    await app.covers.seed(temp, p.bytes);
+  } catch (_) {}
+  for (final s in shown) {
+    lib.showTemporary(s.$1, s.$2, temp);
+  }
+  try {
+    // Первая попытка нередко упирается в разовый сбой Диска: повторяем сами до трёх раз с паузой
     Object? last;
-    for (var attempt = 0; attempt < 3; attempt++) {
+    String? id;
+    for (var attempt = 0; attempt < 3 && id == null; attempt++) {
       try {
         if (attempt > 0) await Future<void>.delayed(Duration(seconds: attempt * 2));
-        final id = await app.lib.uploadCover(p.bytes, p.ext).timeout(coverUploadTimeout(p.bytes.length) + const Duration(seconds: 15));
-        await app.covers.seed(id, p.bytes);
-        return id;
+        id = await lib.uploadCover(p.bytes, p.ext).timeout(coverUploadTimeout(p.bytes.length) + const Duration(seconds: 15));
       } catch (e) {
         last = e;
         AppLog.warn('Загрузка обложки: попытка ${attempt + 1} не удалась', e);
       }
     }
-    app.lib.messages.add('Обложку загрузить не вышло: $last');
-    return null;
+    if (id == null) {
+      lib.saves.end(token);
+      lib.messages.add('Не удалось загрузить на Диск: $label. Прежнее вернулось. $last');
+      return;
+    }
+    await app.covers.seed(id, p.bytes);
+    apply(id, token);
+    lib.finishIfIdle(token);
+  } finally {
+    for (final s in shown) {
+      lib.hideTemporary(s.$1, s.$2);
+    }
   }
+}
+
+/// Связка между кнопкой «Из Deezer» рядом с обложкой и логикой поиска, которая живёт в другом месте окна
+class DeezerCoverHook {
+  final ValueNotifier<bool> busy = ValueNotifier(false);
+  Future<void> Function()? run;
+}
+
+/// Раскладка кнопок рядом с обложкой
+enum CoverEditorLayout {
+  /// Три кнопки столбиком по высоте обложки: файлом, из буфера, по ссылке (плейлист)
+  column,
+
+  /// Две колонки: слева файлом и из буфера, справа по ссылке и поиск в Deezer (альбом, трек)
+  twoColumns,
 }
 
 /// Превью обложки и кнопки выбора — для окон правки трека, альбома и плейлиста
@@ -255,7 +305,23 @@ class CoverEditorView extends StatelessWidget {
   /// Есть ли что сбрасывать (своя обложка уже стоит)
   final bool canReset;
   final String? note;
-  const CoverEditorView({super.key, required this.choice, required this.current, required this.canReset, this.note});
+  final CoverEditorLayout layout;
+
+  /// Для раскладки [CoverEditorLayout.twoColumns]: кнопка «Из Deezer» (поиск ведёт окно, а кнопка стоит здесь)
+  final DeezerCoverHook? deezer;
+
+  /// Что написано на месте обложки после «Вернуть исходную»
+  final String resetText;
+  const CoverEditorView({
+    super.key,
+    required this.choice,
+    required this.current,
+    required this.canReset,
+    this.note,
+    this.layout = CoverEditorLayout.twoColumns,
+    this.deezer,
+    this.resetText = 'Будет обложка из файлов',
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -270,53 +336,105 @@ class CoverEditorView extends StatelessWidget {
             color: C.raised,
             alignment: Alignment.center,
             padding: const EdgeInsets.all(10),
-            child: const Text('Будет обложка из файлов', textAlign: TextAlign.center, style: TextStyle(color: C.muted, fontSize: 12)),
+            child: Text(resetText, textAlign: TextAlign.center, style: const TextStyle(color: C.muted, fontSize: 12)),
           );
         } else {
           preview = current;
         }
-        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-            ClipRRect(borderRadius: BorderRadius.circular(10), child: SizedBox.square(dimension: 120, child: preview)),
-            const SizedBox(width: 18),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    final p = await pickCoverFile(context);
-                    if (p != null) choice.pick(p);
-                  },
-                  icon: const Icon(Icons.image_outlined, size: 18),
-                  label: const Text('Выбрать файл…'),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    final p = await pickCoverFromUrl(context);
-                    if (p != null) choice.pick(p);
-                  },
-                  icon: const Icon(Icons.link_rounded, size: 18),
-                  label: const Text('Вставить ссылку…'),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    final p = await pickCoverFromClipboard(context);
-                    if (p != null) choice.pick(p);
-                  },
-                  icon: const Icon(Icons.content_paste_rounded, size: 18),
-                  label: const Text('Вставить из буфера'),
-                ),
-                if (canReset && !choice.reset) ...[
+        Widget button(IconData icon, String label, Future<PickedCover?> Function() pick, {double? height}) => SizedBox(
+              height: height,
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final p = await pick();
+                  if (p != null) choice.pick(p);
+                },
+                icon: Icon(icon, size: 18),
+                label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+              ),
+            );
+        final file = (Icons.image_outlined, 'Файлом', () => pickCoverFile(context));
+        final clip = (Icons.content_paste_rounded, 'Из буфера', () => pickCoverFromClipboard(context));
+        final link = (Icons.link_rounded, 'По ссылке', () => pickCoverFromUrl(context));
+        final Widget buttons;
+        if (layout == CoverEditorLayout.column) {
+          // Три кнопки делят высоту обложки поровну: верх первой на уровне верха обложки, низ последней — низа
+          buttons = Column(children: [
+            for (final (i, b) in [file, clip, link].indexed) ...[
+              if (i > 0) const SizedBox(height: 6),
+              Expanded(child: button(b.$1, b.$2, b.$3)),
+            ],
+          ]);
+        } else {
+          buttons = Center(
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  button(file.$1, file.$2, file.$3, height: 40),
                   const SizedBox(height: 8),
-                  TextButton(onPressed: choice.clear, child: const Text('Вернуть исходную', style: TextStyle(color: C.muted))),
-                ],
-                if (choice.changed) ...[
-                  const SizedBox(height: 4),
-                  TextButton(onPressed: choice.undo, child: const Text('Отменить выбор', style: TextStyle(color: C.muted))),
-                ],
-              ]),
-            ),
+                  button(clip.$1, clip.$2, clip.$3, height: 40),
+                ]),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  button(link.$1, link.$2, link.$3, height: 40),
+                  if (deezer != null) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 40,
+                      width: double.infinity,
+                      child: ValueListenableBuilder<bool>(
+                        valueListenable: deezer!.busy,
+                        builder: (_, busy, __) => OutlinedButton.icon(
+                          onPressed: busy ? null : () => deezer!.run?.call(),
+                          icon: busy
+                              ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.image_search_rounded, size: 18),
+                          label: const Text('Из Deezer', maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ),
+                      ),
+                    ),
+                  ],
+                ]),
+              ),
+            ]),
+          );
+        }
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              ClipRRect(borderRadius: BorderRadius.circular(10), child: SizedBox.square(dimension: 120, child: preview)),
+              if ((canReset && !choice.reset) || choice.changed)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: SizedBox(
+                    width: 120,
+                    child: Wrap(runSpacing: 2, children: [
+                      if (canReset && !choice.reset)
+                        InkWell(
+                          onTap: choice.clear,
+                          borderRadius: BorderRadius.circular(6),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 3),
+                            child: Text('Вернуть исходную', style: TextStyle(color: C.muted, fontSize: 13)),
+                          ),
+                        ),
+                      if (choice.changed)
+                        InkWell(
+                          onTap: choice.undo,
+                          borderRadius: BorderRadius.circular(6),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 3),
+                            child: Text('Отменить выбор', style: TextStyle(color: C.muted, fontSize: 13)),
+                          ),
+                        ),
+                    ]),
+                  ),
+                ),
+            ]),
+            const SizedBox(width: 18),
+            Expanded(child: SizedBox(height: 120, child: buttons)),
           ]),
           if (note != null) ...[
             const SizedBox(height: 10),
@@ -326,35 +444,4 @@ class CoverEditorView extends StatelessWidget {
       },
     );
   }
-}
-
-/// Отдельное окно «Изменить обложку» (альбом, плейлист).
-/// Возвращает значение для поля обложки: id картинки, '' — вернуть исходную, null — отмена.
-Future<String?> coverDialog(
-  BuildContext context, {
-  required String title,
-  required Widget current,
-  required bool canReset,
-  String? note,
-}) async {
-  final choice = CoverChoice();
-  final ok = await showGlassDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text(title, style: display(18)),
-      content: SizedBox(width: 380, child: CoverEditorView(choice: choice, current: current, canReset: canReset, note: note)),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: C.muted))),
-        ListenableBuilder(
-          listenable: choice,
-          builder: (_, __) => FilledButton(
-            onPressed: choice.changed ? () => Navigator.pop(ctx, true) : null,
-            child: const Text('Сохранить'),
-          ),
-        ),
-      ],
-    ),
-  );
-  if (ok != true || !context.mounted) return null;
-  return choice.commit(context);
 }

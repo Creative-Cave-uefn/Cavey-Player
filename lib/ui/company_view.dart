@@ -606,7 +606,11 @@ class _FeedRow extends StatelessWidget {
 /// При наведении раскрывается вверх и показывает всех, кто слушает
 class NowListeningSidebar extends StatefulWidget {
   final bool compact;
-  const NowListeningSidebar({super.key, required this.compact});
+
+  /// Панель в невысоком окне прокручивается целиком: список, раздвигающий её, сдвинул бы строку «Сейчас слушают» за край.
+  /// Тогда список всплывает окошком над строкой, а она остаётся на месте
+  final bool floating;
+  const NowListeningSidebar({super.key, required this.compact, this.floating = false});
 
   @override
   State<NowListeningSidebar> createState() => _NowListeningSidebarState();
@@ -718,6 +722,80 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
             ),
           ]);
         }
+        final headerRow = Padding(
+              padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 10, compact ? 0 : 16, 10),
+              child: Row(mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
+                if (!compact) ...[
+                  const Expanded(child: Text('Сейчас слушают', style: TextStyle(color: C.muted, fontSize: 13))),
+                  SizedBox(
+                    height: 20,
+                    width: (20 + (everyone.length.clamp(0, 3) - 1).clamp(0, 2) * 12).toDouble(),
+                    child: Stack(children: [
+                      for (var i = 0; i < everyone.length && i < 3; i++)
+                        Positioned(
+                            left: i * 12.0,
+                            child: Avatar(key: ValueKey('hd-${everyone[i]}'), email: everyone[i], name: app.lib.firstNameOf(everyone[i]), size: 20)),
+                    ]),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('${everyone.length}', style: const TextStyle(color: C.faint, fontSize: 12)),
+                ] else
+                  const Icon(Icons.headphones_rounded, size: 18, color: C.muted),
+              ]),
+            );
+        if (widget.floating) {
+          // Окошко над строкой: строка остаётся на месте, а список людей лежит поверх панели выше неё
+          return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (jam.active) JamStrip(compact: false),
+            for (final g in jamGroups) JamGroupCard(key: ValueKey('jg-${g.id}'), group: g, compact: false),
+            OverlayPortal(
+              controller: _portal,
+              overlayChildBuilder: (_) => Align(
+                alignment: Alignment.topLeft,
+                child: CompositedTransformFollower(
+                  link: _link,
+                  targetAnchor: Alignment.topLeft,
+                  followerAnchor: Alignment.bottomLeft,
+                  offset: const Offset(8, -4),
+                  child: live.isEmpty
+                      ? const SizedBox.shrink()
+                      : MouseRegion(
+                          onEnter: (_) => _popEnter(),
+                          onExit: (_) => _popLeave(),
+                          child: SizedBox(
+                            width: 224,
+                            child: GlassPanel(
+                              radius: 16,
+                              tint: C.glassLight,
+                              blur: 32,
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Material(
+                                type: MaterialType.transparency,
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(maxHeight: 320),
+                                  child: SingleChildScrollView(
+                                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                      for (final m in live) _ListenerTile(key: ValueKey('fl-${m.email}'), member: m, compact: false),
+                                    ]),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              child: CompositedTransformTarget(
+                link: _link,
+                child: MouseRegion(
+                  onEnter: (_) => _popEnter(),
+                  onExit: (_) => _popLeave(),
+                  child: headerRow,
+                ),
+              ),
+            ),
+          ]);
+        }
         return MouseRegion(
           onEnter: (_) => setState(() => _open = true),
           onExit: (_) => setState(() => _open = false),
@@ -740,27 +818,7 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
             ),
             if (jam.active) JamStrip(compact: compact),
             for (final g in jamGroups) JamGroupCard(key: ValueKey('jg-${g.id}'), group: g, compact: compact),
-            Padding(
-              padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 10, compact ? 0 : 16, 10),
-              child: Row(mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
-                if (!compact) ...[
-                  const Expanded(child: Text('Сейчас слушают', style: TextStyle(color: C.muted, fontSize: 13))),
-                  SizedBox(
-                    height: 20,
-                    width: (20 + (everyone.length.clamp(0, 3) - 1).clamp(0, 2) * 12).toDouble(),
-                    child: Stack(children: [
-                      for (var i = 0; i < everyone.length && i < 3; i++)
-                        Positioned(
-                            left: i * 12.0,
-                            child: Avatar(key: ValueKey('hd-${everyone[i]}'), email: everyone[i], name: app.lib.firstNameOf(everyone[i]), size: 20)),
-                    ]),
-                  ),
-                  const SizedBox(width: 8),
-                  Text('${everyone.length}', style: const TextStyle(color: C.faint, fontSize: 12)),
-                ] else
-                  const Icon(Icons.headphones_rounded, size: 18, color: C.muted),
-              ]),
-            ),
+            headerRow,
           ]),
         );
       },

@@ -81,16 +81,19 @@ class UploaderFilterButton extends StatelessWidget {
   final List<Uploader> people;
   final Set<String> chosen;
   final ValueChanged<Set<String>> onChanged;
-  const UploaderFilterButton({super.key, required this.people, required this.chosen, required this.onChanged});
+
+  /// Название кнопки и окошка: «Кто загрузил» везде, «Автор» во вкладке плейлистов
+  final String title;
+  const UploaderFilterButton({super.key, required this.people, required this.chosen, required this.onChanged, this.title = 'Кто загрузил'});
 
   @override
   Widget build(BuildContext context) {
     final lib = Services.of(context).lib;
     final label = chosen.isEmpty
-        ? 'Кто загрузил'
+        ? title
         : chosen.length == 1
             ? lib.firstNameOf(chosen.first)
-            : 'Загрузили: ${chosen.length}';
+            : (title == 'Автор' ? 'Авторы: ${chosen.length}' : 'Загрузили: ${chosen.length}');
     return Builder(
       builder: (btn) => ToggleOutlineButton(
         icon: Icons.people_alt_outlined,
@@ -101,7 +104,7 @@ class UploaderFilterButton extends StatelessWidget {
             : () => showGlassPopover(
                   context: btn,
                   width: 290,
-                  builder: (_) => _UploaderPanel(people: people, initial: chosen, onChanged: onChanged),
+                  builder: (_) => _UploaderPanel(title: title, people: people, initial: chosen, onChanged: onChanged),
                 ),
       ),
     );
@@ -109,10 +112,11 @@ class UploaderFilterButton extends StatelessWidget {
 }
 
 class _UploaderPanel extends StatefulWidget {
+  final String title;
   final List<Uploader> people;
   final Set<String> initial;
   final ValueChanged<Set<String>> onChanged;
-  const _UploaderPanel({required this.people, required this.initial, required this.onChanged});
+  const _UploaderPanel({required this.title, required this.people, required this.initial, required this.onChanged});
 
   @override
   State<_UploaderPanel> createState() => _UploaderPanelState();
@@ -135,7 +139,7 @@ class _UploaderPanelState extends State<_UploaderPanel> {
         Padding(
           padding: const EdgeInsets.fromLTRB(18, 8, 8, 4),
           child: Row(children: [
-            const Expanded(child: Text('Кто загрузил', style: TextStyle(color: C.muted, fontSize: 12.5, fontWeight: FontWeight.w600))),
+            Expanded(child: Text(widget.title, style: const TextStyle(color: C.muted, fontSize: 12.5, fontWeight: FontWeight.w600))),
             if (_chosen.isNotEmpty)
               TextButton(
                 style: TextButton.styleFrom(visualDensity: VisualDensity.compact, padding: const EdgeInsets.symmetric(horizontal: 10)),
@@ -180,4 +184,16 @@ class _UploaderPanelState extends State<_UploaderPanel> {
       ]),
     );
   }
+}
+
+/// Фильтр «Мои загрузки» для списков альбомов и исполнителей (запоминается для каждой вкладки)
+bool loadMineFilter(Settings settings, String page) => settings.view['filter.mine.$page'] == '1';
+
+void saveMineFilter(AppServices app, String page, bool on) {
+  if (on) {
+    app.settings.view['filter.mine.$page'] = '1';
+  } else {
+    app.settings.view.remove('filter.mine.$page');
+  }
+  app.lib.viewChanged();
 }

@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 import 'config.dart';
 import 'core/preview.dart';
 import 'core/web_info.dart';
+import 'core/album_order.dart';
 import 'core/karaoke.dart';
 import 'core/wave.dart';
 import 'core/app_icon.dart';
@@ -189,6 +190,21 @@ class AppServices {
     app.exporter = DeviceExport(lib, drive, cache, Tools(store.sub('tools')));
     app.migration = LibraryMigration(lib, store);
     app.web = WebInfoService(store.sub('web'), lib);
+    // Докачали альбом из Deezer — ставим треки в порядок Deezer (с задержкой: часть файлов ещё может грузиться на Диск)
+    downloads.onJobDone = (job) {
+      final title = (job.intoAlbum ?? '').trim();
+      if (title.isEmpty) return;
+      Future<void>.delayed(const Duration(seconds: 12), () async {
+        try {
+          final want = job.intoAlbumArtist?.trim().toLowerCase() ?? '';
+          final found = lib.albums.where((a) => a.title.toLowerCase() == title.toLowerCase());
+          final a = found.where((x) => want.isEmpty || x.artist.toLowerCase() == want).firstOrNull ?? found.firstOrNull;
+          if (a != null) await sortAlbumByDeezer(lib, app.web, a);
+        } catch (e) {
+          AppLog.warn('Порядок альбома по Deezer не выставился', e);
+        }
+      });
+    };
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
     // Умный переход: профили звука треков и темп из Deezer (если уже узнали)

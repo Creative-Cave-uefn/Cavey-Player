@@ -33,6 +33,9 @@ class DownloadJob {
   /// чтобы они встали в него, а не создали второй альбом из-за мелких отличий в написании
   final String? intoAlbum, intoAlbumArtist;
 
+  /// Загрузчик именно для этого задания ('youtube', 'deezer', …); пусто — тот, что выбран в настройках
+  final String? provider;
+
   /// «Скачать на устройство»: файлы кладутся в эту папку на компьютере, на Диск и в библиотеку не попадают
   final String? deviceDir;
 
@@ -70,7 +73,7 @@ class DownloadJob {
 
   DownloadJob(this.input, this.sourceId, this.folderName,
       {this.folderId, this.path = '', this.quiet = false, this.makePlaylist = true,
-       this.onTrack, this.replaceTrackId, this.intoAlbum, this.intoAlbumArtist, this.deviceDir, this.deviceFormat = 'original'}) : title = input;
+       this.onTrack, this.replaceTrackId, this.intoAlbum, this.intoAlbumArtist, this.deviceDir, this.deviceFormat = 'original', this.provider}) : title = input;
 
   String get target => folderId ?? sourceId;
   void add(String line) {
@@ -95,6 +98,9 @@ class DownloadService extends ChangeNotifier {
   final AudioCache? cache;
   final CoverService? covers;
   final void Function(String id)? onAudioReplaced;
+
+  /// Задание успешно закончилось и скачало хотя бы один трек (например, докачка альбома)
+  void Function(DownloadJob job)? onJobDone;
   final List<DownloadJob> jobs = [];
   bool _running = false;
   bool installing = false;
@@ -156,14 +162,14 @@ class DownloadService extends ChangeNotifier {
 
   /// [url] — необязательная ссылка на нужную версию трека: её получает загрузчик вместо поиска по исполнителю и названию.
   /// Метаданные трека (исполнитель, название, альбом, год) в любом случае берутся из библиотеки
-  DownloadJob? enqueueReplacement(Track track, {String? url}) {
+  DownloadJob? enqueueReplacement(Track track, {String? url, String? provider}) {
     final link = (url ?? '').trim();
     if (link.isEmpty && (track.artist.trim().isEmpty || track.title.trim().isEmpty)) return null;
     if (jobs.any((j) => j.replaceTrackId == track.id &&
         (j.state == JobState.queued || j.state == JobState.running))) return null;
     final source = lib.data.sources.where((s) => s.id == track.source).firstOrNull;
     final job = DownloadJob(link.isNotEmpty ? link : '${track.artist} - ${track.title}', track.source,
-        source?.name ?? 'Cavey', replaceTrackId: track.id, path: track.path);
+        source?.name ?? 'Cavey', replaceTrackId: track.id, path: track.path, provider: provider);
     if (link.isNotEmpty) job.title = '${track.artist} - ${track.title}';
     jobs.insert(0, job);
     notifyListeners();
@@ -416,6 +422,13 @@ class DownloadService extends ChangeNotifier {
           }
           job.state = job.cancelRequested ? JobState.cancelled :
               (value == true ? JobState.done : JobState.failed);
+          if (job.state == JobState.done && job.done > 0) {
+            try {
+              onJobDone?.call(job);
+            } catch (e) {
+              AppLog.warn('Действие после загрузки не вышло', e);
+            }
+          }
           if (job.state == JobState.done && job.done > 0 && job.deviceDir != null) {
             lib.messages.add('Скачано на устройство: ${job.done}');
           } else if (job.state == JobState.done && job.done > 0 && !job.quiet && job.replaceTrackId == null) {
@@ -919,7 +932,7 @@ class DownloadService extends ChangeNotifier {
         'tools': _toolsDir.absolute.path,
         'work': work.absolute.path,
         if (job != null) ...{
-          'input': job.input, 'provider': lib.settings.downloadProvider,
+          'input': job.input, 'provider': job.provider ?? lib.settings.downloadProvider,
           'folderName': job.folderName, 'path': job.path,
           'makePlaylist': job.makePlaylist,
         },

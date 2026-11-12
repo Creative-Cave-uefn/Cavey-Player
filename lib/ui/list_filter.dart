@@ -9,6 +9,7 @@ import '../core/store.dart';
 import '../core/text_fold.dart' as fold;
 import 'glass_popup.dart';
 import 'theme.dart';
+import 'widgets.dart';
 
 
 /// Для поиска и сортировки: без регистра и диакритики, «ё» как «е»
@@ -71,6 +72,7 @@ class SearchSortBar extends StatelessWidget {
   /// Фильтр, например «Кто загрузил»: сразу после кнопки сортировки
   final Widget? filter;
   const SearchSortBar({
+    this.mine,
     super.key,
     required this.controller,
     required this.focusNode,
@@ -84,33 +86,24 @@ class SearchSortBar extends StatelessWidget {
     this.filter,
   });
 
+  /// Справа у края, как «Мои загрузки» во вкладке «Все песни»
+  final Widget? mine;
+
   @override
   Widget build(BuildContext context) {
-    return Row(children: [
-      Flexible(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 360),
-          child: TextField(
-            controller: controller,
-            focusNode: focusNode,
-            onChanged: onChanged,
-            decoration: InputDecoration(
-              hintText: hint,
-              prefixIcon: const Icon(Icons.search_rounded, size: 18),
-              suffixIcon: controller.text.isEmpty
-                  ? null
-                  : IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 16),
-                      onPressed: () {
-                        controller.clear();
-                        onChanged('');
-                      },
-                    ),
-            ),
-          ),
-        ),
+    // Поле и кнопки одной высоты (как во вкладке «Все песни»): отступы 12, при нехватке места ряд переносится
+    final left = Wrap(spacing: 12, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
+      RowSearchField(
+        controller: controller,
+        focusNode: focusNode,
+        hint: hint,
+        width: 400,
+        onChanged: onChanged,
+        onClear: () {
+          controller.clear();
+          onChanged('');
+        },
       ),
-      const SizedBox(width: 12),
       if (onMode != null)
         GlassMenuButton<String>(
           tooltip: 'Сортировка',
@@ -143,9 +136,22 @@ class SearchSortBar extends StatelessWidget {
           }),
         ),
       ),
-      if (filter != null) ...[const SizedBox(width: 12), filter!],
-      if (trailing != null) ...[const SizedBox(width: 16), trailing!],
+      if (trailing != null) trailing!,
     ]);
+    final hasRight = filter != null || mine != null;
+    return uniformControls(
+      context,
+      hasRight
+          ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(child: left),
+              const SizedBox(width: 12),
+              Wrap(spacing: 12, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                if (filter != null) filter!,
+                if (mine != null) mine!,
+              ]),
+            ])
+          : left,
+    );
   }
 }
 

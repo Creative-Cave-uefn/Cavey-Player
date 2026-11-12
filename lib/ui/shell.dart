@@ -25,6 +25,7 @@ import 'library_views.dart';
 import 'lyrics_panel.dart';
 import 'mouse_gesture.dart';
 import 'notice_tower.dart';
+import 'save_indicator.dart';
 import 'player_bar.dart';
 import 'playlists_view.dart';
 import 'profile_view.dart';
@@ -519,13 +520,33 @@ class _ShellState extends State<Shell> {
                   builder: (context, bar, child) => ValueListenableBuilder<bool>(
                     valueListenable: _scrollTopVisible,
                     // Башня уведомлений встаёт над стрелкой «наверх»
+                    builder: (context, up, _) => ListenableBuilder(
+                      listenable: app.lib.saves,
+                      builder: (context, _) => AnimatedPadding(
+                        duration: const Duration(milliseconds: 180),
+                        padding: EdgeInsets.only(
+                            bottom: (bar ? 76 : 0) + (up ? 54 : 0) + (app.lib.saves.busy ? SaveIndicator.height + 6 : 0)),
+                        child: child,
+                      ),
+                    ),
+                  ),
+                  child: const NoticeTower(),
+                ),
+              ),
+              Positioned(
+                right: 16,
+                bottom: 92 + 10,
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: selectionBarOpen,
+                  builder: (context, bar, child) => ValueListenableBuilder<bool>(
+                    valueListenable: _scrollTopVisible,
                     builder: (context, up, _) => AnimatedPadding(
                       duration: const Duration(milliseconds: 180),
                       padding: EdgeInsets.only(bottom: (bar ? 76 : 0) + (up ? 54 : 0)),
                       child: child,
                     ),
                   ),
-                  child: const NoticeTower(),
+                  child: const SaveIndicator(),
                 ),
               ),
               Positioned(
@@ -1004,8 +1025,8 @@ class _Sidebar extends StatelessWidget {
                 UploadLine(compact: compact),
                 _UpdateLine(compact: compact),
               ]);
-          final foot = <Widget>[
-            _SlideSwap(t: v, full: const NowListeningSidebar(compact: false), mini: const NowListeningSidebar(compact: true)),
+          List<Widget> foot(bool floating) => <Widget>[
+            _SlideSwap(t: v, full: NowListeningSidebar(compact: false, floating: floating), mini: const NowListeningSidebar(compact: true)),
             const Divider(height: 1),
             const SizedBox(height: 8),
             _SlideSwap(t: v, full: footPart(false), mini: footPart(true)),
@@ -1021,11 +1042,11 @@ class _Sidebar extends StatelessWidget {
               return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 ...head,
                 Expanded(child: ListView(padding: EdgeInsets.zero, children: playlists)),
-                ...foot,
+                ...foot(false),
               ]);
             }
             return SingleChildScrollView(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...head, ...playlists, const SizedBox(height: 12), ...foot]),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...head, ...playlists, const SizedBox(height: 12), ...foot(true)]),
             );
           });
         },
