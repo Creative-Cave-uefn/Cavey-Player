@@ -321,8 +321,6 @@ class _CoverImageState extends State<CoverImage> {
             ? placeholder
             : widget.fill
                 ? Stack(fit: StackFit.expand, children: [
-                    // Сплошная подложка: у картинок с прозрачными краями не остаётся дыр
-                    ColoredBox(color: C.raised),
                     ImageFiltered(
                       imageFilter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14, tileMode: ui.TileMode.clamp),
                       child: Transform.scale(

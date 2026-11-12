@@ -15,7 +15,7 @@ import 'package:image/image.dart' as img;
 bool isGifBytes(List<int> b) => b.length > 6 && b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x38;
 
 /// Предел размера картинки, которую берём по ссылке, и анимированной GIF
-const maxLinkedImageBytes = 25 * 1024 * 1024;
+const maxLinkedImageBytes = 64 * 1024 * 1024;
 const maxGifBytes = 10 * 1024 * 1024;
 
 /// Сколько ждать загрузки картинки на Диск: обычная обложка — 90 секунд, на каждый мегабайт сверх первого ещё 25 (GIF бывает до 10 МБ,
@@ -36,11 +36,11 @@ Future<Uint8List> downloadImageBytes(String url) async {
     final res = await client.send(req).timeout(const Duration(seconds: 15));
     if (res.statusCode != 200) throw HttpException('Сайт ответил ${res.statusCode}');
     final len = res.contentLength;
-    if (len != null && len > maxLinkedImageBytes) throw const FormatException('Файл слишком большой (больше 25 МБ)');
+    if (len != null && len > maxLinkedImageBytes) throw const FormatException('Файл слишком большой (больше 64 МБ)');
     final out = BytesBuilder(copy: false);
     await for (final chunk in res.stream.timeout(const Duration(seconds: 20))) {
       out.add(chunk);
-      if (out.length > maxLinkedImageBytes) throw const FormatException('Файл слишком большой (больше 25 МБ)');
+      if (out.length > maxLinkedImageBytes) throw const FormatException('Файл слишком большой (больше 64 МБ)');
     }
     final bytes = out.takeBytes();
     if (bytes.isEmpty) throw const FormatException('Пустой ответ');
@@ -192,4 +192,70 @@ Write-Output 'NONE'
       if (await tmp.exists()) await tmp.delete();
     } catch (_) {}
   }
+}
+
+
+class _GifJob {
+  final Uint8List bytes;
+  final int limit;
+  const _GifJob(this.bytes, this.limit);
+}
+
+/// Сжимает анимированную GIF до [limit] байт: кадры уменьшаются, а если этого мало — берётся каждый второй кадр.
+/// Возвращает null, если файл не прочитался или уложиться не вышло. Работает в отдельном изоляте
+Future<Uint8List?> shrinkGif(Uint8List bytes, int limit) async {
+  try {
+    return await compute(_shrinkGif, _GifJob(bytes, limit));
+  } catch (_) {
+    return null;
+  }
+}
+
+Uint8List? _shrinkGif(_GifJob j) {
+  img.Image? src;
+  try {
+    src = img.decodeGif(j.bytes);
+  } catch (_) {
+    return null;
+  }
+  if (src == null) return null;
+  final frames = List<img.Image>.of(src.frames);
+  if (frames.isEmpty) return null;
+  final w0 = src.width, h0 = src.height;
+  // Размер GIF растёт примерно с числом пикселей: первый заход берём с запасом
+  var scale = math.min(1.0, math.sqrt(j.limit * 0.75 / j.bytes.length));
+  var step = 1;
+  Uint8List? best;
+  for (var attempt = 0; attempt < 7; attempt++) {
+    final w = math.max(16, (w0 * scale).round());
+    final h = math.max(16, (h0 * scale).round());
+    final enc = img.GifEncoder(
+      repeat: 0,
+      numColors: 128,
+      quantizerType: img.QuantizerType.octree,
+      dither: img.DitherKernel.none,
+    );
+    for (var i = 0; i < frames.length; i += step) {
+      var ms = 0;
+      for (var k = i; k < math.min(i + step, frames.length); k++) {
+        ms += frames[k].frameDuration;
+      }
+      final frame = frames[i].convert(numChannels: 4);
+      final small = (w == w0 && h == h0)
+          ? frame
+          : img.copyResize(frame, width: w, height: h, interpolation: img.Interpolation.average);
+      enc.addFrame(small, duration: math.max(2, (ms / 10).round()));
+    }
+    final out = enc.finish();
+    if (out == null) return null;
+    best = out;
+    if (out.length <= j.limit) return out;
+    // Не уложились: ещё меньше; когда картинка уже мелкая, выбрасываем каждый второй кадр
+    scale *= math.max(0.5, math.min(0.9, math.sqrt(j.limit * 0.85 / out.length)));
+    if (scale < 0.45 && step < 3 && frames.length > 8) {
+      step++;
+      scale = math.min(1.0, scale * 1.6);
+    }
+  }
+  return best != null && best.length <= j.limit ? best : null;
 }

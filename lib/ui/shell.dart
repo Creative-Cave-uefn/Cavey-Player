@@ -25,7 +25,6 @@ import 'library_views.dart';
 import 'lyrics_panel.dart';
 import 'mouse_gesture.dart';
 import 'notice_tower.dart';
-import 'save_indicator.dart';
 import 'player_bar.dart';
 import 'playlists_view.dart';
 import 'profile_view.dart';
@@ -520,33 +519,13 @@ class _ShellState extends State<Shell> {
                   builder: (context, bar, child) => ValueListenableBuilder<bool>(
                     valueListenable: _scrollTopVisible,
                     // Башня уведомлений встаёт над стрелкой «наверх»
-                    builder: (context, up, _) => ListenableBuilder(
-                      listenable: app.lib.saves,
-                      builder: (context, _) => AnimatedPadding(
-                        duration: const Duration(milliseconds: 180),
-                        padding: EdgeInsets.only(
-                            bottom: (bar ? 76 : 0) + (up ? 54 : 0) + (app.lib.saves.busy ? SaveIndicator.height + 6 : 0)),
-                        child: child,
-                      ),
-                    ),
-                  ),
-                  child: const NoticeTower(),
-                ),
-              ),
-              Positioned(
-                right: 16,
-                bottom: 92 + 10,
-                child: ValueListenableBuilder<bool>(
-                  valueListenable: selectionBarOpen,
-                  builder: (context, bar, child) => ValueListenableBuilder<bool>(
-                    valueListenable: _scrollTopVisible,
                     builder: (context, up, _) => AnimatedPadding(
                       duration: const Duration(milliseconds: 180),
                       padding: EdgeInsets.only(bottom: (bar ? 76 : 0) + (up ? 54 : 0)),
                       child: child,
                     ),
                   ),
-                  child: const SaveIndicator(),
+                  child: const NoticeTower(),
                 ),
               ),
               Positioned(
@@ -936,7 +915,6 @@ class _Sidebar extends StatelessWidget {
           final shownEntries = [...split.pinned, ...split.rest];
           final shownTokens = [for (final e in shownEntries) e.tokenIn(pinSet)];
           void drop(String dragged, String target) => applyPinDrop(app, shownTokens, split.pinned.length, dragged, target);
-          final unread = unreadNotices(app);
           final head = <Widget>[
             // Значок остаётся на месте (сдвигается на пару пикселей), название укатывается вправо
             Padding(
@@ -973,15 +951,30 @@ class _Sidebar extends StatelessWidget {
             const SizedBox(height: 14),
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
             if (lib.me != null) item(Icons.person_outline_rounded, 'Моя страница', Nav('user', lib.me)),
-            // Колокольчик с уведомлениями — справа от названия; в узкой панели остаётся красная точка на значке
+            // Колокольчик с уведомлениями — справа от названия; в узкой панели он съезжает отдельной строкой под «Компанию»
             item(Icons.groups_outlined, 'Компания', const Nav('company'),
-                trailing: const NoticeBell(),
-                miniTrailing: unread > 0
-                    ? Tooltip(
-                        message: 'Новых уведомлений: $unread',
-                        child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFFFF4D4F), shape: BoxShape.circle)),
-                      )
-                    : null),
+                trailing: const NoticeBell(), miniTrailing: const SizedBox.shrink()),
+            if (v > 0)
+              ClipRect(
+                child: SizedBox(
+                  height: 42 * Curves.easeOut.transform(v.clamp(0.0, 1.0)),
+                  child: OverflowBox(
+                    alignment: Alignment.topLeft,
+                    minHeight: 0,
+                    maxHeight: 42,
+                    child: Opacity(
+                      opacity: ((v - 0.3) / 0.7).clamp(0.0, 1.0),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 1, 10, 1),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: SizedBox(width: 52, height: 40, child: Center(child: const NoticeBell())),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             const SizedBox(height: 18),
             _SlideSwap(
               t: v,

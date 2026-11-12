@@ -26,16 +26,16 @@ Future<void> editProfileDialog(BuildContext context) async {
     builder: (ctx) => AlertDialog(
       title: Text('Мой профиль', style: display(18)),
       content: SizedBox(
-        width: 480,
+        width: 560,
         child: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             TextField(
               controller: nick,
               maxLength: 32,
+              // Вместо подписи «Ник» в поле стоит сам ник; пустое поле показывает имя из Google, которое будет вместо него
               decoration: InputDecoration(
-                labelText: 'Ник',
                 hintText: googleName,
-                helperText: 'Его увидят все друзья. Если оставить пустым, будет имя из Google.',
+                helperText: 'Если оставить пустым, будет имя из Google.',
                 counterText: '',
               ),
             ),
@@ -44,26 +44,25 @@ Future<void> editProfileDialog(BuildContext context) async {
             const SizedBox(height: 10),
             _ImageField(
               choice: avatar,
-              width: 96,
-              height: 96,
+              width: 120,
+              height: 120,
               round: true,
               aspect: 1,
               outWidth: 512,
               cropTitle: 'Кадрирование аватарки',
               canReset: lib.profileAvatar(me) != null,
-              current: Avatar(email: me, name: googleName, size: 96),
+              current: Avatar(email: me, name: googleName, size: 120),
             ),
             const SizedBox(height: 22),
             const Text('Баннер', style: TextStyle(fontWeight: FontWeight.w600)),
             const SizedBox(height: 4),
-            const Text('Фон шапки вашей страницы. JPG, JFIF, PNG, WebP или GIF: GIF будет двигаться, но не кадрируется (до 10 МБ).',
-                style: TextStyle(color: C.faint, fontSize: 12)),
+            const Text('Поддерживаются анимированные GIF (до 10МБ).', style: TextStyle(color: C.faint, fontSize: 12)),
             const SizedBox(height: 10),
             _ImageField(
               choice: banner,
               blur: blur,
-              width: 270,
-              height: 90,
+              width: 360,
+              height: 120,
               round: false,
               aspect: 3,
               outWidth: 1600,
@@ -75,7 +74,7 @@ Future<void> editProfileDialog(BuildContext context) async {
                       alignment: Alignment.center,
                       child: const Text('Баннера нет', style: TextStyle(color: C.muted, fontSize: 12)),
                     )
-                  : CoverImage(track: null, fileId: lib.profileBanner(me), label: '', size: 270, radius: 0),
+                  : CoverImage(track: null, fileId: lib.profileBanner(me), label: '', size: 360, radius: 0),
             ),
             const SizedBox(height: 14),
             // Предпросмотр — сам баннер выше: он меняется вместе с ползунком
@@ -188,50 +187,62 @@ class _ImageField extends StatelessWidget {
                 valueListenable: b,
                 builder: (_, v, __) => Stack(fit: StackFit.expand, children: [
                   // в окне баннер в три раза меньше, чем на странице, — размытие уменьшаем так же
-                  ClipRect(child: bannerPicture(blur: v * 0.35, child: preview)),
+                  ClipRect(child: bannerPicture(blur: v * 0.47, child: preview)),
                   ColoredBox(color: Colors.black.withValues(alpha: 0.4)),
                 ]),
               );
         final box = SizedBox(width: width, height: height, child: shown);
-        return Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
-          round ? ClipOval(child: box) : ClipRRect(borderRadius: BorderRadius.circular(8), child: box),
+        // Те же кнопки и расположение, что в окне правки плейлиста: три кнопки делят высоту картинки поровну
+        Widget button(IconData icon, String label, Future<PickedCover?> Function() pick) => SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final p = await pick();
+                  if (p != null) choice.pick(p);
+                },
+                icon: Icon(icon, size: 18),
+                label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+              ),
+            );
+        Widget link(String text, VoidCallback onTap) => InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Text(text, style: const TextStyle(color: C.muted, fontSize: 13)),
+              ),
+            );
+        final actions = [
+          (Icons.image_outlined, 'Файлом', () => pickCoverFile(context, title: cropTitle, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: true)),
+          (Icons.content_paste_rounded, 'Из буфера', () => pickCoverFromClipboard(context, title: cropTitle, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: true)),
+          (Icons.link_rounded, 'По ссылке', () => pickCoverFromUrl(context, title: cropTitle, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: true)),
+        ];
+        return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            round ? ClipOval(child: box) : ClipRRect(borderRadius: BorderRadius.circular(10), child: box),
+            if ((canReset && !choice.reset) || choice.changed)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: SizedBox(
+                  width: width,
+                  child: Wrap(spacing: 14, runSpacing: 2, children: [
+                    if (canReset && !choice.reset) link('Удалить', choice.clear),
+                    if (choice.changed) link('Отменить выбор', choice.undo),
+                  ]),
+                ),
+              ),
+          ]),
           const SizedBox(width: 18),
           Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final p = await pickCoverFile(context,
-                      title: cropTitle, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: true);
-                  if (p != null) choice.pick(p);
-                },
-                icon: const Icon(Icons.image_outlined, size: 18),
-                label: const Text('Выбрать файл…'),
-              ),
-              const SizedBox(height: 6),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final p = await pickCoverFromUrl(context,
-                      title: cropTitle, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: true);
-                  if (p != null) choice.pick(p);
-                },
-                icon: const Icon(Icons.link_rounded, size: 18),
-                label: const Text('Вставить ссылку…'),
-              ),
-              const SizedBox(height: 6),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final p = await pickCoverFromClipboard(context,
-                      title: cropTitle, aspect: aspect, outWidth: outWidth, round: round, keepAnimation: true);
-                  if (p != null) choice.pick(p);
-                },
-                icon: const Icon(Icons.content_paste_rounded, size: 18),
-                label: const Text('Вставить из буфера'),
-              ),
-              if (canReset && !choice.reset)
-                TextButton(onPressed: choice.clear, child: const Text('Убрать', style: TextStyle(color: C.muted))),
-              if (choice.changed)
-                TextButton(onPressed: choice.undo, child: const Text('Отменить выбор', style: TextStyle(color: C.muted))),
-            ]),
+            child: SizedBox(
+              height: height,
+              child: Column(children: [
+                for (final (i, a) in actions.indexed) ...[
+                  if (i > 0) const SizedBox(height: 6),
+                  Expanded(child: button(a.$1, a.$2, a.$3)),
+                ],
+              ]),
+            ),
           ),
         ]);
       },

@@ -130,8 +130,15 @@ Future<PickedCover?> prepareCover(
       return null;
     }
     if (bytes.length > maxGifBytes) {
-      app.lib.messages.add('GIF больше 10 МБ: возьмите файл поменьше');
-      return null;
+      // Больше предела: сжимаем сами, чтобы файл можно было поставить
+      app.lib.messages.add('GIF больше 10 МБ, сжимаю — это может занять до минуты…');
+      final small = await shrinkGif(bytes, maxGifBytes - 256 * 1024);
+      if (small == null) {
+        app.lib.messages.add('Не получилось сжать GIF до 10 МБ: возьмите файл поменьше');
+        return null;
+      }
+      app.lib.messages.add('GIF сжат: ${(bytes.length / 1048576).toStringAsFixed(1)} → ${(small.length / 1048576).toStringAsFixed(1)} МБ');
+      return PickedCover(small, 'gif');
     }
     // Анимация сохраняется: кадрировать GIF нельзя, на странице он показывается по центру (аватарка — кругом)
     return PickedCover(bytes, 'gif');
@@ -310,7 +317,7 @@ class CoverEditorView extends StatelessWidget {
   /// Для раскладки [CoverEditorLayout.twoColumns]: кнопка «Из Deezer» (поиск ведёт окно, а кнопка стоит здесь)
   final DeezerCoverHook? deezer;
 
-  /// Что написано на месте обложки после «Вернуть исходную»
+  /// Что написано на месте обложки после «Удалить»
   final String resetText;
   const CoverEditorView({
     super.key,
@@ -353,9 +360,9 @@ class CoverEditorView extends StatelessWidget {
                 label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
               ),
             );
-        final file = (Icons.image_outlined, 'Файлом', () => pickCoverFile(context));
-        final clip = (Icons.content_paste_rounded, 'Из буфера', () => pickCoverFromClipboard(context));
-        final link = (Icons.link_rounded, 'По ссылке', () => pickCoverFromUrl(context));
+        final file = (Icons.image_outlined, 'Файлом', () => pickCoverFile(context, keepAnimation: true));
+        final clip = (Icons.content_paste_rounded, 'Из буфера', () => pickCoverFromClipboard(context, keepAnimation: true));
+        final link = (Icons.link_rounded, 'По ссылке', () => pickCoverFromUrl(context, keepAnimation: true));
         final Widget buttons;
         if (layout == CoverEditorLayout.column) {
           // Три кнопки делят высоту обложки поровну: верх первой на уровне верха обложки, низ последней — низа
@@ -417,7 +424,7 @@ class CoverEditorView extends StatelessWidget {
                           borderRadius: BorderRadius.circular(6),
                           child: const Padding(
                             padding: EdgeInsets.symmetric(vertical: 3),
-                            child: Text('Вернуть исходную', style: TextStyle(color: C.muted, fontSize: 13)),
+                            child: Text('Удалить', style: TextStyle(color: C.muted, fontSize: 13)),
                           ),
                         ),
                       if (choice.changed)

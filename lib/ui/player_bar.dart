@@ -132,24 +132,20 @@ class PlayerBar extends StatelessWidget {
                       child: SizedBox(
                         width: 104,
                         height: 74,
-                        // Обложка шире и выше карточки: уходит за левый край и за верх/низ капсулы, которая её обрежет.
-                        // Так по дуге скругления не остаётся полосок фона даже у картинок плохого качества
                         child: OverflowBox(
                           alignment: Alignment.centerRight,
                           minWidth: 0,
-                          maxWidth: 150,
-                          minHeight: 0,
-                          maxHeight: 82,
+                          maxWidth: 120,
                           child: ShaderMask(
                             // Правая часть обложки растворяется
                             shaderCallback: (r) => const LinearGradient(
                               begin: Alignment.centerLeft,
                               end: Alignment.centerRight,
                               colors: [Colors.white, Colors.white, Color(0x00FFFFFF)],
-                              stops: [0.0, 0.70, 1.0],
+                              stops: [0.0, 0.62, 1.0],
                             ).createShader(r),
                             blendMode: BlendMode.dstIn,
-                            child: CoverImage(track: t, size: 150, height: 82, radius: 0, fill: true),
+                            child: CoverImage(track: t, size: 120, height: 74, radius: 0, fill: true),
                           ),
                         ),
                       ),

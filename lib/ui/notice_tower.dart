@@ -159,10 +159,11 @@ class _NoticeTowerState extends State<NoticeTower> {
   Widget build(BuildContext context) {
     final app = Services.of(context);
     return ListenableBuilder(
-      listenable: app.lib,
+      listenable: Listenable.merge([app.lib, app.lib.saves]),
       builder: (context, _) {
         final err = app.lib.syncError;
-        final saving = err != null || app.lib.hasUnsavedChanges;
+        final labels = app.lib.saves.labels;
+        final saving = err != null || app.lib.hasUnsavedChanges || labels.isNotEmpty;
         if (_cards.isEmpty && !saving) return const SizedBox.shrink();
         return Column(
           mainAxisSize: MainAxisSize.min,
@@ -174,7 +175,7 @@ class _NoticeTowerState extends State<NoticeTower> {
                 padding: const EdgeInsets.only(bottom: 8),
                 child: _SlideIn(leaving: c.leaving, child: _NoticeCard(card: c, onClose: () => _dismiss(c))),
               ),
-            if (saving) _SaveCloud(error: err),
+            if (saving) _SaveCloud(error: err, labels: labels),
           ],
         );
       },
@@ -337,7 +338,10 @@ class _SlideInState extends State<_SlideIn> {
 /// Облако «идёт сохранение на Диск». Подпись выезжает при наведении.
 class _SaveCloud extends StatefulWidget {
   final String? error;
-  const _SaveCloud({this.error});
+
+  /// Что именно сохраняется (обложка, метаданные…): пишется в подписи при наведении
+  final List<String> labels;
+  const _SaveCloud({this.error, this.labels = const []});
   @override
   State<_SaveCloud> createState() => _SaveCloudState();
 }
@@ -365,8 +369,20 @@ class _SaveCloudState extends State<_SaveCloud> {
             if (_hover)
               Padding(
                 padding: const EdgeInsets.only(right: 8),
-                child: Text(err != null ? 'Нет связи с Диском' : 'Идёт сохранение на диск',
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 320),
+                  child: Text(
+                    err != null
+                        ? 'Нет связи с Диском'
+                        : widget.labels.isEmpty
+                            ? 'Идёт сохранение на диск'
+                            : widget.labels.length == 1
+                                ? 'Сохраняется: ${widget.labels.first}'
+                                : 'Сохраняется: ${widget.labels.first} и ещё ${widget.labels.length - 1}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 12.5, color: color, decoration: TextDecoration.none)),
+                ),
               ),
             Icon(err != null ? Icons.cloud_off_rounded : Icons.cloud_upload_outlined, size: 16, color: color),
           ]),
