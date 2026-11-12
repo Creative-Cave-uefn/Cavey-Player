@@ -8,6 +8,7 @@ import '../core/desktop_notify.dart';
 import '../core/notices.dart';
 import '../core/notify_prefs.dart';
 import '../core/toast_window.dart';
+import 'share_dialog.dart' show openSharedThing;
 import 'widgets.dart';
 import 'theme.dart';
 import 'glass_popup.dart';
@@ -290,6 +291,15 @@ class _NoticeCard extends StatelessWidget {
             },
             icon: Icon(Icons.play_arrow_rounded, size: 18, color: C.accent),
             label: const Text('Слушать'),
+          ),
+        if (n.thing != null && n.thingKey != null)
+          TextButton.icon(
+            onPressed: () {
+              if (!openSharedThing(app.lib, n.thing!, n.thingKey!)) app.lib.messages.add('Этого нет в вашей библиотеке');
+              onClose();
+            },
+            icon: Icon(Icons.open_in_new_rounded, size: 18, color: C.accent),
+            label: const Text('Открыть'),
           ),
       ],
       ),

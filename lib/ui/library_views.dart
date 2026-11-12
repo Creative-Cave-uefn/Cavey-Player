@@ -17,6 +17,8 @@ import 'shell.dart';
 import 'library_tabs.dart';
 import 'suggest_field.dart';
 import 'collection_menu.dart';
+import 'device_export_ui.dart';
+import 'share_dialog.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'uploader_filter.dart';
@@ -312,6 +314,22 @@ class ArtistPage extends StatelessWidget {
           tracks: a.tracks,
           cover: a.coverTrack,
           compact: compact,
+          actions: [
+            GlassMenuButton<String>(
+              tooltip: 'Ещё',
+              icon: const Icon(Icons.more_horiz_rounded),
+              onSelected: (v) {
+                if (v == 'fav') app.lib.toggleFavArtist(a.key);
+                if (v == 'share') showShareSubjectDialog(context, collectionShareSubject(artist: a));
+                if (v == 'export') exportToDevice(context, List<Track>.of(a.tracks), folderName: a.name, numbered: false);
+              },
+              itemBuilder: (_) => [
+                PopupMenuItem(value: 'fav', child: Text(app.lib.isFavArtist(a.key) ? 'Убрать из любимых исполнителей' : 'В любимые исполнители')),
+                const PopupMenuItem(value: 'share', child: Text('Поделиться…')),
+                const PopupMenuItem(value: 'export', child: Text('Скачать на устройство')),
+              ],
+            ),
+          ],
           empty: const SizedBox.shrink(),
         );
       },

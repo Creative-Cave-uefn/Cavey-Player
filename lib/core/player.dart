@@ -166,12 +166,42 @@ class PlayerController extends ChangeNotifier {
   void Function(Track track, Duration duration)? onTrackReady;
 
   PlayerController(this.lib, this.accounts, this.settings, this.cache) {
+    position.addListener(_anchorClock);
     _bind(_p);
     unawaited(_p.setVolume(_scaled(settings.volume)));
     // Пока играет, раз в 15 секунд запоминаем позицию — на случай, если окно закроют
     _saveTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (playing) _saveSession();
     });
+  }
+
+  // ---------- общие «часы» воспроизведения ----------
+
+  final Stopwatch _clock = Stopwatch()..start();
+  Duration _clockPos = Duration.zero;
+  int _clockAtUs = 0;
+
+  /// Запоминает, какая позиция была в этот момент: от неё now() отсчитывает прошедшее время
+  void _anchorClock() {
+    _clockPos = position.value;
+    _clockAtUs = _clock.elapsedMicroseconds;
+  }
+
+  /// Сколько времени события позиции от плеера может не приходить, пока now() продолжает идти сам
+  static const _maxClockAhead = Duration(seconds: 1);
+
+  /// Текущее время песни — единственный источник «сейчас» для текстов и караоке: позиция от плеера плюс время,
+  /// прошедшее с её прихода, с учётом паузы, скорости и перемотки. Позиция приходит раз в несколько десятков
+  /// миллисекунд, а экран обновляется чаще, поэтому смена строки и заливка слов читают время только отсюда
+  Duration now() {
+    final pos = position.value;
+    if (!playing || buffering || _resumeAt != null) return pos;
+    var rate = _p.state.rate;
+    if (!(rate > 0)) rate = 1;
+    var ahead = Duration(microseconds: ((_clock.elapsedMicroseconds - _clockAtUs) * rate).round());
+    if (ahead > _maxClockAhead) ahead = _maxClockAhead;
+    if (ahead < Duration.zero) ahead = Duration.zero;
+    return _clockPos + ahead;
   }
 
   /// Подписывается на события проигрывателя [p] (и отписывается от прежнего)
@@ -192,11 +222,13 @@ class PlayerController extends ChangeNotifier {
     }));
     _subs.add(p.stream.playing.listen((v) {
       playing = v;
+      _anchorClock();
       notifyListeners();
       _saveSession();
     }));
     _subs.add(p.stream.buffering.listen((v) {
       buffering = v;
+      _anchorClock();
       notifyListeners();
     }));
     _subs.add(p.stream.completed.listen((done) {

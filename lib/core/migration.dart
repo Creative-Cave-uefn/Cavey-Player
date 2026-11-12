@@ -120,54 +120,43 @@ class LibraryMigration extends ChangeNotifier {
       notifyListeners();
       if (list.isEmpty) return;
       final cfg = await lib.brokerConfig();
+      // Пачки по BrokerBatch.size файлов; несколько пачек идут параллельно. Сбой одной пачки не останавливает остальные —
+      // останавливает только ошибка, которая повторится у всех (брокер устарел, нет доступа к библиотеке)
+      final jobs = <(String, List<Track>)>[];
       final byAccount = <String, List<Track>>{};
       for (final t in list) {
         byAccount.putIfAbsent(lib.accounts.accounts.firstWhere((a) => a.email.toLowerCase() == t.by.toLowerCase()).email, () => []).add(t);
       }
       for (final entry in byAccount.entries) {
-        final account = entry.key;
-        final tracks = entry.value;
-        for (var i = 0; i < tracks.length; i += BrokerBatch.size) {
-          final chunk = tracks.sublist(i, (i + BrokerBatch.size).clamp(0, tracks.length));
+        for (var i = 0; i < entry.value.length; i += BrokerBatch.size) {
+          jobs.add((entry.key, entry.value.sublist(i, (i + BrokerBatch.size).clamp(0, entry.value.length))));
+        }
+      }
+      var next = 0;
+      BrokerException? fatal;
+      Future<void> worker() async {
+        while (fatal == null && next < jobs.length) {
+          final job = jobs[next++];
           status = 'Переношу ${moved + failed + 1} из $total…';
           notifyListeners();
-          // Шаг 1: назначаем владельца библиотеки «ожидающим владельцем» (от имени друга)
-          final offered = <String>[];
-          var cursor = 0;
-          Future<void> worker() async {
-            while (cursor < chunk.length) {
-              final t = chunk[cursor++];
-              try {
-                await lib.drive.offerOwnership(account, t.id, owner);
-                offered.add(t.id);
-              } on DriveException catch (e) {
-                AppLog.warn('Перенос: не удалось предложить «${t.title}» (${e.status})', e);
-                lastProblem ??= 'Google не разрешил назначить владельца (${e.status}): ${e.message}';
-                failed++;
-              }
-            }
-          }
-
-          await Future.wait([for (var k = 0; k < 4; k++) worker()]);
-          if (offered.isEmpty) continue;
-          // Шаг 2: брокер принимает владение
-          final answer = await lib.broker.adopt(cfg.url, account, offered);
-          for (final id in offered) {
-            final r = answer.results[id] ?? 'error';
-            if (r == 'ok' || r == 'already') {
-              _done.add(id);
-              moved++;
+          try {
+            await _chunk(cfg.url, job.$1, job.$2, owner);
+          } on BrokerException catch (e) {
+            if (e.code == 'outdated_broker' || e.code == 'not_member' || e.code == 'outdated' || e.code == 'no_broker') {
+              fatal = e;
             } else {
-              failed++;
-              final why = answer.details[id];
-              AppLog.warn('Перенос: брокер ответил «$r» для $id${why == null ? '' : ' ($why)'}');
-              lastProblem ??= '${_reasonText(r)}${why == null ? '' : ': $why'}';
+              failed += job.$2.length;
+              AppLog.warn('Перенос: пачка не перенесена (${e.code})', e);
+              lastProblem ??= e.message;
             }
           }
           await _save();
           notifyListeners();
         }
       }
+
+      await Future.wait([for (var k = 0; k < parallelChunks; k++) worker()]);
+      if (fatal != null) throw fatal!;
       status = 'Готово';
     } on BrokerException catch (e) {
       error = e.message;
@@ -185,6 +174,98 @@ class LibraryMigration extends ChangeNotifier {
       }
     }
   }
+
+  /// Сколько пачек обрабатывается одновременно
+  static const parallelChunks = 3;
+
+  Future<String?> _ownerOf(String account, String id) async {
+    try {
+      final j = await lib.drive.getFile(account, id, fields: 'id,owners(emailAddress)');
+      final owners = j['owners'];
+      if (owners is List && owners.isNotEmpty && owners.first is Map) {
+        return '${(owners.first as Map)['emailAddress'] ?? ''}'.toLowerCase();
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Одна пачка: пропускаем то, что уже у владельца (перенос мог пройти в прошлый раз, пока приложение ждало ответ),
+  /// предлагаем владение, просим брокера принять. Если брокер не ответил вовремя — сверяем итог по Диску и пробуем ещё раз
+  Future<void> _chunk(String url, String account, List<Track> chunk, String owner) async {
+    var todo = <Track>[];
+    var cursor = 0;
+    Future<void> check() async {
+      while (cursor < chunk.length) {
+        final t = chunk[cursor++];
+        if (await _ownerOf(account, t.id) == owner) {
+          _done.add(t.id);
+          moved++;
+        } else {
+          todo.add(t);
+        }
+      }
+    }
+
+    await Future.wait([for (var k = 0; k < 3; k++) check()]);
+    if (todo.isEmpty) return;
+    // Шаг 1: назначаем владельца библиотеки «ожидающим владельцем» (от имени друга)
+    final offered = <String>[];
+    cursor = 0;
+    final toOffer = todo;
+    Future<void> worker() async {
+      while (cursor < toOffer.length) {
+        final t = toOffer[cursor++];
+        try {
+          await lib.drive.offerOwnership(account, t.id, owner);
+          offered.add(t.id);
+        } on DriveException catch (e) {
+          AppLog.warn('Перенос: не удалось предложить «${t.title}» (${e.status})', e);
+          lastProblem ??= 'Google не разрешил назначить владельца (${e.status}): ${e.message}';
+          failed++;
+        }
+      }
+    }
+
+    await Future.wait([for (var k = 0; k < 3; k++) worker()]);
+    if (offered.isEmpty) return;
+    // Шаг 2: брокер принимает владение
+    var pending = offered;
+    for (var attempt = 0; attempt < 3 && pending.isNotEmpty; attempt++) {
+      try {
+        final answer = await lib.broker.adopt(url, account, pending);
+        final retry = <String>[];
+        for (final id in pending) {
+          final r = answer.results[id] ?? 'error';
+          if (r == 'ok' || r == 'already') {
+            _done.add(id);
+            moved++;
+          } else if (r == 'error' && attempt < 2) {
+            retry.add(id);
+          } else {
+            failed++;
+            final why = answer.details[id];
+            AppLog.warn('Перенос: брокер ответил «$r» для $id${why == null ? '' : ' ($why)'}');
+            lastProblem ??= '${_reasonText(r)}${why == null ? '' : ': $why'}';
+          }
+        }
+        pending = retry;
+      } on BrokerException catch (e) {
+        if (!e.deferrable || attempt >= 2) rethrow;
+        // Брокер мог успеть перенести часть файлов, пока мы ждали: смотрим, у кого владелец уже сменился
+        final left = <String>[];
+        for (final id in pending) {
+          if (await _ownerOf(account, id) == owner) {
+            _done.add(id);
+            moved++;
+          } else {
+            left.add(id);
+          }
+        }
+        pending = left;
+        await Future<void>.delayed(Duration(seconds: e.code == 'rate_limited' ? 20 : 5));
+      }
+    }
+  }
 }
 
 String _reasonText(String code) => switch (code) {
@@ -196,7 +277,8 @@ String _reasonText(String code) => switch (code) {
       _ => 'Ошибка переноса ($code)',
     };
 
-/// Сколько файлов за один запрос к брокеру (должно быть не больше ADOPT_BATCH в Code.gs)
+/// Сколько файлов за один запрос к брокеру (не больше ADOPT_BATCH в Code.gs). Брокер переносит файлы по одному, по нескольку секунд
+/// на каждый, поэтому пачка небольшая — иначе ответ не успевает прийти
 class BrokerBatch {
-  static const size = 20;
+  static const size = 5;
 }

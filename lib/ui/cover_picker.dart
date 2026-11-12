@@ -18,7 +18,10 @@ import 'glass_popup.dart';
 class PickedCover {
   final Uint8List bytes;
   final String ext;
-  const PickedCover(this.bytes, this.ext);
+
+  /// Пояснение для окна правки (например, что GIF сжат); показывается под картинкой
+  final String? info;
+  const PickedCover(this.bytes, this.ext, {this.info});
 }
 
 const _imageExtensions = ['jpg', 'jpeg', 'jpe', 'jfif', 'png', 'webp', 'bmp', 'gif'];
@@ -62,7 +65,7 @@ Future<PickedCover?> pickCoverFromUrl(
   } catch (e) {
     AppLog.warn('Обложка по ссылке: не скачалась', e);
     final why = e is FormatException ? e.message : (e is TimeoutException ? 'сайт не отвечает' : '$e');
-    app.lib.messages.add('Не получилось скачать картинку: $why');
+    await _say(context, 'Не получилось скачать картинку: $why');
     return null;
   }
   if (!context.mounted) return null;
@@ -100,11 +103,11 @@ Future<PickedCover?> pickCoverFromClipboard(
   } catch (e) {
     AppLog.warn('Обложка из буфера: не вышло', e);
     final why = e is FormatException ? e.message : (e is TimeoutException ? 'не дождался ответа' : '$e');
-    app.lib.messages.add('Не получилось взять картинку из буфера: $why');
+    await _say(context, 'Не получилось взять картинку из буфера: $why');
     return null;
   }
   if (bytes == null) {
-    app.lib.messages.add('В буфере нет картинки: скопируйте изображение, файл-картинку или ссылку на неё');
+    await _say(context, 'В буфере нет картинки: скопируйте изображение, файл-картинку или ссылку на неё');
     return null;
   }
   if (!context.mounted) return null;
@@ -124,21 +127,17 @@ Future<PickedCover?> prepareCover(
   required bool keepAnimation,
 }) async {
   if (keepAnimation && isGifBytes(bytes)) {
-    final app = Services.of(context);
     if (!await _decodes(bytes)) {
-      app.lib.messages.add('Не получилось открыть «$name» как картинку');
+      await _say(context, 'Не получилось открыть «$name» как картинку');
       return null;
     }
     if (bytes.length > maxGifBytes) {
-      // Больше предела: сжимаем сами, чтобы файл можно было поставить
-      app.lib.messages.add('GIF больше 10 МБ, сжимаю — это может занять до минуты…');
-      final small = await shrinkGif(bytes, maxGifBytes - 256 * 1024);
-      if (small == null) {
-        app.lib.messages.add('Не получилось сжать GIF до 10 МБ: возьмите файл поменьше');
-        return null;
-      }
-      app.lib.messages.add('GIF сжат: ${(bytes.length / 1048576).toStringAsFixed(1)} → ${(small.length / 1048576).toStringAsFixed(1)} МБ');
-      return PickedCover(small, 'gif');
+      // Больше предела: сжимаем сами, чтобы файл можно было поставить. Ход работы показываем окном поверх окна правки:
+      // сообщения внизу экрана оказываются под размытием окна и их не видно
+      final small = await _shrinkWithDialog(context, bytes);
+      if (small == null) return null;
+      final from = (bytes.length / 1048576).toStringAsFixed(1), to = (small.length / 1048576).toStringAsFixed(1);
+      return PickedCover(small, 'gif', info: 'GIF сжат: $from → $to МБ. На Диск загрузится после «Сохранить».');
     }
     // Анимация сохраняется: кадрировать GIF нельзя, на странице он показывается по центру (аватарка — кругом)
     return PickedCover(bytes, 'gif');
@@ -147,13 +146,67 @@ Future<PickedCover?> prepareCover(
   if (cropped == null) {
     // Либо отмена, либо файл не картинка; отличить по результату нельзя, сообщаем только про не-картинку
     if (context.mounted && !await _decodes(bytes)) {
-      Services.of(context).lib.messages.add('Не получилось открыть «$name» как картинку');
+      await _say(context, 'Не получилось открыть «$name» как картинку');
     }
     return null;
   }
   // На Диск уходит сжатый JPEG: аватарка около 50 КБ, баннер около 250 КБ вместо мегабайт PNG
   final jpeg = await compressImage(cropped, maxSide: outWidth, quality: outWidth >= 1200 ? 82 : 85);
   return PickedCover(jpeg, identical(jpeg, cropped) ? 'png' : 'jpg');
+}
+
+/// Короткое сообщение окном поверх окна правки (сообщения внизу экрана из-под размытия окна не видны)
+Future<void> _say(BuildContext context, String text) async {
+  if (!context.mounted) return;
+  await showGlassDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      content: SizedBox(width: 400, child: Text(text, style: const TextStyle(color: C.muted, fontSize: 13.5, height: 1.4))),
+      actions: [FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('Понятно'))],
+    ),
+  );
+}
+
+String _mb(int n) => (n / 1048576).toStringAsFixed(1);
+
+/// Окно «Сжимаю GIF…» поверх окна правки. Возвращает сжатый файл, а если не вышло или человек отменил — null
+/// (о неудаче рассказывает отдельное окно, а не сообщение внизу экрана)
+Future<Uint8List?> _shrinkWithDialog(BuildContext context, Uint8List bytes) async {
+  var closed = false;
+  final dialog = showGlassDialog<bool>(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) => AlertDialog(
+      title: Text('Сжимаю GIF', style: display(18)),
+      content: SizedBox(
+        width: 400,
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const LinearProgressIndicator(),
+          const SizedBox(height: 14),
+          Text('Файл ${_mb(bytes.length)} МБ, а можно не больше 10 МБ. Кадры уменьшаются, пока файл не поместится — '
+              'это может занять до пары минут. Сжатая копия появится в окне правки, на Диск она загрузится после «Сохранить».',
+              style: const TextStyle(color: C.muted, fontSize: 13, height: 1.4)),
+        ]),
+      ),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена', style: TextStyle(color: C.muted)))],
+    ),
+  );
+  unawaited(dialog.then((_) => closed = true));
+  final small = await shrinkGif(bytes, maxGifBytes - 256 * 1024);
+  if (closed) return null; // отменили, пока шло сжатие
+  if (context.mounted) Navigator.of(context, rootNavigator: true).pop(true);
+  await dialog;
+  if (small == null && context.mounted) {
+    await showGlassDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Не получилось сжать GIF', style: display(18)),
+        content: const SizedBox(width: 400, child: Text('Файл не удалось уменьшить до 10 МБ. Возьмите GIF поменьше или с меньшим числом кадров.', style: TextStyle(color: C.muted, fontSize: 13, height: 1.4))),
+        actions: [FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text('Понятно'))],
+      ),
+    );
+  }
+  return small;
 }
 
 /// Окно с полем для ссылки на картинку; подставляет ссылку из буфера обмена, если она там есть
@@ -443,6 +496,10 @@ class CoverEditorView extends StatelessWidget {
             const SizedBox(width: 18),
             Expanded(child: SizedBox(height: 120, child: buttons)),
           ]),
+          if (choice.picked?.info != null) ...[
+            const SizedBox(height: 10),
+            Text(choice.picked!.info!, style: TextStyle(color: C.accent, fontSize: 12.5, height: 1.4)),
+          ],
           if (note != null) ...[
             const SizedBox(height: 10),
             Text(note!, style: const TextStyle(color: C.faint, fontSize: 12, height: 1.4)),

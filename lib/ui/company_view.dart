@@ -8,6 +8,7 @@ import '../core/social.dart';
 import 'animated_tiles.dart';
 import 'glass_popup.dart';
 import 'jam_panel.dart';
+import 'share_dialog.dart' show openSharedThing;
 import 'shell.dart';
 import 'profile_view.dart';
 import 'tracks_view.dart' show Links, LinkPart, trackLinks, TrackMenu, showTrackMenu;
@@ -432,7 +433,9 @@ class _NoticeRow extends StatelessWidget {
       NoticeKind.addToPlaylist => notice.trackIds.length == 1
           ? line([who, t(' добавил(а) '), title, t(notice.playlist == null ? ' в плейлист' : ' в плейлист «${notice.playlist}»')])
           : line([who, t(' добавил(а) ваших треков: ${notice.trackIds.length} ${notice.playlist == null ? 'в плейлист' : 'в плейлист «${notice.playlist}»'}')]),
-      NoticeKind.share => line([who, t(' поделился(ась): '), title, t(track == null ? '' : ' — ${track.displayArtist}')]),
+      NoticeKind.share => notice.thing != null
+          ? line([who, t(' поделился(ась) ${thingPhrase(notice)}')])
+          : line([who, t(' поделился(ась): '), title, t(track == null ? '' : ' — ${track.displayArtist}')]),
       NoticeKind.jamInvite => line([who, t(' зовёт в джем')]),
       NoticeKind.jamRequest => line([who, t(' просится в джем')]),
     };
@@ -440,7 +443,19 @@ class _NoticeRow extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       // Нажатие на строку включает трек; окно уведомлений остаётся открытым
-      onTap: isJam || track == null ? null : () => app.player.playTracks([track], 0),
+      onTap: isJam
+          ? null
+          : notice.thing != null && notice.thingKey != null
+              ? () {
+                  if (openSharedThing(lib, notice.thing!, notice.thingKey!)) {
+                    closeMenu();
+                  } else {
+                    lib.messages.add('Этого нет в вашей библиотеке');
+                  }
+                }
+              : track == null
+                  ? null
+                  : () => app.player.playTracks([track], 0),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
         child: Row(children: [
@@ -565,10 +580,21 @@ class _FeedRow extends StatelessWidget {
         icon = Icons.favorite_rounded;
         onTap = () => app.player.playTracks([t], 0);
       case 'share':
-        final t = lib.data.tracks[lib.data.resolve('${d['track']}')];
-        if (t == null) return const SizedBox.shrink();
         final to = [for (final x in (d['to'] as List? ?? const [])) '$x'];
         final whom = to.length == 1 ? lib.firstNameOf(to.first) : 'друзьями (${to.length})';
+        final thing = '${d['kind'] ?? ''}';
+        if (d['track'] == null && const {'album', 'artist', 'playlist'}.contains(thing) && '${d['key'] ?? ''}'.isNotEmpty) {
+          final what = switch (thing) { 'album' => 'альбомом', 'artist' => 'исполнителем', _ => 'плейлистом' };
+          final name = '${d['title'] ?? ''}'.trim();
+          text = '$who поделился(ась) $what${name.isEmpty ? '' : ' «$name»'} с $whom';
+          icon = Icons.share_rounded;
+          onTap = () {
+            if (!openSharedThing(lib, thing, '${d['key']}')) lib.messages.add('Этого нет в вашей библиотеке');
+          };
+          break;
+        }
+        final t = lib.data.tracks[lib.data.resolve('${d['track']}')];
+        if (t == null) return const SizedBox.shrink();
         text = '$who поделился(ась) «${t.title}» — ${t.displayArtist} с $whom';
         icon = Icons.share_rounded;
         onTap = () => app.player.playTracks([t], 0);

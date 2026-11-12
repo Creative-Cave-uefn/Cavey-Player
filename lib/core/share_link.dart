@@ -1,6 +1,7 @@
 import 'dart:io';
 
-// Ссылки на треки: caveplayer://track/<id> открывает приложение на этом треке.
+// Ссылки на треки, альбомы, исполнителей и плейлисты: caveplayer://track/<id>, …/album/<ключ>, …/artist/<ключ>, …/playlist/<id>
+// открывают приложение на нужной странице.
 // В мессенджерах такие ссылки не кликабельны, поэтому есть и обычная https-ссылка на страницу-переадресацию
 // (docs/open/index.html), которая сама открывает caveplayer://.
 
@@ -22,15 +23,71 @@ String appLinkFor(String trackId) => '$_scheme://track/$trackId';
 String? webLinkFor(String trackId, {String base = kShareRedirectUrl}) =>
     base.isEmpty ? null : '${base.endsWith('/') ? base : '$base/'}?t=${Uri.encodeQueryComponent(trackId)}';
 
+/// Что можно отправить ссылкой
+enum ShareKind { track, album, artist, playlist }
+
+/// Ссылка на что-то в Cavey: [key] — id трека, ключ альбома, ключ исполнителя или id плейлиста
+class ShareTarget {
+  final ShareKind kind;
+  final String key;
+  const ShareTarget(this.kind, this.key);
+
+  @override
+  bool operator ==(Object other) => other is ShareTarget && other.kind == kind && other.key == key;
+
+  @override
+  int get hashCode => Object.hash(kind, key);
+}
+
+const _webParam = {ShareKind.track: 't', ShareKind.album: 'al', ShareKind.artist: 'ar', ShareKind.playlist: 'pl'};
+
+/// Ссылка для открытия в приложении
+String appShareLink(ShareKind kind, String key) =>
+    kind == ShareKind.track ? appLinkFor(key) : '$_scheme://${kind.name}/${Uri.encodeComponent(key)}';
+
+/// Ссылка для мессенджеров; null, если страница-переадресация не настроена
+String? webShareLink(ShareKind kind, String key, {String base = kShareRedirectUrl}) => base.isEmpty
+    ? null
+    : '${base.endsWith('/') ? base : '$base/'}?${_webParam[kind]}=${Uri.encodeQueryComponent(key)}';
+
+/// То, что кладётся в буфер по «Скопировать ссылку»: ссылка для мессенджеров, а если её нет — ссылка приложения
+String shareLinkText(ShareKind kind, String key) => webShareLink(kind, key) ?? appShareLink(kind, key);
+
+final _trackIdPattern = RegExp(r'^[A-Za-z0-9_\-]+$');
+
+/// Разбирает ссылку любого вида (caveplayer:// или страница-переадресация); null, если это не ссылка Cavey
+ShareTarget? shareTargetFromLink(String link) {
+  final text = link.trim();
+  final app = RegExp('^$_scheme:(?://)?(track|album|artist|playlist)/(.+?)/?\$', caseSensitive: false).firstMatch(text);
+  if (app != null) {
+    final kind = ShareKind.values.byName(app.group(1)!.toLowerCase());
+    String key;
+    try {
+      key = Uri.decodeComponent(app.group(2)!);
+    } catch (_) {
+      return null;
+    }
+    if (key.isEmpty) return null;
+    if (kind == ShareKind.track || kind == ShareKind.playlist) {
+      if (!_trackIdPattern.hasMatch(key)) return null;
+    }
+    return ShareTarget(kind, key);
+  }
+  final uri = Uri.tryParse(text);
+  if (uri == null || (uri.scheme != 'https' && uri.scheme != 'http')) return null;
+  for (final e in _webParam.entries) {
+    final v = uri.queryParameters[e.value];
+    if (v == null || v.isEmpty) continue;
+    if ((e.key == ShareKind.track || e.key == ShareKind.playlist) && !_trackIdPattern.hasMatch(v)) return null;
+    return ShareTarget(e.key, v);
+  }
+  return null;
+}
+
 /// Достаёт id трека из ссылки обоих видов; null, если это не ссылка на трек
 String? trackIdFromLink(String link) {
-  final text = link.trim();
-  final app = RegExp('^$_scheme:(?://)?track/([A-Za-z0-9_\\-]+)/?\$', caseSensitive: false).firstMatch(text);
-  if (app != null) return app.group(1);
-  final uri = Uri.tryParse(text);
-  final t = uri?.queryParameters['t'];
-  if (uri != null && (uri.scheme == 'https' || uri.scheme == 'http') && t != null && RegExp(r'^[A-Za-z0-9_\-]+$').hasMatch(t)) return t;
-  return null;
+  final t = shareTargetFromLink(link);
+  return t != null && t.kind == ShareKind.track ? t.key : null;
 }
 
 /// Файл, через который вторая копия передаёт ссылку первой (обычный сигнал «покажись» ссылку не несёт)

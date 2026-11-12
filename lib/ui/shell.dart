@@ -38,6 +38,7 @@ import 'glass_popup.dart';
 import 'library_home.dart';
 import 'library_tabs.dart';
 import 'collection_menu.dart';
+import 'share_dialog.dart' show openSharedThing;
 import 'collection_page.dart';
 import 'device_export_ui.dart';
 import 'migration_ui.dart';
@@ -272,14 +273,31 @@ class _ShellState extends State<Shell> {
     final link = app.incomingLink.value;
     if (link == null) return;
     app.incomingLink.value = null;
-    final id = trackIdFromLink(link);
-    final track = id == null ? null : app.lib.data.tracks[app.lib.data.resolve(id)];
-    if (track == null) {
-      _showToast('Этого трека нет в вашей библиотеке');
+    final target = shareTargetFromLink(link);
+    if (target == null) {
+      _showToast('Не удалось разобрать ссылку');
       return;
     }
-    _nav.go(Nav('album', track.albumKey));
-    unawaited(app.player.playTracks([track], 0));
+    switch (target.kind) {
+      case ShareKind.track:
+        final track = app.lib.data.tracks[app.lib.data.resolve(target.key)];
+        if (track == null) {
+          _showToast('Этого трека нет в вашей библиотеке');
+          return;
+        }
+        _nav.go(Nav('album', track.albumKey));
+        unawaited(app.player.playTracks([track], 0));
+      case ShareKind.album:
+      case ShareKind.artist:
+      case ShareKind.playlist:
+        if (!openSharedThing(app.lib, target.kind.name, target.key)) {
+          _showToast(switch (target.kind) {
+            ShareKind.album => 'Этого альбома нет в вашей библиотеке',
+            ShareKind.artist => 'Этого исполнителя нет в вашей библиотеке',
+            _ => 'Этого плейлиста нет у вас: возможно, он приватный',
+          });
+        }
+    }
   }
 
   /// Зажатая правая кнопка + движение: ← предыдущий, → следующий, ↑ ↓ громкость

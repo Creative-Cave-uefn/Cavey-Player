@@ -231,6 +231,14 @@ class _ImageField extends StatelessWidget {
                   ]),
                 ),
               ),
+            if (choice.picked?.info != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: SizedBox(
+                  width: width < 200 ? 200 : width,
+                  child: Text(choice.picked!.info!, style: TextStyle(color: C.accent, fontSize: 12, height: 1.35)),
+                ),
+              ),
           ]),
           const SizedBox(width: 18),
           Expanded(

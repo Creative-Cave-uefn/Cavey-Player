@@ -17,6 +17,7 @@ import 'library_tabs.dart';
 import 'library_views.dart';
 import 'shell.dart';
 import 'share_dialog.dart';
+import 'collection_menu.dart' show collectionShareSubject;
 import 'album_edit.dart';
 import 'accounts_view.dart' show GlassSelect;
 import 'album_missing.dart';
@@ -207,6 +208,7 @@ class AlbumPage extends StatelessWidget {
               icon: const Icon(Icons.more_horiz_rounded),
               onSelected: (v) {
                 if (v == 'edit') editAlbumDialog(context, album);
+                if (v == 'share') showShareSubjectDialog(context, collectionShareSubject(album: album));
                 if (v == 'order') app.lib.resetAlbumOrder(albumKey);
                 if (v == 'deezerSort') {
                   sortAlbumByDeezer(app.lib, app.web, album).then((r) {
@@ -223,6 +225,7 @@ class AlbumPage extends StatelessWidget {
               },
               itemBuilder: (_) => [
                 const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
+                const PopupMenuItem(value: 'share', child: Text('Поделиться…')),
                 const PopupMenuItem(value: 'export', child: Text('Скачать альбом на устройство')),
                 const PopupMenuItem(value: 'deezerSort', child: Text('Рассортировать треки по Deezer')),
                 if (app.lib.hasAlbumOrder(albumKey)) const PopupMenuItem(value: 'order', child: Text('Вернуть порядок по номерам')),
@@ -297,6 +300,8 @@ class PlaylistPage extends StatelessWidget {
               onSelected: (v) async {
                 if (v == 'edit') {
                   await editPlaylistDialog(context, p, coverTrack: coverTrack);
+                } else if (v == 'share') {
+                  await showShareSubjectDialog(context, collectionShareSubject(playlist: p));
                 } else if (v == 'export') {
                   await exportToDevice(context, List<Track>.of(tracks), folderName: p.name);
                 } else if (v == 'public') {
@@ -323,6 +328,7 @@ class PlaylistPage extends StatelessWidget {
                       ? const PopupMenuItem(value: 'private', child: Text('Сделать приватным'))
                       : const PopupMenuItem(value: 'public', child: Text('Сделать открытым')),
                 const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
+                const PopupMenuItem(value: 'share', child: Text('Поделиться…')),
                 const PopupMenuItem(value: 'export', child: Text('Скачать плейлист на устройство')),
                 const PopupMenuItem(value: 'delete', child: Text('Удалить плейлист')),
               ],

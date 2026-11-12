@@ -143,7 +143,8 @@ class UploadBroker {
 
   /// Один запрос к брокеру. Apps Script отвечает на POST редиректом (302) на адрес с результатом,
   /// который нужно забрать обычным GET — dart:io сам такой редирект для POST не проходит.
-  Future<Map<String, dynamic>> _call(String url, String email, Map<String, Object?> body, {bool refreshed = false}) async {
+  Future<Map<String, dynamic>> _call(String url, String email, Map<String, Object?> body,
+      {bool refreshed = false, Duration timeout = const Duration(seconds: 45)}) async {
     final token = await accounts.token(email, force: refreshed);
     http.Response res;
     try {
@@ -151,12 +152,12 @@ class UploadBroker {
         ..followRedirects = false
         ..headers['Content-Type'] = 'text/plain; charset=utf-8'
         ..body = jsonEncode({...body, 'token': token});
-      res = await http.Response.fromStream(await _http.send(req).timeout(const Duration(seconds: 45)))
-          .timeout(const Duration(seconds: 60));
+      res = await http.Response.fromStream(await _http.send(req).timeout(timeout))
+          .timeout(timeout + const Duration(seconds: 15));
       for (var hop = 0; hop < 5 && const {301, 302, 303, 307, 308}.contains(res.statusCode); hop++) {
         final loc = res.headers['location'];
         if (loc == null) break;
-        res = await _http.get(Uri.parse(loc)).timeout(const Duration(seconds: 45));
+        res = await _http.get(Uri.parse(loc)).timeout(timeout);
       }
     } on AuthException {
       rethrow;
@@ -180,7 +181,7 @@ class UploadBroker {
     if (j['ok'] == true) return j.cast<String, dynamic>();
     final code = '${j['code'] ?? 'internal'}';
     if ((code == 'bad_token' || code == 'no_token') && !refreshed) {
-      return _call(url, email, body, refreshed: true);
+      return _call(url, email, body, refreshed: true, timeout: timeout);
     }
     throw BrokerException(code, BrokerException.friendly(code, '${j['error'] ?? 'Ошибка сервиса загрузки'}'));
   }
@@ -251,7 +252,8 @@ class UploadBroker {
   /// bad_type, error) и, для неудач, пояснение брокера
   Future<({Map<String, String> results, Map<String, String> details})> adopt(String url, String email, List<String> ids) async {
     try {
-      final r = await _call(url, email, {'action': 'adopt', 'fileIds': ids});
+      // Брокер переносит файлы по одному (на каждый уходит несколько секунд), поэтому ждём ответ заметно дольше обычного
+      final r = await _call(url, email, {'action': 'adopt', 'fileIds': ids}, timeout: const Duration(seconds: 150));
       // Брокер версии 2 принимал владение по почте и не проверял итог: его надо заменить на версию 3
       if (((r['api'] as num?)?.toInt() ?? 0) < 3) {
         throw const BrokerException('outdated_broker', 'Брокер нужно обновить: владельцу библиотеки надо один раз заново развернуть скрипт (tools/broker/README.md).');

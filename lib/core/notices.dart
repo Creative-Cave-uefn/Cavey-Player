@@ -26,8 +26,13 @@ class Notice {
 
   /// Организатор джема (почта), если приглашавший знает его
   final String? host;
+
+  /// Если поделились не треком, а альбомом, исполнителем или плейлистом: что именно (album, artist, playlist), ключ и название
+  final String? thing;
+  final String? thingKey;
+  final String? thingTitle;
   const Notice(this.kind, this.from, this.at, this.trackIds,
-      {this.playlist, this.note, this.jam, this.reply = false, this.host});
+      {this.playlist, this.note, this.jam, this.reply = false, this.host, this.thing, this.thingKey, this.thingTitle});
 
   bool get isJam => kind == NoticeKind.jamInvite || kind == NoticeKind.jamRequest;
 
@@ -67,9 +72,12 @@ List<Notice> collectNotices({
         }
       case 'share':
         final to = [for (final x in (d['to'] as List? ?? const [])) '$x'];
+        final note = '${d['note'] ?? ''}'.trim();
         if (to.contains(me) && d['track'] != null) {
-          final note = '${d['note'] ?? ''}'.trim();
           out.add(Notice(NoticeKind.share, email, at, ['${d['track']}'], note: note.isEmpty ? null : note));
+        } else if (to.contains(me) && const {'album', 'artist', 'playlist'}.contains('${d['kind']}') && '${d['key'] ?? ''}'.isNotEmpty) {
+          out.add(Notice(NoticeKind.share, email, at, const [],
+              note: note.isEmpty ? null : note, thing: '${d['kind']}', thingKey: '${d['key']}', thingTitle: '${d['title'] ?? ''}'));
         }
       case 'jaminv':
         // Приглашение в джем: только свежее и только мне
@@ -115,8 +123,16 @@ String noticeText(Notice n, {required String who, required String Function(Strin
           ? '$who добавил(а) «${title(first)}» $where'
           : '$who добавил(а) ваших треков: ${n.trackIds.length} $where';
     case NoticeKind.share:
+      if (n.thing != null) return '$who поделился(ась) ${thingPhrase(n)}';
       return '$who поделился(ась): ${label(first)}';
   }
+}
+
+/// «альбомом «Название»» / «исполнителем «Имя»» / «плейлистом «Название»»
+String thingPhrase(Notice n) {
+  final what = switch (n.thing) { 'album' => 'альбомом', 'artist' => 'исполнителем', _ => 'плейлистом' };
+  final t = (n.thingTitle ?? '').trim();
+  return t.isEmpty ? what : '$what «$t»';
 }
 
 /// Текст уведомления без имени (имя стоит в заголовке карточки): «Добавил(а) «Трек» в любимое»

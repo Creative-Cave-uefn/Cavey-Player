@@ -6,7 +6,9 @@ import '../core/models.dart';
 import 'album_edit.dart';
 import 'device_export_ui.dart';
 import 'glass_popup.dart';
+import '../core/share_link.dart';
 import 'profile_view.dart' show topTracksOf;
+import 'share_dialog.dart';
 
 /// Меню по правому клику на плейлисте, альбоме или исполнителе: левая панель, «Коллекция», «Главная» медиатеки.
 /// Слушать, вперемешку, правка, закрепление, «Скачать на устройство», приватность плейлиста
@@ -34,6 +36,7 @@ Future<void> showCollectionMenu(BuildContext context, Offset at, {Playlist? play
           child: Text(lib.isFavArtist(artist.key) ? 'Убрать из любимых исполнителей' : 'В любимые исполнители'),
         ),
       PopupMenuItem(value: 'pin', child: Text(pinned ? 'Открепить' : 'Закрепить')),
+      const PopupMenuItem(value: 'share', child: Text('Поделиться…')),
       const PopupMenuItem(value: 'export', child: Text('Скачать на устройство')),
       if (mine)
         lib.isPlaylistPublic(p.id)
@@ -70,6 +73,8 @@ Future<void> showCollectionMenu(BuildContext context, Offset at, {Playlist? play
       lib.toggleFavArtist(artist!.key);
     case 'pin':
       lib.togglePinToken(tokens);
+    case 'share':
+      await showShareSubjectDialog(context, collectionShareSubject(playlist: p, album: album, artist: artist));
     case 'export':
       if (p != null) {
         await exportToDevice(context, tracks(), folderName: p.name);
@@ -84,4 +89,11 @@ Future<void> showCollectionMenu(BuildContext context, Offset at, {Playlist? play
       lib.setPlaylistPublic(p!.id, v == 'public');
       lib.messages.add(v == 'public' ? 'Плейлист «${p.name}» теперь видят все друзья' : 'Плейлист «${p.name}» виден только вам');
   }
+}
+
+/// Что отправляется по «Поделиться» у плейлиста, альбома или исполнителя
+ShareSubject collectionShareSubject({Playlist? playlist, Album? album, Artist? artist}) {
+  if (playlist != null) return ShareSubject(ShareKind.playlist, playlist.id, playlist.name);
+  if (album != null) return ShareSubject(ShareKind.album, album.key, album.title, album.artist);
+  return ShareSubject(ShareKind.artist, artist!.key, artist.name);
 }

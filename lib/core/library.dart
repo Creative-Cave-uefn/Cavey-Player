@@ -1343,6 +1343,20 @@ class LibraryController extends ChangeNotifier {
     onEvent?.call({'k': 'share', 'to': to, 'track': trackId, if (note.trim().isNotEmpty) 'note': note.trim()});
   }
 
+  /// Поделиться альбомом, исполнителем или плейлистом с друзьями внутри приложения.
+  /// [title] кладём в событие: у друга может не быть такого плейлиста или альбома под рукой, а подпись нужна
+  void shareThing(String kind, String key, String title, List<String> to, {String note = ''}) {
+    if (to.isEmpty) return;
+    onEvent?.call({
+      'k': 'share',
+      'to': to,
+      'kind': kind,
+      'key': key,
+      'title': title,
+      if (note.trim().isNotEmpty) 'note': note.trim(),
+    });
+  }
+
   void renamePlaylist(String id, String name) {
     final old = data.playlists.where((p) => p.id == id).firstOrNull?.name;
     commit({'op': 'renamePlaylist', 'id': id, 'name': name},

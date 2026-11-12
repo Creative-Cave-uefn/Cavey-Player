@@ -49,6 +49,22 @@ void main() {
     expect(n.single.trackIds, ['zzz']);
   });
 
+  test('Альбом, исполнитель и плейлист в «Поделился» доходят с названием', () {
+    final n = run([
+      ('a@x.com', t0, {'k': 'share', 'to': [me], 'kind': 'album', 'key': 'k1', 'title': 'Discovery', 'note': 'огонь'}),
+      ('a@x.com', t0, {'k': 'share', 'to': [me], 'kind': 'playlist', 'key': 'pl1', 'title': 'Дорога'}),
+      ('a@x.com', t0, {'k': 'share', 'to': ['b@x.com'], 'kind': 'artist', 'key': 'x', 'title': 'Не мне'}),
+      ('a@x.com', t0, {'k': 'share', 'to': [me], 'kind': 'странное', 'key': 'x'}),
+    ]);
+    expect(n, hasLength(2));
+    final album = n.firstWhere((x) => x.thing == 'album');
+    expect(album.thingKey, 'k1');
+    expect(album.note, 'огонь');
+    expect(thingPhrase(album), 'альбомом «Discovery»');
+    expect(thingPhrase(n.firstWhere((x) => x.thing == 'playlist')), 'плейлистом «Дорога»');
+    expect(noticeText(album, who: 'Redsit', title: (_) => '', label: (_) => ''), 'Redsit поделился(ась) альбомом «Discovery»');
+  });
+
   test('Новые — только после отметки; без отметки старое не показывается', () {
     final all = run([
       ('a@x.com', t0, {'k': 'like', 'track': 'mine1'}),
