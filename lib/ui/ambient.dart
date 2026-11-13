@@ -95,6 +95,10 @@ class StripTint {
 
   /// 0…1: насколько баннер ещё виден (уезжает при прокрутке — подкраска гаснет вместе с ним)
   static final ValueNotifier<double> fade = ValueNotifier(1);
+
+  /// Где баннер стоит по горизонтали (левый и правый край в координатах окна): цвета полосы ложатся ровно над ним,
+  /// а левее и правее продолжаются его крайние цвета
+  static final ValueNotifier<(double, double)?> span = ValueNotifier(null);
   static Object? _owner;
 
   static void claim(Object owner, List<Color>? list) {
@@ -106,13 +110,16 @@ class StripTint {
     if (!identical(_owner, owner)) return;
     _owner = null;
     colors.value = null;
+    span.value = null;
     fade.value = 1;
   }
 
-  /// Цвета верхних строк картинки: [count] полосок слева направо. Затемнены так же, как сам баннер на странице
-  static Future<List<Color>?> sample(Uint8List bytes, {int count = 12, double dim = 0.6}) async {
+  /// Цвета верхней кромки картинки так, как её видно на странице: [count] полосок слева направо.
+  /// [boxAspect] — ширина к высоте рамки баннера (картинка в неё вписана «с обрезкой», как BoxFit.cover).
+  /// Затемнены так же, как сам баннер на странице (там поверх чёрный слой 40 %)
+  static Future<List<Color>?> sample(Uint8List bytes, {int count = 48, double dim = 0.6, double? boxAspect}) async {
     try {
-      final codec = await ui.instantiateImageCodec(bytes, targetWidth: count * 4);
+      final codec = await ui.instantiateImageCodec(bytes, targetWidth: 192);
       final frame = await codec.getNextFrame();
       codec.dispose();
       final img = frame.image;
@@ -121,14 +128,28 @@ class StripTint {
       final h = img.height;
       img.dispose();
       if (data == null || w == 0 || h == 0) return null;
-      final rows = math.max(1, math.min(3, h));
+      // Видимая часть картинки внутри рамки
+      var x0v = 0.0, x1v = w.toDouble(), y0v = 0.0;
+      final a = boxAspect;
+      if (a != null && a > 0) {
+        final imgAspect = w / h;
+        if (imgAspect > a) {
+          final visW = h * a;
+          x0v = (w - visW) / 2;
+          x1v = x0v + visW;
+        } else {
+          y0v = (h - w / a) / 2;
+        }
+      }
+      final top = y0v.floor().clamp(0, h - 1);
+      final rows = math.max(1, math.min(4, h - top));
       final out = <Color>[];
       for (var i = 0; i < count; i++) {
         var r = 0, g = 0, b = 0, n = 0;
-        final x0 = (i * w / count).floor();
-        final x1 = math.max(x0 + 1, ((i + 1) * w / count).floor());
-        for (var y = 0; y < rows; y++) {
-          for (var x = x0; x < x1 && x < w; x++) {
+        final xa = (x0v + i * (x1v - x0v) / count).floor();
+        final xb = math.max(xa + 1, (x0v + (i + 1) * (x1v - x0v) / count).floor());
+        for (var y = top; y < top + rows; y++) {
+          for (var x = xa; x < xb && x < w; x++) {
             final o = (y * w + x) * 4;
             r += data.getUint8(o);
             g += data.getUint8(o + 1);

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
@@ -102,7 +103,8 @@ class _WindowBarState extends State<WindowBar> with WindowListener {
   }
 }
 
-/// Подкраска верхней полосы окна по баннеру профиля ([StripTint]); без баннера ничего не рисует
+/// Подкраска верхней полосы окна по баннеру профиля ([StripTint]): крайние верхние цвета баннера ложатся ровно над ним,
+/// левее и правее продолжаются, слегка размыты — полоса выглядит продолжением баннера вверх. Без баннера ничего не рисует
 class _BannerStrip extends StatelessWidget {
   const _BannerStrip();
 
@@ -114,25 +116,26 @@ class _BannerStrip extends StatelessWidget {
         builder: (context, colors, _) {
           return AnimatedSwitcher(
             duration: const Duration(milliseconds: 500),
-            child: colors == null
+            child: colors == null || colors.isEmpty
                 ? const SizedBox.shrink(key: ValueKey('none'))
                 : ValueListenableBuilder<double>(
                     key: ValueKey(colors),
                     valueListenable: StripTint.fade,
                     builder: (context, fade, _) => Opacity(
                       opacity: fade,
-                      child: ShaderMask(
-                        blendMode: BlendMode.dstIn,
-                        shaderCallback: (r) => const LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          // у верхнего края слабее, к баннеру — полный цвет: полоса словно продолжает баннер вверх
-                          colors: [Color(0x40FFFFFF), Colors.white],
-                          stops: [0.0, 1.0],
-                        ).createShader(r),
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(colors: [for (final c in colors) c.withValues(alpha: 0.9)]),
+                      child: ValueListenableBuilder<(double, double)?>(
+                        valueListenable: StripTint.span,
+                        builder: (context, span, _) => ShaderMask(
+                          blendMode: BlendMode.dstIn,
+                          shaderCallback: (r) => const LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            // у верхнего края чуть слабее, к баннеру — полный цвет
+                            colors: [Color(0x99FFFFFF), Colors.white],
+                          ).createShader(r),
+                          child: ImageFiltered(
+                            imageFilter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 2, tileMode: TileMode.clamp),
+                            child: CustomPaint(painter: _StripPainter(colors, span), size: Size.infinite),
                           ),
                         ),
                       ),
@@ -143,6 +146,27 @@ class _BannerStrip extends StatelessWidget {
       ),
     );
   }
+}
+
+class _StripPainter extends CustomPainter {
+  final List<Color> colors;
+  final (double, double)? span;
+  const _StripPainter(this.colors, this.span);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Полоса начинается у левого края окна, поэтому координаты окна совпадают с её собственными
+    final left = span?.$1 ?? 0;
+    final right = span?.$2 ?? size.width;
+    final list = colors.length == 1 ? [colors.first, colors.first] : colors;
+    final paint = Paint()
+      ..shader = ui.Gradient.linear(Offset(left, 0), Offset(right <= left ? left + 1 : right, 0), list,
+          [for (var i = 0; i < list.length; i++) i / (list.length - 1)], TileMode.clamp);
+    canvas.drawRect(Offset.zero & size, paint);
+  }
+
+  @override
+  bool shouldRepaint(_StripPainter old) => !identical(old.colors, colors) || old.span != span;
 }
 
 class _CaptionButton extends StatefulWidget {

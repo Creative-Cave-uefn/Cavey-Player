@@ -907,7 +907,12 @@ class _TracksPageState extends State<TracksPage> {
       );
     }
 
-    return Container(
+    TrackColumns.ensure(Services.of(context));
+    final show = TrackColumns.shows;
+    return GestureDetector(
+      // ПКМ по шапке — какие столбцы показывать
+      onSecondaryTapUp: (d) => TrackColumns.menu(context, d.globalPosition),
+      child: Container(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
       height: 32,
@@ -919,18 +924,23 @@ class _TracksPageState extends State<TracksPage> {
           child: Align(alignment: Alignment.centerLeft, child: _titleArtistLabel()),
         ),
         if (!compact) ...[
-          const SizedBox(width: 16),
-          Expanded(flex: 3, child: Align(alignment: Alignment.centerLeft, child: label('album', 'Альбом'))),
-          const SizedBox(width: 16),
-          Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: label('by', 'Загрузил(а)'))),
+          if (show('album')) ...[
+            const SizedBox(width: 16),
+            Expanded(flex: 3, child: Align(alignment: Alignment.centerLeft, child: label('album', 'Альбом'))),
+          ],
+          if (show('by')) ...[
+            const SizedBox(width: 16),
+            Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: label('by', 'Загрузил(а)'))),
+          ],
         ],
-        if (widget.playlistId != null && !compact)
+        if (widget.playlistId != null && !compact && show('padded'))
           SizedBox(width: _addedColW, child: Align(alignment: Alignment.centerLeft, child: label('padded', 'Дата добавления'))),
-        if (!compact) SizedBox(width: _uploadColW, child: Align(alignment: Alignment.centerLeft, child: label('added', 'Дата загрузки'))),
+        if (!compact && show('added')) SizedBox(width: _uploadColW, child: Align(alignment: Alignment.centerLeft, child: label('added', 'Дата загрузки'))),
         // Ровно столько же занимают сердечко с аватарками и «…» в строке: столбцы шапки и строк совпадают
-        const SizedBox(width: kRowActionsW),
+        SizedBox(width: show('likes') ? kRowActionsW : 40),
         SizedBox(width: 60, child: Align(alignment: Alignment.centerRight, child: label('dur', 'Длительность', icon: Icons.schedule_rounded))),
       ]),
+    ),
     );
   }
 
@@ -1131,7 +1141,7 @@ class _TracksPageState extends State<TracksPage> {
     }
 
     return ListenableBuilder(
-      listenable: Listenable.merge([app.player, app.cache]),
+      listenable: Listenable.merge([app.player, app.cache, TrackColumns.hidden]),
       builder: (context, _) {
         final currentId = app.player.current?.id;
         // Перетаскиваемая строка рисуется в Overlay навигатора, выше страницы, где живёт NavScope: передаём его вручную,
@@ -1265,6 +1275,7 @@ class TrackRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
+    TrackColumns.ensure(app);
     final titleColor = current ? C.accent : C.text;
     return InkWell(
       onTap: () {
@@ -1336,31 +1347,35 @@ class TrackRow extends StatelessWidget {
             ]),
           ),
           if (!compact) ...[
-            const SizedBox(width: 16),
-            Expanded(
-              flex: 3,
-              child: Links(
-                parts: [LinkPart(track.displayAlbum, () => NavScope.of(context).go(Nav('album', track.albumKey)))],
-                style: const TextStyle(color: C.muted, fontSize: 13),
+            if (TrackColumns.shows('album')) ...[
+              const SizedBox(width: 16),
+              Expanded(
+                flex: 3,
+                child: Links(
+                  parts: [LinkPart(track.displayAlbum, () => NavScope.of(context).go(Nav('album', track.albumKey)))],
+                  style: const TextStyle(color: C.muted, fontSize: 13),
+                ),
               ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: FriendTag(track.by))),
+            ],
+            if (TrackColumns.shows('by')) ...[
+              const SizedBox(width: 16),
+              Expanded(flex: 2, child: Align(alignment: Alignment.centerLeft, child: FriendTag(track.by))),
+            ],
           ],
-          if (addedAt != null && !compact)
+          if (addedAt != null && !compact && TrackColumns.shows('padded'))
             SizedBox(
               width: 120,
               child: Text(formatAddedDate(addedAt!), maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: C.muted, fontSize: 13)),
             ),
-          if (!compact)
+          if (!compact && TrackColumns.shows('added'))
             SizedBox(
               width: 110,
               child: Text(formatUploadDate(track.added.isNotEmpty ? track.added : track.modified),
                   maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.muted, fontSize: 13)),
             ),
           // Сердечко с аватарками друзей и «…» занимают всегда одну и ту же ширину [kRowActionsW]
-          LikeButton(track: track, slot: true),
+          if (TrackColumns.shows('likes')) LikeButton(track: track, slot: true),
           SizedBox(
             width: 40,
             child: Center(
@@ -1383,6 +1398,59 @@ class TrackRow extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Какие столбцы списка треков показывать. Настройка личная и общая для всех списков; меняется по ПКМ на шапке.
+/// «#», «Название / Исполнитель» и длительность скрыть нельзя
+class TrackColumns {
+  static const optional = [
+    ('album', 'Альбом'),
+    ('by', 'Загрузил(а)'),
+    ('padded', 'Дата добавления (в плейлистах)'),
+    ('added', 'Дата загрузки'),
+    ('likes', 'Нравится (сердечко и друзья)'),
+  ];
+  static final ValueNotifier<Set<String>> hidden = ValueNotifier(const {});
+  static bool _loaded = false;
+
+  static void ensure(AppServices app) {
+    if (_loaded) return;
+    _loaded = true;
+    hidden.value = {for (final x in app.settings.viewOf('cols.hidden', '').split(',')) if (x.isNotEmpty) x};
+  }
+
+  static bool shows(String key) => !hidden.value.contains(key);
+
+  static void toggle(AppServices app, String key) {
+    final next = {...hidden.value};
+    if (!next.remove(key)) next.add(key);
+    hidden.value = next;
+    if (next.isEmpty) {
+      app.settings.view.remove('cols.hidden');
+    } else {
+      app.settings.view['cols.hidden'] = next.join(',');
+    }
+    app.lib.viewChanged();
+  }
+
+  /// Меню по ПКМ на шапке: галочки у столбцов; основные столбцы показаны, но выключить их нельзя
+  static Future<void> menu(BuildContext context, Offset at) async {
+    final app = Services.of(context);
+    ensure(app);
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    final v = await showGlassMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
+      items: [
+        const CheckedPopupMenuItem(value: '', checked: true, enabled: false, child: Text('Номер')),
+        const CheckedPopupMenuItem(value: '', checked: true, enabled: false, child: Text('Название / Исполнитель')),
+        for (final (key, label) in optional) CheckedPopupMenuItem(value: key, checked: shows(key), child: Text(label)),
+        const CheckedPopupMenuItem(value: '', checked: true, enabled: false, child: Text('Длительность')),
+      ],
+    );
+    if (v == null || v.isEmpty) return;
+    toggle(app, v);
   }
 }
 

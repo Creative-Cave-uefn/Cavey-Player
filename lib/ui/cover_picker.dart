@@ -184,7 +184,7 @@ Future<Uint8List?> _shrinkWithDialog(BuildContext context, Uint8List bytes) asyn
           const LinearProgressIndicator(),
           const SizedBox(height: 14),
           Text('Файл ${_mb(bytes.length)} МБ, а можно не больше 10 МБ. Кадры уменьшаются, пока файл не поместится — '
-              'это может занять до пары минут. Сжатая копия появится в окне правки, на Диск она загрузится после «Сохранить».',
+              'это может занять до пары минут (при первом сжатии ещё скачивается FFmpeg). Сжатая копия появится в окне правки, на Диск она загрузится после «Сохранить».',
               style: const TextStyle(color: C.muted, fontSize: 13, height: 1.4)),
         ]),
       ),
@@ -192,7 +192,8 @@ Future<Uint8List?> _shrinkWithDialog(BuildContext context, Uint8List bytes) asyn
     ),
   );
   unawaited(dialog.then((_) => closed = true));
-  final small = await shrinkGif(bytes, maxGifBytes - 256 * 1024);
+  final tools = Services.of(context).exporter.tools;
+  final small = await shrinkGif(bytes, maxGifBytes - 256 * 1024, tools: tools);
   if (closed) return null; // отменили, пока шло сжатие
   if (context.mounted) Navigator.of(context, rootNavigator: true).pop(true);
   await dialog;

@@ -11,6 +11,8 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 
+import 'dl/tools.dart';
+
 /// GIF по первым байтам («GIF87a», «GIF89a»)
 bool isGifBytes(List<int> b) => b.length > 6 && b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x38;
 
@@ -201,13 +203,66 @@ class _GifJob {
   const _GifJob(this.bytes, this.limit);
 }
 
-/// Сжимает анимированную GIF до [limit] байт: кадры уменьшаются, а если этого мало — берётся каждый второй кадр.
-/// Возвращает null, если файл не прочитался или уложиться не вышло. Работает в отдельном изоляте
-Future<Uint8List?> shrinkGif(Uint8List bytes, int limit) async {
+/// Сжимает анимированную GIF до [limit] байт. Сначала через FFmpeg (своя палитра на весь ролик, правильная склейка кадров;
+/// если его ещё нет — скачивается, как для «Скачать на устройство»), а если не вышло — своими силами в отдельном изоляте.
+/// Возвращает null, если уложиться не вышло
+Future<Uint8List?> shrinkGif(Uint8List bytes, int limit, {Tools? tools}) async {
+  if (tools != null) {
+    try {
+      final out = await _shrinkGifFfmpeg(tools, bytes, limit);
+      if (out != null) return out;
+    } catch (_) {}
+  }
   try {
     return await compute(_shrinkGif, _GifJob(bytes, limit));
   } catch (_) {
     return null;
+  }
+}
+
+/// Размер кадра из заголовка GIF
+(int, int)? gifSize(Uint8List b) => b.length < 10 ? null : (b[6] | (b[7] << 8), b[8] | (b[9] << 8));
+
+Future<Uint8List?> _shrinkGifFfmpeg(Tools tools, Uint8List bytes, int limit) async {
+  if (!await tools.ffmpeg.exists()) await tools.ensure((_) {});
+  final size = gifSize(bytes);
+  if (size == null || size.$1 <= 0) return null;
+  final tmp = Directory.systemTemp.path + Platform.pathSeparator;
+  final stamp = DateTime.now().microsecondsSinceEpoch;
+  final src = File('${tmp}cave-gif-$stamp-in.gif');
+  final dst = File('${tmp}cave-gif-$stamp-out.gif');
+  await src.writeAsBytes(bytes, flush: true);
+  try {
+    var scale = math.min(1.0, math.sqrt(limit * 0.8 / bytes.length));
+    int? fps;
+    Uint8List? best;
+    for (var attempt = 0; attempt < 6; attempt++) {
+      final w = math.max(32, (size.$1 * scale).round() & ~1);
+      final filter = '${fps == null ? '' : 'fps=$fps,'}scale=$w:-2:flags=lanczos,split[a][b];'
+          '[a]palettegen=max_colors=256:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle';
+      try {
+        if (await dst.exists()) await dst.delete();
+      } catch (_) {}
+      await Tools.run(tools.ffmpeg.path, ['-hide_banner', '-loglevel', 'error', '-y', '-i', src.path, '-filter_complex', filter, '-loop', '0', dst.path]);
+      if (!await dst.exists()) return null;
+      final out = await dst.readAsBytes();
+      if (out.isEmpty || !isGifBytes(out)) return null;
+      best = out;
+      if (out.length <= limit) return out;
+      // Не уложились: меньше кадр, а когда он уже мелкий — реже кадры
+      scale *= math.max(0.5, math.min(0.9, math.sqrt(limit * 0.85 / out.length)));
+      if (scale < 0.55 && fps == null) {
+        fps = 15;
+        scale = math.min(1.0, scale * 1.3);
+      }
+    }
+    return best != null && best.length <= limit ? best : null;
+  } finally {
+    for (final f in [src, dst]) {
+      try {
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
   }
 }
 
@@ -219,38 +274,42 @@ Uint8List? _shrinkGif(_GifJob j) {
     return null;
   }
   if (src == null) return null;
-  final frames = List<img.Image>.of(src.frames);
-  if (frames.isEmpty) return null;
   final w0 = src.width, h0 = src.height;
+  // Кадры GIF часто хранят только изменившиеся точки, а остальное прозрачно (под прозрачным нередко лежит «ключевой»
+  // зелёный цвет). Склеиваем каждый кадр поверх предыдущего и берём без прозрачности — иначе картинка становилась зелёной
+  final frames = <img.Image>[];
+  img.Image? canvas;
+  for (final f in src.frames) {
+    final rgba = f.convert(numChannels: 4);
+    final next = canvas == null ? img.Image(width: w0, height: h0, numChannels: 4) : img.Image.from(canvas);
+    img.compositeImage(next, rgba);
+    next.frameDuration = f.frameDuration;
+    canvas = next;
+    frames.add(next.convert(numChannels: 3));
+  }
+  if (frames.isEmpty) return null;
   // Размер GIF растёт примерно с числом пикселей: первый заход берём с запасом
   var scale = math.min(1.0, math.sqrt(j.limit * 0.75 / j.bytes.length));
   var step = 1;
   Uint8List? best;
-  for (var attempt = 0; attempt < 7; attempt++) {
+  for (var attempt = 0; attempt < 6; attempt++) {
     final w = math.max(16, (w0 * scale).round());
     final h = math.max(16, (h0 * scale).round());
-    final enc = img.GifEncoder(
-      repeat: 0,
-      numColors: 128,
-      quantizerType: img.QuantizerType.octree,
-      dither: img.DitherKernel.none,
-    );
+    // Нейронная палитра: восьмеричное дерево из пакета image давало кашу из цветов
+    final enc = img.GifEncoder(repeat: 0, samplingFactor: 20);
     for (var i = 0; i < frames.length; i += step) {
       var ms = 0;
       for (var k = i; k < math.min(i + step, frames.length); k++) {
         ms += frames[k].frameDuration;
       }
-      final frame = frames[i].convert(numChannels: 4);
-      final small = (w == w0 && h == h0)
-          ? frame
-          : img.copyResize(frame, width: w, height: h, interpolation: img.Interpolation.average);
+      final frame = frames[i];
+      final small = (w == w0 && h == h0) ? frame : img.copyResize(frame, width: w, height: h, interpolation: img.Interpolation.average);
       enc.addFrame(small, duration: math.max(2, (ms / 10).round()));
     }
     final out = enc.finish();
     if (out == null) return null;
     best = out;
     if (out.length <= j.limit) return out;
-    // Не уложились: ещё меньше; когда картинка уже мелкая, выбрасываем каждый второй кадр
     scale *= math.max(0.5, math.min(0.9, math.sqrt(j.limit * 0.85 / out.length)));
     if (scale < 0.45 && step < 3 && frames.length > 8) {
       step++;

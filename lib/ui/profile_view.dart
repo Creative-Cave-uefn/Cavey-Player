@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderProxyBox;
 
 import '../app.dart';
 import '../core/covers.dart' show CoverService;
@@ -159,48 +160,38 @@ class _ProfileLayoutState extends State<ProfileLayout> {
     if (old.bannerFileId != widget.bannerFileId) _loadStrip();
   }
 
-  Timer? _stripRetry;
-  int _stripTries = 0;
-
-  /// Цвета верхней кромки баннера → верхняя полоса окна. Баннер мог ещё не догрузиться: пробуем снова и по сигналу обложек,
-  /// и по таймеру (сигнал мог прийти раньше, чем копия легла в память, и больше не повториться)
+  /// Цвета верхней кромки баннера → верхняя полоса окна. Ждём ту же копию баннера, что показывает страница
+  /// (не отдельную маленькую): раньше отдельная копия часто не успевала, и полоса оставалась серой
   Future<void> _loadStrip() async {
     final id = widget.bannerFileId;
     final covers = _covers;
     if (id == null || covers == null) {
       _stripFor = null;
       _stripSeq++;
-      _stripRetry?.cancel();
       WidgetsBinding.instance.addPostFrameCallback((_) => StripTint.release(this));
       return;
     }
-    if (_stripFor == id) return; // уже взяли
+    if (_stripFor == id) return; // уже взяли или берём
+    _stripFor = id;
     final seq = ++_stripSeq;
-    final bytes = covers.peekFile(id, px: 64);
+    final bytes = await waitBannerBytes(covers, id);
+    if (!mounted || seq != _stripSeq) return;
     if (bytes == null) {
-      covers.forFile(id, px: 64); // запускаем загрузку
-      _retryStrip();
+      AppLog.info('Верхняя полоса: баннер $id не загрузился');
+      _stripFor = null; // следующий сигнал обложек попробует снова
       return;
     }
-    final list = await StripTint.sample(bytes);
+    // Рамка баннера: ширина как у страницы, высота — треть ширины в пределах 300…620 (см. _Banner)
+    final span = StripTint.span.value;
+    final width = span == null ? 1200.0 : span.$2 - span.$1;
+    final list = await StripTint.sample(bytes, boxAspect: width / (width / 3).clamp(300.0, 620.0));
     if (!mounted || seq != _stripSeq) return;
     if (list == null) {
       AppLog.info('Верхняя полоса: не удалось взять цвета баннера $id');
-      _retryStrip();
       return;
     }
-    _stripFor = id;
-    _stripRetry?.cancel();
     StripTint.claim(this, list);
     _onScroll();
-  }
-
-  void _retryStrip() {
-    if (_stripTries >= 14 || (_stripRetry?.isActive ?? false)) return;
-    _stripTries++;
-    _stripRetry = Timer(Duration(milliseconds: 600 + _stripTries * 400), () {
-      if (mounted) _loadStrip();
-    });
   }
 
   /// На какой высоте прокрутки баннер исчезает совсем
@@ -209,7 +200,6 @@ class _ProfileLayoutState extends State<ProfileLayout> {
   @override
   void dispose() {
     _covers?.removeListener(_loadStrip);
-    _stripRetry?.cancel();
     _stripSeq++;
     final me = this;
     WidgetsBinding.instance.addPostFrameCallback((_) => StripTint.release(me));
@@ -354,9 +344,10 @@ class _Banner extends StatelessWidget {
       // Свой слой: баннер не перерисовывается заново от прокрутки страницы, и нижний край не мерцает
       return RepaintBoundary(
        child: Padding(
-        padding: const EdgeInsets.fromLTRB(margin, 4, margin, 0),
+        // Сверху без отступа и скругления: баннер упирается в верхнюю полосу окна, а та подкрашена его цветами
+        padding: const EdgeInsets.fromLTRB(margin, 0, margin, 0),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
+          borderRadius: const BorderRadius.vertical(bottom: Radius.circular(28)),
           child: ShaderMask(
             // снизу: плавно в прозрачность с середины; к 96 % высоты баннер уже полностью прозрачен,
             // чтобы у самого края не оставалась тонкая линия
@@ -376,6 +367,7 @@ class _Banner extends StatelessWidget {
               ).createShader(r),
               // ClipRect: размытие рисует и за краем своего прямоугольника, это и давало линию на нижней границе
               child: ClipRect(
+               child: _SpanReport(
                child: SizedBox(
                 width: w,
                 height: h,
@@ -389,12 +381,63 @@ class _Banner extends StatelessWidget {
                   ColoredBox(color: Colors.black.withValues(alpha: 0.4)),
                 ]),
                ),
+               ),
               ),
             ),
           ),
         ),
        ),
       );
+    });
+  }
+}
+
+/// Картинка баннера (или аватарки) для фона окна и верхней полосы: любая уже загруженная копия, иначе ждём ту, что грузит
+/// страница (сигнал сервиса обложек или проверка раз в 400 мс), не дольше [limit]
+Future<Uint8List?> waitBannerBytes(CoverService covers, String id, {Duration limit = const Duration(seconds: 30)}) async {
+  Uint8List? peek() => covers.peekFile(id, px: 160) ?? covers.peekFile(id, px: 640) ?? covers.peekFile(id);
+  final now = peek();
+  if (now != null) return now;
+  final done = Completer<Uint8List?>();
+  void check() {
+    final b = peek();
+    if (b != null && !done.isCompleted) done.complete(b);
+  }
+
+  covers.forFile(id, px: 640).then((b) {
+    if (b != null && !done.isCompleted) done.complete(b);
+  });
+  covers.addListener(check);
+  final timer = Timer.periodic(const Duration(milliseconds: 400), (_) => check());
+  try {
+    return await done.future.timeout(limit, onTimeout: () => null);
+  } finally {
+    covers.removeListener(check);
+    timer.cancel();
+  }
+}
+
+/// Сообщает верхней полосе окна, где по горизонтали стоит баннер
+class _SpanReport extends SingleChildRenderObjectWidget {
+  const _SpanReport({required Widget super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) => _RenderSpanReport();
+}
+
+class _RenderSpanReport extends RenderProxyBox {
+  (double, double)? _last;
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    super.paint(context, offset);
+    if (!attached || !hasSize) return;
+    final left = localToGlobal(Offset.zero).dx;
+    final span = (left, left + size.width);
+    if (span == _last) return;
+    _last = span;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (StripTint.span.value != span) StripTint.span.value = span;
     });
   }
 }
@@ -908,20 +951,11 @@ class UserProfilePage extends StatelessWidget {
             bytes: () async {
               final id = lib.profileBanner(email) ?? lib.profileAvatar(email);
               if (id == null) return null;
-              // Маленькая копия (как у обложки трека): подходит и та, что уже загрузил сам баннер на странице (640 px).
-              // Запрос оригинала упирался в «отказ помнится 5 минут» и не видел уже готовой копии — фон оставался без баннера
-              final covers = app.covers;
-              final hit = covers.peekFile(id, px: 160) ?? await covers.forFile(id, px: 160);
-              if (hit != null) return hit;
-              // Не вышло сразу (баннер ещё качает сама страница или недавний отказ): ждём, пока копия появится в памяти.
-              // Если не дождались — фон на время цвета друга, а потом он сам повторит попытку
-              for (var i = 0; i < 12; i++) {
-                await Future<void>.delayed(const Duration(milliseconds: 500));
-                final late = covers.peekFile(id, px: 160);
-                if (late != null) return late;
-              }
-              AppLog.info('Фон профиля: баннер $id не загрузился за 6 секунд');
-              return null;
+              // Ждём ту же копию, что грузит сама страница (и сигнал о ней от сервиса обложек), до 30 секунд.
+              // Раньше фон ждал отдельную маленькую копию 6 секунд и при первом заходе на страницу не дожидался
+              final hit = await waitBannerBytes(app.covers, id);
+              if (hit == null) AppLog.info('Фон профиля: картинка $id не загрузилась за 30 секунд');
+              return hit;
             },
             color: friendColor(email),
           ),
