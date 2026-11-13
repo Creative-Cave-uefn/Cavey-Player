@@ -138,7 +138,7 @@ if (Test-Path $iconPath) {
             $n = $sizes[$density]
             $out = Join-Path $root ("android/app/src/main/res/mipmap-" + $density)
             New-Item -ItemType Directory -Path $out -Force | Out-Null
-            $bmp = New-Object System.Drawing.Bitmap($n, $n)
+            $bmp = [System.Drawing.Bitmap]::new($n, $n)
             try {
                 $graphics = [System.Drawing.Graphics]::FromImage($bmp)
                 try {
