@@ -81,7 +81,7 @@ class MainActivity : AudioServiceActivity() {
                 val request = YtDlpRequest(url).setOutputTemplate(template)
                     .addOption("--no-playlist")
                     .addOption("--no-mtime")
-                    .addOption("--restrict-filenames")
+                    .addOption("--max-filesize", "250M")
                     // The app's Drive library already recognizes M4A.
                     // Do not mislabel WebM/Opus bytes as M4A.
                     .addOption("-f", "bestaudio[ext=m4a]/best[ext=m4a]")
