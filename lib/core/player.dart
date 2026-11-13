@@ -1138,7 +1138,9 @@ class PlayerController extends ChangeNotifier {
       // Теперь «главный» проигрыватель — новый, а прежний доигрывает затихая
       final old = _p;
       _transitionProbe = TransitionProbe(from: fromId, to: nextTrack.id,
-          technique: dj ? 'beatBlend' : _adaptiveDecision?.to == nextTrack.id ? _adaptiveDecision!.technique.name : 'autoMix',
+          technique: dj ? 'beatBlend' : plan == null ? 'autoMix' :
+              _adaptiveDecision?.to == nextTrack.id && _adaptiveDecision?.technique != AdaptiveTechnique.beatBlend
+                  ? _adaptiveDecision!.technique.name : 'autoMix',
           requestedStartMs: plan?.start.inMilliseconds ?? old.state.position.inMilliseconds,
           actualStartMs: old.state.position.inMilliseconds, cueInMs: incoming.state.position.inMilliseconds,
           plannedLengthMs: lengthWanted, actualLengthMs: lengthMs, prepareMs: prepareClock.elapsedMilliseconds,
@@ -1234,6 +1236,8 @@ class PlayerController extends ChangeNotifier {
       });
     } catch (e) {
       AppLog.warn('Плавный переход не получился, трек доиграет как обычно', e);
+      _traceDj({'kind': 'executionAbort', 'from': fromId, 'to': nextTrack.id,
+        'cause': e.runtimeType.toString(), 'cancelled': !ownsTransition(), 'hadHandoff': _transitionProbe != null});
       if (ownsTransition()) {
         _endFade(stopIncoming: true);
         if (plan?.dj == true && playing) {
@@ -1527,7 +1531,7 @@ class PlayerController extends ChangeNotifier {
       _historySeq = seq;
       final f = adaptiveFeatures?.call(t.id), p = mixer?.profileCached(t.id);
       _djHistory.add(DjHistoryEntry(t.id, artist: t.artist.toLowerCase(), genre: p?.genre ?? '',
-          technique: _adaptiveDecision?.to == t.id ? _adaptiveDecision!.technique.name : '',
+          technique: _transitionProbe?.to == t.id ? _transitionProbe!.technique : '',
           energyDb: f?.rmsDb ?? p?.loudDb ?? -20));
       if (_djHistory.length > 8) _djHistory.removeAt(0);
     }
