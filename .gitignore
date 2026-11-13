@@ -16,3 +16,5 @@ sockseek.conf
 
 # Python benchmark bytecode
 tools/__pycache__/
+
+tools/**/__pycache__/

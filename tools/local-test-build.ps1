@@ -11,6 +11,7 @@
 #   -Stable         стабильная сборка с main (канал пустой, как в CI); сам ничего не публикует. Его вызывает tools\publish-release.ps1
 #   -NoPublish      только собрать, на GitHub ничего не выкладывать (файлы будут в папке dist)
 #   -Publish        после успешных проверок опубликовать тестовую сборку и отчёт без дополнительного вопроса
+#   -WithAudioModels добавить локальную модель голоса (Python 3.11 нужен только на машине сборки)
 #   -Downloader     путь к cave-downloader-windows-x64.exe (по умолчанию берётся из установленной Cavey)
 #   -GoogleClientId / -GoogleClientSecret   ключи Google (или переменные окружения GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).
 #                   Без них сборка работает, но при первом запуске приложение попросит ввести ключи.
@@ -21,6 +22,7 @@ param(
     [switch]$NoPublish,
     [switch]$Publish,
     [switch]$Stable,
+    [switch]$WithAudioModels,
     [string]$Downloader = '',
     [string]$GoogleClientId = $env:GOOGLE_CLIENT_ID,
     [string]$GoogleClientSecret = $env:GOOGLE_CLIENT_SECRET,
@@ -162,6 +164,7 @@ $verification = [ordered]@{
     listening = 'not_run'
     playbackRegression = 'not_run'
     downloaderIncluded = $false
+    audioModel = 'not_included'
     artifacts = @()
 }
 function Write-Verification {
@@ -180,7 +183,8 @@ function Write-Verification {
         "| flutter build windows --release | $($verification.checks.windowsRelease) |",
         "| Установщик и portable ZIP | $($verification.checks.packaging) |", '',
         'Прослушивание и проверка регрессий воспроизведения: ещё не выполнены.', '',
-        "Загрузчик включён в пакет: $($verification.downloaderIncluded)", '',
+        "Загрузчик включён в пакет: $($verification.downloaderIncluded)",
+        "Локальная модель голоса: $($verification.audioModel)", '',
         '## SHA-256 файлов', ''
     )
     foreach ($artifact in $verification.artifacts) { $lines += "- $($artifact.name): $($artifact.sha256)" }
@@ -276,6 +280,17 @@ if ($buildCode -ne 0) { Fail 'Сборка не удалась. Пришлите
 
 $release = Join-Path $root 'build\windows\x64\runner\Release'
 if (-not (Test-Path (Join-Path $release 'cave_player.exe'))) { Fail "Не нашёл cave_player.exe в $release" }
+if ($WithAudioModels) {
+    Say 'Собираю локальную модель голоса и проверяю упакованный анализатор'
+    $modelCode = Run 'powershell' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        (Join-Path $root 'tools\intelligence\setup.ps1'), '-Destination', (Join-Path $release 'audio-intelligence'))
+    $verification.exitCodes['audioModel'] = $modelCode
+    $verification.audioModel = if ($modelCode -eq 0) { 'included_self_test_passed' } else { 'failed' }
+    Write-Verification
+    if ($modelCode -ne 0) { Fail 'Локальная модель голоса не прошла сборку/самопроверку.' }
+} elseif (Test-Path (Join-Path $release 'audio-intelligence')) {
+    Remove-Item (Join-Path $release 'audio-intelligence') -Recurse -Force
+}
 
 # ---------- 7. Загрузчик музыки ----------
 Say 'Добавляю Cavey-Downloader.exe'
