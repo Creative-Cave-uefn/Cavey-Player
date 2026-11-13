@@ -321,7 +321,7 @@ function adopt_(req, email) {
         Drive.Permissions.update({ role: 'owner' }, id, pid, { transferOwnership: true, supportsAllDrives: true });
       } catch (err) {
         results[id] = 'transfer_failed';
-        details[id] = String(err).slice(0, 300);
+        details[id] = String(err).slice(0, 200) + ' | мой id права: ' + myPid + ' | права на файле: ' + permsInfo_(id);
         log_('adopt_fail', email, id + ' ' + details[id]);
         continue;
       }
@@ -355,6 +355,16 @@ function adopt_(req, email) {
   }
   log_('adopt', email, JSON.stringify(results).slice(0, 400));
   return json_({ ok: true, api: API_VERSION, results: results, details: details });
+}
+
+/** Кратко: какие права на файле видны скрипту (для разбора неудачной передачи владения) */
+function permsInfo_(id) {
+  try {
+    var perms = Drive.Permissions.list(id, { fields: 'permissions(id,emailAddress,role,pendingOwner)', supportsAllDrives: true }).permissions || [];
+    return perms.map(function (p) { return (p.emailAddress || '?') + ':' + p.role + (p.pendingOwner ? ':ждёт' : '') + ':' + p.id; }).join(', ').slice(0, 300);
+  } catch (err) {
+    return 'список прав недоступен: ' + String(err).slice(0, 100);
+  }
 }
 
 // ───────────────────────── Журнал ─────────────────────────
