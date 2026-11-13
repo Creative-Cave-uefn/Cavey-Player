@@ -8,6 +8,7 @@ import 'audio_cache.dart';
 import 'automix.dart';
 import 'auth.dart';
 import 'crossfade.dart';
+import 'crossfade_handoff.dart';
 import 'drive.dart';
 import 'library.dart';
 import 'mixbook.dart';
@@ -767,6 +768,7 @@ class PlayerController extends ChangeNotifier {
 
   Duration _prevPos = Duration.zero;
   bool _fading = false;
+  int _fadeGeneration = 0;
   Timer? _fadeTimer;
   double _inGain = 1;
   double _outGain = 1;
@@ -932,6 +934,8 @@ class PlayerController extends ChangeNotifier {
     if (nextTrack == null) return;
     _fading = true;
     final seq = ++_openSeq;
+    final generation = ++_fadeGeneration;
+    bool ownsTransition() => seq == _openSeq && generation == _fadeGeneration && _fading;
     final lengthWanted = plan?.length.inMilliseconds ?? crossfadeSecNow.clamp(1, 10).toInt() * 1000;
     final lengthMs0 = lengthWanted;
     // С выравниванием громкости оба трека уже приведены к одному уровню — свою подгонку перехода не добавляем
@@ -945,7 +949,7 @@ class PlayerController extends ChangeNotifier {
       for (var i = 0; _preparing && i < 60; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
-      if (seq != _openSeq || !_fading) return;
+      if (!ownsTransition()) return;
       final incoming = _q ??= Player();
       final prepared = _preparedId == nextTrack.id;
       _preparedId = null;
@@ -965,24 +969,28 @@ class PlayerController extends ChangeNotifier {
         await incoming.play();
       } else {
         final media = await _mediaFor(nextTrack);
-        if (seq != _openSeq || !_fading) return; // пока готовили, человек сам что-то переключил
+        if (!ownsTransition()) return; // пока готовили, человек сам что-то переключил
         await incoming.open(media, play: true);
       }
+      if (!ownsTransition()) return;
       // Пустое вступление следующего трека пропускаем
       // Диджейскому следующий трек запускается на preroll раньше, чтобы к началу перехода дойти ровно до своей доли
       final inStart = djp != null
           ? djp.inStart - Duration(microseconds: (djp.preroll.inMicroseconds * djp.rate).round())
           : (plan != null && plan.inStart > const Duration(milliseconds: 300) ? plan.inStart : Duration.zero);
       if (inStart > (djp != null ? const Duration(milliseconds: 20) : Duration.zero)) await incoming.seek(inStart);
-      // Уходящий трек остаётся на полной громкости, пока у следующего не пошёл звук (до 3 с),
+      // Уходящий трек остаётся на полной громкости, пока следующая дека не готова к воспроизведению (до 5 с),
       // и оба затихают и нарастают одновременно
-      await incoming.stream.position
-          .firstWhere((d) => d > inStart + const Duration(milliseconds: 40))
-          .timeout(const Duration(seconds: 3), onTimeout: () => Duration.zero);
-      if (seq != _openSeq || !_fading) {
-        await incoming.stop();
-        return;
-      }
+      HandoffState readIncoming() => HandoffState(incoming.state.position, incoming.state.duration,
+          playing: incoming.state.playing, buffering: incoming.state.buffering);
+      final ready = await waitForHandoff(
+        read: readIncoming,
+        changes: incoming.stream.position.map<void>((_) {}),
+        isCurrent: ownsTransition,
+        cue: inStart,
+      );
+      if (!ownsTransition()) return;
+      if (!ready) throw StateError('Следующая дека не готова: нет длительности или продвижения воспроизведения');
       if (dj) {
         // Ждём, пока уходящий дойдёт до начала перехода (следующий всё это время уже играет без звука),
         // и сверяем доли: если расходятся заметно, один раз подтягиваем, дальше подстраиваем скоростью
@@ -993,9 +1001,7 @@ class PlayerController extends ChangeNotifier {
         if (wait > const Duration(milliseconds: 5)) {
           await Future<void>.delayed(wait < const Duration(seconds: 3) ? wait : const Duration(seconds: 3));
         }
-        if (seq != _openSeq || !_fading) {
-          _stopClocks();
-          await incoming.stop();
+        if (!ownsTransition()) {
           return;
         }
         final e = _phaseErr(djp, oc.now(), ic.now());
@@ -1003,6 +1009,10 @@ class PlayerController extends ChangeNotifier {
           final back = Duration(microseconds: ((e - 45) * djp.rate * 1000).round()); // 45 мс — на саму перемотку
           await incoming.seek(ic.now() - back);
         }
+      }
+      if (!ownsTransition()) return;
+      if (!readIncoming().readyAfter(inStart)) {
+        throw StateError('Следующая дека потеряла готовность до передачи управления');
       }
       // Уходящему осталось звучать не дольше, чем он ещё длится: переход укорачивается на время ожидания
       final oldRemaining = duration - _p.state.position;
@@ -1056,12 +1066,17 @@ class PlayerController extends ChangeNotifier {
       _preloadNext();
       _saveSession();
       _topUpFeed();
+      if (!ownsTransition()) return;
       final started = DateTime.now();
       final swapAt = djp?.swapAt;
       var swapped = false;
       var ticks = 0;
       var cmdRate = djp?.rate ?? 1.0;
       _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+        if (!ownsTransition()) {
+          timer.cancel();
+          return;
+        }
         final elapsed = DateTime.now().difference(started);
         // Подстройка скоростью: раз в 200 мс смотрим, не уехали ли доли, и чуть ускоряем или замедляем следующий трек
         if (djp != null && ++ticks % 2 == 0) {
@@ -1096,7 +1111,7 @@ class PlayerController extends ChangeNotifier {
       });
     } catch (e) {
       AppLog.warn('Плавный переход не получился, трек доиграет как обычно', e);
-      _endFade(stopIncoming: seq == _openSeq);
+      if (ownsTransition()) _endFade(stopIncoming: true);
     }
   }
 
@@ -1203,6 +1218,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _endFade({bool stopIncoming = false}) {
+    _fadeGeneration++;
     _previewOverride = null;
     _stopClocks();
     _fadeTimer?.cancel();
@@ -1461,13 +1477,14 @@ class PlayerController extends ChangeNotifier {
       await _open(at: position.value);
       return;
     }
-    _endFade();
+    _endFade(stopIncoming: _fading && _outgoing == null);
     if (playing) _userPaused = true;
     await _p.playOrPause();
     onUserAction?.call();
   }
 
   Future<void> seek(Duration d) async {
+    if (_fading) _endFade(stopIncoming: _outgoing == null);
     if (_resumeAt != null) {
       _resumeAt = d;
       position.value = d;
