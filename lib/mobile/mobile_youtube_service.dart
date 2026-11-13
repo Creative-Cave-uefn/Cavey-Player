@@ -28,7 +28,7 @@ class MobileYoutubeService extends ChangeNotifier {
   /// Host-based allowlist: never send arbitrary URLs to an extractor.
   static bool isYoutubeUrl(String input) {
     final uri = Uri.tryParse(input.trim());
-    if (uri == null || uri.scheme != 'https' || uri.hasUserInfo) return false;
+    if (uri == null || uri.scheme != 'https' || uri.userInfo.isNotEmpty) return false;
     final host = uri.host.toLowerCase();
     if (host == 'youtu.be' || host == 'www.youtu.be') {
       return uri.pathSegments.isNotEmpty && uri.pathSegments.first.isNotEmpty;
