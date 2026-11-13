@@ -24,6 +24,11 @@ AdaptiveTrack song(String id, {double bpm = 120, String key = '8A', int vocal = 
 }
 
 void main() {
+  test('cuts require explicit opt-in', () {
+    final d = AdaptiveDj.pair(song('a', vocal: 90), song('b', bpm: 92, vocal: 90));
+    expect(d.technique, isNot(AdaptiveTechnique.cut));
+    expect(d.plan!.length.inMilliseconds, greaterThan(250));
+  });
   test('stable analysed pair uses a beat blend', () {
     final d = AdaptiveDj.pair(song('a'), song('b'));
     expect(d.technique, AdaptiveTechnique.beatBlend);
@@ -54,7 +59,7 @@ void main() {
     expect(d.score, greaterThan(0));
   });
   test('contrast can use a structural cut without vocal overlap', () {
-    final d = AdaptiveDj.pair(song('a'), song('b', bpm: 92));
+    final d = AdaptiveDj.pair(song('a'), song('b', bpm: 92), allowCut: true);
     expect(d.technique, AdaptiveTechnique.cut);
     expect(d.plan!.rate, 1);
   });
@@ -64,7 +69,7 @@ void main() {
     expect(d.plan!.rate, 1);
   });
   test('strong vocal proxy prohibits long overlap and supports a phrase cut', () {
-    final d = AdaptiveDj.pair(song('a', vocal: 90), song('b', vocal: 90));
+    final d = AdaptiveDj.pair(song('a', vocal: 90), song('b', vocal: 90), allowCut: true);
     expect(d.technique, AdaptiveTechnique.cut);
     expect(d.plan!.length.inMilliseconds, 250);
     final noCut = AdaptiveDj.pair(song('a', vocal: 90), song('b', vocal: 90), allowCut: false);

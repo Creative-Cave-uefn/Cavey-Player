@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'sections.dart';
+import 'rhythm.dart';
+import 'vocal_activity.dart';
 
 // Запись признаков одного трека — то, что хранится в локальном индексе и общих файлах на Диске.
 // Общая часть компактна; необязательные локальные окна v2 увеличивают размер с длительностью трека. Спектрограммы не хранятся.
@@ -183,7 +185,7 @@ class TrackFeatures {
   static const int schemaVersion = 1;
 
   /// Версия анализатора: растёт, когда меняются алгоритмы. Записи старее пересчитываются
-  static const int analyzerVersion = 2;
+  static const int analyzerVersion = 3;
 
   /// Кратко о том, что проверять в [flags]
   static const flagPartial = 'partial'; // разобраны только отрывки трека
@@ -243,6 +245,8 @@ class TrackFeatures {
   final double? stereoWidth;
 
   final SectionIndex? sections;
+  final RhythmTimeline? rhythm;
+  final VocalActivity? vocalActivity;
   final SegmentStats? intro;
   final SegmentStats? outro;
   final List<String> flags;
@@ -283,6 +287,8 @@ class TrackFeatures {
     this.lra,
     this.stereoWidth,
     this.sections,
+    this.rhythm,
+    this.vocalActivity,
     this.intro,
     this.outro,
     this.flags = const [],
@@ -347,6 +353,8 @@ class TrackFeatures {
         if (lra != null) 'lr': _r(lra!, 1),
         if (stereoWidth != null) 'sw': _r(stereoWidth!, 3),
         if (sections != null) 'sx': sections!.toJson(),
+        if (rhythm != null) 'rt': rhythm!.toJson(),
+        if (vocalActivity != null) 'va': vocalActivity!.toJson(),
         if (intro != null) 'in': intro!.toJson(),
         if (outro != null) 'out': outro!.toJson(),
         if (flags.isNotEmpty) 'q': flags,
@@ -400,6 +408,8 @@ class TrackFeatures {
         lra: _dn(j['lr']),
         stereoWidth: _dn(j['sw']),
         sections: SectionIndex.fromJson(j['sx']),
+        rhythm: RhythmTimeline.fromJson(j['rt']),
+        vocalActivity: VocalActivity.fromJson(j['va']),
         intro: SegmentStats.fromJson(j['in']),
         outro: SegmentStats.fromJson(j['out']),
         flags: q is List ? [for (final x in q) '$x'] : const [],

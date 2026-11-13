@@ -6,6 +6,7 @@ import '../beats.dart' show beatPhase, downbeatOf, findTempo, frameLevels, onset
 import 'features.dart';
 import 'record.dart';
 import 'section_analysis.dart';
+import 'rhythm.dart';
 
 // Сборка записи признаков из звука: тембр, гармония, ритм, энергия, вступление и концовка, данные для DJ.
 // Чистая функция без обращений к диску и сети: звук приходит байтами, результат — запись. Поэтому её можно
@@ -382,6 +383,7 @@ TrackFeatures analyzeAudio(AnalysisInput input) {
     lufs: input.lufs,
     lra: input.lra,
     stereoWidth: _stereoWidthOf(input.chunks),
+    rhythm: full && tempo.broadO != null && tempo.lowO != null ? analyzeRhythm(tempo.broadO!, tempo.lowO!) : null,
     sections: full ? analyzeSections(all, input.chunks.first.pcm22, onsets: tempo.broadO) : null,
     intro: intro,
     outro: outro,

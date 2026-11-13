@@ -89,7 +89,7 @@ class AdaptiveDj {
   }
 
   static AdaptiveDecision choose(AdaptiveTrack from, List<AdaptiveTrack> pool,
-      {DjMix options = const DjMix(), int maxSec = 8, int earliestMs = 0, int? manualPositionMs, bool allowCut = true, DjSetContext context = const DjSetContext()}) {
+      {DjMix options = const DjMix(), int maxSec = 8, int earliestMs = 0, int? manualPositionMs, bool allowCut = false, DjSetContext context = const DjSetContext()}) {
     if (pool.isEmpty) throw ArgumentError('Empty candidate pool');
     final candidates = pool.where((t) => t.id != from.id).take(maxCandidates).toList();
     if (!from.reliable || candidates.isEmpty) return fallback(from, pool.first, maxSec);
@@ -140,7 +140,7 @@ class AdaptiveDj {
   }
 
   static AdaptiveDecision pair(AdaptiveTrack from, AdaptiveTrack next,
-      {DjMix options = const DjMix(), int maxSec = 8, int earliestMs = 0, int? manualPositionMs, bool allowCut = true}) {
+      {DjMix options = const DjMix(), int maxSec = 8, int earliestMs = 0, int? manualPositionMs, bool allowCut = false}) {
     if (!from.reliable || !next.reliable) return fallback(from, next, maxSec);
     final a = from.planningProfile, b = next.planningProfile, fa = from.features!, fb = next.features!;
     if (fa.sections != null && fb.sections != null) {

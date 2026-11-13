@@ -40,10 +40,7 @@ SectionIndex applyVocalAnnotations(SectionIndex index, List<VocalObservation> ev
       covered += weight; probability += v.probability * weight; confidence += v.confidence * weight;
     }
     if (covered < (r.endMs - r.startMs) * 0.9) { out.add(r); continue; }
-    out.add(AudioRegion(startMs: r.startMs, endMs: r.endMs, energyDb: r.energyDb, centroidHz: r.centroidHz,
-        bassRatio: r.bassRatio, onsetDensity: r.onsetDensity, activeFraction: r.activeFraction,
-        mfcc: r.mfcc, chroma: r.chroma, boundaryConfidence: r.boundaryConfidence, samplePeakDb: r.samplePeakDb,
-        vocalProbability: probability / covered, vocalConfidence: confidence / covered, vocalSource: source));
+    out.add(r.copyWith(vocalProbability: probability / covered, vocalConfidence: confidence / covered, vocalSource: source));
   }
   return SectionIndex(List.unmodifiable(out));
 }
