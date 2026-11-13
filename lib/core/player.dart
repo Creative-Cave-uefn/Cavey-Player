@@ -1033,21 +1033,22 @@ class PlayerController extends ChangeNotifier {
       await incoming.setVolume(0);
       final djp = plan != null && plan.dj ? plan : null;
       final dj = djp != null;
-      if (dj) {
-        // Темп следующего подгоняем под уходящий до того, как он зазвучит; у басов следующего срезаем низы
-        _fxDirty = true;
-        await _setRate(incoming, djp.rate);
-        if (djp.swapAt != null) await _setLowCut(incoming, true);
-      } else if (_fxDirty) {
-        await _setRate(incoming, 1.0);
-        await _setLowCut(incoming, false);
-      }
       if (prepared) {
         await incoming.play();
       } else {
         final media = await _mediaFor(nextTrack);
         if (!ownsTransition()) return; // пока готовили, человек сам что-то переключил
         await incoming.open(media, play: true);
+      }
+      if (!ownsTransition()) return;
+      // Configure the already opened, silent deck; open may reset transport FX.
+      if (dj) {
+        _fxDirty = true;
+        await _setRate(incoming, djp.rate);
+        await _setLowCut(incoming, djp.swapAt != null, force: true);
+      } else if (_fxDirty) {
+        await _setRate(incoming, 1.0);
+        await _setLowCut(incoming, false, force: true);
       }
       if (!ownsTransition()) return;
       // Пустое вступление следующего трека пропускаем
@@ -1068,6 +1069,8 @@ class PlayerController extends ChangeNotifier {
       );
       if (!ownsTransition()) return;
       if (!ready) throw StateError('Следующая дека не готова: нет длительности или продвижения воспроизведения');
+      if (dj) AppLog.info('DJ execution: rate requested=${djp.rate}, actual=${incoming.state.rate}, '
+          'bassCut=${_cut.contains(incoming)}, swapMs=${djp.swapAt?.inMilliseconds}, envelope=phrase');
       if (dj) {
         // Ждём, пока уходящий дойдёт до начала перехода (следующий всё это время уже играет без звука),
         // и сверяем доли: если расходятся заметно, один раз подтягиваем, дальше подстраиваем скоростью
@@ -1178,13 +1181,15 @@ class PlayerController extends ChangeNotifier {
         // Обмен басов: низы переходят от уходящего к следующему на сильной доле посередине перехода
         if (swapAt != null && !swapped && elapsed >= swapAt) {
           swapped = true;
+          AppLog.info('DJ execution: bass swap at ${elapsed.inMilliseconds} ms');
           unawaited(_setLowCut(incoming, false));
           unawaited(_setLowCut(old, true));
         }
-        final g = dj ? djGains(t) : fadeGains(t);
-        _outGain = g.$1;
-        // Следующий трек входит на громкости уходящего и к концу перехода выходит на свою
-        _inGain = g.$2 * (match + (1 - match) * t);
+        final g = dj ? phraseBlendGains(t) : fadeGains(t);
+        _outGain = dj ? amplitudeToMpvVolume(g.$1) : g.$1;
+        // DJ envelopes are amplitudes; convert to the cubic mpv slider once.
+        final inAmplitude = g.$2 * (match + (1 - match) * t);
+        _inGain = dj ? math.pow(math.max(0.0, inAmplitude), 1 / 3).toDouble() : inAmplitude;
         _applyVolume();
       });
     } catch (e) {
@@ -1263,16 +1268,18 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// Срезает низкие частоты (фильтр высоких) у проигрывателя или возвращает как было. Если сборка mpv без фильтров — молча пропускаем
-  Future<void> _setLowCut(Player p, bool on) async {
-    if (on == _cut.contains(p)) return; // фильтр уже в нужном состоянии: лишний раз цепочку звука не пересобираем
-    if (on) {
-      _cut.add(p);
-    } else {
-      _cut.remove(p);
-    }
+  Future<void> _setLowCut(Player p, bool on, {bool force = false}) async {
+    if (!force && on == _cut.contains(p)) return;
     try {
       await (p.platform as dynamic).setProperty('af', on ? 'lavfi=[highpass=f=220]' : '');
+      if (on) {
+        _cut.add(p);
+      } else {
+        _cut.remove(p);
+      }
+      AppLog.info('DJ execution: bass filter ${on ? 'on' : 'off'} applied');
     } catch (e) {
+      // Never record an unsupported filter as successfully enabled.
       AppLog.warn('Переход: не удалось поменять фильтр басов', e);
     }
   }
