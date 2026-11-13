@@ -92,7 +92,9 @@ class SectionIndex {
     final mfcc = List.filled(12, 0.0), chroma = List.filled(12, 0.0);
     final sources = <String>{};
     for (final r in regions) {
-      final weight = math.min(r.endMs, endMs) - math.max(r.startMs, startMs);
+      final int overlapEnd = r.endMs < endMs ? r.endMs : endMs;
+      final int overlapStart = r.startMs > startMs ? r.startMs : startMs;
+      final int weight = overlapEnd - overlapStart;
       if (weight <= 0) continue;
       covered += weight; db += r.energyDb * weight; hz += r.centroidHz * weight;
       bass += r.bassRatio * weight; onset += r.onsetDensity * weight; active += r.activeFraction * weight;

@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:cave_player/core/automix.dart';
 import 'package:cave_player/core/intel/adaptive_dj.dart';
 import 'package:cave_player/core/intel/record.dart';
 import 'package:cave_player/core/intel/sections.dart';
