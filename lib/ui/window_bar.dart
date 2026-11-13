@@ -110,7 +110,10 @@ class _BannerStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return IgnorePointer(
+    // ClipRect: размытие рисует и за краями своего прямоугольника; без обрезки оно выходило за нижнюю границу полосы
+    // и ложилось поверх страницы (особенно заметно на ярких баннерах)
+    return ClipRect(
+      child: IgnorePointer(
       child: ValueListenableBuilder<List<Color>?>(
         valueListenable: StripTint.colors,
         builder: (context, colors, _) {
@@ -143,6 +146,7 @@ class _BannerStrip extends StatelessWidget {
                   ),
           );
         },
+      ),
       ),
     );
   }
