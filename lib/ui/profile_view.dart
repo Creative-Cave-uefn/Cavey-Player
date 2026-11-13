@@ -184,13 +184,14 @@ class _ProfileLayoutState extends State<ProfileLayout> {
     // Рамка баннера: ширина как у страницы, высота — треть ширины в пределах 300…620 (см. _Banner)
     final span = StripTint.span.value;
     final width = span == null ? 1200.0 : span.$2 - span.$1;
-    final list = await StripTint.sample(bytes, boxAspect: width / (width / 3).clamp(300.0, 620.0));
+    Color? tone;
+    final list = await StripTint.sample(bytes, boxAspect: width / (width / 3).clamp(300.0, 620.0), onTone: (c) => tone = c);
     if (!mounted || seq != _stripSeq) return;
     if (list == null) {
       AppLog.info('Верхняя полоса: не удалось взять цвета баннера $id');
       return;
     }
-    StripTint.claim(this, list);
+    StripTint.claim(this, list, tone: tone);
     _onScroll();
   }
 

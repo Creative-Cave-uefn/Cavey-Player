@@ -99,10 +99,15 @@ class StripTint {
   /// Где баннер стоит по горизонтали (левый и правый край в координатах окна): цвета полосы ложатся ровно над ним,
   /// а левее и правее продолжаются его крайние цвета
   static final ValueNotifier<(double, double)?> span = ValueNotifier(null);
+
+  /// Общий тон баннера (среднее по всей видимой картинке, затемнённое так же): им полоса закрашена там, где баннера нет
+  /// (над боковой панелью и по краям), и в него же растворяются края баннера — как растворяется фон окна
+  static final ValueNotifier<Color?> base = ValueNotifier(null);
   static Object? _owner;
 
-  static void claim(Object owner, List<Color>? list) {
+  static void claim(Object owner, List<Color>? list, {Color? tone}) {
     _owner = owner;
+    base.value = tone;
     colors.value = list;
   }
 
@@ -110,6 +115,7 @@ class StripTint {
     if (!identical(_owner, owner)) return;
     _owner = null;
     colors.value = null;
+    base.value = null;
     span.value = null;
     fade.value = 1;
   }
@@ -117,7 +123,8 @@ class StripTint {
   /// Цвета верхней кромки картинки так, как её видно на странице: [count] полосок слева направо.
   /// [boxAspect] — ширина к высоте рамки баннера (картинка в неё вписана «с обрезкой», как BoxFit.cover).
   /// Затемнены так же, как сам баннер на странице (там поверх чёрный слой 40 %)
-  static Future<List<Color>?> sample(Uint8List bytes, {int count = 48, double dim = 0.6, double? boxAspect}) async {
+  static Future<List<Color>?> sample(Uint8List bytes,
+      {int count = 48, double dim = 0.6, double? boxAspect, void Function(Color tone)? onTone}) async {
     try {
       final codec = await ui.instantiateImageCodec(bytes, targetWidth: 192);
       final frame = await codec.getNextFrame();
@@ -143,6 +150,21 @@ class StripTint {
       }
       final top = y0v.floor().clamp(0, h - 1);
       final rows = math.max(1, math.min(4, h - top));
+      // Общий тон: среднее по всей видимой части картинки
+      if (onTone != null) {
+        var r = 0, g = 0, b = 0, n = 0;
+        final xa = x0v.floor().clamp(0, w - 1), xb = x1v.ceil().clamp(xa + 1, w);
+        for (var y = top; y < h; y++) {
+          for (var x = xa; x < xb; x++) {
+            final o = (y * w + x) * 4;
+            r += data.getUint8(o);
+            g += data.getUint8(o + 1);
+            b += data.getUint8(o + 2);
+            n++;
+          }
+        }
+        if (n > 0) onTone(Color.fromARGB(255, (r / n * dim).round(), (g / n * dim).round(), (b / n * dim).round()));
+      }
       final out = <Color>[];
       for (var i = 0; i < count; i++) {
         var r = 0, g = 0, b = 0, n = 0;

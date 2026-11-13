@@ -138,7 +138,7 @@ class _BannerStrip extends StatelessWidget {
                           ).createShader(r),
                           child: ImageFiltered(
                             imageFilter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 2, tileMode: TileMode.clamp),
-                            child: CustomPaint(painter: _StripPainter(colors, span), size: Size.infinite),
+                            child: CustomPaint(painter: _StripPainter(colors, span, StripTint.base.value), size: Size.infinite),
                           ),
                         ),
                       ),
@@ -155,22 +155,52 @@ class _BannerStrip extends StatelessWidget {
 class _StripPainter extends CustomPainter {
   final List<Color> colors;
   final (double, double)? span;
-  const _StripPainter(this.colors, this.span);
+  final Color? base;
+  const _StripPainter(this.colors, this.span, this.base);
+
+  static double _smooth(double t) {
+    final x = t.clamp(0.0, 1.0);
+    return x * x * (3 - 2 * x);
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    if (w <= 0) return;
     // Полоса начинается у левого края окна, поэтому координаты окна совпадают с её собственными
-    final left = span?.$1 ?? 0;
-    final right = span?.$2 ?? size.width;
+    final left = (span?.$1 ?? 0).clamp(0.0, w).toDouble();
+    final right = (span?.$2 ?? w).clamp(left, w).toDouble();
     final list = colors.length == 1 ? [colors.first, colors.first] : colors;
+    // Общий тон: там, где баннера нет (над боковой панелью, по краям), полоса одного цвета с фоном окна,
+    // а края баннера (он по бокам растворяется в фон) переходят в этот же тон, а не тянут свои крайние пиксели
+    var bg = base;
+    if (bg == null) {
+      var r = 0, g = 0, b = 0;
+      for (final c in list) {
+        r += (c.r * 255).round();
+        g += (c.g * 255).round();
+        b += (c.b * 255).round();
+      }
+      bg = Color.fromARGB(255, r ~/ list.length, g ~/ list.length, b ~/ list.length);
+    }
+    final n = list.length;
+    final cols = <Color>[bg];
+    final xs = <double>[0];
+    for (var i = 0; i < n; i++) {
+      final p = i / (n - 1);
+      final a = _smooth(p / 0.12) * _smooth((1 - p) / 0.12);
+      cols.add(Color.lerp(bg, list[i], a)!);
+      xs.add(left + p * (right - left));
+    }
+    cols.add(bg);
+    xs.add(w);
     final paint = Paint()
-      ..shader = ui.Gradient.linear(Offset(left, 0), Offset(right <= left ? left + 1 : right, 0), list,
-          [for (var i = 0; i < list.length; i++) i / (list.length - 1)], TileMode.clamp);
+      ..shader = ui.Gradient.linear(Offset.zero, Offset(w, 0), cols, [for (final x in xs) (x / w).clamp(0.0, 1.0)], TileMode.clamp);
     canvas.drawRect(Offset.zero & size, paint);
   }
 
   @override
-  bool shouldRepaint(_StripPainter old) => !identical(old.colors, colors) || old.span != span;
+  bool shouldRepaint(_StripPainter old) => !identical(old.colors, colors) || old.span != span || old.base != base;
 }
 
 class _CaptionButton extends StatefulWidget {
