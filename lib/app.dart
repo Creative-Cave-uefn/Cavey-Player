@@ -14,6 +14,7 @@ import 'core/wave.dart';
 import 'core/app_icon.dart';
 import 'core/audio_cache.dart';
 import 'core/automix.dart';
+import 'core/intel/service.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
@@ -24,11 +25,14 @@ import 'core/dl/tools.dart';
 import 'core/drive.dart';
 import 'core/jam.dart';
 import 'core/library.dart';
+import 'core/listenbrainz.dart';
+import 'core/mixbook.dart';
 import 'core/lyric_sources.dart';
 import 'core/perf.dart';
 import 'core/log.dart';
 import 'core/lyrics.dart';
 import 'core/player.dart';
+import 'core/radio.dart';
 import 'core/social.dart';
 import 'core/store.dart';
 import 'core/single_instance.dart';
@@ -71,6 +75,14 @@ class AppServices {
   late final WebInfoService web;
   late final PreviewPlayer preview;
   late final WaveService wave;
+
+  /// Похожесть треков по локальным данным (для радио и АвтоDJ) и скробблинг в ListenBrainz
+  late final SimIndex sim;
+
+  /// Audio Intelligence: локальный разбор звука, общий индекс признаков и подбор похожих по звуку
+  late final IntelService intel;
+  late final ListenBrainz listenBrainz;
+  late final MixBook mixBook;
   late final KaraokeService karaoke;
 
   /// «Скачать на устройство»: треки, альбомы и плейлисты обычными файлами в выбранную папку
@@ -208,9 +220,33 @@ class AppServices {
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
     // Умный переход: профили звука треков и темп из Deezer (если уже узнали)
-    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))..onProfile = (id) {
+    final mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))..onProfile = (id) {
         if (id == player.current?.id) player.refreshNormalize();
       };
+    player.mixer = mixer;
+    app.mixBook = MixBook(File('${store.sub('mixbook').path}${Platform.pathSeparator}transitions.json'));
+    player.mixBook = app.mixBook;
+    unawaited(mixer.preload()); // сохранённые разборы звука — в память, в фоне
+    app.sim = SimIndex(lib, () => player.mixer);
+    app.intel = IntelService(dir: store.sub('intel'), lib: lib, drive: drive, cache: cache, tools: Tools(store.sub('tools')));
+    // Переменная CAVEY_NO_INTEL=1 полностью отключает анализ звука (для проверки, не он ли виноват в сбое)
+    final intelOff = Platform.environment['CAVEY_NO_INTEL'] == '1';
+    if (!intelOff) {
+      unawaited(app.intel.open()); // индекс читается и разбор идёт в фоне: запуск приложения не ждёт
+      player.refinePlan = app.intel.refinePlan;
+    }
+    // Играющий и следующий трек разбираются в первую очередь: для DJ-перехода нужны данные именно по ним
+    String? intelSeen;
+    player.addListener(() {
+      if (intelOff) return;
+      final cur = player.current?.id;
+      if (cur == null || cur == intelSeen) return;
+      intelSeen = cur;
+      final ni = player.index + 1;
+      if (ni >= 0 && ni < player.queue.length) app.intel.prioritize(player.queue[ni]);
+      app.intel.prioritize(cur);
+    });
+    app.listenBrainz = ListenBrainz(settings, player)..start();
     final tempo = <String, double?>{};
     player.tempoOf = (t) {
       if (tempo.containsKey(t.id)) return tempo[t.id];
@@ -219,6 +255,7 @@ class AppServices {
       return null;
     };
     app.wave = await WaveService.open(store, lib, player, social, app.web, downloads);
+    app.wave.intel = app.intel;
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
@@ -327,6 +364,9 @@ class AppServices {
       await player.flushSession();
       await wave.flush();
       await lib.flushNow();
+    } catch (_) {}
+    try {
+      await intel.store.flush(); // готовые результаты разбора звука не теряются при выходе
     } catch (_) {}
     await AppLog.flush();
     try {

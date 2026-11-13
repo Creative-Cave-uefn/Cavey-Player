@@ -28,3 +28,12 @@ bool crossfadeDue({
   final x = t.clamp(0.0, 1.0);
   return (math.cos(x * math.pi / 2), math.sin(x * math.pi / 2));
 }
+
+/// Громкость в диджейском переходе: следующий трек быстро входит (за первую половину), уходящий держится почти на полной
+/// громкости и уходит во второй половине, когда басы уже поменялись местами
+(double out, double inn) djGains(double t) {
+  final x = t.clamp(0.0, 1.0);
+  final inn = math.sin(math.min(x / 0.5, 1.0) * math.pi / 2) * (x < 0.5 ? 0.85 : 0.85 + 0.15 * (x - 0.5) / 0.5);
+  final out = x < 0.5 ? 1.0 - 0.15 * (x / 0.5) : 0.85 * math.cos((x - 0.5) / 0.5 * math.pi / 2);
+  return (out, inn);
+}
