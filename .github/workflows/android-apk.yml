@@ -3,12 +3,10 @@ name: Android
 # Сборка APK для телефона. Подпись — всегда одним и тем же ключом из секретов,
 # поэтому SHA-1 для Google Sign-In не меняется от сборки к сборке,
 # а новая версия ставится поверх старой без удаления.
+# Android builds and publication now run locally on Windows by default.
+# Keep workflow_dispatch only for an explicit emergency CI build.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - android/**
-      - feature/android-mvp
 
 permissions:
   contents: read
