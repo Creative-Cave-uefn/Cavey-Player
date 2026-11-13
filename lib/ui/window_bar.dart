@@ -1,10 +1,13 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../app.dart';
 import '../core/window_style.dart';
+import 'ambient.dart' show StripTint;
 import 'shell.dart';
 import 'theme.dart';
 
@@ -73,7 +76,10 @@ class _WindowBarState extends State<WindowBar> with WindowListener {
     return RepaintBoundary(
         child: SizedBox(
       height: WindowBar.height,
-      child: Row(children: [
+      child: Stack(children: [
+        // На странице человека с баннером: полоса подкрашена цветами верхней кромки баннера и продолжает его вверх
+        const Positioned.fill(child: _BannerStrip()),
+        Row(children: [
         // Слева: настройки, «Назад» и «Вперёд» — на одном уровне с кнопками окна
         const _NavButtons(),
         Expanded(
@@ -92,9 +98,111 @@ class _WindowBarState extends State<WindowBar> with WindowListener {
           onTap: _toggleMax,
         ),
         _CaptionButton(icon: Icons.close_rounded, tooltip: 'Закрыть', danger: true, onTap: () => windowManager.close()),
+        ]),
       ]),
     ));
   }
+}
+
+/// Подкраска верхней полосы окна по баннеру профиля ([StripTint]): крайние верхние цвета баннера ложатся ровно над ним,
+/// левее и правее продолжаются, слегка размыты — полоса выглядит продолжением баннера вверх. Без баннера ничего не рисует
+class _BannerStrip extends StatelessWidget {
+  const _BannerStrip();
+
+  @override
+  Widget build(BuildContext context) {
+    // ClipRect: размытие рисует и за краями своего прямоугольника; без обрезки оно выходило за нижнюю границу полосы
+    // и ложилось поверх страницы (особенно заметно на ярких баннерах)
+    return ClipRect(
+      child: IgnorePointer(
+      child: ValueListenableBuilder<List<Color>?>(
+        valueListenable: StripTint.colors,
+        builder: (context, colors, _) {
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 500),
+            child: colors == null || colors.isEmpty
+                ? const SizedBox.shrink(key: ValueKey('none'))
+                : ValueListenableBuilder<(double, double)?>(
+                    key: ValueKey(colors),
+                    valueListenable: StripTint.span,
+                    builder: (context, span, _) => ShaderMask(
+                      blendMode: BlendMode.dstIn,
+                      shaderCallback: (r) => const LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        // у верхнего края чуть слабее, к баннеру — полный цвет
+                        colors: [Color(0x99FFFFFF), Colors.white],
+                      ).createShader(r),
+                      child: ImageFiltered(
+                        imageFilter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 2, tileMode: TileMode.clamp),
+                        // Угасание при прокрутке рисует сам painter (repaint: fade): виджет Opacity над размытием
+                        // обновлял только свой слой, и полоса не успевала за прокруткой, пока по ней не проведёшь мышью
+                        child: CustomPaint(painter: _StripPainter(colors, span, StripTint.base.value, StripTint.fade), size: Size.infinite),
+                      ),
+                    ),
+                  ),
+          );
+        },
+      ),
+      ),
+    );
+  }
+}
+
+class _StripPainter extends CustomPainter {
+  final List<Color> colors;
+  final (double, double)? span;
+  final Color? base;
+
+  /// 0…1: насколько баннер ещё виден; при каждом изменении полоса перерисовывается сама
+  final ValueListenable<double> fade;
+  _StripPainter(this.colors, this.span, this.base, this.fade) : super(repaint: fade);
+
+  static double _smooth(double t) {
+    final x = t.clamp(0.0, 1.0);
+    return x * x * (3 - 2 * x);
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    if (w <= 0) return;
+    // Полоса начинается у левого края окна, поэтому координаты окна совпадают с её собственными
+    final left = (span?.$1 ?? 0).clamp(0.0, w).toDouble();
+    final right = (span?.$2 ?? w).clamp(left, w).toDouble();
+    final list = colors.length == 1 ? [colors.first, colors.first] : colors;
+    // Общий тон: там, где баннера нет (над боковой панелью, по краям), полоса одного цвета с фоном окна,
+    // а края баннера (он по бокам растворяется в фон) переходят в этот же тон, а не тянут свои крайние пиксели
+    var bg = base;
+    if (bg == null) {
+      var r = 0, g = 0, b = 0;
+      for (final c in list) {
+        r += (c.r * 255).round();
+        g += (c.g * 255).round();
+        b += (c.b * 255).round();
+      }
+      bg = Color.fromARGB(255, r ~/ list.length, g ~/ list.length, b ~/ list.length);
+    }
+    final n = list.length;
+    final cols = <Color>[bg];
+    final xs = <double>[0];
+    for (var i = 0; i < n; i++) {
+      final p = i / (n - 1);
+      final a = _smooth(p / 0.12) * _smooth((1 - p) / 0.12);
+      cols.add(Color.lerp(bg, list[i], a)!);
+      xs.add(left + p * (right - left));
+    }
+    cols.add(bg);
+    xs.add(w);
+    final k = fade.value.clamp(0.0, 1.0);
+    final paint = Paint()
+      ..shader = ui.Gradient.linear(Offset.zero, Offset(w, 0), [for (final c in cols) c.withValues(alpha: k)],
+          [for (final x in xs) (x / w).clamp(0.0, 1.0)], TileMode.clamp);
+    canvas.drawRect(Offset.zero & size, paint);
+  }
+
+  @override
+  bool shouldRepaint(_StripPainter old) => !identical(old.colors, colors) || old.span != span || old.base != base || !identical(old.fade, fade);
 }
 
 class _CaptionButton extends StatefulWidget {

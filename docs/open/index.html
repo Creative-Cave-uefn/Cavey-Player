@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cave Player — открыть трек</title>
+<title>Cave Player — открыть ссылку</title>
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #12162a; color: #ede9e1;
@@ -24,16 +24,24 @@
   <p><small>Cave Player должен быть установлен на этом компьютере (Windows).</small></p>
 </main>
 <script>
-  // Адрес вида …/open/?t=<id трека> превращаем в caveplayer://track/<id>
-  var id = new URLSearchParams(location.search).get('t') || '';
-  var ok = /^[A-Za-z0-9_-]+$/.test(id);
-  var link = ok ? 'caveplayer://track/' + id : '';
+  // Адрес вида …/open/?t=<id трека> (или al=альбом, ar=исполнитель, pl=плейлист, tg=тег: почта|id) превращаем в caveplayer://…
+  var q = new URLSearchParams(location.search);
+  var kinds = { t: 'track', al: 'album', ar: 'artist', pl: 'playlist', tg: 'tag' };
+  var link = '', ok = false;
+  Object.keys(kinds).forEach(function (k) {
+    var v = q.get(k) || '';
+    if (ok || !v) return;
+    if ((k === 't' || k === 'pl') && !/^[A-Za-z0-9_-]+$/.test(v)) return;
+    if (k === 'tg' && !/^[^\s|]+\|[A-Za-z0-9_-]+$/.test(v)) return;
+    ok = true;
+    link = 'caveplayer://' + kinds[k] + '/' + encodeURIComponent(v);
+  });
   var btn = document.getElementById('open');
   if (ok) {
     btn.href = link;
     location.href = link;
   } else {
-    document.getElementById('msg').textContent = 'В этой ссылке не нашёлся трек.';
+    document.getElementById('msg').textContent = 'В этой ссылке ничего не нашлось.';
     btn.style.display = 'none';
   }
 </script>

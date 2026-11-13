@@ -4,14 +4,14 @@
 #   powershell -ExecutionPolicy Bypass -File tools\publish-release.ps1
 #
 # Параметры:
-#   -Branch   что вливать в main (по умолчанию feature/beta-10)
+#   -Branch   что вливать в main (по умолчанию feature/beta-11)
 #   -Version  номер версии (по умолчанию: последний стабильный релиз + 1)
 #   -SkipChecks  не гонять flutter analyze и flutter test при сборке
 #
 # Скрипт останавливается и спрашивает перед каждым необратимым шагом: пуш в main и публикация релиза.
 
 param(
-    [string]$Branch = 'feature/beta-10',
+    [string]$Branch = 'feature/beta-11',
     [string]$Version = '',
     [switch]$SkipChecks
 )

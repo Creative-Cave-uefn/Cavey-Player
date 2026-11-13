@@ -1,12 +1,16 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderProxyBox;
 
 import '../app.dart';
+import '../core/covers.dart' show CoverService;
 import '../core/library.dart';
+import '../core/log.dart';
 import '../core/models.dart';
 import '../core/social.dart';
 import 'ambient.dart';
@@ -91,6 +95,9 @@ class ProfileLayout extends StatefulWidget {
   /// Свой баннер человека (id картинки на Диске): показывается сверху и плавно уходит в фон
   final String? bannerFileId;
 
+  /// Сила размытия баннера (сигма); у каждого человека своя, по умолчанию 6
+  final double bannerBlur;
+
   /// Чем красить фон окна, пока открыт этот профиль (важнее обложки текущего трека)
   final AmbientSource? ambient;
   /// Дополнительные кнопки сбоку от шапки (например, «Слушать вместе»); на узком окне уходят под кнопки
@@ -109,6 +116,7 @@ class ProfileLayout extends StatefulWidget {
     this.onInfo,
     this.thirdButton,
     this.bannerFileId,
+    this.bannerBlur = LibraryController.defaultBannerBlur,
     this.ambient,
     this.extras,
   });
@@ -119,12 +127,83 @@ class ProfileLayout extends StatefulWidget {
 
 class _ProfileLayoutState extends State<ProfileLayout> {
   final _scroll = ScrollController();
+  CoverService? _covers;
+  String? _stripFor;
+  int _stripSeq = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_onScroll);
+  }
+
+  /// Подкраска верхней полосы гаснет вместе с баннером
+  void _onScroll() {
+    if (!_scroll.hasClients) return;
+    StripTint.fade.value = (1 - _scroll.offset / _fadeAt).clamp(0.0, 1.0).toDouble();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final c = Services.of(context).covers;
+    if (!identical(_covers, c)) {
+      _covers?.removeListener(_loadStrip);
+      _covers = c..addListener(_loadStrip);
+    }
+    _loadStrip();
+  }
+
+  @override
+  void didUpdateWidget(covariant ProfileLayout old) {
+    super.didUpdateWidget(old);
+    if (old.bannerFileId != widget.bannerFileId) _loadStrip();
+  }
+
+  /// Цвета верхней кромки баннера → верхняя полоса окна. Ждём ту же копию баннера, что показывает страница
+  /// (не отдельную маленькую): раньше отдельная копия часто не успевала, и полоса оставалась серой
+  Future<void> _loadStrip() async {
+    final id = widget.bannerFileId;
+    final covers = _covers;
+    if (id == null || covers == null) {
+      _stripFor = null;
+      _stripSeq++;
+      WidgetsBinding.instance.addPostFrameCallback((_) => StripTint.release(this));
+      return;
+    }
+    if (_stripFor == id) return; // уже взяли или берём
+    _stripFor = id;
+    final seq = ++_stripSeq;
+    final bytes = await waitBannerBytes(covers, id);
+    if (!mounted || seq != _stripSeq) return;
+    if (bytes == null) {
+      AppLog.info('Верхняя полоса: баннер $id не загрузился');
+      _stripFor = null; // следующий сигнал обложек попробует снова
+      return;
+    }
+    // Рамка баннера: ширина как у страницы, высота — треть ширины в пределах 300…620 (см. _Banner)
+    final span = StripTint.span.value;
+    final width = span == null ? 1200.0 : span.$2 - span.$1;
+    Color? tone;
+    final list = await StripTint.sample(bytes, boxAspect: width / (width / 3).clamp(300.0, 620.0), onTone: (c) => tone = c);
+    if (!mounted || seq != _stripSeq) return;
+    if (list == null) {
+      AppLog.info('Верхняя полоса: не удалось взять цвета баннера $id');
+      return;
+    }
+    StripTint.claim(this, list, tone: tone);
+    _onScroll();
+  }
 
   /// На какой высоте прокрутки баннер исчезает совсем
   static const _fadeAt = 360.0;
 
   @override
   void dispose() {
+    _covers?.removeListener(_loadStrip);
+    _stripSeq++;
+    final me = this;
+    WidgetsBinding.instance.addPostFrameCallback((_) => StripTint.release(me));
     _scroll.dispose();
     super.dispose();
   }
@@ -169,7 +248,7 @@ class _ProfileLayoutState extends State<ProfileLayout> {
     Widget page(Color? tint) {
       return Stack(children: [
         if (bannerFileId != null)
-          _backdrop(Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId)))
+          _backdrop(Align(alignment: Alignment.topCenter, child: _Banner(fileId: bannerFileId, blur: widget.bannerBlur)))
         else
           // Свечение цветом профиля — на всё окно, плавное, медленно «дышит»
           AmbientGlow(color: tint?.withValues(alpha: 0.4)),
@@ -237,14 +316,17 @@ class _ProfileLayoutState extends State<ProfileLayout> {
   }
 }
 
+/// Слабее этого размытия баннер берётся в оригинальном размере, а не в уменьшенной копии 640 px
+const _sharpBannerBelow = 9.0;
+
 /// Баннер профиля вместо градиента: немного затемнён и размыт, чтобы текст поверх читался; низ плавно уходит в фон
 class _Banner extends StatelessWidget {
   final String fileId;
-  const _Banner({required this.fileId});
+  final double blur;
+  const _Banner({required this.fileId, required this.blur});
 
   @override
   Widget build(BuildContext context) {
-    final covers = Services.of(context).covers;
     return LayoutBuilder(builder: (context, box) {
       // Карточка со скруглёнными углами и отступом от краёв: раньше баннер упирался в панель и шапку окна
       const margin = 12.0;
@@ -263,9 +345,10 @@ class _Banner extends StatelessWidget {
       // Свой слой: баннер не перерисовывается заново от прокрутки страницы, и нижний край не мерцает
       return RepaintBoundary(
        child: Padding(
-        padding: const EdgeInsets.fromLTRB(margin, 4, margin, 0),
+        // Сверху без отступа и скругления: баннер упирается в верхнюю полосу окна, а та подкрашена его цветами
+        padding: const EdgeInsets.fromLTRB(margin, 0, margin, 0),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
+          borderRadius: const BorderRadius.vertical(bottom: Radius.circular(28)),
           child: ShaderMask(
             // снизу: плавно в прозрачность с середины; к 96 % высоты баннер уже полностью прозрачен,
             // чтобы у самого края не оставалась тонкая линия
@@ -285,18 +368,20 @@ class _Banner extends StatelessWidget {
               ).createShader(r),
               // ClipRect: размытие рисует и за краем своего прямоугольника, это и давало линию на нижней границе
               child: ClipRect(
+               child: _SpanReport(
                child: SizedBox(
                 width: w,
                 height: h,
                 child: Stack(fit: StackFit.expand, children: [
-                  ImageFiltered(
-                    // mirror, а не clamp: у краёв clamp тянет крайний ряд пикселей в полосы — тот самый «шов»
-                    imageFilter: ui.ImageFilter.blur(sigmaX: 6, sigmaY: 6, tileMode: TileMode.mirror),
-                    // Баннер размыт, поэтому хватает копии в 640 px: она читается с диска мгновенно
-                    child: CoverImage(track: null, fileId: fileId, label: '', size: w, height: h, radius: 0, maxPx: 640),
+                  bannerPicture(
+                    blur: blur,
+                    // Сильно размытому баннеру хватает копии в 640 px (грузится мгновенно). При слабом размытии копия
+                    // растягивается и сквозь блюр видны «лесенки», поэтому берём оригинал
+                    child: CoverImage(track: null, fileId: fileId, label: '', size: w, height: h, radius: 0, maxPx: blur < _sharpBannerBelow ? null : 640),
                   ),
                   ColoredBox(color: Colors.black.withValues(alpha: 0.4)),
                 ]),
+               ),
                ),
               ),
             ),
@@ -307,6 +392,61 @@ class _Banner extends StatelessWidget {
     });
   }
 }
+
+/// Картинка баннера (или аватарки) для фона окна и верхней полосы: любая уже загруженная копия, иначе ждём ту, что грузит
+/// страница (сигнал сервиса обложек или проверка раз в 400 мс), не дольше [limit]
+Future<Uint8List?> waitBannerBytes(CoverService covers, String id, {Duration limit = const Duration(seconds: 30)}) async {
+  Uint8List? peek() => covers.peekFile(id, px: 160) ?? covers.peekFile(id, px: 640) ?? covers.peekFile(id);
+  final now = peek();
+  if (now != null) return now;
+  final done = Completer<Uint8List?>();
+  void check() {
+    final b = peek();
+    if (b != null && !done.isCompleted) done.complete(b);
+  }
+
+  covers.forFile(id, px: 640).then((b) {
+    if (b != null && !done.isCompleted) done.complete(b);
+  });
+  covers.addListener(check);
+  final timer = Timer.periodic(const Duration(milliseconds: 400), (_) => check());
+  try {
+    return await done.future.timeout(limit, onTimeout: () => null);
+  } finally {
+    covers.removeListener(check);
+    timer.cancel();
+  }
+}
+
+/// Сообщает верхней полосе окна, где по горизонтали стоит баннер
+class _SpanReport extends SingleChildRenderObjectWidget {
+  const _SpanReport({required Widget super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) => _RenderSpanReport();
+}
+
+class _RenderSpanReport extends RenderProxyBox {
+  (double, double)? _last;
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    super.paint(context, offset);
+    if (!attached || !hasSize) return;
+    final left = localToGlobal(Offset.zero).dx;
+    final span = (left, left + size.width);
+    if (span == _last) return;
+    _last = span;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (StripTint.span.value != span) StripTint.span.value = span;
+    });
+  }
+}
+
+/// Баннер с размытием: mirror, а не clamp — у краёв clamp тянет крайний ряд пикселей в полосы, тот самый «шов».
+/// Одинаково выглядит на странице профиля и в предпросмотре окна «Мой профиль»
+Widget bannerPicture({required double blur, required Widget child}) =>
+    blur < 0.3 ? child : ImageFiltered(imageFilter: ui.ImageFilter.blur(sigmaX: blur, sigmaY: blur, tileMode: TileMode.mirror), child: child);
 
 Widget _roundButton(IconData icon, VoidCallback? onTap, {String tooltip = '', Color? color}) => Tooltip(
       message: tooltip,
@@ -805,12 +945,18 @@ class UserProfilePage extends StatelessWidget {
           compact: compact,
           avatar: Avatar(email: email, name: name, size: 220),
           bannerFileId: lib.profileBanner(email),
+          bannerBlur: lib.profileBannerBlur(email),
           // Фон — по баннеру человека, иначе по аватару, иначе его цветом
           ambient: AmbientSource(
             'user:$email:${lib.profileBanner(email)}:${lib.profileAvatar(email)}',
             bytes: () async {
               final id = lib.profileBanner(email) ?? lib.profileAvatar(email);
-              return id == null ? null : app.covers.forFile(id);
+              if (id == null) return null;
+              // Ждём ту же копию, что грузит сама страница (и сигнал о ней от сервиса обложек), до 30 секунд.
+              // Раньше фон ждал отдельную маленькую копию 6 секунд и при первом заходе на страницу не дожидался
+              final hit = await waitBannerBytes(app.covers, id);
+              if (hit == null) AppLog.info('Фон профиля: картинка $id не загрузилась за 30 секунд');
+              return hit;
             },
             color: friendColor(email),
           ),

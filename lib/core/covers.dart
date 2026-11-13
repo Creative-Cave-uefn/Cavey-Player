@@ -366,8 +366,10 @@ class CoverService extends ChangeNotifier {
           Timer(const Duration(minutes: 5), _signal);
           return null;
         }
-        bytes = bucket == 0 ? orig : await makeThumbnail(orig, bucket);
-        if (thumbFile != null) await _writeAtomic(thumbFile, bytes);
+        // GIF отдаём целиком: уменьшенная копия была бы одним кадром, а аватарка и баннер должны двигаться
+        final keep = bucket == 0 || isGifBytes(orig);
+        bytes = keep ? orig : await makeThumbnail(orig, bucket);
+        if (thumbFile != null && !keep) await _writeAtomic(thumbFile, bytes);
       }
       _failures.remove(key);
       _retryAt.remove(key);

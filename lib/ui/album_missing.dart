@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/album_match.dart';
 import '../core/library.dart';
-import '../core/models.dart';
 import '../core/web_info.dart';
 import 'theme.dart';
 import 'web_pages.dart';
@@ -74,7 +73,7 @@ class _MissingAlbumTracksState extends State<MissingAlbumTracks> {
                       child: Text('Можно докачать · ${countTracks(missing.length)}', style: display(18)),
                     ),
                     FilledButton.icon(
-                      onPressed: web.link.isEmpty ? null : () => downloadToLibrary(context, web.link, web.title),
+                      onPressed: web.link.isEmpty ? null : () => downloadToLibrary(context, web.link, web.title, into: widget.album),
                       icon: const Icon(Icons.download_rounded, size: 18),
                       label: const Text('Докачать всё'),
                     ),
@@ -86,7 +85,7 @@ class _MissingAlbumTracksState extends State<MissingAlbumTracks> {
                     style: const TextStyle(color: C.faint, fontSize: 13, height: 1.4),
                   ),
                   const SizedBox(height: 10),
-                  ...webAlbumRows(missing),
+                  ...webAlbumRows(missing, into: widget.album),
                 ]),
               ),
             );

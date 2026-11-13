@@ -2,14 +2,14 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/library.dart';
-import 'album_edit.dart';
 import 'list_filter.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
+import 'collection_menu.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
+import 'uploader_filter.dart';
 import 'widgets.dart';
-import 'glass_popup.dart';
 import 'library_home.dart';
 
 class AlbumsPage extends StatefulWidget {
@@ -53,9 +53,18 @@ class _AlbumsPageState extends State<AlbumsPage> {
       listenable: app.lib,
       builder: (context, _) {
         final ep = widget.kind == 'ep';
-        final all = ep ? app.lib.albums.where(isShortRelease).toList() : app.lib.albums;
+        final every = ep ? app.lib.albums.where(isShortRelease).toList() : app.lib.albums;
         final q = foldText(_query.trim());
         final sortId = ep ? 'eps' : 'albums';
+        // «Кто загрузил»: альбомы, в которых есть треки выбранных людей
+        final by = loadUploaderFilter(app.settings, sortId);
+        final mineOnly = loadMineFilter(app.settings, sortId);
+        final all = by.isEmpty && !mineOnly
+            ? every
+            : [
+                for (final a in every)
+                  if (a.tracks.any((t) => passesUploaders(by, t.by) && (!mineOnly || app.lib.isMyAccount(t.by)))) a
+              ];
         final ls = ListSort.read(app.settings, sortId, legacyDesc: app.settings.albumsDesc);
         final desc = ls.desc;
         final firstAt = ls.mode == 'first' ? {for (final a in all) a.key: firstUpload(a.tracks)} : const <String, String>{};
@@ -83,22 +92,22 @@ class _AlbumsPageState extends State<AlbumsPage> {
         final prefs = ViewPrefs(app.settings, ep ? 'eps' : 'albums', defaultGrid: true);
         final pad = MediaQuery.sizeOf(context).width < 860 ? 20.0 : 36.0;
         final header = Padding(
-          padding: EdgeInsets.fromLTRB(pad, 34, pad, 22),
+          padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 18),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             if (!LibraryFrame.on(context))
               Text(ep ? 'Синглы и EP' : 'Альбомы', style: display(36, weight: FontWeight.w700)),
-            if (all.isNotEmpty) ...[
-              // В «Медиатеке» общее число уже стоит под заголовком раздела; здесь остаётся лишь итог поиска
-              if (!LibraryFrame.on(context) || q.isNotEmpty) ...[
+            if (every.isNotEmpty) ...[
+              // В «Медиатеке» заголовка и подписи нет: сразу ряд с поиском на одном отступе от вкладок
+              if (!LibraryFrame.on(context)) ...[
                 const SizedBox(height: 10),
                 Text(
-                  q.isEmpty
+                  q.isEmpty && by.isEmpty && !mineOnly
                       ? '${all.length} ${plural(all.length, 'альбом', 'альбома', 'альбомов')}'
-                      : 'Найдено ${albums.length} из ${all.length}',
+                      : 'Найдено ${albums.length} из ${every.length}',
                   style: const TextStyle(color: C.muted, fontSize: 15),
                 ),
+                const SizedBox(height: 18),
               ],
-              const SizedBox(height: 18),
               SearchSortBar(
                 controller: _search,
                 focusNode: _focus,
@@ -117,12 +126,29 @@ class _AlbumsPageState extends State<AlbumsPage> {
                   app.lib.saveSettings();
                   setState(() {});
                 },
+                filter: UploaderFilterButton(
+                  people: uploadersOf(every.expand((a) => a.tracks)),
+                  chosen: by,
+                  onChanged: (v) {
+                    saveUploaderFilter(app, sortId, v);
+                    setState(() {});
+                  },
+                ),
+                mine: ToggleOutlineButton(
+                  icon: Icons.person_outline_rounded,
+                  label: 'Мои загрузки',
+                  on: mineOnly,
+                  onPressed: () {
+                    saveMineFilter(app, sortId, !mineOnly);
+                    setState(() {});
+                  },
+                ),
                 trailing: ViewControls(prefs: prefs, onChanged: () => setState(() {})),
               ),
             ],
           ]),
         );
-        if (all.isEmpty) {
+        if (every.isEmpty) {
           return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             header,
             const Expanded(
@@ -134,13 +160,13 @@ class _AlbumsPageState extends State<AlbumsPage> {
             ),
           ]);
         }
-        return CustomScrollView(slivers: [
+        return CustomScrollView(key: PageStorageKey('library:albums:${widget.kind ?? ''}'), slivers: [
           SliverToBoxAdapter(child: header),
           if (albums.isEmpty)
             SliverToBoxAdapter(
               child: Padding(
                 padding: EdgeInsets.symmetric(horizontal: pad, vertical: 12),
-                child: Text('Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
+                child: Text(q.isEmpty ? 'Среди выбранных людей альбомов нет' : 'Ничего не нашлось по запросу «$_query»', style: const TextStyle(color: C.muted)),
               ),
             ),
           SliverPadding(
@@ -219,15 +245,4 @@ class _AlbumsPageState extends State<AlbumsPage> {
 }
 
 /// Меню альбома по правому клику, в точке клика
-Future<void> showAlbumMenu(BuildContext context, Album a, Offset at) async {
-  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-  final v = await showGlassMenu<String>(
-    context: context,
-    position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
-    items: [
-      const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
-    ],
-  );
-  if (!context.mounted) return;
-  if (v == 'edit') await editAlbumDialog(context, a);
-}
+Future<void> showAlbumMenu(BuildContext context, Album a, Offset at) => showCollectionMenu(context, at, album: a);

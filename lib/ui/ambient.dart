@@ -87,6 +87,108 @@ class AmbientScope {
   }
 }
 
+/// Цвета верхней кромки баннера профиля: по ним верхняя полоса окна (с кнопками) подкрашивается и размывается,
+/// чтобы баннер не обрывался под ней. Пока страница не просит — полоса обычная
+class StripTint {
+  /// Цвета слева направо; null — подкраски нет
+  static final ValueNotifier<List<Color>?> colors = ValueNotifier(null);
+
+  /// 0…1: насколько баннер ещё виден (уезжает при прокрутке — подкраска гаснет вместе с ним)
+  static final ValueNotifier<double> fade = ValueNotifier(1);
+
+  /// Где баннер стоит по горизонтали (левый и правый край в координатах окна): цвета полосы ложатся ровно над ним,
+  /// а левее и правее продолжаются его крайние цвета
+  static final ValueNotifier<(double, double)?> span = ValueNotifier(null);
+
+  /// Общий тон баннера (среднее по всей видимой картинке, затемнённое так же): им полоса закрашена там, где баннера нет
+  /// (над боковой панелью и по краям), и в него же растворяются края баннера — как растворяется фон окна
+  static final ValueNotifier<Color?> base = ValueNotifier(null);
+  static Object? _owner;
+
+  static void claim(Object owner, List<Color>? list, {Color? tone}) {
+    _owner = owner;
+    base.value = tone;
+    colors.value = list;
+  }
+
+  static void release(Object owner) {
+    if (!identical(_owner, owner)) return;
+    _owner = null;
+    colors.value = null;
+    base.value = null;
+    span.value = null;
+    fade.value = 1;
+  }
+
+  /// Цвета верхней кромки картинки так, как её видно на странице: [count] полосок слева направо.
+  /// [boxAspect] — ширина к высоте рамки баннера (картинка в неё вписана «с обрезкой», как BoxFit.cover).
+  /// Затемнены так же, как сам баннер на странице (там поверх чёрный слой 40 %)
+  static Future<List<Color>?> sample(Uint8List bytes,
+      {int count = 48, double dim = 0.6, double? boxAspect, void Function(Color tone)? onTone}) async {
+    try {
+      final codec = await ui.instantiateImageCodec(bytes, targetWidth: 192);
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      final img = frame.image;
+      final data = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final w = img.width;
+      final h = img.height;
+      img.dispose();
+      if (data == null || w == 0 || h == 0) return null;
+      // Видимая часть картинки внутри рамки
+      var x0v = 0.0, x1v = w.toDouble(), y0v = 0.0;
+      final a = boxAspect;
+      if (a != null && a > 0) {
+        final imgAspect = w / h;
+        if (imgAspect > a) {
+          final visW = h * a;
+          x0v = (w - visW) / 2;
+          x1v = x0v + visW;
+        } else {
+          y0v = (h - w / a) / 2;
+        }
+      }
+      final top = y0v.floor().clamp(0, h - 1);
+      final rows = math.max(1, math.min(4, h - top));
+      // Общий тон: среднее по всей видимой части картинки
+      if (onTone != null) {
+        var r = 0, g = 0, b = 0, n = 0;
+        final xa = x0v.floor().clamp(0, w - 1), xb = x1v.ceil().clamp(xa + 1, w);
+        for (var y = top; y < h; y++) {
+          for (var x = xa; x < xb; x++) {
+            final o = (y * w + x) * 4;
+            r += data.getUint8(o);
+            g += data.getUint8(o + 1);
+            b += data.getUint8(o + 2);
+            n++;
+          }
+        }
+        if (n > 0) onTone(Color.fromARGB(255, (r / n * dim).round(), (g / n * dim).round(), (b / n * dim).round()));
+      }
+      final out = <Color>[];
+      for (var i = 0; i < count; i++) {
+        var r = 0, g = 0, b = 0, n = 0;
+        final xa = (x0v + i * (x1v - x0v) / count).floor();
+        final xb = math.max(xa + 1, (x0v + (i + 1) * (x1v - x0v) / count).floor());
+        for (var y = top; y < top + rows; y++) {
+          for (var x = xa; x < xb && x < w; x++) {
+            final o = (y * w + x) * 4;
+            r += data.getUint8(o);
+            g += data.getUint8(o + 1);
+            b += data.getUint8(o + 2);
+            n++;
+          }
+        }
+        if (n == 0) return null;
+        out.add(Color.fromARGB(255, (r / n * dim).round(), (g / n * dim).round(), (b / n * dim).round()));
+      }
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
 /// Ставится на страницу: пока она открыта, по всему окну мягко светится [color]. Сам ничего не рисует
 class AmbientGlow extends StatefulWidget {
   final Color? color;
@@ -267,10 +369,14 @@ class _AmbientBackgroundState extends State<AmbientBackground> with SingleTicker
     // Обложка догрузилась позже, чем трек включился: фон без картинки пробует ещё раз
     void coversReady() {
       final k = _key;
-      if (_image != null || _color != null || k == null) return;
-      // Сигналы от обложек частые (прокрутка списков) — повторяем не чаще раза в 8 секунд
+      if (k == null) return;
+      // Вместо нужной картинки (баннер профиля) сейчас запасной цвет: баннер мог догрузиться — смотрим сразу
+      final showingFallback = _attemptsFor == k;
+      if (!showingFallback && (_image != null || _color != null)) return;
+      // Сигналы от обложек частые (прокрутка списков) — повторяем не чаще раза в 8 секунд (для запасного цвета — в 1,5)
       final last = _retried[k];
-      if (last != null && DateTime.now().difference(last) < const Duration(seconds: 8)) return;
+      final gap = showingFallback ? const Duration(milliseconds: 1500) : const Duration(seconds: 8);
+      if (last != null && DateTime.now().difference(last) < gap) return;
       _retried[k] = DateTime.now();
       _key = null;
       _sync();

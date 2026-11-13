@@ -23,9 +23,10 @@ var MIN_FREE_BYTES = 200 * 1024 * 1024; // запас, который остав
 var RATE_LIMIT = 300;                   // запросов begin на человека в час (альбом = десятки файлов и обложек)
 var ALLOWED_EXT = {
   mp3: 1, flac: 1, m4a: 1, aac: 1, ogg: 1, opus: 1, wav: 1, wma: 1, aiff: 1, aif: 1, alac: 1, ape: 1,
-  jpg: 1, jpeg: 1, png: 1, webp: 1, json: 1
+  jpg: 1, jpeg: 1, png: 1, webp: 1, gif: 1, json: 1
 };
-var API_VERSION = 1;
+var API_VERSION = 3;
+var ADOPT_BATCH = 20; // файлов за один запрос adopt
 
 function props_() { return PropertiesService.getScriptProperties(); }
 function prop_(k, d) { var v = props_().getProperty(k); return v ? v : d; }
@@ -52,8 +53,9 @@ function doPost(e) {
     switch (req.action) {
       case 'begin': return begin_(req, who.email);
       case 'delete': return delete_(req, who.email);
+      case 'adopt': return adopt_(req, who.email);
       case 'quota': return quota_(who.email);
-      case 'ping': return json_({ ok: true, api: API_VERSION, email: who.email });
+      case 'ping': return json_({ ok: true, api: API_VERSION, email: who.email, owner: ownerEmail_() });
       default: return fail_('bad_request', 'Неизвестное действие');
     }
   } catch (err) {
@@ -269,6 +271,100 @@ function delete_(req, email) {
   }
   log_('delete', email, (f.name || '') + ' ' + id);
   return json_({ ok: true });
+}
+
+/**
+ * adopt: { token, action:'adopt', fileIds:[…] } — не больше ADOPT_BATCH файлов за раз.
+ * Перенос СТАРЫХ файлов (загруженных до брокера) на диск владельца библиотеки без копирования: id файла не меняется,
+ * поэтому плейлисты, лайки, статистика и офлайн-копии остаются на месте.
+ * Google позволяет передать владение только текущему владельцу файла, поэтому порядок такой:
+ *   1. Приложение участника (его токеном) назначает владельца библиотеки «ожидающим владельцем» своих файлов
+ *      (permissions.create, role=writer, pendingOwner=true).
+ *   2. Этот метод (работает от имени владельца библиотеки) принимает владение (permissions.update, role=owner).
+ * Проверки: файл внутри библиотеки; сейчас им владеет вызывающий; ожидающий владелец — именно владелец библиотеки.
+ * Прежний владелец записывается в cave_uploader, чтобы «кто загрузил» и права на удаление остались прежними.
+ * Ответ: { ok:true, results:{ id: 'ok' | 'already' | 'not_yours' | 'not_pending' | 'bad_parent' | 'bad_type' | 'error' } }
+ */
+function adopt_(req, email) {
+  var me = ownerEmail_();
+  if (email === me) return fail_('bad_request', 'Вы и есть владелец библиотеки: переносить нечего');
+  var ids = (req.fileIds || []).map(String).slice(0, ADOPT_BATCH);
+  if (!ids.length) return fail_('bad_request', 'Не указаны файлы');
+  // Собственный идентификатор разрешения: чужие адреса в списке прав обычному «редактору» Google не показывает,
+  // поэтому искать своё право по почте ненадёжно. Принимаем владение прямо по этому идентификатору
+  var myPid = '';
+  try { myPid = Drive.About.get({ fields: 'user(permissionId)' }).user.permissionId; } catch (err) { log_('adopt_about', email, String(err)); }
+  var results = {};
+  var details = {};
+  for (var i = 0; i < ids.length; i++) {
+    var id = ids[i];
+    try {
+      if (!insideRoot_(id)) { results[id] = 'bad_parent'; continue; }
+      var f = Drive.Files.get(id, {
+        fields: 'id,name,mimeType,createdTime,modifiedTime,properties,trashed,owners(emailAddress)',
+        supportsAllDrives: true
+      });
+      if (f.mimeType === 'application/vnd.google-apps.folder') { results[id] = 'bad_type'; continue; }
+      var owner = String((f.owners && f.owners.length && f.owners[0].emailAddress) || '').toLowerCase();
+      if (owner === me) { results[id] = 'already'; continue; }
+      if (owner !== email) { results[id] = 'not_yours'; details[id] = 'владелец файла: ' + owner; continue; }
+      var pid = myPid;
+      if (!pid) {
+        // запасной путь: ищем своё право в списке
+        var perms = Drive.Permissions.list(id, { fields: 'permissions(id,emailAddress,role,pendingOwner)', supportsAllDrives: true }).permissions || [];
+        for (var j = 0; j < perms.length; j++) {
+          if (perms[j].pendingOwner && (!perms[j].emailAddress || String(perms[j].emailAddress).toLowerCase() === me)) { pid = perms[j].id; break; }
+        }
+      }
+      if (!pid) { results[id] = 'not_pending'; details[id] = 'не найдено ожидающее право владельца'; continue; }
+      try {
+        Drive.Permissions.update({ role: 'owner' }, id, pid, { transferOwnership: true, supportsAllDrives: true });
+      } catch (err) {
+        results[id] = 'transfer_failed';
+        details[id] = String(err).slice(0, 200) + ' | мой id права: ' + myPid + ' | права на файле: ' + permsInfo_(id);
+        log_('adopt_fail', email, id + ' ' + details[id]);
+        continue;
+      }
+      // Проверяем, что владелец действительно сменился: иначе не считаем файл перенесённым
+      var after = Drive.Files.get(id, { fields: 'owners(emailAddress)', supportsAllDrives: true });
+      var nowOwner = String((after.owners && after.owners.length && after.owners[0].emailAddress) || '').toLowerCase();
+      if (nowOwner !== me) {
+        results[id] = 'not_transferred';
+        details[id] = 'владелец после запроса: ' + nowOwner;
+        log_('adopt_fail', email, id + ' ' + details[id]);
+        continue;
+      }
+      var props = f.properties || {};
+      props.cave_uploader = owner;
+      if (!props.cave_uploaded_at) props.cave_uploaded_at = f.createdTime;
+      props.cave_adopted_at = new Date().toISOString();
+      try {
+        // modifiedTime сохраняем, чтобы приложения не перечитывали теги всех перенесённых файлов
+        Drive.Files.update({ properties: props, modifiedTime: f.modifiedTime }, id, null, { supportsAllDrives: true });
+      } catch (err) {
+        // Владение уже передано; без свойств файл останется «старым», но вернётся в перенос как «already»
+        log_('adopt_props_fail', email, id + ' ' + err);
+        details[id] = 'владелец сменён, свойства не записаны: ' + String(err).slice(0, 200);
+      }
+      results[id] = 'ok';
+    } catch (err) {
+      log_('adopt_fail', email, id + ' ' + err);
+      results[id] = 'error';
+      details[id] = String(err).slice(0, 300);
+    }
+  }
+  log_('adopt', email, JSON.stringify(results).slice(0, 400));
+  return json_({ ok: true, api: API_VERSION, results: results, details: details });
+}
+
+/** Кратко: какие права на файле видны скрипту (для разбора неудачной передачи владения) */
+function permsInfo_(id) {
+  try {
+    var perms = Drive.Permissions.list(id, { fields: 'permissions(id,emailAddress,role,pendingOwner)', supportsAllDrives: true }).permissions || [];
+    return perms.map(function (p) { return (p.emailAddress || '?') + ':' + p.role + (p.pendingOwner ? ':ждёт' : '') + ':' + p.id; }).join(', ').slice(0, 300);
+  } catch (err) {
+    return 'список прав недоступен: ' + String(err).slice(0, 100);
+  }
 }
 
 // ───────────────────────── Журнал ─────────────────────────

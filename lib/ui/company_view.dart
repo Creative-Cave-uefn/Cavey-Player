@@ -8,6 +8,7 @@ import '../core/social.dart';
 import 'animated_tiles.dart';
 import 'glass_popup.dart';
 import 'jam_panel.dart';
+import 'share_dialog.dart' show openSharedThing;
 import 'shell.dart';
 import 'profile_view.dart';
 import 'tracks_view.dart' show Links, LinkPart, trackLinks, TrackMenu, showTrackMenu;
@@ -41,13 +42,9 @@ class CompanyPage extends StatelessWidget {
         final now = social.listeningNow;
         final chart = social.chart();
         final feed = social.feed;
-        final notices = social.notices.take(20).toList();
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 28, pad, 40), children: [
-          Row(children: [
-            Expanded(child: Text('Участники', style: display(20))),
-            _NoticeBell(notices: notices),
-          ]),
-          const SizedBox(height: 14),
+        return ListView(key: const PageStorageKey('page:company'), padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
+          Text('Участники', style: display(36, weight: FontWeight.w700)),
+          const SizedBox(height: 18),
           _People(),
           const SizedBox(height: 40),
           Text('Сейчас слушают', style: display(20)),
@@ -295,15 +292,29 @@ int unreadNotices(AppServices app) {
   return app.social.notices.where((n) => n.at.isAfter(seen)).length;
 }
 
-/// Колокольчик с уведомлениями «Вам»: цвета акцента и красная точка, пока есть непрочитанные; по нажатию раскрывается окошко
-class _NoticeBell extends StatefulWidget {
-  final List<Notice> notices;
-  const _NoticeBell({required this.notices});
+/// Колокольчик с уведомлениями «Вам»: цвета акцента и красная точка, пока есть непрочитанные; по нажатию раскрывается окошко.
+/// Стоит в левой панели справа от «Компании»
+class NoticeBell extends StatelessWidget {
+  const NoticeBell({super.key});
+
   @override
-  State<_NoticeBell> createState() => _NoticeBellState();
+  Widget build(BuildContext context) {
+    final social = Services.of(context).social;
+    return ListenableBuilder(
+      listenable: social,
+      builder: (context, _) => _NoticeBellBody(notices: social.notices.take(20).toList()),
+    );
+  }
 }
 
-class _NoticeBellState extends State<_NoticeBell> {
+class _NoticeBellBody extends StatefulWidget {
+  final List<Notice> notices;
+  const _NoticeBellBody({required this.notices});
+  @override
+  State<_NoticeBellBody> createState() => _NoticeBellState();
+}
+
+class _NoticeBellState extends State<_NoticeBellBody> {
   final _menu = MenuController();
 
   /// Что считать прочитанным: всё, что старше последнего открытия колокольчика
@@ -323,7 +334,8 @@ class _NoticeBellState extends State<_NoticeBell> {
         shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
         padding: const WidgetStatePropertyAll(EdgeInsets.zero),
       ),
-      alignmentOffset: const Offset(-330, 4),
+      // Окошко раскрывается вправо от левой панели, на уровне колокольчика
+      alignmentOffset: const Offset(34, -34),
       onOpen: () {
         // Открыли — всё считается прочитанным, колокольчик гаснет
         app.settings.bellSeen = DateTime.now().toUtc().toIso8601String();
@@ -355,9 +367,13 @@ class _NoticeBellState extends State<_NoticeBell> {
       builder: (context, controller, _) => IconButton(
         tooltip: lit ? 'Новых уведомлений: $unread' : 'Уведомления',
         onPressed: () => controller.isOpen ? controller.close() : controller.open(),
+        iconSize: 20,
+        padding: EdgeInsets.zero,
+        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints.tightFor(width: 32, height: 32),
         icon: Stack(clipBehavior: Clip.none, children: [
           Icon(lit ? Icons.notifications_active_rounded : Icons.notifications_none_rounded,
-              color: lit ? C.accent : C.muted),
+              size: 20, color: lit ? C.accent : C.muted),
           if (lit)
             Positioned(
               right: -2,
@@ -417,7 +433,9 @@ class _NoticeRow extends StatelessWidget {
       NoticeKind.addToPlaylist => notice.trackIds.length == 1
           ? line([who, t(' добавил(а) '), title, t(notice.playlist == null ? ' в плейлист' : ' в плейлист «${notice.playlist}»')])
           : line([who, t(' добавил(а) ваших треков: ${notice.trackIds.length} ${notice.playlist == null ? 'в плейлист' : 'в плейлист «${notice.playlist}»'}')]),
-      NoticeKind.share => line([who, t(' поделился(ась): '), title, t(track == null ? '' : ' — ${track.displayArtist}')]),
+      NoticeKind.share => notice.thing != null
+          ? line([who, t(' поделился(ась) ${thingPhrase(notice)}')])
+          : line([who, t(' поделился(ась): '), title, t(track == null ? '' : ' — ${track.displayArtist}')]),
       NoticeKind.jamInvite => line([who, t(' зовёт в джем')]),
       NoticeKind.jamRequest => line([who, t(' просится в джем')]),
     };
@@ -425,7 +443,19 @@ class _NoticeRow extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       // Нажатие на строку включает трек; окно уведомлений остаётся открытым
-      onTap: isJam || track == null ? null : () => app.player.playTracks([track], 0),
+      onTap: isJam
+          ? null
+          : notice.thing != null && notice.thingKey != null
+              ? () {
+                  if (openSharedThing(lib, notice.thing!, notice.thingKey!)) {
+                    closeMenu();
+                  } else {
+                    lib.messages.add('Этого нет в вашей библиотеке');
+                  }
+                }
+              : track == null
+                  ? null
+                  : () => app.player.playTracks([track], 0),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
         child: Row(children: [
@@ -550,10 +580,21 @@ class _FeedRow extends StatelessWidget {
         icon = Icons.favorite_rounded;
         onTap = () => app.player.playTracks([t], 0);
       case 'share':
-        final t = lib.data.tracks[lib.data.resolve('${d['track']}')];
-        if (t == null) return const SizedBox.shrink();
         final to = [for (final x in (d['to'] as List? ?? const [])) '$x'];
         final whom = to.length == 1 ? lib.firstNameOf(to.first) : 'друзьями (${to.length})';
+        final thing = '${d['kind'] ?? ''}';
+        if (d['track'] == null && const {'album', 'artist', 'playlist'}.contains(thing) && '${d['key'] ?? ''}'.isNotEmpty) {
+          final what = switch (thing) { 'album' => 'альбомом', 'artist' => 'исполнителем', _ => 'плейлистом' };
+          final name = '${d['title'] ?? ''}'.trim();
+          text = '$who поделился(ась) $what${name.isEmpty ? '' : ' «$name»'} с $whom';
+          icon = Icons.share_rounded;
+          onTap = () {
+            if (!openSharedThing(lib, thing, '${d['key']}')) lib.messages.add('Этого нет в вашей библиотеке');
+          };
+          break;
+        }
+        final t = lib.data.tracks[lib.data.resolve('${d['track']}')];
+        if (t == null) return const SizedBox.shrink();
         text = '$who поделился(ась) «${t.title}» — ${t.displayArtist} с $whom';
         icon = Icons.share_rounded;
         onTap = () => app.player.playTracks([t], 0);
@@ -591,7 +632,11 @@ class _FeedRow extends StatelessWidget {
 /// При наведении раскрывается вверх и показывает всех, кто слушает
 class NowListeningSidebar extends StatefulWidget {
   final bool compact;
-  const NowListeningSidebar({super.key, required this.compact});
+
+  /// Панель в невысоком окне прокручивается целиком: список, раздвигающий её, сдвинул бы строку «Сейчас слушают» за край.
+  /// Тогда список всплывает окошком над строкой, а она остаётся на месте
+  final bool floating;
+  const NowListeningSidebar({super.key, required this.compact, this.floating = false});
 
   @override
   State<NowListeningSidebar> createState() => _NowListeningSidebarState();
@@ -599,6 +644,29 @@ class NowListeningSidebar extends StatefulWidget {
 
 class _NowListeningSidebarState extends State<NowListeningSidebar> {
   bool _open = false;
+
+  // Узкая панель: список не раздвигает её, а всплывает окошком над значком, пока курсор на значке или на окошке
+  final _portal = OverlayPortalController();
+  final _link = LayerLink();
+  Timer? _closeTimer;
+
+  void _popEnter() {
+    _closeTimer?.cancel();
+    if (!_portal.isShowing) _portal.show();
+  }
+
+  void _popLeave() {
+    _closeTimer?.cancel();
+    _closeTimer = Timer(const Duration(milliseconds: 180), () {
+      if (mounted && _portal.isShowing) _portal.hide();
+    });
+  }
+
+  @override
+  void dispose() {
+    _closeTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -620,6 +688,140 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
           for (final g in jamGroups) ...g.people,
           if (jam.active) ...jam.participants,
         }.where((e) => e != me).toList();
+        if (compact) {
+          return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (jam.active) JamStrip(compact: true),
+            for (final g in jamGroups) JamGroupCard(key: ValueKey('jg-${g.id}'), group: g, compact: true),
+            OverlayPortal(
+              controller: _portal,
+              overlayChildBuilder: (_) => Align(
+                alignment: Alignment.topLeft,
+                child: CompositedTransformFollower(
+                  link: _link,
+                  targetAnchor: Alignment.topRight,
+                  followerAnchor: Alignment.bottomLeft,
+                  // Окошко стоит выше значка с небольшим зазором и не лежит под курсором; с зазором в 6 px окошко
+                  // не закрывается: переход курсора на него закрывающий таймер переживает
+                  offset: const Offset(0, -6),
+                  child: live.isEmpty
+                      ? const SizedBox.shrink()
+                      : MouseRegion(
+                          onEnter: (_) => _popEnter(),
+                          onExit: (_) => _popLeave(),
+                          child: Padding(
+                            padding: const EdgeInsets.only(left: 6),
+                            child: SizedBox(
+                              width: 290,
+                              child: GlassPanel(
+                                radius: 16,
+                                tint: C.glassLight,
+                                blur: 32,
+                                padding: const EdgeInsets.symmetric(vertical: 6),
+                                child: Material(
+                                  type: MaterialType.transparency,
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(maxHeight: 320),
+                                    child: SingleChildScrollView(
+                                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                        for (final m in live) _ListenerTile(key: ValueKey('pop-${m.email}'), member: m, compact: false),
+                                      ]),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              child: CompositedTransformTarget(
+                link: _link,
+                child: MouseRegion(
+                  onEnter: (_) => _popEnter(),
+                  onExit: (_) => _popLeave(),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Center(child: Icon(Icons.headphones_rounded, size: 18, color: live.isEmpty ? C.faint : C.muted)),
+                  ),
+                ),
+              ),
+            ),
+          ]);
+        }
+        final headerRow = Padding(
+              padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 10, compact ? 0 : 16, 10),
+              child: Row(mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
+                if (!compact) ...[
+                  const Expanded(child: Text('Сейчас слушают', style: TextStyle(color: C.muted, fontSize: 13))),
+                  SizedBox(
+                    height: 20,
+                    width: (20 + (everyone.length.clamp(0, 3) - 1).clamp(0, 2) * 12).toDouble(),
+                    child: Stack(children: [
+                      for (var i = 0; i < everyone.length && i < 3; i++)
+                        Positioned(
+                            left: i * 12.0,
+                            child: Avatar(key: ValueKey('hd-${everyone[i]}'), email: everyone[i], name: app.lib.firstNameOf(everyone[i]), size: 20)),
+                    ]),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('${everyone.length}', style: const TextStyle(color: C.faint, fontSize: 12)),
+                ] else
+                  const Icon(Icons.headphones_rounded, size: 18, color: C.muted),
+              ]),
+            );
+        if (widget.floating) {
+          // Окошко над строкой: строка остаётся на месте, а список людей лежит поверх панели выше неё
+          return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (jam.active) JamStrip(compact: false),
+            for (final g in jamGroups) JamGroupCard(key: ValueKey('jg-${g.id}'), group: g, compact: false),
+            OverlayPortal(
+              controller: _portal,
+              overlayChildBuilder: (_) => Align(
+                alignment: Alignment.topLeft,
+                child: CompositedTransformFollower(
+                  link: _link,
+                  targetAnchor: Alignment.topLeft,
+                  followerAnchor: Alignment.bottomLeft,
+                  offset: const Offset(8, -4),
+                  child: live.isEmpty
+                      ? const SizedBox.shrink()
+                      : MouseRegion(
+                          onEnter: (_) => _popEnter(),
+                          onExit: (_) => _popLeave(),
+                          child: SizedBox(
+                            width: 224,
+                            child: GlassPanel(
+                              radius: 16,
+                              tint: C.glassLight,
+                              blur: 32,
+                              padding: const EdgeInsets.symmetric(vertical: 6),
+                              child: Material(
+                                type: MaterialType.transparency,
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(maxHeight: 320),
+                                  child: SingleChildScrollView(
+                                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                      for (final m in live) _ListenerTile(key: ValueKey('fl-${m.email}'), member: m, compact: false),
+                                    ]),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+              child: CompositedTransformTarget(
+                link: _link,
+                child: MouseRegion(
+                  onEnter: (_) => _popEnter(),
+                  onExit: (_) => _popLeave(),
+                  child: headerRow,
+                ),
+              ),
+            ),
+          ]);
+        }
         return MouseRegion(
           onEnter: (_) => setState(() => _open = true),
           onExit: (_) => setState(() => _open = false),
@@ -642,27 +844,7 @@ class _NowListeningSidebarState extends State<NowListeningSidebar> {
             ),
             if (jam.active) JamStrip(compact: compact),
             for (final g in jamGroups) JamGroupCard(key: ValueKey('jg-${g.id}'), group: g, compact: compact),
-            Padding(
-              padding: EdgeInsets.fromLTRB(compact ? 0 : 22, 10, compact ? 0 : 16, 10),
-              child: Row(mainAxisAlignment: compact ? MainAxisAlignment.center : MainAxisAlignment.start, children: [
-                if (!compact) ...[
-                  const Expanded(child: Text('Сейчас слушают', style: TextStyle(color: C.muted, fontSize: 13))),
-                  SizedBox(
-                    height: 20,
-                    width: (20 + (everyone.length.clamp(0, 3) - 1).clamp(0, 2) * 12).toDouble(),
-                    child: Stack(children: [
-                      for (var i = 0; i < everyone.length && i < 3; i++)
-                        Positioned(
-                            left: i * 12.0,
-                            child: Avatar(key: ValueKey('hd-${everyone[i]}'), email: everyone[i], name: app.lib.firstNameOf(everyone[i]), size: 20)),
-                    ]),
-                  ),
-                  const SizedBox(width: 8),
-                  Text('${everyone.length}', style: const TextStyle(color: C.faint, fontSize: 12)),
-                ] else
-                  const Icon(Icons.headphones_rounded, size: 18, color: C.muted),
-              ]),
-            ),
+            headerRow,
           ]),
         );
       },

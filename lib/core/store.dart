@@ -102,6 +102,7 @@ class Settings {
   bool offlineLiked = false;
   Set<String> offlinePlaylists = {};
   Set<String> offlineAlbums = {}; // ключи альбомов, сохранённых офлайн
+  Set<String> offlineTags = {}; // id моих тегов, треки которых сохранены офлайн
   /// Активный загрузчик: youtube, sockseek, bandcamp, deezer или full.
   String downloadProvider = 'youtube';
   bool discord = true;
@@ -140,6 +141,7 @@ class Settings {
         'offlineLiked': offlineLiked,
         'offlinePlaylists': offlinePlaylists.toList(),
         'offlineAlbums': offlineAlbums.toList(),
+        if (offlineTags.isNotEmpty) 'offlineTags': offlineTags.toList(),
         'downloadProvider': downloadProvider,
         'discord': discord,
         'betaUpdates': betaUpdates,
@@ -175,6 +177,7 @@ class Settings {
     s.offlineLiked = j['offlineLiked'] == true;
     s.offlinePlaylists = {for (final x in (j['offlinePlaylists'] as List? ?? const [])) '$x'};
     s.offlineAlbums = {for (final x in (j['offlineAlbums'] as List? ?? const [])) '$x'};
+    s.offlineTags = {for (final x in (j['offlineTags'] as List? ?? const [])) '$x'};
     // Старые настройки Zotify намеренно не восстанавливаем. Sockseek переносим.
     final provider = j['downloadProvider'];
     if (provider == 'youtube' || provider == 'sockseek' || provider == 'bandcamp' || provider == 'deezer' || provider == 'full') {

@@ -1,12 +1,16 @@
 import 'dart:math' as math;
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../core/dl/service.dart';
+import '../core/log.dart';
 import '../core/upload_queue.dart';
+import 'accounts_view.dart' show GlassSelect;
+import 'device_export_ui.dart' show chooseExportFormat;
 import 'shell.dart';
 import 'theme.dart';
 
@@ -20,7 +24,6 @@ class DownloadPage extends StatefulWidget {
 
 class _DownloadPageState extends State<DownloadPage> {
   final _input = TextEditingController();
-  String? _target;
   /// Галочка «Сделать плейлист» хранится в настройках, поэтому не сбрасывается при смене вкладки
   bool _makePlaylist = true;
 
@@ -58,10 +61,178 @@ class _DownloadPageState extends State<DownloadPage> {
 
   void _start() {
     final app = Services.of(context);
-    final target = _target ?? app.settings.hubId;
+    final target = app.settings.hubId ?? app.lib.data.sources.firstOrNull?.id;
     if (target == null || _input.text.trim().isEmpty) return;
     app.downloads.enqueue(_input.text, target, makePlaylist: _makePlaylist);
     _input.clear();
+  }
+
+  /// Скачать в папку на компьютере: в библиотеку и на Диск не попадает
+  Future<void> _startToDevice() async {
+    final app = Services.of(context);
+    final text = _input.text.trim();
+    if (text.isEmpty) return;
+    final format = await chooseExportFormat(context);
+    if (format == null || !mounted) return;
+    final last = app.settings.viewOf('export.dir', '');
+    final dir = await getDirectoryPath(initialDirectory: last.isEmpty ? null : last, confirmButtonText: 'Сохранить сюда');
+    if (dir == null || !mounted) return;
+    app.settings.view['export.dir'] = dir;
+    app.lib.viewChanged();
+    final source = app.settings.hubId ?? app.lib.data.sources.firstOrNull?.id ?? '';
+    app.downloads.enqueue(text, source, makePlaylist: false, deviceDir: dir, deviceFormat: format);
+    _input.clear();
+  }
+
+  Widget _inputPanel(BuildContext context, AppServices app, DownloadService dl, String? target) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      if (app.lib.uploadQueue.count > 0) ...[
+        _PendingUploads(queue: app.lib.uploadQueue, onRetry: () => app.lib.retryPendingUploads(manual: true)),
+        const SizedBox(height: 16),
+      ],
+      Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          TextField(
+            controller: _input,
+            autofocus: true,
+            decoration: InputDecoration(
+              hintText: app.settings.downloadProvider == 'bandcamp' ? 'Ссылка Bandcamp на трек или альбом' : 'Ссылка или «Исполнитель - Название»',
+              prefixIcon: const Icon(Icons.link_rounded, size: 18),
+              suffixIcon: IconButton(
+                tooltip: 'Вставить из буфера',
+                icon: const Icon(Icons.content_paste_rounded, size: 18),
+                onPressed: _paste,
+              ),
+            ),
+            onSubmitted: (_) => _start(),
+          ),
+          const SizedBox(height: 14),
+          Wrap(spacing: 12, runSpacing: 10, children: [
+            FilledButton.icon(
+              onPressed: target == null ? null : _start,
+              icon: const Icon(Icons.download_rounded, size: 18),
+              label: const Text('Скачать в плеер'),
+            ),
+            OutlinedButton.icon(
+              onPressed: _startToDevice,
+              icon: const Icon(Icons.computer_rounded, size: 18),
+              label: const Text('Скачать на устройство'),
+            ),
+          ]),
+          const SizedBox(height: 14),
+          // Выбор источника — как «Автозапуск» в настройках: подпись слева, стеклянный список справа
+          Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+            const Expanded(child: Text('Источник музыки', style: TextStyle(fontSize: 16))),
+            const SizedBox(width: 16),
+            // Пока идёт скачивание, источник не меняем
+            IgnorePointer(
+              ignoring: dl.busy,
+              child: Opacity(
+                opacity: dl.busy ? 0.5 : 1,
+                child: GlassSelect<String>(
+                  value: app.settings.downloadProvider,
+                  width: 250,
+                  options: const [
+                    ('youtube', 'YouTube'),
+                    ('deezer', 'Deezer'),
+                    ('full', 'Универсальный поиск и ссылки'),
+                    ('sockseek', 'Soulseek / Sockseek'),
+                    ('bandcamp', 'Bandcamp'),
+                  ],
+                  onChanged: (value) {
+                    setState(() => app.settings.downloadProvider = value);
+                    app.lib.saveSettings();
+                  },
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 10),
+          InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () => _setMakePlaylist(!_makePlaylist),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: Checkbox(
+                    value: _makePlaylist,
+                    activeColor: C.accent,
+                    checkColor: C.accentInk,
+                    onChanged: (v) => _setMakePlaylist(v ?? true),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Flexible(
+                  child: Text('Сделать плейлист в Cavey (для ссылок на плейлисты)', style: TextStyle(color: C.muted)),
+                ),
+              ]),
+            ),
+          ),
+        ]),
+      ),
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(
+          child: Text(
+            dl.installing
+                ? 'Устанавливаю программы для скачивания…'
+                : 'yt-dlp: ${dl.toolsVersion.isEmpty ? '…' : dl.toolsVersion}. Программы ставятся сами при первом скачивании.',
+            style: const TextStyle(color: C.faint, fontSize: 13),
+          ),
+        ),
+        TextButton.icon(
+          onPressed: dl.busy ? null : dl.updateTools,
+          icon: const Icon(Icons.refresh_rounded, size: 16),
+          label: const Text('Обновить yt-dlp'),
+        ),
+      ]),
+    ]);
+  }
+
+  /// Правая половина: карточки заданий. Первая карточка начинается на одной высоте с панелью ссылки слева
+  Widget _jobsPanel(BuildContext context, DownloadService dl) {
+    if (dl.jobs.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
+        child: const Text('Здесь появятся скачивания: вставьте ссылку слева.', style: TextStyle(color: C.faint)),
+      );
+    }
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      for (final j in dl.jobs) _JobCard(key: ObjectKey(j), job: j),
+    ]);
+  }
+
+  Widget _jobsHeader(DownloadService dl) => Row(children: [
+        Expanded(child: Text('Задания', style: display(20))),
+        if (dl.jobs.any((j) => j.state == JobState.done || j.state == JobState.failed || j.state == JobState.cancelled))
+          TextButton(onPressed: dl.clearFinished, child: const Text('Убрать завершённые')),
+      ]);
+
+  /// Описание выбранного источника — только в ширину левой половины
+  Widget _description(AppServices app) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(
+        switch (app.settings.downloadProvider) {
+          'full' => 'Универсальные ссылки: Spotify, Deezer, Apple Music, Яндекс, YouTube, Bandcamp, SoundCloud, Audiomack, Mixcloud, Internet Archive. Каталоги: Deezer → Soulseek → YouTube → Bandcamp. До трёх треков одновременно.',
+          'deezer' => 'Deezer: прямые ссылки на треки, альбомы и плейлисты или «Исполнитель - Название». Нужны локальный ARL и Python.',
+          'sockseek' => 'Soulseek (Sockseek): «Исполнитель - Название» или ссылка Spotify, Deezer, Яндекс Музыки. Ищет файлы в P2P сети.',
+          'bandcamp' => 'Bandcamp: вставьте прямую ссылку на трек или альбом (artist.bandcamp.com/track/... или /album/...). Скачивается доступный для прослушивания аудиопоток, а не оригинальный FLAC.',
+          _ => 'YouTube / YouTube Music: ссылки музыкальных каталогов используются для метаданных; доступное аудио со страниц YouTube, SoundCloud, Bandcamp, Audiomack, Mixcloud и Internet Archive загружается через yt-dlp.',
+        },
+        style: const TextStyle(color: C.muted, fontSize: 15, height: 1.5),
+      ),
+      const SizedBox(height: 8),
+      Text(
+        'Активный источник: ${switch (app.settings.downloadProvider) { 'full' => 'Полный поиск', 'deezer' => 'Deezer', 'bandcamp' => 'Bandcamp', 'sockseek' => 'Soulseek', _ => 'YouTube' }}. Переключить можно здесь или в настройках аккаунта.',
+        style: const TextStyle(color: C.faint, fontSize: 13),
+      ),
+    ]);
   }
 
   Future<void> _paste() async {
@@ -80,148 +251,59 @@ class _DownloadPageState extends State<DownloadPage> {
     return ListenableBuilder(
       listenable: Listenable.merge([app.downloads, app.lib, app.lib.uploadQueue]),
       builder: (context, _) {
-        final dl = app.downloads;
-        final sources = app.lib.data.sources;
-        final target = sources.any((s) => s.id == _target) ? _target : (sources.any((s) => s.id == app.settings.hubId) ? app.settings.hubId : sources.firstOrNull?.id);
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
-          Text('Скачать', style: display(36, weight: FontWeight.w700)),
-          const SizedBox(height: 10),
-          Text(
-            switch (app.settings.downloadProvider) {
-              'full' => 'Универсальные ссылки: Spotify, Deezer, Apple Music, Яндекс, YouTube, Bandcamp, SoundCloud, Audiomack, Mixcloud, Internet Archive. Каталоги: Deezer → Soulseek → YouTube → Bandcamp. До трёх треков одновременно.',
-               'deezer' => 'Deezer: прямые ссылки на треки, альбомы и плейлисты или «Исполнитель - Название». Нужны локальный ARL и Python.',
-               'sockseek' => 'Soulseek (Sockseek): «Исполнитель - Название» или ссылка Spotify, Deezer, Яндекс Музыки. Ищет файлы в P2P сети.',
-              'bandcamp' => 'Bandcamp: вставьте прямую ссылку на трек или альбом (artist.bandcamp.com/track/... или /album/...). Скачивается доступный для прослушивания аудиопоток, а не оригинальный FLAC.',
-              _ => 'YouTube / YouTube Music: ссылки музыкальных каталогов используются для метаданных; доступное аудио со страниц YouTube, SoundCloud, Bandcamp, Audiomack, Mixcloud и Internet Archive загружается через yt-dlp.',
-            },
-            style: const TextStyle(color: C.muted, fontSize: 15, height: 1.5),
-          ),
-          const SizedBox(height: 8),
-          Text('Активный источник: ${switch (app.settings.downloadProvider) { 'full' => 'Полный поиск', 'deezer' => 'Deezer', 'bandcamp' => 'Bandcamp', 'sockseek' => 'Soulseek', _ => 'YouTube' }}. Переключить можно в настройках аккаунта.',
-              style: const TextStyle(color: C.faint, fontSize: 13)),
-          const SizedBox(height: 24),
-          if (app.lib.uploadQueue.count > 0) ...[
-            _PendingUploads(queue: app.lib.uploadQueue, onRetry: () => app.lib.retryPendingUploads(manual: true)),
-            const SizedBox(height: 16),
-          ],
-          Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              Row(children: [
-                Expanded(
-                  child: TextField(
-                    controller: _input,
-                    autofocus: true,
-                    decoration: InputDecoration(
-                      hintText: app.settings.downloadProvider == 'bandcamp' ? 'Ссылка Bandcamp на трек или альбом' : 'Ссылка или «Исполнитель - Название»',
-                      prefixIcon: const Icon(Icons.link_rounded, size: 18),
-                      suffixIcon: IconButton(
-                        tooltip: 'Вставить из буфера',
-                        icon: const Icon(Icons.content_paste_rounded, size: 18),
-                        onPressed: _paste,
-                      ),
-                    ),
-                    onSubmitted: (_) => _start(),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                FilledButton.icon(
-                  onPressed: target == null ? null : _start,
-                  icon: const Icon(Icons.download_rounded, size: 18),
-                  label: const Text('Скачать'),
-                ),
-              ]),
-              const SizedBox(height: 14),
-              DropdownButtonFormField<String>(
-                value: app.settings.downloadProvider,
-                decoration: const InputDecoration(labelText: 'Источник музыки'),
-                items: const [
-                  DropdownMenuItem(value: 'youtube', child: Text('YouTube')),
-                   DropdownMenuItem(value: 'deezer', child: Text('Deezer')),
-                   DropdownMenuItem(value: 'full', child: Text('Универсальный поиск и ссылки')),
-                  DropdownMenuItem(value: 'sockseek', child: Text('Soulseek / Sockseek')),
-                  DropdownMenuItem(value: 'bandcamp', child: Text('Bandcamp')),
-                ],
-                onChanged: dl.busy ? null : (value) {
-                  if (value == null) return;
-                  setState(() => app.settings.downloadProvider = value);
-                  app.lib.saveSettings();
-                },
-              ),
-              const SizedBox(height: 14),
-              const SizedBox(height: 14),
-              Wrap(spacing: 12, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
-                const Text('Куда положить:', style: TextStyle(color: C.muted)),
-                if (sources.isEmpty)
-                  const Text('сначала добавьте папку с музыкой', style: TextStyle(color: C.danger))
-                else
-                  DropdownButton<String>(
-                    value: target,
-                    dropdownColor: C.raised,
-                    underline: const SizedBox.shrink(),
-                    items: [
-                      for (final s in sources)
-                        DropdownMenuItem(value: s.id, child: Text(s.id == app.settings.hubId ? '${s.name} (общая папка)' : s.name)),
-                    ],
-                    onChanged: (v) => setState(() => _target = v),
-                  ),
-                const Text('Альбомы и плейлисты — в отдельную подпапку.', style: TextStyle(color: C.faint, fontSize: 13)),
-              ]),
-              const SizedBox(height: 6),
-              InkWell(
-                borderRadius: BorderRadius.circular(6),
-                onTap: () => _setMakePlaylist(!_makePlaylist),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: Checkbox(
-                        value: _makePlaylist,
-                        activeColor: C.accent,
-                        checkColor: C.accentInk,
-                        onChanged: (v) => _setMakePlaylist(v ?? true),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Flexible(
-                      child: Text('Сделать плейлист в Cavey (для ссылок на плейлисты)', style: TextStyle(color: C.muted)),
-                    ),
-                  ]),
-                ),
-              ),
-            ]),
-          ),
-          const SizedBox(height: 14),
-          Row(children: [
-            Expanded(
-              child: Text(
-                dl.installing
-                    ? 'Устанавливаю программы для скачивания…'
-                    : 'yt-dlp: ${dl.toolsVersion.isEmpty ? '…' : dl.toolsVersion}. Программы ставятся сами при первом скачивании.',
-                style: const TextStyle(color: C.faint, fontSize: 13),
-              ),
-            ),
-            TextButton.icon(
-              onPressed: dl.busy ? null : dl.updateTools,
-              icon: const Icon(Icons.refresh_rounded, size: 16),
-              label: const Text('Обновить yt-dlp'),
-            ),
-          ]),
-          const SizedBox(height: 26),
-          if (dl.jobs.isNotEmpty)
-            Row(children: [
-              Expanded(child: Text('Задания', style: display(20))),
-              if (dl.jobs.any((j) => j.state == JobState.done || j.state == JobState.failed || j.state == JobState.cancelled))
-                TextButton(onPressed: dl.clearFinished, child: const Text('Убрать завершённые')),
-            ]),
-          const SizedBox(height: 10),
-          for (final j in dl.jobs) _JobCard(key: ObjectKey(j), job: j),
-        ]);
+        try {
+          return _content(context, app, pad);
+        } catch (e, st) {
+          // Ошибка в вёрстке раздела не должна оставлять пустое окно: показываем причину и пишем её в журнал
+          AppLog.error('Раздел «Скачать»: не удалось построить', e, st);
+          return Padding(padding: EdgeInsets.all(pad), child: Text('Не удалось показать раздел: $e', style: const TextStyle(color: C.danger)));
+        }
       },
     );
+  }
+
+  Widget _content(BuildContext context, AppServices app, double pad) {
+    final dl = app.downloads;
+    final sources = app.lib.data.sources;
+    // Всё скачивается в одну общую папку библиотеки
+    final target = sources.any((s) => s.id == app.settings.hubId) ? app.settings.hubId : sources.firstOrNull?.id;
+    return ListView(key: const PageStorageKey('page:download'), padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
+      Text('Скачать', style: display(36, weight: FontWeight.w700)),
+      const SizedBox(height: 10),
+      // Две половины: слева описание, ссылка и кнопки, справа задания. Верхние края панелей на одной высоте
+      LayoutBuilder(builder: (context, box) {
+        final wide = box.maxWidth >= 860;
+        final description = _description(app);
+        final left = _inputPanel(context, app, dl, target);
+        final right = _jobsPanel(context, dl);
+        if (!wide) {
+          return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            description,
+            const SizedBox(height: 18),
+            left,
+            const SizedBox(height: 26),
+            _jobsHeader(dl),
+            const SizedBox(height: 10),
+            right,
+          ]);
+        }
+        const gap = 28.0;
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          // Заголовки внизу своих половин: описание слева и «Задания» справа заканчиваются на одной линии
+          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Expanded(child: description),
+            const SizedBox(width: gap),
+            Expanded(child: _jobsHeader(dl)),
+          ]),
+          const SizedBox(height: 14),
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(child: left),
+            const SizedBox(width: gap),
+            Expanded(child: right),
+          ]),
+        ]);
+      }),
+    ]);
   }
 }
 
@@ -237,6 +319,20 @@ class _JobCardState extends State<_JobCard> {
 
   @override
   Widget build(BuildContext context) {
+    try {
+      return _card(context);
+    } catch (e, st) {
+      AppLog.error('Карточка задания: не удалось построить', e, st);
+      return Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
+        child: Text('${widget.job.title}: не удалось показать задание ($e)', style: const TextStyle(color: C.danger, fontSize: 13)),
+      );
+    }
+  }
+
+  Widget _card(BuildContext context) {
     final job = widget.job;
     final dl = Services.of(context).downloads;
     final (label, color) = switch (job.state) {
@@ -271,83 +367,91 @@ class _JobCardState extends State<_JobCard> {
           icon: Icon(icon, color: c, size: 20),
           onPressed: onTap,
         );
+    // Своё раскрытие вместо ExpansionTile: тот хранит состояние в PageStorage страницы (одно на все карточки)
+    // и ломал вёрстку при смене состояния задания
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(12), border: Border.all(color: C.line)),
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          initiallyExpanded: _open,
-          onExpansionChanged: (v) => setState(() => _open = v),
-          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-            if (canRestart)
-              action('Перезапустить: докачать только недоделанные треки', Icons.refresh_rounded, C.accent, () => dl.restart(job)),
-            if (canStop)
-              action(job.state == JobState.queued ? 'Отменить задание в очереди' : 'Остановить загрузку',
-                  Icons.cancel_outlined, C.danger, () => dl.cancel(job)),
-            SizedBox.square(
-              dimension: 36,
-              child: Center(
-                child: AnimatedRotation(
-                  turns: _open ? 0.5 : 0,
-                  duration: const Duration(milliseconds: 200),
-                  child: const Icon(Icons.expand_more_rounded, color: C.muted),
-                ),
+      decoration: BoxDecoration(color: C.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: C.line)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => setState(() => _open = !_open),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(job.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+                  const SizedBox(height: 4),
+                  Text(
+                    job.deviceDir != null ? '$label, на устройство: ${job.deviceDir}' : (job.folderName.isEmpty ? label : '$label, в «${job.folderName}»'),
+                    style: TextStyle(color: color, fontSize: 13),
+                  ),
+                  if (job.state == JobState.running) ...[
+                    const SizedBox(height: 6),
+                    // Полоса не во всю ширину карточки, а компактно под подписью
+                    ConstrainedBox(constraints: const BoxConstraints(maxWidth: 280), child: JobProgressBar(job: job)),
+                  ],
+                  if (job.playlistId != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: TextButton.icon(
+                        style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 30)),
+                        onPressed: () => NavScope.of(context).go(Nav('playlist', job.playlistId!)),
+                        icon: const Icon(Icons.queue_music_rounded, size: 16),
+                        label: Text('Открыть плейлист «${job.playlistName}»'),
+                      ),
+                    ),
+                ]),
               ),
-            ),
-          ]),
-          title: Text(job.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
-          subtitle: Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(
-                job.folderName.isEmpty ? label : '$label, в «${job.folderName}»',
-                style: TextStyle(color: color, fontSize: 13),
-              ),
-              if (job.state == JobState.running) ...[
-                const SizedBox(height: 6),
-                // Полоса не во всю ширину карточки, а компактно под подписью
-                ConstrainedBox(constraints: const BoxConstraints(maxWidth: 280), child: JobProgressBar(job: job)),
-              ],
-              if (job.playlistId != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: TextButton.icon(
-                    style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0, 30)),
-                    onPressed: () => NavScope.of(context).go(Nav('playlist', job.playlistId!)),
-                    icon: const Icon(Icons.queue_music_rounded, size: 16),
-                    label: Text('Открыть плейлист «${job.playlistName}»'),
+              if (canRestart)
+                action('Перезапустить: докачать только недоделанные треки', Icons.refresh_rounded, C.accent, () => dl.restart(job)),
+              if (canStop)
+                action(job.state == JobState.queued ? 'Отменить задание в очереди' : 'Остановить загрузку',
+                    Icons.cancel_outlined, C.danger, () => dl.cancel(job)),
+              SizedBox.square(
+                dimension: 36,
+                child: Center(
+                  child: AnimatedRotation(
+                    turns: _open ? 0.5 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: const Icon(Icons.expand_more_rounded, color: C.muted),
                   ),
                 ),
+              ),
             ]),
           ),
-          children: [
-            Container(
-              width: double.infinity,
-              constraints: const BoxConstraints(maxHeight: 260),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(color: const Color(0x40000000), borderRadius: BorderRadius.circular(8)),
-              child: SingleChildScrollView(
-                reverse: true,
-                child: SelectableText(
-                  job.log.isEmpty ? 'Пока пусто' : job.log.join('\n'),
-                  style: const TextStyle(fontFamily: 'Consolas', fontSize: 12, color: C.muted, height: 1.4),
-                ),
-              ),
-            ),
-            if (job.input != job.title)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(job.input, style: const TextStyle(color: C.faint, fontSize: 12)),
-                ),
-              ),
-          ],
         ),
-      ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          alignment: Alignment.topCenter,
+          child: !_open
+              ? const SizedBox(width: double.infinity)
+              : Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                    Container(
+                      constraints: const BoxConstraints(maxHeight: 260),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: const Color(0x40000000), borderRadius: BorderRadius.circular(8)),
+                      child: SingleChildScrollView(
+                        reverse: true,
+                        child: SelectableText(
+                          job.log.isEmpty ? 'Пока пусто' : job.log.join('\n'),
+                          style: const TextStyle(fontFamily: 'Consolas', fontSize: 12, color: C.muted, height: 1.4),
+                        ),
+                      ),
+                    ),
+                    if (job.input != job.title)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(job.input, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: C.faint, fontSize: 12)),
+                      ),
+                  ]),
+                ),
+        ),
+      ]),
     );
   }
 }

@@ -698,6 +698,50 @@ class DriveApi {
     return [for (final f in (j['files'] as List? ?? const [])) (f as Map).cast<String, dynamic>()];
   }
 
+  /// Первый шаг передачи владения: назначает [newOwner] «ожидающим владельцем» файла. Вызывается от имени нынешнего владельца.
+  /// Письмо Google при этом не отправляется; сам перенос завершает принятие владения (в Cavey — через брокера)
+  Future<void> offerOwnership(String email, String fileId, String newOwner) async {
+    const fields = 'id,type,role,emailAddress,pendingOwner';
+    const json = {'Content-Type': 'application/json; charset=utf-8'};
+    final created = await send(
+      email,
+      'POST',
+      api('files/$fileId/permissions', {'sendNotificationEmail': 'false', 'fields': fields}),
+      headers: json,
+      body: utf8.encode(jsonEncode({'role': 'writer', 'type': 'user', 'emailAddress': newOwner, 'pendingOwner': true})),
+    );
+    Map? perm;
+    try {
+      perm = jsonDecode(created.body) as Map?;
+    } catch (_) {}
+    if (perm?['pendingOwner'] == true) return;
+    // Google ответил «успешно», но пометку «ожидающий владелец» не поставил (например, у человека уже было право на файл, и запрос
+    // его не изменил). Ставим пометку отдельным запросом по существующему праву и проверяем, что она появилась
+    var pid = '${perm?['id'] ?? ''}';
+    if (pid.isEmpty) {
+      final list = await send(email, 'GET', api('files/$fileId/permissions', {'fields': 'permissions($fields)'}));
+      final all = ((jsonDecode(list.body) as Map)['permissions'] as List? ?? const []);
+      for (final x in all) {
+        if (x is Map && '${x['emailAddress'] ?? ''}'.toLowerCase() == newOwner.toLowerCase()) pid = '${x['id']}';
+      }
+    }
+    if (pid.isEmpty) throw DriveException(409, 'у файла не нашлось права для владельца библиотеки');
+    final patched = await send(
+      email,
+      'PATCH',
+      api('files/$fileId/permissions/$pid', {'fields': fields}),
+      headers: json,
+      body: utf8.encode(jsonEncode({'role': 'writer', 'pendingOwner': true})),
+    );
+    Map? after;
+    try {
+      after = jsonDecode(patched.body) as Map?;
+    } catch (_) {}
+    if (after?['pendingOwner'] != true) {
+      throw DriveException(409, 'Google не пометил владельца библиотеки как ожидающего: ${patched.body.replaceAll(RegExp(r'\s+'), ' ')}');
+    }
+  }
+
   /// Даёт другому человеку доступ к файлу или папке. Google сам пришлёт ему письмо.
   Future<void> share(String email, String fileId, String withEmail, {String role = 'writer', String? message}) async {
     await send(

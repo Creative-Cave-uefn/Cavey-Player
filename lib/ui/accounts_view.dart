@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
 import '../config.dart';
+import '../core/audio_format.dart';
 import '../core/autostart.dart';
 import '../core/log.dart';
 import '../core/notices.dart';
@@ -17,6 +18,7 @@ import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
 import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength, seekWaveMin, seekWaveMax;
+import 'migration_ui.dart';
 import 'theme.dart';
 import 'widgets.dart';
 import 'glass_popup.dart';
@@ -213,6 +215,8 @@ class _AccountsPageState extends State<AccountsPage> {
           'library' => const [
               LibrarySection(parts: {'folders'}),
               gap,
+              MigrationSection(),
+              gap,
               _CacheSection(),
               gap,
               _DownloaderSection(),
@@ -223,7 +227,7 @@ class _AccountsPageState extends State<AccountsPage> {
             ],
           'notify' => const [_NotifySection()],
           'debug' => const [_DebugSection()],
-          _ => const [_UpdatesSection(), gap, _AppWorkSection()],
+          _ => const [_UpdatesSection(), gap, _AppWorkSection(), gap, _LocalDownloadSection()],
         };
         return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Padding(
@@ -368,6 +372,52 @@ class _AppWorkSectionState extends State<_AppWorkSection> {
         const SizedBox(height: 10),
       ],
       const _TraySwitches(),
+    ]);
+  }
+}
+
+/// «Локальная загрузка»: формат по умолчанию для «Скачать на устройство» и вопрос о формате при каждой загрузке
+class _LocalDownloadSection extends StatefulWidget {
+  const _LocalDownloadSection();
+  @override
+  State<_LocalDownloadSection> createState() => _LocalDownloadSectionState();
+}
+
+class _LocalDownloadSectionState extends State<_LocalDownloadSection> {
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final format = exportFormatOf(app.settings);
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('Локальная загрузка', style: display(20)),
+      const SizedBox(height: 10),
+      Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+        const Expanded(
+          child: HintTitle('В каком формате скачивать треки по умолчанию?',
+              'Относится к «Скачать на устройство». MP3, FLAC и WAV — перекодирование через FFmpeg; «Как есть» сохраняет файл без изменений.'),
+        ),
+        const SizedBox(width: 16),
+        GlassSelect<String>(
+          value: format,
+          width: 250,
+          options: [for (final f in exportFormats) (f, exportFormatLabel(f))],
+          onChanged: (v) {
+            if (v == format) return;
+            setState(() => app.settings.view['export.format'] = v);
+            app.lib.viewChanged();
+          },
+        ),
+      ]),
+      const SizedBox(height: 6),
+      HintSwitch(
+        contentPadding: EdgeInsets.zero,
+        value: exportAskOf(app.settings),
+        title: 'Спрашивать формат при каждой загрузке',
+        onChanged: (v) {
+          setState(() => app.settings.view['export.ask'] = v ? '1' : '0');
+          app.lib.viewChanged();
+        },
+      ),
     ]);
   }
 }

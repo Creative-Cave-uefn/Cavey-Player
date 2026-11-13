@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
+import '../core/library.dart' show Album;
 import '../core/models.dart';
 import '../core/web_info.dart';
 import 'ambient.dart';
@@ -16,6 +17,7 @@ import 'profile_view.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'web_views.dart';
+import 'album_edit.dart' show HeaderCover;
 import 'widgets.dart';
 
 // ---------- общие кусочки ----------
@@ -119,7 +121,8 @@ class PreviewButton extends StatelessWidget {
 /// «Уже есть» или «Скачать» для трека
 class TrackGetButton extends StatelessWidget {
   final WebTrack track;
-  const TrackGetButton({super.key, required this.track});
+  final Album? into;
+  const TrackGetButton({super.key, required this.track, this.into});
 
   @override
   Widget build(BuildContext context) {
@@ -133,7 +136,7 @@ class TrackGetButton extends StatelessWidget {
     return IconButton(
       tooltip: 'Скачать в библиотеку',
       iconSize: 18,
-      onPressed: track.link.isEmpty ? null : () => downloadToLibrary(context, track.link, track.title),
+      onPressed: track.link.isEmpty ? null : () => downloadToLibrary(context, track.link, track.title, into: into),
       icon: const Icon(Icons.download_rounded, color: C.muted),
     );
   }
@@ -145,7 +148,10 @@ class WebTrackLine extends StatelessWidget {
   final WebTrack track;
   final bool showCover;
   final List<WebTrack>? list;
-  const WebTrackLine({super.key, required this.track, this.showCover = true, this.list});
+
+  /// Докачка в существующий альбом (см. downloadToLibrary)
+  final Album? into;
+  const WebTrackLine({super.key, required this.track, this.showCover = true, this.list, this.into});
 
   @override
   Widget build(BuildContext context) {
@@ -194,7 +200,7 @@ class WebTrackLine extends StatelessWidget {
               Text(formatDuration(Duration(seconds: track.seconds)), style: const TextStyle(color: C.faint, fontSize: 12)),
               const SizedBox(width: 6),
               PreviewButton(track: track, list: list),
-              TrackGetButton(track: track),
+              TrackGetButton(track: track, into: into),
             ]),
           ),
         );
@@ -663,7 +669,7 @@ class _WebAlbumPageState extends State<WebAlbumPage> {
         final have = app.web.inLibrary(a.artist.toLowerCase(), a);
         return ListView(padding: EdgeInsets.fromLTRB(pad, 40, pad, 40), children: [
           Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            netCover(a.cover, size, radius: 12),
+            HeaderCover(track: null, url: a.cover, size: size),
             const SizedBox(width: 28),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -753,12 +759,12 @@ class _WebSearchPageState extends State<WebSearchPage> {
 
   @override
   Widget build(BuildContext context) {
-    final pad = widget.compact ? 20.0 : 40.0;
-    return ListView(padding: EdgeInsets.fromLTRB(pad, 40, pad, 40), children: [
-      Text('Поиск в интернете', style: display(widget.compact ? 28 : 38, weight: FontWeight.w700)),
-      const SizedBox(height: 8),
+    final pad = widget.compact ? 20.0 : 36.0;
+    return ListView(key: const PageStorageKey('page:websearch'), padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
+      Text('Поиск в интернете', style: display(36, weight: FontWeight.w700)),
+      const SizedBox(height: 10),
       const Text('Треки, альбомы и исполнители из Deezer: послушать отрывок и скачать в библиотеку.',
-          style: TextStyle(color: C.muted)),
+          style: TextStyle(color: C.muted, fontSize: 15, height: 1.5)),
       const SizedBox(height: 18),
       ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 640),
@@ -832,7 +838,7 @@ class _WebSearchPageState extends State<WebSearchPage> {
 
 /// Строки треков альбома из интернета. У многодисковых изданий — разделы «Диск 1», «Диск 2»…
 /// и нумерация внутри диска
-List<Widget> webAlbumRows(List<WebTrack> tracks, {bool cover = false}) {
+List<Widget> webAlbumRows(List<WebTrack> tracks, {bool cover = false, Album? into}) {
   final discs = tracks.map((t) => t.disc).toSet();
   final multi = discs.length > 1;
   final out = <Widget>[];
@@ -856,7 +862,7 @@ List<Widget> webAlbumRows(List<WebTrack> tracks, {bool cover = false}) {
       decoration: BoxDecoration(border: Border(bottom: BorderSide(color: C.divider))),
       child: Row(children: [
         SizedBox(width: 32, child: Text('$n', style: const TextStyle(color: C.faint, fontSize: 13))),
-        Expanded(child: WebTrackLine(track: t, showCover: cover, list: tracks)),
+        Expanded(child: WebTrackLine(track: t, showCover: cover, list: tracks, into: into)),
       ]),
     ));
   }

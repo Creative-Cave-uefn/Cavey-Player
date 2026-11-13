@@ -15,7 +15,8 @@ import 'theme.dart';
 import 'widgets.dart';
 
 /// Ставит ссылку в загрузчик: в общую папку или первую из папок с музыкой
-void downloadToLibrary(BuildContext context, String link, String label) {
+/// [into] — докачка в существующий альбом: треки получат его название и исполнителя альбома
+void downloadToLibrary(BuildContext context, String link, String label, {Album? into}) {
   final app = Services.of(context);
   final sources = app.lib.data.sources;
   final target = sources.any((s) => s.id == app.settings.hubId) ? app.settings.hubId : sources.firstOrNull?.id;
@@ -23,7 +24,8 @@ void downloadToLibrary(BuildContext context, String link, String label) {
     app.lib.messages.add('Сначала добавьте папку с музыкой');
     return;
   }
-  app.downloads.enqueue(link, target);
+  app.downloads.enqueue(link, target,
+      intoAlbum: into?.title, intoAlbumArtist: into == null || into.artist == 'Разные исполнители' ? null : into.artist);
   app.lib.messages.add('«$label» — в загрузках. Прогресс в разделе «Скачать»');
 }
 
@@ -408,7 +410,7 @@ class _NewReleasesPageState extends State<NewReleasesPage> {
         final list = q.isEmpty
             ? all
             : [for (final r in all) if (foldText(r.album.title).contains(q) || foldText(r.album.artist).contains(q)) r];
-        return ListView(padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
+        return ListView(key: const PageStorageKey('page:new'), padding: EdgeInsets.fromLTRB(pad, 34, pad, 40), children: [
           Row(children: [
             Expanded(child: Text('Новинки', style: display(36, weight: FontWeight.w700))),
             IconButton(

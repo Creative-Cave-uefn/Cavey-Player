@@ -9,12 +9,15 @@ import 'package:flutter/foundation.dart';
 
 import '../config.dart';
 import 'auth.dart';
+import 'image_tools.dart' show coverUploadTimeout;
+import 'save_tracker.dart';
 import 'log.dart';
 import 'notices.dart' show maxAddedTracksInEvent;
 import 'drive.dart';
 import 'models.dart';
 import 'store.dart';
 import 'tags.dart';
+import 'text_fold.dart';
 import 'broker.dart';
 import 'upload_queue.dart';
 
@@ -122,6 +125,18 @@ class LibraryController extends ChangeNotifier {
     }
   }
   int _flushGen = 0;
+
+  /// Что человек сейчас сохраняет на Диск (для значка внизу справа)
+  final SaveTracker saves = SaveTracker();
+  final Map<String, int> _opToken = {};
+  final Map<int, Set<String>> _tokenOps = {};
+  final Map<String, Map<String, dynamic>> _undo = {};
+  final Map<int, String> _tokenLabel = {};
+  int _failStreak = 0;
+
+  /// Картинки, которые уже показываются, но ещё грузятся на Диск: 'id|поле' → временный id картинки.
+  /// Только для показа, в общую библиотеку никогда не попадают
+  final Map<String, String> _shown = {};
   String? _libModified;
   String? _libVersion;
   bool _flushing = false;
@@ -708,10 +723,22 @@ class LibraryController extends ChangeNotifier {
     }
   }
 
-  void commit(Map<String, dynamic> op) {
+  /// [label] — правка человека: пока она не дошла до Диска, внизу справа видно, что именно сохраняется;
+  /// если Диск так и не принял правку, она откатывается ([undo] — как вернуть прежнее). [token] — уже начатое сохранение
+  void commit(Map<String, dynamic> op, {String? label, int? token, Map<String, dynamic>? undo}) {
     // Отключились от библиотеки, а сканирование ещё дописывает: эти правки уже ничьи
-    if (!hasHub) return;
+    if (!hasHub) {
+      if (token != null) saves.end(token);
+      return;
+    }
     op.putIfAbsent('oid', () => '${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32)}');
+    final oid = op['oid'] as String;
+    if (label != null && token == null) token = beginSave(label);
+    if (token != null) {
+      _opToken[oid] = token;
+      (_tokenOps[token] ??= <String>{}).add(oid);
+      if (undo != null) _undo[oid] = undo;
+    }
     data.apply(op);
     _pending.add(op);
     _changed();
@@ -800,6 +827,10 @@ class LibraryController extends ChangeNotifier {
         }
       });
       syncError = null;
+      _failStreak = 0;
+      for (final op in batch) {
+        _opSaved(op['oid']);
+      }
       final now = DateTime.now();
       for (final op in batch) {
         if (op['oid'] is String) _recentOps.add((op, now));
@@ -817,11 +848,76 @@ class LibraryController extends ChangeNotifier {
     } catch (e) {
       syncError = 'Изменения пока не сохранены на Диске: $e';
       _scheduleFlush(const Duration(seconds: 15));
+      // Третья неудача подряд: правки человека откатываем, чтобы не показывать то, чего у друзей нет
+      if (++_failStreak >= 3) _rollbackUnsaved(e);
     } finally {
       _flushing = false;
       _changed();
       if (_pending.isNotEmpty && syncError == null) _scheduleFlush();
     }
+  }
+
+  /// Правка дошла до Диска: сохранение, к которому она относилась, заканчивается вместе с последней своей правкой
+  void _opSaved(Object? oid) {
+    final token = _opToken.remove(oid);
+    _undo.remove(oid);
+    if (token == null) return;
+    final ops = _tokenOps[token];
+    ops?.remove(oid);
+    if (ops == null || ops.isEmpty) {
+      _tokenOps.remove(token);
+      _tokenLabel.remove(token);
+      saves.end(token);
+    }
+  }
+
+  /// Начинает сохранение с подписью (для значка и для сообщения об откате)
+  int beginSave(String label) {
+    final t = saves.begin(label);
+    _tokenLabel[t] = label;
+    return t;
+  }
+
+  /// Если к сохранению так и не привязали ни одной правки (менять было нечего), оно заканчивается сразу
+  void finishIfIdle(int token) {
+    if ((_tokenOps[token] ?? const <String>{}).isEmpty) {
+      _tokenOps.remove(token);
+      _tokenLabel.remove(token);
+      saves.end(token);
+    }
+  }
+
+  /// Диск не принимает правки: те, что сделал человек, отменяем и сообщаем, остальное (сканирование) копится дальше
+  void _rollbackUnsaved(Object error) {
+    final undone = <String>[];
+    for (var i = _pending.length - 1; i >= 0; i--) {
+      final op = _pending[i];
+      final oid = op['oid'];
+      final token = _opToken[oid];
+      final undo = _undo[oid];
+      if (token == null || undo == null) continue;
+      _pending.removeAt(i);
+      data.apply(undo);
+      final label = _tokenLabel[token];
+      if (label != null && !undone.contains(label)) undone.add(label);
+      _opSaved(oid);
+    }
+    if (undone.isEmpty) return;
+    _failStreak = 0;
+    unawaited(store.writeJson('pending_ops.json', _pending));
+    messages.add('Не удалось сохранить на Диск, изменения отменены: ${undone.join(', ')}. $error');
+  }
+
+  // ---------- картинки, которые ещё грузятся ----------
+
+  /// Показывает [tempId] вместо обложки/аватарки/баннера: у [metaId] ('album:ключ', 'pl:id', 'u:почта', id трека) поля [field]
+  void showTemporary(String metaId, String field, String tempId) {
+    _shown['$metaId|$field'] = tempId;
+    _changed();
+  }
+
+  void hideTemporary(String metaId, String field) {
+    if (_shown.remove('$metaId|$field') != null) _changed();
   }
 
   // И6: локальную копию записываем не чаще раза в 5 секунд: при потоке правок (сканирование) это были лишние рывки
@@ -1247,7 +1343,26 @@ class LibraryController extends ChangeNotifier {
     onEvent?.call({'k': 'share', 'to': to, 'track': trackId, if (note.trim().isNotEmpty) 'note': note.trim()});
   }
 
-  void renamePlaylist(String id, String name) => commit({'op': 'renamePlaylist', 'id': id, 'name': name});
+  /// Поделиться альбомом, исполнителем или плейлистом с друзьями внутри приложения.
+  /// [title] кладём в событие: у друга может не быть такого плейлиста или альбома под рукой, а подпись нужна
+  void shareThing(String kind, String key, String title, List<String> to, {String note = ''}) {
+    if (to.isEmpty) return;
+    onEvent?.call({
+      'k': 'share',
+      'to': to,
+      'kind': kind,
+      'key': key,
+      'title': title,
+      if (note.trim().isNotEmpty) 'note': note.trim(),
+    });
+  }
+
+  void renamePlaylist(String id, String name) {
+    final old = data.playlists.where((p) => p.id == id).firstOrNull?.name;
+    commit({'op': 'renamePlaylist', 'id': id, 'name': name},
+        label: 'Название плейлиста «$name»',
+        undo: old == null ? null : {'op': 'renamePlaylist', 'id': id, 'name': old});
+  }
   void deletePlaylist(String id) => commit({'op': 'deletePlaylist', 'id': id});
   void addToPlaylist(String id, List<String> items) {
     commit({'op': 'addToPlaylist', 'id': id, 'items': items, 'at': DateTime.now().millisecondsSinceEpoch});
@@ -1582,7 +1697,9 @@ class LibraryController extends ChangeNotifier {
   /// ему придёт предложение с причиной [reason] (dup, bad, tags, other) и комментарием [note];
   /// для дубликатов [keep] — копия, которая остаётся.
   void deleteTracks(Iterable<Track> list, {String reason = 'other', String note = '', Track? keep}) {
-    final ids = {for (final t in list) t.id: t.by};
+    // Загрузивший неизвестен (старые записи без «by»): файл числим за владельцем библиотеки, иначе его не удалил бы никто
+    // и он навсегда остался бы на Диске
+    final ids = {for (final t in list) t.id: _uploaderOf(t.by)};
     if (ids.isEmpty) return;
     final names = {for (final t in list) t.id: '${t.displayArtist} — ${t.title}'};
     final info = {
@@ -1598,6 +1715,8 @@ class LibraryController extends ChangeNotifier {
     AppLog.info('Удаление с Диска: ${ids.length} (причина: $reason)');
     unawaited(processDeletions());
   }
+
+  String _uploaderOf(String by) => by.isNotEmpty ? by : (settings.hubEmail ?? '').toLowerCase();
 
   /// Объединить копии в [keep] (лайки, плейлисты, прослушивания переходят на неё) и удалить остальные
   void mergeAndDelete(Track keep, Iterable<Track> copies) {
@@ -1626,7 +1745,7 @@ class LibraryController extends ChangeNotifier {
   Map<String, String> get foreignDeletions {
     return {
       for (final e in data.deleted.entries)
-        if (isMyAccount(e.value) &&
+        if (isMyAccount(_uploaderOf(e.value)) &&
             (data.deletedBy[e.key] ?? '').isNotEmpty &&
             !isMyAccount(data.deletedBy[e.key]!))
           e.key: data.deletedBy[e.key]!
@@ -1678,7 +1797,7 @@ class LibraryController extends ChangeNotifier {
     try {
       final hubOwner = (settings.hubEmail ?? '').toLowerCase();
       for (final e in Map.of(data.deleted).entries) {
-        final uploader = e.value.toLowerCase();
+        final uploader = _uploaderOf(e.value).toLowerCase();
         final by = (data.deletedBy[e.key] ?? '').toLowerCase();
         final upAcc = accounts.accounts.where((a) => a.email.toLowerCase() == uploader).firstOrNull;
         final ownerAcc = hubOwner.isEmpty ? null : accounts.accounts.where((a) => a.email.toLowerCase() == hubOwner).firstOrNull;
@@ -1760,12 +1879,16 @@ class LibraryController extends ChangeNotifier {
   // ---------- правка, скрытие, удаление ----------
 
   /// [cover]: id картинки в папке covers, пустая строка — убрать свою обложку, null — не трогать
-  void editTrack(String id, {required String title, required String artist, required String album, String? cover}) =>
-      editTracks([id], {'t': title, 'a': artist, 'al': album, if (cover != null) 'cv': cover});
+  void editTrack(String id, {required String title, required String artist, required String album, String? cover}) {
+    final t = data.tracks[id];
+    final changed = t == null || t.title != title || t.artist != artist || t.album != album;
+    editTracks([id], {'t': title, 'a': artist, 'al': album, if (cover != null) 'cv': cover},
+        label: changed ? 'Метаданные «$title»' : null);
+  }
 
   /// Массовая правка: только переданные поля — название 't', исполнитель 'a', альбом 'al', обложка 'cv'.
   /// Если альбом со своей обложкой переезжает целиком, обложка переезжает вместе с ним.
-  void editTracks(Iterable<String> ids, Map<String, String> fields) {
+  void editTracks(Iterable<String> ids, Map<String, String> fields, {String? label, int? token}) {
     if (fields.isEmpty) return;
     final list = ids.toList();
     final meta = <String, Map<String, String>>{for (final id in list) id: fields};
@@ -1787,7 +1910,7 @@ class LibraryController extends ChangeNotifier {
         meta['album:${newKeys.first}'] = {'cv': cover};
       });
     }
-    setMeta(meta);
+    setMeta(meta, label: label, token: token);
   }
 
   /// Правка альбома целиком (окно «Альбом»): название, год и исполнитель альбома — у всех его треков,
@@ -1802,7 +1925,9 @@ class LibraryController extends ChangeNotifier {
       if (year != null) 'y': year,
       if (albumArtist != null) 'aa': albumArtist,
     };
-    if (fields.isNotEmpty) editTracks(ids, fields);
+    if (fields.isNotEmpty) {
+      editTracks(ids, fields, label: 'Метаданные альбома «${title ?? a.title}»');
+    }
     final now = data.tracks[ids.first];
     if (now == null) return;
     final target = cover ?? keep;
@@ -1813,35 +1938,57 @@ class LibraryController extends ChangeNotifier {
   // Старые версии приложения про них не знают, но сохраняют: в edits при записи файла ничего не теряется.
   // Ключи: id трека, 'album:<ключ альбома>', 'pl:<id плейлиста>', 'u:<почта>' (личные настройки).
 
-  void setMeta(Map<String, Map<String, String>> meta) {
+  void setMeta(Map<String, Map<String, String>> meta, {String? label, int? token}) {
     if (meta.isEmpty) return;
-    commit({'op': 'setMeta', 'meta': meta});
+    Map<String, dynamic>? undo;
+    if (label != null || token != null) {
+      // Прежние значения запоминаем сейчас: если Диск правку не примет, вернём их
+      undo = {
+        'op': 'setMeta',
+        'meta': {
+          for (final e in meta.entries) e.key: {for (final f in e.value.keys) f: data.edits[e.key]?[f] ?? ''},
+        },
+      };
+    }
+    commit({'op': 'setMeta', 'meta': meta}, label: label, token: token, undo: undo);
   }
 
   String? _metaValue(String id, String key) {
+    final shown = _shown['$id|$key'];
+    if (shown != null) return shown;
     final v = data.edits[id]?[key];
     return (v == null || v.isEmpty) ? null : v;
   }
 
   /// Explicit per-track artwork must win over album-wide artwork; the
   /// latter remains the fallback for tracks without an individual override.
-  String? customCoverOf(Track t) => t.customCover ?? albumCover(t.albumKey);
+  String? customCoverOf(Track t) => _shown['${t.id}|cv'] ?? t.customCover ?? albumCover(t.albumKey);
   // ---------- профиль: ник, аватарка, баннер (хранятся в edits['u:<почта>']) ----------
 
   String? profileNick(String email) => _metaValue('u:$email', 'nick');
   String? profileAvatar(String email) => _metaValue('u:$email', 'av');
   String? profileBanner(String email) => _metaValue('u:$email', 'bn');
 
+  static const defaultBannerBlur = 6.0;
+  static const maxBannerBlur = 24.0;
+
+  /// Размытие баннера (сигма): 0 — резкий, по умолчанию 6
+  double profileBannerBlur(String email) {
+    final v = double.tryParse(_metaValue('u:$email', 'bb') ?? '');
+    return (v ?? defaultBannerBlur).clamp(0.0, maxBannerBlur).toDouble();
+  }
+
   /// Меняет только свой профиль. Значение '' возвращает прежнее (имя из Google, цветной кружок, обычную шапку)
-  void setProfile({String? nick, String? avatar, String? banner}) {
+  void setProfile({String? nick, String? avatar, String? banner, double? bannerBlur, int? token, String? label}) {
     final m = me;
     if (m == null) return;
     final f = <String, String>{
       if (nick != null) 'nick': nick,
       if (avatar != null) 'av': avatar,
       if (banner != null) 'bn': banner,
+      if (bannerBlur != null) 'bb': bannerBlur.clamp(0.0, maxBannerBlur).toStringAsFixed(1),
     };
-    setMeta({'u:$m': f});
+    setMeta({'u:$m': f}, token: token, label: label);
   }
 
   /// Все, кого мы знаем в компании: участники библиотеки, те, кто грузил треки, собирал плейлисты или лайкал
@@ -1878,19 +2025,23 @@ class LibraryController extends ChangeNotifier {
   String? playlistCover(String id) => _metaValue('pl:$id', 'cv');
 
   /// [cover]: id картинки, пустая строка — вернуть обложку из файлов
-  void setAlbumCover(String albumKey, String cover) {
+  void setAlbumCover(String albumKey, String cover, {int? token}) {
     final a = album(albumKey);
     if (a == null) {
-      setMeta({'album:$albumKey': {'cv': cover}});
+      setMeta({'album:$albumKey': {'cv': cover}}, token: token);
       return;
     }
     // Своя обложка ставится главной части, а со всех остальных снимается: иначе у склеенного альбома их две
     setMeta({
       for (final k in a.keys) 'album:$k': {'cv': ''},
       'album:${a.key}': {'cv': cover},
-    });
+    }, token: token);
   }
-  void setPlaylistCover(String id, String cover) => setMeta({'pl:$id': {'cv': cover}});
+
+  /// Метаданные ключей, у которых во время загрузки показывается временная обложка альбома: главный ключ и склеенные части
+  List<String> albumCoverMetaIds(Album a) => ['album:${a.key}', for (final k in a.keys) 'album:$k'];
+
+  void setPlaylistCover(String id, String cover, {int? token}) => setMeta({'pl:$id': {'cv': cover}}, token: token);
 
   /// Любимые исполнители: у каждого свой список
   bool isFavArtist(String artistKey) => me != null && _metaValue('u:$me', 'fa:${artistKey.toLowerCase()}') != null;
@@ -1951,6 +2102,50 @@ class LibraryController extends ChangeNotifier {
     return (playlists: pl, albums: al, artists: ar);
   }
 
+  // ---------- закреплённое в коллекции ----------
+
+  /// Жетоны закреплённых пунктов в порядке закрепа: fp:<плейлист>, fl:<ключ альбома>, fa:<ключ исполнителя>.
+  /// Хранятся в личных данных человека (edits['u:<почта>']['pins']), поэтому порядок один на всех его устройствах
+  List<String> get pinned {
+    final m = me;
+    if (m == null) return const [];
+    final raw = data.edits['u:$m']?['pins'] ?? '';
+    if (raw.isEmpty) return const [];
+    try {
+      final j = jsonDecode(raw);
+      if (j is List) return [for (final x in j) '$x'];
+    } catch (_) {}
+    return const [];
+  }
+
+  void setPinned(List<String> tokens) {
+    final m = me;
+    if (m == null) return;
+    setMeta({'u:$m': {'pins': tokens.isEmpty ? '' : jsonEncode(tokens)}});
+  }
+
+  static String playlistPin(String id) => 'fp:$id';
+  static String albumPin(Album a) => 'fl:${a.key.toLowerCase()}';
+  static String artistPin(Artist a) => 'fa:${a.key.toLowerCase()}';
+
+  /// Все жетоны альбома: после склейки альбом может быть закреплён под любым из старых ключей
+  static Iterable<String> albumPins(Album a) => {a.key, ...a.keys}.map((k) => 'fl:${k.toLowerCase()}');
+
+  bool isPinnedToken(Iterable<String> tokens) {
+    final set = pinned.toSet();
+    return tokens.any(set.contains);
+  }
+
+  void togglePinToken(Iterable<String> tokens) {
+    final list = pinned;
+    final set = tokens.toSet();
+    if (list.any(set.contains)) {
+      setPinned([for (final p in list) if (!set.contains(p)) p]);
+    } else {
+      setPinned([...list, tokens.first]);
+    }
+  }
+
   // ---------- папка с загруженными обложками ----------
 
   static const coversFolderName = 'cave-covers';
@@ -1981,7 +2176,7 @@ class LibraryController extends ChangeNotifier {
     final known = _coverKnown[key];
     if (known != null) return Future.value(known);
     return _coverInflight[key] ??=
-        _uploadCoverUnique(bytes, '$digest.$ext').timeout(const Duration(seconds: 90)).then((id) {
+        _uploadCoverUnique(bytes, '$digest.$ext').timeout(coverUploadTimeout(bytes.length)).then((id) {
           if (_coverKnown.length >= 200) _coverKnown.remove(_coverKnown.keys.first);
           _coverKnown[key] = id;
           return id;
@@ -2135,6 +2330,29 @@ class LibraryController extends ChangeNotifier {
         ..running = false
         ..current = '';
       notifyListeners();
+    }
+  }
+
+  String? _hubOwner;
+
+  /// Почта владельца общей папки — аккаунта с подпиской, на чьём Диске должны лежать все файлы
+  Future<String?> hubOwnerEmail() async {
+    final cached = _hubOwner;
+    if (cached != null) return cached;
+    final hub = settings.hubId;
+    if (hub == null) return null;
+    try {
+      final owner = await _withHub((email) async {
+        final f = await drive.getFile(email, hub, fields: 'id,owners(emailAddress)');
+        final owners = f['owners'];
+        if (owners is List && owners.isNotEmpty && owners.first is Map) return '${(owners.first as Map)['emailAddress'] ?? ''}'.toLowerCase();
+        return '';
+      });
+      if (owner.isEmpty) return null;
+      return _hubOwner = owner;
+    } catch (e) {
+      AppLog.warn('Не узнал владельца общей папки', e);
+      return null;
     }
   }
 
@@ -2389,11 +2607,15 @@ class _Found {
 
 // ---------- склейка альбомов ----------
 
-String _normAlbumTitle(String s) => s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+/// Название для склейки: без регистра, диакритики, знаков и пометок «(Remastered)»
+String _normAlbumTitle(String s) {
+  final f = foldAlbumTitle(s);
+  return f.isEmpty ? s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim() : f;
+}
 
 Set<String> _albumNames(Track t) => {
-      for (final n in t.artists) n.toLowerCase(),
-      if (t.albumArtist.isNotEmpty) ...splitArtists(t.albumArtist).map((n) => n.toLowerCase()),
+      for (final n in t.artists) foldText(n),
+      if (t.albumArtist.isNotEmpty) ...splitArtists(t.albumArtist).map(foldText),
     };
 
 /// Диск трека; если в тегах не указан, считаем первым

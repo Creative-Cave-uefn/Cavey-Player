@@ -10,6 +10,9 @@ import 'package:flutter/foundation.dart';
 
 import '../audio_cache.dart';
 import '../covers.dart';
+import '../audio_format.dart';
+import '../device_export.dart' show safeFileName;
+import 'tools.dart';
 import '../library.dart';
 import '../log.dart';
 import '../models.dart';
@@ -25,6 +28,19 @@ class DownloadJob {
   final String path;
   final bool quiet, makePlaylist;
   final void Function(Track)? onTrack;
+
+  /// Докачка недостающих треков существующего альбома: всем скачанным трекам ставим его название и исполнителя альбома,
+  /// чтобы они встали в него, а не создали второй альбом из-за мелких отличий в написании
+  final String? intoAlbum, intoAlbumArtist;
+
+  /// Загрузчик именно для этого задания ('youtube', 'deezer', …); пусто — тот, что выбран в настройках
+  final String? provider;
+
+  /// «Скачать на устройство»: файлы кладутся в эту папку на компьютере, на Диск и в библиотеку не попадают
+  final String? deviceDir;
+
+  /// Формат файлов на устройстве: 'original' или 'mp3' / 'flac' / 'wav' (перекодируются через ffmpeg)
+  final String deviceFormat;
   String title;
   JobState state = JobState.queued;
   bool cancelRequested = false;
@@ -57,7 +73,7 @@ class DownloadJob {
 
   DownloadJob(this.input, this.sourceId, this.folderName,
       {this.folderId, this.path = '', this.quiet = false, this.makePlaylist = true,
-       this.onTrack, this.replaceTrackId}) : title = input;
+       this.onTrack, this.replaceTrackId, this.intoAlbum, this.intoAlbumArtist, this.deviceDir, this.deviceFormat = 'original', this.provider}) : title = input;
 
   String get target => folderId ?? sourceId;
   void add(String line) {
@@ -82,6 +98,9 @@ class DownloadService extends ChangeNotifier {
   final AudioCache? cache;
   final CoverService? covers;
   final void Function(String id)? onAudioReplaced;
+
+  /// Задание успешно закончилось и скачало хотя бы один трек (например, докачка альбома)
+  void Function(DownloadJob job)? onJobDone;
   final List<DownloadJob> jobs = [];
   bool _running = false;
   bool installing = false;
@@ -128,26 +147,30 @@ class DownloadService extends ChangeNotifier {
 
   DownloadJob? enqueue(String input, String sourceId,
       {String? folderId, String path = '', bool quiet = false,
-       void Function(Track)? onTrack, bool makePlaylist = true}) {
+       void Function(Track)? onTrack, bool makePlaylist = true, String? intoAlbum, String? intoAlbumArtist, String? deviceDir, String deviceFormat = 'original'}) {
     final value = input.trim();
     if (value.isEmpty) return null;
     final source = lib.data.sources.where((s) => s.id == sourceId).firstOrNull;
     final job = DownloadJob(value, sourceId, source?.name ?? 'Cavey',
       folderId: folderId, path: path, quiet: quiet, onTrack: onTrack,
-      makePlaylist: makePlaylist);
+      makePlaylist: makePlaylist, intoAlbum: intoAlbum, intoAlbumArtist: intoAlbumArtist, deviceDir: deviceDir, deviceFormat: deviceFormat);
     jobs.insert(0, job);
     notifyListeners();
     unawaited(_pump());
     return job;
   }
 
-  DownloadJob? enqueueReplacement(Track track) {
-    if (track.artist.trim().isEmpty || track.title.trim().isEmpty) return null;
+  /// [url] — необязательная ссылка на нужную версию трека: её получает загрузчик вместо поиска по исполнителю и названию.
+  /// Метаданные трека (исполнитель, название, альбом, год) в любом случае берутся из библиотеки
+  DownloadJob? enqueueReplacement(Track track, {String? url, String? provider}) {
+    final link = (url ?? '').trim();
+    if (link.isEmpty && (track.artist.trim().isEmpty || track.title.trim().isEmpty)) return null;
     if (jobs.any((j) => j.replaceTrackId == track.id &&
         (j.state == JobState.queued || j.state == JobState.running))) return null;
     final source = lib.data.sources.where((s) => s.id == track.source).firstOrNull;
-    final job = DownloadJob('${track.artist} - ${track.title}', track.source,
-        source?.name ?? 'Cavey', replaceTrackId: track.id, path: track.path);
+    final job = DownloadJob(link.isNotEmpty ? link : '${track.artist} - ${track.title}', track.source,
+        source?.name ?? 'Cavey', replaceTrackId: track.id, path: track.path, provider: provider);
+    if (link.isNotEmpty) job.title = '${track.artist} - ${track.title}';
     jobs.insert(0, job);
     notifyListeners();
     unawaited(_pump());
@@ -399,7 +422,16 @@ class DownloadService extends ChangeNotifier {
           }
           job.state = job.cancelRequested ? JobState.cancelled :
               (value == true ? JobState.done : JobState.failed);
-          if (job.state == JobState.done && job.done > 0 && !job.quiet && job.replaceTrackId == null) {
+          if (job.state == JobState.done && job.done > 0) {
+            try {
+              onJobDone?.call(job);
+            } catch (e) {
+              AppLog.warn('Действие после загрузки не вышло', e);
+            }
+          }
+          if (job.state == JobState.done && job.done > 0 && job.deviceDir != null) {
+            lib.messages.add('Скачано на устройство: ${job.done}');
+          } else if (job.state == JobState.done && job.done > 0 && !job.quiet && job.replaceTrackId == null) {
             final added = job.done - job.deferred;
             if (added > 0) lib.onEvent?.call({'k': 'upload', 'n': added, 'folder': job.folderName});
             lib.messages.add(job.deferred == 0
@@ -521,6 +553,31 @@ class DownloadService extends ChangeNotifier {
   }
 
   /// Only accept files produced in this job's temporary directory.
+  /// Метка «файл на устройстве» в идентификаторах, которые заняты у загрузчика вместо id Диска
+  static const _deviceMark = 'device:';
+
+  /// Копирует скачанный файл в [dir], не затирая одноимённые: «Имя (2).mp3».
+  /// [format] не 'original' — файл перекодируется в mp3 / flac / wav (если он уже в этом формате, просто копируется)
+  Future<String> _copyToDevice(File f, String dir, {String format = 'original'}) async {
+    await Directory(dir).create(recursive: true);
+    final name = f.uri.pathSegments.last;
+    final dot = name.lastIndexOf('.');
+    final stem = dot > 0 ? name.substring(0, dot) : name;
+    var ext = dot > 0 ? name.substring(dot) : '';
+    final convert = format != 'original' && ext.toLowerCase() != '.$format';
+    if (convert) ext = '.$format';
+    var dest = File('$dir${Platform.pathSeparator}$stem$ext');
+    for (var n = 2; await dest.exists(); n++) {
+      dest = File('$dir${Platform.pathSeparator}$stem ($n)$ext');
+    }
+    if (convert) {
+      await convertAudio(Tools(_toolsDir), f, dest, format);
+    } else {
+      await f.copy(dest.path);
+    }
+    return dest.path;
+  }
+
   Future<File> _jobFile(Object? path, {bool image = false}) async {
     if (path is! String || path.trim().isEmpty) throw const FormatException('Не указан файл');
     final f = File(path);
@@ -593,14 +650,28 @@ class DownloadService extends ChangeNotifier {
     if (job == null) throw const FormatException('Для этого запроса нужно задание');
     switch (method) {
       case 'existing':
+        // На устройство скачиваем всё, даже если трек уже есть в библиотеке
+        if (job.deviceDir != null) return null;
         final t = lib.existing('${call['artist'] ?? ''}', '${call['title'] ?? ''}',
             album: '${call['album'] ?? ''}',
             duration: (call['duration'] as num?)?.toDouble());
         return t == null ? null : {'id': t.id, 'artist': t.artist, 'title': t.title};
       case 'folder':
+        if (job.deviceDir != null) {
+          final dir = Directory('${job.deviceDir}${Platform.pathSeparator}${safeFileName('${call['name'] ?? ''}')}');
+          await dir.create(recursive: true);
+          return '$_deviceMark${dir.path}';
+        }
         return lib.ensureSubfolder(job.sourceId, job.target, '${call['name'] ?? ''}');
       case 'upload':
         final f = await _jobFile(call['file']);
+        if (job.deviceDir != null) {
+          final folder = call['folderId'] as String?;
+          final dir = folder != null && folder.startsWith(_deviceMark) ? folder.substring(_deviceMark.length) : job.deviceDir!;
+          final saved = await _copyToDevice(f, dir, format: job.deviceFormat);
+          job.touch();
+          return '$_deviceMark$saved';
+        }
         final target = (call['folderId'] as String?) ?? job.target;
         var lastMove = DateTime.now();
         job.touch();
@@ -624,6 +695,7 @@ class DownloadService extends ChangeNotifier {
         }
       case 'enrich':
         final id = '${call['trackId'] ?? ''}';
+        if (id.startsWith(_deviceMark)) return true; // файл на устройстве: теги остаются как скачались
         final track = lib.data.tracks[id];
         final waiting = id.startsWith(UploadQueue.idPrefix) ? lib.uploadQueue.byId(id) : null;
         if (waiting == null && (track == null || track.source != job.sourceId)) {
@@ -651,6 +723,10 @@ class DownloadService extends ChangeNotifier {
           if (m['duration'] is num && (m['duration'] as num) > 0)
             'd': '${((m['duration'] as num) * 1000).round()}',
         };
+        if ((job.intoAlbum ?? '').isNotEmpty) {
+          edit['al'] = job.intoAlbum!;
+          if ((job.intoAlbumArtist ?? '').isNotEmpty) edit['aa'] = job.intoAlbumArtist!;
+        }
         if (waiting != null) {
           // Трека на Диске ещё нет: метаданные применятся, когда файл выйдет из очереди «Ожидают загрузки»
           waiting.edit = edit;
@@ -750,12 +826,14 @@ class DownloadService extends ChangeNotifier {
         lib.messages.add('«${track.title}» перекачан без создания дубля');
         return id;
       case 'playlist':
+        if (job.deviceDir != null) return {'id': '', 'created': false, 'added': 0};
         final ids = (call['ids'] as List? ?? const []).map((x) => '$x').toList();
         final result = addToNamedPlaylist(lib, '${call['name'] ?? ''}', ids);
         job.playlistId = result.id;
         job.playlistName = '${call['name'] ?? ''}';
         return {'id': result.id, 'created': result.created, 'added': result.added};
       case 'playlistCover':
+        if (job.deviceDir != null) return true;
         final path = call['file'];
         final f = await _jobFile(path, image: true);
         final bytes = await f.readAsBytes();
@@ -854,7 +932,7 @@ class DownloadService extends ChangeNotifier {
         'tools': _toolsDir.absolute.path,
         'work': work.absolute.path,
         if (job != null) ...{
-          'input': job.input, 'provider': lib.settings.downloadProvider,
+          'input': job.input, 'provider': job.provider ?? lib.settings.downloadProvider,
           'folderName': job.folderName, 'path': job.path,
           'makePlaylist': job.makePlaylist,
         },
@@ -868,6 +946,7 @@ class DownloadService extends ChangeNotifier {
         final dot = name.lastIndexOf('.');
         request.addAll({
           'replaceTrackId': t.id,
+          if (RegExp(r'^https?://', caseSensitive: false).hasMatch(job.input)) 'sourceUrl': job.input,
           'originalExt': dot < 0 ? '' : name.substring(dot),
           'artist': t.artist, 'requestedTitle': t.title,
           'album': t.album, 'albumArtist': t.albumArtist,

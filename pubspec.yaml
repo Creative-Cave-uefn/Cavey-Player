@@ -1,7 +1,7 @@
 name: cave_player
 description: Общая музыкальная библиотека для своих — музыка играет прямо с Google Дисков.
 publish_to: none
-version: 0.1.0+1
+version: 0.4.0+1
 
 environment:
   sdk: ">=3.6.0 <4.0.0"

@@ -13,6 +13,7 @@ import '../core/models.dart';
 import 'shell.dart';
 import 'theme.dart';
 import 'glass_popup.dart';
+import 'tags_ui.dart' show TagSuggest;
 
 String plural(int n, String one, String few, String many) {
   final m10 = n % 10, m100 = n % 100;
@@ -594,7 +595,23 @@ class TileInk extends StatefulWidget {
   /// Если задано — по наведению появляется кнопка воспроизведения
   final VoidCallback? onPlay;
   final double radius;
-  const TileInk({super.key, required this.child, required this.onTap, this.onSecondaryTapUp, this.onPlay, this.radius = 12});
+
+  /// «В любимое»: сердечко в углу обложки появляется по наведению; у отмеченного остаётся всегда.
+  /// [favorite] — отмечено ли сейчас, [onFavorite] — переключить. [favoriteOnCircle] — фото круглое: сердечко ближе к центру
+  final bool favorite;
+  final VoidCallback? onFavorite;
+  final bool favoriteOnCircle;
+  const TileInk({
+    super.key,
+    required this.child,
+    required this.onTap,
+    this.onSecondaryTapUp,
+    this.onPlay,
+    this.radius = 12,
+    this.favorite = false,
+    this.onFavorite,
+    this.favoriteOnCircle = false,
+  });
 
   /// Отступ подсветки от обложки и текста
   static const pad = 8.0;
@@ -622,6 +639,35 @@ class _TileInkState extends State<TileInk> {
             onSecondaryTapUp: widget.onSecondaryTapUp,
             child: Padding(padding: const EdgeInsets.all(TileInk.pad), child: widget.child),
           ),
+          if (widget.onFavorite != null && side > 80)
+            Positioned(
+              // у круглого фото угол квадрата пустой: сердечко ставим на дугу круга
+              right: TileInk.pad + (widget.favoriteOnCircle ? side * 0.1 : 8),
+              top: TileInk.pad + (widget.favoriteOnCircle ? side * 0.1 : 8),
+              child: IgnorePointer(
+                ignoring: !(_hover || widget.favorite),
+                child: AnimatedOpacity(
+                  opacity: (_hover || widget.favorite) ? 1 : 0,
+                  duration: const Duration(milliseconds: 140),
+                  child: Tooltip(
+                    message: widget.favorite ? 'Убрать из любимого' : 'В любимое',
+                    child: GestureDetector(
+                      onTap: widget.onFavorite,
+                      child: Container(
+                        width: 34,
+                        height: 34,
+                        decoration: const BoxDecoration(color: Color(0x88000000), shape: BoxShape.circle),
+                        child: Icon(
+                          widget.favorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                          size: 20,
+                          color: widget.favorite ? C.accent : Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           if (widget.onPlay != null && side > button * 2)
             Positioned(
               right: TileInk.pad + 8,
@@ -740,13 +786,16 @@ Widget uniformControls(BuildContext context, Widget child) {
 }
 
 /// Поле поиска той же высоты, что и кнопки рядом
-class RowSearchField extends StatelessWidget {
+class RowSearchField extends StatefulWidget {
   final TextEditingController controller;
   final FocusNode? focusNode;
   final String hint;
   final double width;
   final ValueChanged<String> onChanged;
   final VoidCallback onClear;
+
+  /// «#» в поле включает поиск по тегам: под полем появляется список моих тегов
+  final bool tagSuggest;
   const RowSearchField({
     super.key,
     required this.controller,
@@ -755,28 +804,48 @@ class RowSearchField extends StatelessWidget {
     required this.onChanged,
     required this.onClear,
     this.width = 340,
+    this.tagSuggest = false,
   });
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-        width: width,
-        height: kRowControlHeight,
-        child: TextField(
-          controller: controller,
-          focusNode: focusNode,
-          onChanged: onChanged,
-          maxLines: 1,
-          textAlignVertical: TextAlignVertical.center,
-          decoration: InputDecoration(
-            constraints: const BoxConstraints.tightFor(height: kRowControlHeight),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 12),
-            hintText: hint,
-            hintMaxLines: 1,
-            prefixIcon: const Icon(Icons.search_rounded, size: 18),
-            suffixIcon: controller.text.isEmpty
-                ? null
-                : IconButton(icon: const Icon(Icons.close_rounded, size: 16), onPressed: onClear),
-          ),
-        ),
-      );
+  State<RowSearchField> createState() => _RowSearchFieldState();
+}
+
+class _RowSearchFieldState extends State<RowSearchField> {
+  FocusNode? _own;
+  FocusNode get _focus => widget.focusNode ?? (_own ??= FocusNode());
+
+  @override
+  void dispose() {
+    _own?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final field = TextField(
+      controller: widget.controller,
+      focusNode: _focus,
+      onChanged: widget.onChanged,
+      maxLines: 1,
+      textAlignVertical: TextAlignVertical.center,
+      decoration: InputDecoration(
+        constraints: const BoxConstraints.tightFor(height: kRowControlHeight),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+        hintText: widget.hint,
+        hintMaxLines: 1,
+        prefixIcon: const Icon(Icons.search_rounded, size: 18),
+        suffixIcon: widget.controller.text.isEmpty
+            ? null
+            : IconButton(icon: const Icon(Icons.close_rounded, size: 16), onPressed: widget.onClear),
+      ),
+    );
+    return SizedBox(
+      width: widget.width,
+      height: kRowControlHeight,
+      child: widget.tagSuggest
+          ? TagSuggest(controller: widget.controller, focusNode: _focus, onChanged: widget.onChanged, child: field)
+          : field,
+    );
+  }
 }

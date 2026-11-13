@@ -5,9 +5,11 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
+import '../core/track_tags.dart';
 import 'profile_view.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
+import 'collection_menu.dart';
 import 'theme.dart';
 import 'tracks_view.dart';
 import 'web_views.dart';
@@ -63,13 +65,16 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
 
   /// Результаты поиска по всей библиотеке: исполнители, альбомы и треки
   List<Widget> _results(BuildContext context, AppServices app, List<Track> tracks, List<Album> albums, List<Artist> artists, bool compact) {
-    final words = _words(_query);
-    final foundArtists = artists.where((a) => _hasAll(a.name, words)).toList()
+    // С тегами («#рок #вечер») ищутся только треки: у исполнителей и альбомов тегов нет
+    final tq = parseTagQuery(_query);
+    final tagOk = tagFilterFor(app.lib.myTags, tq);
+    final words = _words(tq.text);
+    final foundArtists = tagOk != null ? <Artist>[] : artists.where((a) => _hasAll(a.name, words)).toList()
       ..sort((a, b) {
         final r = b.tracks.length.compareTo(a.tracks.length);
         return r != 0 ? r : a.key.compareTo(b.key);
       });
-    final foundAlbums = albums.where((a) => _hasAll('${a.title} ${a.artist}', words)).toList()
+    final foundAlbums = (tagOk != null ? <Album>[] : albums.where((a) => _hasAll('${a.title} ${a.artist}', words)).toList())
       ..sort((a, b) {
         // Сначала те, у кого запрос в названии, потом по числу треков
         final ta = _hasAll(a.title, words) ? 0 : 1, tb = _hasAll(b.title, words) ? 0 : 1;
@@ -77,7 +82,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         final r = b.tracks.length.compareTo(a.tracks.length);
         return r != 0 ? r : a.key.compareTo(b.key);
       });
-    final foundTracks = tracks.where((t) => _hasAll('${t.title} ${t.artist} ${t.album}', words)).toList();
+    final foundTracks = tracks.where((t) => (tagOk == null || tagOk(t)) && _hasAll('${t.title} ${t.artist} ${t.album}', words)).toList();
     if (foundArtists.isEmpty && foundAlbums.isEmpty && foundTracks.isEmpty) {
       return [
         const SizedBox(height: 40),
@@ -198,26 +203,27 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         final topArtists = shelves.artists;
         final shortShelf = shelves.short;
 
-        return ListView(padding: EdgeInsets.fromLTRB(pad, LibraryFrame.on(context) ? 12 : 34, pad, 40), children: [
+        return ListView(key: const PageStorageKey('library:home'), padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 40), children: [
           // Внутри «Медиатеки» счётчики стоят под её заголовком (library_tabs.dart); своё место они нужны только без рамки
           if (!LibraryFrame.on(context)) ...[
-            Text('Медиатека', style: display(compact ? 30 : 36, weight: FontWeight.w700)),
-            const SizedBox(height: 8),
+            Text('Медиатека', style: display(36, weight: FontWeight.w700)),
+            const SizedBox(height: 10),
             Text(
               '${countTracks(tracks.length)} · ${albums.length} ${plural(albums.length, 'альбом', 'альбома', 'альбомов')} · '
               '${artists.length} ${plural(artists.length, 'исполнитель', 'исполнителя', 'исполнителей')}',
               style: const TextStyle(color: C.muted, fontSize: 15),
             ),
+            const SizedBox(height: 18),
           ],
-          const SizedBox(height: 18),
           // Поиск и кнопки в одной строке, у всех один центр по вертикали
           uniformControls(
             context,
             Wrap(spacing: 12, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
               RowSearchField(
                 controller: _search,
-                hint: 'Найти исполнителя, альбом или трек',
+                hint: app.lib.myTags.isEmpty ? 'Найти исполнителя, альбом или трек' : 'Найти исполнителя, альбом или трек · #тег',
                 width: compact ? 300 : 400,
+                tagSuggest: true,
                 onChanged: (v) => setState(() => _query = v),
                 onClear: () => setState(() {
                   _search.clear();
@@ -283,6 +289,7 @@ class _AlbumTile extends StatelessWidget {
   Widget build(BuildContext context) => TileInk(
         onTap: () => NavScope.of(context).go(Nav('album', a.key)),
         onPlay: () => Services.of(context).player.playTracks(a.tracks, 0, inOrder: true),
+        onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, album: a),
         child: LayoutBuilder(
           builder: (context, box) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             CoverImage(track: a.coverTrack, size: box.maxWidth, radius: 10),
@@ -300,12 +307,21 @@ class _ArtistTile extends StatelessWidget {
   const _ArtistTile(this.a);
 
   @override
-  Widget build(BuildContext context) => TileInk(
+  Widget build(BuildContext context) {
+    final lib = Services.of(context).lib;
+    return ListenableBuilder(listenable: lib, builder: (context, _) => _tile(context, lib));
+  }
+
+  Widget _tile(BuildContext context, LibraryController lib) => TileInk(
         onTap: () => NavScope.of(context).go(Nav('artist', a.key)),
         onPlay: () {
           final app = Services.of(context);
           app.player.playTracks(topTracksOf(app, a), 0);
         },
+        favorite: lib.isFavArtist(a.key),
+        onFavorite: () => lib.toggleFavArtist(a.key),
+        favoriteOnCircle: true,
+        onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, artist: a),
         child: LayoutBuilder(
           builder: (context, box) => Column(children: [
             ArtistPhoto(

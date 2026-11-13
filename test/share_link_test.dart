@@ -24,6 +24,17 @@ void main() {
     expect(trackIdFromLink(web), 'abc');
   });
 
+  test('Ссылка на тег: почта владельца и id тега', () {
+    const key = 'ivan@gmail.com|g1abc2';
+    final app = appShareLink(ShareKind.tag, key);
+    expect(shareTargetFromLink(app), const ShareTarget(ShareKind.tag, key));
+    final web = webShareLink(ShareKind.tag, key, base: 'https://example.com/open');
+    expect(web, 'https://example.com/open/?tg=ivan%40gmail.com%7Cg1abc2');
+    expect(shareTargetFromLink(web!), const ShareTarget(ShareKind.tag, key));
+    expect(shareTargetFromLink('caveplayer://tag/just-an-id'), isNull);
+    expect(shareTargetFromLink('caveplayer://tag/a%20b%7Cg1'), isNull);
+  });
+
   test('Чужие и испорченные ссылки не принимаются', () {
     expect(trackIdFromLink('https://example.com/'), isNull);
     expect(trackIdFromLink('caveplayer://album/abc'), isNull);
@@ -35,5 +46,37 @@ void main() {
   test('Ссылка находится среди аргументов запуска', () {
     expect(linkFromArgs(['--foo', 'caveplayer://track/abc']), 'caveplayer://track/abc');
     expect(linkFromArgs(['--foo']), isNull);
+  });
+
+  test('Ссылки на альбом, исполнителя и плейлист туда и обратно', () {
+    final album = appShareLink(ShareKind.album, 'Daft Punk|Discovery / 2001');
+    expect(shareTargetFromLink(album), const ShareTarget(ShareKind.album, 'Daft Punk|Discovery / 2001'));
+    final artist = appShareLink(ShareKind.artist, 'тату');
+    expect(artist.startsWith('caveplayer://artist/'), isTrue);
+    expect(shareTargetFromLink(artist), const ShareTarget(ShareKind.artist, 'тату'));
+    expect(shareTargetFromLink(appShareLink(ShareKind.playlist, 'plabc12')), const ShareTarget(ShareKind.playlist, 'plabc12'));
+    expect(shareTargetFromLink(appShareLink(ShareKind.track, 'xyz')), const ShareTarget(ShareKind.track, 'xyz'));
+  });
+
+  test('Ссылки для мессенджеров на альбом, исполнителя и плейлист читаются обратно', () {
+    for (final t in const [
+      ShareTarget(ShareKind.album, 'A & B|Лучшее: №1'),
+      ShareTarget(ShareKind.artist, 'a&b c/d'),
+      ShareTarget(ShareKind.playlist, 'pl1x'),
+      ShareTarget(ShareKind.track, 'trk_1'),
+    ]) {
+      final web = webShareLink(t.kind, t.key, base: 'https://example.github.io/app/open/');
+      expect(web, isNotNull);
+      expect(shareTargetFromLink(web!), t, reason: web);
+    }
+    expect(webShareLink(ShareKind.album, 'x', base: ''), isNull);
+    expect(shareLinkText(ShareKind.album, 'x').startsWith(kDefaultShareUrl), isTrue);
+  });
+
+  test('Ссылка на альбом не принимается за ссылку на трек', () {
+    expect(trackIdFromLink(appShareLink(ShareKind.album, 'abc')), isNull);
+    expect(shareTargetFromLink('caveplayer://playlist/a b'), isNull);
+    expect(shareTargetFromLink('caveplayer://album/'), isNull);
+    expect(shareTargetFromLink('https://x.y/?pl=a%20b'), isNull);
   });
 }

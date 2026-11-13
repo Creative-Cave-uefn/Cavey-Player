@@ -127,35 +127,54 @@ class PlayerBar extends StatelessWidget {
                     cursor: SystemMouseCursors.click,
                     child: GestureDetector(
                       onTap: () => NavScope.of(context).go(Nav('album', t.albumKey)),
-                      child: ShaderMask(
-                        // Правая часть обложки растворяется
-                        shaderCallback: (r) => const LinearGradient(
-                          begin: Alignment.centerLeft,
-                          end: Alignment.centerRight,
-                          colors: [Colors.white, Colors.white, Color(0x00FFFFFF)],
-                          stops: [0.0, 0.58, 1.0],
-                        ).createShader(r),
-                        blendMode: BlendMode.dstIn,
-                        child: CoverImage(track: t, size: 104, height: 74, radius: 0, fill: true),
+                      // Обложка крупнее и сдвинута влево: скруглённый левый край капсулы обрезает её саму, а не показывает
+                      // фон по краям — у картинок плохого качества иначе были видны дуги капсулы
+                      child: SizedBox(
+                        width: 104,
+                        height: 74,
+                        child: OverflowBox(
+                          alignment: Alignment.centerRight,
+                          minWidth: 0,
+                          maxWidth: 120,
+                          child: ShaderMask(
+                            // Правая часть обложки растворяется
+                            shaderCallback: (r) => const LinearGradient(
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                              colors: [Colors.white, Colors.white, Color(0x00FFFFFF)],
+                              stops: [0.0, 0.62, 1.0],
+                            ).createShader(r),
+                            blendMode: BlendMode.dstIn,
+                            child: CoverImage(track: t, size: 120, height: 74, radius: 0, fill: true),
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
                 const SizedBox(width: 2),
                 Expanded(
-                  // Правый клик по названию и исполнителю — полное меню трека (без «Выбрать»); обычный клик по ссылке работает как раньше
-                  child: GestureDetector(
+                  // Текст можно выделить зажатой левой кнопкой и скопировать (Ctrl+C); обычный клик по ссылке работает как раньше.
+                  // Правый клик — полное меню трека (без «Выбрать»): через Listener, чтобы не спорить с выделением
+                  child: Listener(
                     behavior: HitTestBehavior.translucent,
-                    onSecondaryTapUp: (d) => showTrackMenu(context, t, null, d.globalPosition, openPlaylist: p.sourcePlaylist),
-                    child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      // Название ведёт в альбом, как и обложка
-                      Links(
-                        parts: [LinkPart(t.title, () => NavScope.of(context).go(Nav('album', t.albumKey)))],
-                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
-                      ),
-                      const SizedBox(height: 2),
-                      Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 13)),
-                    ]),
+                    onPointerDown: (e) {
+                      if (e.kind == PointerDeviceKind.mouse && e.buttons == kSecondaryMouseButton) {
+                        showTrackMenu(context, t, null, e.position, openPlaylist: p.sourcePlaylist);
+                      }
+                    },
+                    child: SelectionArea(
+                      contextMenuBuilder: (_, __) => const SizedBox.shrink(),
+                      child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        // Название ведёт в альбом, как и обложка
+                        Links(
+                          parts: [LinkPart(t.title, () => NavScope.of(context).go(Nav('album', t.albumKey)))],
+                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                        ),
+                        const SizedBox(height: 2),
+                        Links(parts: trackLinks(context, t, album: true), style: const TextStyle(color: C.muted, fontSize: 13)),
+                      ]),
+                    ),
                   ),
                 ),
                 if (app.wave.active) ...[

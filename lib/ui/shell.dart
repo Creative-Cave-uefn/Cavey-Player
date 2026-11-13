@@ -1,7 +1,8 @@
 import 'dart:async';
 
-import 'package:flutter/gestures.dart' show kBackMouseButton, kForwardMouseButton, kSecondaryMouseButton, PointerDeviceKind;
+import 'package:flutter/gestures.dart' show HitTestResult, kBackMouseButton, kForwardMouseButton, kSecondaryMouseButton, PointerDeviceKind;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderEditable;
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/services.dart';
 
@@ -11,6 +12,7 @@ import '../core/log.dart';
 import '../core/media_keys.dart';
 import '../core/share_link.dart';
 import '../core/models.dart';
+import '../core/pin_order.dart';
 import '../core/player.dart' show PlayerController;
 import '../core/updater.dart';
 import 'accounts_view.dart';
@@ -35,8 +37,14 @@ import 'widgets.dart';
 import 'glass_popup.dart';
 import 'library_home.dart';
 import 'library_tabs.dart';
+import 'collection_menu.dart';
+import 'share_dialog.dart' show openSharedThing;
+import 'tag_page.dart';
+import '../core/track_tags.dart';
 import 'collection_page.dart';
-import 'album_edit.dart';
+import 'device_export_ui.dart';
+import 'migration_ui.dart';
+import 'pin_drag.dart';
 import 'queue_panel.dart';
 
 class Nav {
@@ -98,6 +106,8 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> {
   final _nav = NavController();
   final _gesture = MouseGesture();
+  /// Фокус оболочки: через него до обработчика клавиш доходят пробел, стрелки и M/L
+  final _keyFocus = FocusNode(debugLabel: 'shell-keys');
   StreamSubscription<String>? _msgs;
   bool _dragging = false;
   String? _toast;
@@ -152,6 +162,30 @@ class _ShellState extends State<Shell> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    FocusManager.instance.addListener(_keepKeyFocus);
+  }
+
+  /// Фокус ушёл «в никуда» (поле ввода исчезло или потеряло фокус, закрылось окно): возвращаем его оболочке,
+  /// иначе клавиши до неё не доходят и пробел перестаёт ставить паузу
+  void _keepKeyFocus() {
+    if (!mounted || _keyFocus.hasPrimaryFocus) return;
+    final f = FocusManager.instance.primaryFocus;
+    if (f != null && f is! FocusScopeNode) return;
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _keyFocus.hasPrimaryFocus) return;
+      final cur = FocusManager.instance.primaryFocus;
+      if (cur != null && cur is! FocusScopeNode) return;
+      final r = ModalRoute.of(context);
+      if (r != null && !r.isCurrent) return;
+      _keyFocus.requestFocus();
+    });
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _nav.removeListener(_onNavForScroll);
@@ -167,9 +201,27 @@ class _ShellState extends State<Shell> {
       // Своя плашка вместо SnackBar: маленькая, по центру и над плеером, ничего не перекрывает
       _showToast(m);
     });
+    if (!_tabRestored) {
+      _tabRestored = true;
+      final last = lastLibraryTab(Services.of(context).settings);
+      if (!last.same(_nav.value)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _nav.value.same(const Nav('all'))) _nav.value = last;
+        });
+      }
+    }
+    if (!_migrationOffered) {
+      _migrationOffered = true;
+      // Через несколько секунд после запуска, когда библиотека уже загрузилась
+      Timer(const Duration(seconds: 12), () {
+        if (mounted) offerMigrationAtStart(context);
+      });
+    }
     if (_askLib == null) {
       _askLib = Services.of(context).lib..addListener(_checkForeignDeletions);
       WidgetsBinding.instance.addPostFrameCallback((_) => _checkForeignDeletions());
+      // Подстраховка: если окно вопроса пропустили или оно было закрыто мимо кнопок, спрашиваем снова
+      _askTimer = Timer.periodic(const Duration(minutes: 2), (_) => _checkForeignDeletions());
     }
     if (_linkSource == null) {
       _linkSource = Services.of(context).incomingLink..addListener(_onLink);
@@ -177,11 +229,25 @@ class _ShellState extends State<Shell> {
     }
   }
 
+  bool _migrationOffered = false;
+  bool _tabRestored = false;
   LibraryController? _askLib;
+
+  Timer? _askTimer;
+  int _askLogged = -1;
 
   void _checkForeignDeletions() {
     final lib = _askLib;
-    if (!mounted || lib == null || lib.foreignDeletions.isEmpty) return;
+    if (!mounted || lib == null) return;
+    final n = lib.foreignDeletions.length;
+    if (n == 0) {
+      _askLogged = -1;
+      return;
+    }
+    if (n != _askLogged) {
+      _askLogged = n;
+      AppLog.info('Чужие удаления моих файлов, жду ответа: $n');
+    }
     askForeignDeletions(context, lib);
   }
 
@@ -209,14 +275,33 @@ class _ShellState extends State<Shell> {
     final link = app.incomingLink.value;
     if (link == null) return;
     app.incomingLink.value = null;
-    final id = trackIdFromLink(link);
-    final track = id == null ? null : app.lib.data.tracks[app.lib.data.resolve(id)];
-    if (track == null) {
-      _showToast('Этого трека нет в вашей библиотеке');
+    final target = shareTargetFromLink(link);
+    if (target == null) {
+      _showToast('Не удалось разобрать ссылку');
       return;
     }
-    _nav.go(Nav('album', track.albumKey));
-    unawaited(app.player.playTracks([track], 0));
+    switch (target.kind) {
+      case ShareKind.track:
+        final track = app.lib.data.tracks[app.lib.data.resolve(target.key)];
+        if (track == null) {
+          _showToast('Этого трека нет в вашей библиотеке');
+          return;
+        }
+        _nav.go(Nav('album', track.albumKey));
+        unawaited(app.player.playTracks([track], 0));
+      case ShareKind.album:
+      case ShareKind.artist:
+      case ShareKind.playlist:
+      case ShareKind.tag:
+        if (!openSharedThing(app.lib, target.kind.name, target.key)) {
+          _showToast(switch (target.kind) {
+            ShareKind.album => 'Этого альбома нет в вашей библиотеке',
+            ShareKind.artist => 'Этого исполнителя нет в вашей библиотеке',
+            ShareKind.tag => 'Этот тег недоступен: его удалили или переименовали',
+            _ => 'Этого плейлиста нет у вас: возможно, он приватный',
+          });
+        }
+    }
   }
 
   /// Зажатая правая кнопка + движение: ← предыдущий, → следующий, ↑ ↓ громкость
@@ -264,6 +349,9 @@ class _ShellState extends State<Shell> {
   }
 
   void _onNavForScroll() {
+    // Какая вкладка Медиатеки открыта — запоминаем: «Медиатека» слева и запуск приложения вернут её
+    final app = Services.of(context);
+    if (rememberLibraryTab(app.settings, _nav.value)) unawaited(app.lib.saveSettings());
     if (_scrollNav != null && !_nav.value.same(_scrollNav!)) {
       _scrollTopVisible.value = false;
       _pagePos = null;
@@ -272,6 +360,9 @@ class _ShellState extends State<Shell> {
 
   @override
   void dispose() {
+    FocusManager.instance.removeListener(_keepKeyFocus);
+    _askTimer?.cancel();
+    _keyFocus.dispose();
     if (shellNav.value == _nav) shellNav.value = null;
     _nav.removeListener(_onNavForScroll);
     _scrollTopVisible.dispose();
@@ -293,6 +384,7 @@ class _ShellState extends State<Shell> {
       child: Listener(
         behavior: HitTestBehavior.translucent,
         onPointerDown: (e) {
+          _dropTextFocusOnOutsideTap(e);
           if (e.buttons & kBackMouseButton != 0) _nav.back();
           if (e.buttons & kForwardMouseButton != 0) _nav.forward();
           if (e.kind == PointerDeviceKind.mouse && e.buttons == kSecondaryMouseButton) _gesture.start(e.position);
@@ -307,6 +399,7 @@ class _ShellState extends State<Shell> {
         child: Focus(
         onKeyEvent: (node, e) => _onKey(e),
         child: Focus(
+          focusNode: _keyFocus,
           autofocus: true,
           child: DropTarget(
             onDragEntered: (_) => setState(() => _dragging = true),
@@ -457,6 +550,11 @@ class _ShellState extends State<Shell> {
                   child: const NoticeTower(),
                 ),
               ),
+              Positioned(
+                left: ((MediaQuery.sizeOf(context).width < 860 || app.settings.viewOf('sidebar.mini', '0') == '1') ? 72.0 : 240.0) + 12 + 16,
+                bottom: 92 + 10,
+                child: const ExportCard(),
+              ),
               if (_dragging) const Positioned.fill(child: IgnorePointer(child: _DropOverlay())),
             ]),
           ),
@@ -471,6 +569,20 @@ class _ShellState extends State<Shell> {
     final ctx = FocusManager.instance.primaryFocus?.context;
     if (ctx == null) return false;
     return ctx.widget is EditableText || ctx.findAncestorWidgetOfExactType<EditableText>() != null;
+  }
+
+  /// Клик мимо поля ввода снимает с него фокус: иначе поле (например, поиск) держало фокус и «Пробел» ставил пробел в нём,
+  /// а не паузу. Клики по самому полю и по его подсказкам (TextFieldTapRegion) фокус не трогают
+  void _dropTextFocusOnOutsideTap(PointerDownEvent e) {
+    if (!_typing()) return;
+    final hit = HitTestResult();
+    WidgetsBinding.instance.hitTestInView(hit, e.position, e.viewId);
+    for (final entry in hit.path) {
+      final t = entry.target;
+      if (t is RenderEditable) return;
+      if (t is RenderTapRegion && t.groupId == EditableText) return;
+    }
+    _keyFocus.requestFocus();
   }
 
   KeyEventResult _onKey(KeyEvent e) {
@@ -548,6 +660,8 @@ class _ShellState extends State<Shell> {
         return LikedPage(key: const ValueKey('liked'), compact: compact);
       case 'playlist':
         return PlaylistPage(key: ValueKey('pl:${nav.id}'), playlistId: nav.id!, compact: compact);
+      case 'tag':
+        return TagPage(key: ValueKey('tag:${nav.id}'), id: nav.id!, compact: compact);
       case 'download':
         return DownloadPage(key: const ValueKey('download'), compact: compact);
       case 'company':
@@ -794,12 +908,13 @@ class _Sidebar extends StatelessWidget {
           final lib = app.lib;
           final cur = nav.value;
           final v = t.value;
-          Widget item(IconData icon, String label, Nav target, {Widget? trailing, List<String> also = const []}) => _NavItem(
+          Widget item(IconData icon, String label, Nav target, {Widget? trailing, Widget? miniTrailing, List<String> also = const []}) => _NavItem(
                 icon: icon,
                 label: label,
                 t: v,
                 selected: cur.same(target) || also.contains(cur.kind),
                 trailing: trailing,
+                miniTrailing: miniTrailing,
                 onTap: () => nav.go(target),
               );
 
@@ -812,12 +927,20 @@ class _Sidebar extends StatelessWidget {
             if (on('sidebar.showPl'))
               for (final p in lib.visiblePlaylists)
                 if (p.by.isEmpty || p.by == lib.me || lib.isFavPlaylist(p.id)) _SideEntry.playlist(p),
+            // Теги: только те, что человек вынес в панель или закрепил
+            for (final t in lib.sidebarTags) _SideEntry.tag(t),
             if (on('sidebar.showAl') && favs != null)
               for (final a in favs.albums) _SideEntry.album(a),
             if (on('sidebar.showAr') && favs != null)
               for (final a in favs.artists) _SideEntry.artist(a),
           ];
-          final unread = unreadNotices(app);
+          // Закреплённые — наверху, в порядке закрепа
+          final pins = lib.pinned;
+          final pinSet = pins.toSet();
+          final split = splitPinned(entries, (e) => e.tokens, pins);
+          final shownEntries = [...split.pinned, ...split.rest];
+          final shownTokens = [for (final e in shownEntries) e.tokenIn(pinSet)];
+          void drop(String dragged, String target) => applyPinDrop(app, shownTokens, split.pinned.length, dragged, target);
           final head = <Widget>[
             // Значок остаётся на месте (сдвигается на пару пикселей), название укатывается вправо
             Padding(
@@ -841,8 +964,8 @@ class _Sidebar extends StatelessWidget {
                 ]),
               ),
             ),
-            item(Icons.library_music_outlined, 'Медиатека', const Nav('all'),
-                also: const ['albums', 'artists', 'recent', 'songs', 'playlists', 'collection']),
+            item(Icons.library_music_outlined, 'Медиатека', lastLibraryTab(app.settings),
+                also: const ['all', 'albums', 'artists', 'recent', 'songs', 'playlists', 'collection']),
             item(Icons.waves_rounded, 'Моя волна', const Nav('wave'), trailing: waveSidebarMark(context)),
             const SizedBox(height: 14),
             item(Icons.travel_explore_rounded, 'Поиск в интернете', const Nav('websearch')),
@@ -854,13 +977,30 @@ class _Sidebar extends StatelessWidget {
             const SizedBox(height: 14),
             item(Icons.favorite_border_rounded, 'Любимое', const Nav('liked')),
             if (lib.me != null) item(Icons.person_outline_rounded, 'Моя страница', Nav('user', lib.me)),
+            // Колокольчик с уведомлениями — справа от названия; в узкой панели он съезжает отдельной строкой под «Компанию»
             item(Icons.groups_outlined, 'Компания', const Nav('company'),
-                trailing: unread > 0
-                    ? Tooltip(
-                        message: 'Новых уведомлений: $unread',
-                        child: Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFFFF4D4F), shape: BoxShape.circle)),
-                      )
-                    : null),
+                trailing: const NoticeBell(), miniTrailing: const SizedBox.shrink()),
+            if (v > 0)
+              ClipRect(
+                child: SizedBox(
+                  height: 42 * Curves.easeOut.transform(v.clamp(0.0, 1.0)),
+                  child: OverflowBox(
+                    alignment: Alignment.topLeft,
+                    minHeight: 0,
+                    maxHeight: 42,
+                    child: Opacity(
+                      opacity: ((v - 0.3) / 0.7).clamp(0.0, 1.0),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 1, 10, 1),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: SizedBox(width: 52, height: 40, child: Center(child: const NoticeBell())),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             const SizedBox(height: 18),
             _SlideSwap(
               t: v,
@@ -875,14 +1015,22 @@ class _Sidebar extends StatelessWidget {
           Widget collection(bool compact) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 if (mode == 'covers')
                   _SideTiles(
-                    entries: entries,
+                    entries: shownEntries,
+                    pins: pinSet,
+                    onDrop: drop,
                     compact: compact,
                     current: cur,
                     cols: compact ? 1 : int.tryParse(app.settings.viewOf('sidebar.cols', '2'))?.clamp(2, 4) ?? 2,
                     names: !compact && on('sidebar.names'),
                   )
                 else
-                  for (final e in entries) _SideRow(entry: e, compact: compact, selected: cur.same(e.target), onTap: () => nav.go(e.target)),
+                  for (final e in shownEntries)
+                    PinDrag(
+                      token: e.tokenIn(pinSet),
+                      vertical: true,
+                      onDrop: drop,
+                      child: _SideRow(entry: e, compact: compact, selected: cur.same(e.target), pinned: pinSet.contains(e.tokenIn(pinSet)), onTap: () => nav.go(e.target)),
+                    ),
                 if (entries.isEmpty && !compact)
                   const Padding(
                     padding: EdgeInsets.fromLTRB(22, 4, 16, 0),
@@ -896,8 +1044,8 @@ class _Sidebar extends StatelessWidget {
                 UploadLine(compact: compact),
                 _UpdateLine(compact: compact),
               ]);
-          final foot = <Widget>[
-            _SlideSwap(t: v, full: const NowListeningSidebar(compact: false), mini: const NowListeningSidebar(compact: true)),
+          List<Widget> foot(bool floating) => <Widget>[
+            _SlideSwap(t: v, full: NowListeningSidebar(compact: false, floating: floating), mini: const NowListeningSidebar(compact: true)),
             const Divider(height: 1),
             const SizedBox(height: 8),
             _SlideSwap(t: v, full: footPart(false), mini: footPart(true)),
@@ -913,11 +1061,11 @@ class _Sidebar extends StatelessWidget {
               return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 ...head,
                 Expanded(child: ListView(padding: EdgeInsets.zero, children: playlists)),
-                ...foot,
+                ...foot(false),
               ]);
             }
             return SingleChildScrollView(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...head, ...playlists, const SizedBox(height: 12), ...foot]),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...head, ...playlists, const SizedBox(height: 12), ...foot(true)]),
             );
           });
         },
@@ -1129,10 +1277,25 @@ class _SideEntry {
   final Playlist? playlist;
   final Album? album;
   final Artist? artist;
-  const _SideEntry(this.label, this.target, this.cover, {this.round = false, this.owner, this.playlist, this.album, this.artist});
+  final TagInfo? tag;
+  const _SideEntry(this.label, this.target, this.cover, {this.round = false, this.owner, this.playlist, this.album, this.artist, this.tag});
+
+  /// Жетоны закрепа: у склеенного альбома их несколько
+  List<String> get tokens => tag != null
+      ? [tagPinToken(tag!.id)]
+      : playlist != null
+      ? [LibraryController.playlistPin(playlist!.id)]
+      : album != null
+          ? LibraryController.albumPins(album!).toList()
+          : [LibraryController.artistPin(artist!)];
+
+  /// Тот жетон, под которым пункт уже закреплён, иначе основной
+  String tokenIn(Set<String> pins) => tokens.firstWhere(pins.contains, orElse: () => tokens.first);
 
   factory _SideEntry.playlist(Playlist p) => _SideEntry(p.name, Nav('playlist', p.id),
       (size) => PlaylistCover(playlist: p, size: size, radius: 5), owner: p.by, playlist: p);
+
+  factory _SideEntry.tag(TagInfo t) => _SideEntry('#${t.name}', Nav('tag', t.id), (size) => TagMark(size: size, radius: 5), tag: t);
 
   factory _SideEntry.album(Album a) =>
       _SideEntry(a.title, Nav('album', a.key), (size) => CoverImage(track: a.coverTrack, size: size, radius: 5), album: a);
@@ -1148,67 +1311,20 @@ class _SideEntry {
       );
 }
 
-/// Правый клик по плейлисту, альбому или исполнителю в боковой панели: слушать, вперемешку, правка, приватность
-Future<void> _showSideMenu(BuildContext context, _SideEntry e, Offset at) async {
-  final app = Services.of(context);
-  final lib = app.lib;
-  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-  final p = e.playlist;
-  final mine = p != null && (p.by == lib.me || p.by.isEmpty);
-  final v = await showGlassMenu<String>(
-    context: context,
-    position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
-    items: [
-      const PopupMenuItem(value: 'play', child: Text('Слушать')),
-      const PopupMenuItem(value: 'shuffle', child: Text('Вперемешку')),
-      if (p != null || e.album != null) const PopupMenuDivider(),
-      if (p != null || e.album != null) const PopupMenuItem(value: 'edit', child: Text('Редактировать…')),
-      if (mine)
-        lib.isPlaylistPublic(p.id)
-            ? const PopupMenuItem(value: 'private', child: Text('Сделать приватным'))
-            : const PopupMenuItem(value: 'public', child: Text('Сделать открытым')),
-    ],
-  );
-  if (v == null || !context.mounted) return;
-  List<Track> tracks() {
-    if (p != null) return lib.playlistTracks(p.id);
-    if (e.album != null) return e.album!.tracks;
-    final a = e.artist!;
-    return topTracksOf(app, a);
-  }
-
-  switch (v) {
-    case 'play':
-    case 'shuffle':
-      final list = tracks();
-      if (list.isEmpty) {
-        lib.messages.add('Здесь пока нет треков');
-        return;
-      }
-      final shuffle = v == 'shuffle';
-      if (app.player.shuffle != shuffle) app.player.toggleShuffle();
-      app.player.playTracks(list, shuffle ? DateTime.now().microsecond % list.length : 0);
-    case 'edit':
-      if (p != null) {
-        final t = lib.playlistTracks(p.id);
-        await editPlaylistDialog(context, p, coverTrack: t.isEmpty ? null : t.firstWhere((x) => x.hasCover, orElse: () => t.first));
-      } else {
-        await editAlbumDialog(context, e.album!);
-      }
-    case 'public':
-    case 'private':
-      lib.setPlaylistPublic(p!.id, v == 'public');
-      lib.messages.add(v == 'public' ? 'Плейлист «${p.name}» теперь видят все друзья' : 'Плейлист «${p.name}» виден только вам');
-  }
-}
+/// Правый клик по плейлисту, альбому или исполнителю в боковой панели
+Future<void> _showSideMenu(BuildContext context, _SideEntry e, Offset at) =>
+    e.tag != null
+        ? showTagMenu(context, at, e.tag!.id)
+        : showCollectionMenu(context, at, playlist: e.playlist, album: e.album, artist: e.artist);
 
 /// Строка «Коллекции»: миниатюра и название
 class _SideRow extends StatelessWidget {
   final _SideEntry entry;
   final bool compact;
   final bool selected;
+  final bool pinned;
   final VoidCallback onTap;
-  const _SideRow({required this.entry, required this.compact, required this.selected, required this.onTap});
+  const _SideRow({required this.entry, required this.compact, required this.selected, required this.onTap, this.pinned = false});
 
   @override
   Widget build(BuildContext context) {
@@ -1233,6 +1349,7 @@ class _SideRow extends StatelessWidget {
               ),
               // Точка присутствия — только у чужих плейлистов: у собственных она ничего не говорит
               if (entry.owner != null && entry.owner!.isNotEmpty && entry.owner != Services.of(context).lib.me) FriendDot(entry.owner!, size: 7),
+              if (pinned) const Padding(padding: EdgeInsets.only(left: 6), child: PinMark(size: 13)),
               const SizedBox(width: 4),
             ],
           ],
@@ -1253,7 +1370,10 @@ class _SideTiles extends StatelessWidget {
   final Nav current;
   final int cols;
   final bool names;
-  const _SideTiles({required this.entries, required this.compact, required this.current, required this.cols, required this.names});
+  final Set<String> pins;
+  final void Function(String dragged, String target) onDrop;
+  const _SideTiles(
+      {required this.entries, required this.compact, required this.current, required this.cols, required this.names, required this.pins, required this.onDrop});
 
   @override
   Widget build(BuildContext context) {
@@ -1267,7 +1387,10 @@ class _SideTiles extends StatelessWidget {
           for (final e in entries)
             SizedBox(
               width: w,
-              child: Tooltip(
+              child: PinDrag(
+                token: e.tokenIn(pins),
+                onDrop: onDrop,
+                child: Tooltip(
                 message: e.label,
                 child: InkWell(
                   borderRadius: BorderRadius.circular(8),
@@ -1281,7 +1404,16 @@ class _SideTiles extends StatelessWidget {
                         borderRadius: e.round ? null : BorderRadius.circular(8),
                         border: current.same(e.target) ? Border.all(color: C.accent, width: 2) : null,
                       ),
-                      child: SizedBox.square(dimension: w, child: e.cover(w)),
+                      child: SizedBox.square(
+                        dimension: w,
+                        child: Stack(children: [
+                          Positioned.fill(child: e.cover(w)),
+                          if (pins.contains(e.tokenIn(pins)))
+                            const Positioned(right: 4, top: 4, child: DecoratedBox(
+                                decoration: BoxDecoration(color: Color(0x99000000), shape: BoxShape.circle),
+                                child: Padding(padding: EdgeInsets.all(3), child: PinMark(size: 12)))),
+                        ]),
+                      ),
                     ),
                     if (names) ...[
                       const SizedBox(height: 4),
@@ -1293,6 +1425,7 @@ class _SideTiles extends StatelessWidget {
                     ],
                   ]),
                 ),
+              ),
               ),
             ),
         ]);
@@ -1360,6 +1493,9 @@ class _NavItem extends StatelessWidget {
   final double t;
   final VoidCallback onTap;
   final Widget? trailing;
+
+  /// Что рисовать на значке, когда панель узкая; без него там стоит [trailing]
+  final Widget? miniTrailing;
   final Widget? leading;
 
   const _NavItem({
@@ -1369,6 +1505,7 @@ class _NavItem extends StatelessWidget {
     required this.t,
     required this.onTap,
     this.trailing,
+    this.miniTrailing,
     this.leading,
   });
 
@@ -1401,8 +1538,8 @@ class _NavItem extends StatelessWidget {
                   const SizedBox(width: 16),
                   Stack(clipBehavior: Clip.none, children: [
                     Icon(icon, size: 20, color: selected ? C.accent : color),
-                    if (trailing != null && t > 0)
-                      Positioned(right: -8, top: -6, child: Opacity(opacity: t.clamp(0.0, 1.0), child: trailing!)),
+                    if ((miniTrailing ?? trailing) != null && t > 0)
+                      Positioned(right: -8, top: -6, child: Opacity(opacity: t.clamp(0.0, 1.0), child: miniTrailing ?? trailing!)),
                   ]),
                   const SizedBox(width: 14),
                   Expanded(
@@ -1420,7 +1557,7 @@ class _NavItem extends StatelessWidget {
                           ),
                           if (leading != null) ...[leading!, const SizedBox(width: 4)],
                           if (trailing != null) trailing!,
-                          const SizedBox(width: 16),
+                          SizedBox(width: trailing is NoticeBell ? 8 : 16),
                         ]),
                       ),
                     ),

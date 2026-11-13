@@ -73,6 +73,26 @@ class _Note extends StatelessWidget {
 }
 
 /// Текст песни. [big] — крупно, для режима кинотеатра
+/// Номер текущей строки. Строки списка подписаны на него сами и перестраиваются только тогда, когда у них поменялось
+/// положение относительно текущей (раньше на каждую смену строки перестраивался весь список)
+class _ActiveLine extends ChangeNotifier {
+  int idx = -1;
+  int lead = -1;
+
+  void set(int i, int l) {
+    if (i == idx && l == lead) return;
+    idx = i;
+    lead = l;
+    notifyListeners();
+  }
+
+  /// Без уведомления: во время сборки подписчиков трогать нельзя
+  void reset(int i, int l) {
+    idx = i;
+    lead = l;
+  }
+}
+
 class LyricsBody extends StatefulWidget {
   final Track track;
   final bool big;
@@ -84,21 +104,28 @@ class LyricsBody extends StatefulWidget {
   State<LyricsBody> createState() => _LyricsBodyState();
 }
 
-class _LyricsBodyState extends State<LyricsBody> {
+class _LyricsBodyState extends State<LyricsBody> with SingleTickerProviderStateMixin {
   PlayerController? _player;
   LyricsService? _lyrics;
   Lyrics? _synced;
-  final List<GlobalKey> _keys = [];
-  int _idx = -1;
+  List<GlobalKey> _keys = [];
+  String? _keysTrack;
   int _shown = -2;
   DateTime _userScrolledAt = DateTime(0);
+  final _active = _ActiveLine();
+  Lyrics? _builtFor;
+  late final Ticker _ticker = createTicker((_) => _tick());
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_player != null) return;
     final app = Services.of(context);
-    _player = app.player..position.addListener(_onPosition);
+    // Строка переключается на каждый кадр, пока песня играет; на паузе кадры не тратятся.
+    // Перемотка и пауза будят проверку сразу
+    _player = app.player
+      ..position.addListener(_wake)
+      ..addListener(_wake);
     // Панель показывает то, что лежит в сервисе текстов, и перерисовывается,
     // когда любой поиск закончился — свой, начатый плеером при открытии трека, или повторный
     _lyrics = app.lyrics..addListener(_onLyrics);
@@ -111,9 +138,12 @@ class _LyricsBodyState extends State<LyricsBody> {
 
   @override
   void dispose() {
-    _player?.position.removeListener(_onPosition);
+    _player?.position.removeListener(_wake);
+    _player?.removeListener(_wake);
     _lyrics?.removeListener(_onLyrics);
     _karaoke?.removeListener(_onLyrics);
+    _ticker.dispose();
+    _active.dispose();
     super.dispose();
   }
 
@@ -165,13 +195,12 @@ class _LyricsBodyState extends State<LyricsBody> {
   /// Когда строка на самом деле начинается. В LRCLIB отметки часто стоят чуть раньше пения;
   /// если Whisper знает время первого слова — строка переключается по нему
   List<Duration>? _starts;
-  int _offMs = 0; // Ж7: поправка времени текста (мс)
-
-  int _leadIdx = -1; // К3: строка, к которой надо начать прокрутку (на 180 мс раньше)
+  final int _offMs = 0; // Ж7: поправка времени текста (мс); ручного сдвига больше нет
 
   int _lineAt(Lyrics ly, {int leadMs = 0}) {
-    // В панели строку подсвечиваем чуть заранее — читать удобнее. В караоке — ровно в такт, без упреждения
-    final pos = _player!.position.value + (widget.karaoke ? Duration(milliseconds: _offMs + leadMs) : const Duration(milliseconds: 250));
+    // В панели строку подсвечиваем чуть заранее — читать удобнее. В караоке — ровно в такт, без упреждения.
+    // Время — только с общих часов плеера, те же, по которым заливаются слова
+    final pos = _player!.now() + (widget.karaoke ? Duration(milliseconds: _offMs + leadMs) : const Duration(milliseconds: 250));
     final starts = _starts;
     if (starts == null || starts.length != ly.lines.length) return ly.indexAt(pos);
     var lo = 0, hi = starts.length - 1, idx = -1;
@@ -187,18 +216,28 @@ class _LyricsBodyState extends State<LyricsBody> {
     return idx;
   }
 
-  /// Перерисовываем только когда сменилась строка, а не на каждый тик позиции
-  void _onPosition() {
-    final ly = _synced;
-    if (ly == null || _player == null || !mounted) return;
+  /// Позиция или состояние плеера изменились (перемотка, пауза, пуск): проверяем строку сразу и,
+  /// если песня играет, снова включаем проверку на каждый кадр
+  void _wake() {
+    if (!mounted) return;
+    _updateIndex();
+    if (_player?.playing == true && !_ticker.isActive) _ticker.start();
+  }
+
+  void _tick() {
+    if (!mounted) return;
+    _updateIndex();
+    if (_player?.playing != true && _ticker.isActive) _ticker.stop();
+  }
+
+  /// Проверка текущей строки: сообщаем только когда она сменилась, и тогда перестраиваются только строки рядом с ней
+  void _updateIndex() {
+    final ly = _synced, p = _player;
+    if (ly == null || p == null) return;
     final i = _lineAt(ly);
     final lead = widget.karaoke ? _lineAt(ly, leadMs: 180) : i;
-    if (i != _idx || lead != _leadIdx) {
-      setState(() {
-        _idx = i;
-        _leadIdx = lead;
-      });
-    }
+    _active.set(i, lead);
+    _follow(math.max(i, lead)); // К3: прокрутка начинается за 180 мс до новой строки
   }
 
   void _retry() {
@@ -213,6 +252,7 @@ class _LyricsBodyState extends State<LyricsBody> {
     if (DateTime.now().difference(_userScrolledAt) < const Duration(seconds: 4)) return;
     _shown = idx;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || idx >= _keys.length) return;
       final ctx = _keys[idx].currentContext;
       if (ctx != null) {
         // Кинотеатр: текущая строка всегда на середине высоты, и шаг между строками везде одинаковый
@@ -257,64 +297,6 @@ class _LyricsBodyState extends State<LyricsBody> {
     );
   }
 
-  /// К2: текущая строка в полный размер, остальные тем меньше, прозрачнее и размытее, чем дальше от неё
-  Widget _focus(int offset, Widget child) {
-    if (!widget.big) return child;
-    final d = offset.abs().clamp(0, 4).toDouble();
-    return TweenAnimationBuilder<double>(
-      tween: Tween(end: d),
-      duration: const Duration(milliseconds: 450),
-      curve: Curves.easeOutBack,
-      child: child,
-      builder: (context, v, child) {
-        final k = v.clamp(0.0, 4.0);
-        final scale = k <= 0 ? 1.0 : 0.94 - 0.005 * math.min(k, 4);
-        final sigma = k < 1 ? 0.0 : math.min(3.0, 0.8 + 0.7 * (k - 1));
-        Widget w = Transform.scale(scale: scale, alignment: Alignment.centerLeft, child: child);
-        if (sigma > 0.05) {
-          w = ImageFiltered(imageFilter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma, tileMode: TileMode.decal), child: w);
-        }
-        return w;
-      },
-    );
-  }
-
-  /// К4: если до следующей строки больше 4 секунд без слов, показываем три точки, которые заполняются к её началу
-  Widget _breakDots(List<KWord> words, Duration next, PlayerController player) {
-    if (words.isEmpty) return const SizedBox.shrink();
-    final from = words.last.end;
-    if (next - from < const Duration(seconds: 4)) return const SizedBox.shrink();
-    return ValueListenableBuilder<Duration>(
-      valueListenable: player.position,
-      builder: (context, pos, _) {
-        final p = Duration(milliseconds: _offMs) + pos;
-        if (p < from) return const SizedBox.shrink();
-        final prog = ((p - from).inMilliseconds / (next - from).inMilliseconds).clamp(0.0, 1.0);
-        final breathe = 1 + 0.15 * math.sin(p.inMilliseconds / 350);
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-          child: Row(children: [
-            for (var k = 0; k < 3; k++)
-              Padding(
-                padding: const EdgeInsets.only(right: 10),
-                child: Transform.scale(
-                  scale: breathe,
-                  child: Container(
-                    width: 14,
-                    height: 14,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.white.withValues(alpha: 0.25 + 0.75 * (prog * 3 - k).clamp(0.0, 1.0)),
-                    ),
-                  ),
-                ),
-              ),
-          ]),
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final app = Services.of(context);
@@ -339,11 +321,15 @@ class _LyricsBodyState extends State<LyricsBody> {
         for (final l in ly.lines)
           Padding(
             padding: const EdgeInsets.only(bottom: 6),
-            child: Text(l.text, style: TextStyle(color: C.muted, fontSize: widget.big ? 24 : 15, height: 1.5, fontWeight: widget.big ? FontWeight.w600 : null)),
+            child: Text(l.text, style: TextStyle(color: C.muted, fontSize: widget.big ? 24 : 15, height: 1.5, fontWeight: widget.big ? FontWeight.w700 : null)),
           ),
         _again(),
         _PlainTiming(track: t, lyrics: ly), // Л4
       ]);
+    }
+    if (_keysTrack != t.id) {
+      _keysTrack = t.id;
+      _keys = [];
     }
     while (_keys.length < ly.lines.length) {
       _keys.add(GlobalKey());
@@ -351,7 +337,6 @@ class _LyricsBodyState extends State<LyricsBody> {
     // Анимация — по тому, что дал источник текста: время слогов — по слогам, время слов — по словам,
     // только время строк — по строкам. Своё время слов (Whisper, разбивка на слоги) не подставляем,
     // ручного сдвига времени больше нет
-    _offMs = 0;
     _starts = widget.karaoke
         ? KaraokeAligner.lineStarts([for (final l in ly.lines) l.at!], [
             for (var i = 0; i < ly.lines.length; i++)
@@ -361,11 +346,17 @@ class _LyricsBodyState extends State<LyricsBody> {
               }(),
           ])
         : null;
-    final idx = _idx = _lineAt(ly);
-    _leadIdx = widget.karaoke ? _lineAt(ly, leadMs: 180) : idx;
-    _follow(math.max(idx, _leadIdx)); // К3: прокрутка начинается за 180 мс до новой строки
-    /// Время слов (или слогов) строки из источника; пусто — у строки есть только её начало
-    List<KWord> wordsOf(int i) => ly.lines[i].words ?? const [];
+    if (!identical(_builtFor, ly)) {
+      // Другой текст (или другой трек): строки создаются заново, текущая строка и прокрутка определяются с нуля
+      _builtFor = ly;
+      _shown = -2;
+      _active.reset(_lineAt(ly), widget.karaoke ? _lineAt(ly, leadMs: 180) : _lineAt(ly));
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _updateIndex();
+      if (_player?.playing == true && !_ticker.isActive) _ticker.start();
+    });
 
     return NotificationListener<UserScrollNotification>(
       onNotification: _onScroll,
@@ -380,37 +371,21 @@ class _LyricsBodyState extends State<LyricsBody> {
             14,
             widget.big && box.maxHeight.isFinite ? math.max(200.0, box.maxHeight * 0.5) : 200),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          for (var i = 0; i < ly.lines.length; i++) ...[
-            _focus(
-              i - idx,
-              InkWell(
-              key: _keys[i],
-              borderRadius: BorderRadius.circular(8),
+          for (var i = 0; i < ly.lines.length; i++)
+            _LyricLine(
+              key: ValueKey('${t.id}:$i'),
+              index: i,
+              active: _active,
+              ly: ly,
+              big: widget.big,
+              karaoke: widget.karaoke,
+              player: app.player,
+              itemKey: _keys[i],
               onTap: () {
                 _userScrolledAt = DateTime(0); // клик по строке — снова следим за песней
                 app.player.seek(ly.lines[i].at!);
               },
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8, vertical: widget.big ? 10 : 6),
-                child: AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 250),
-                  style: TextStyle(
-                    fontSize: widget.big ? 34 : 19,
-                    height: widget.big ? 1.25 : 1.35,
-                    fontWeight: widget.big ? FontWeight.w700 : FontWeight.w600,
-                    letterSpacing: widget.big ? -0.4 : null,
-                    color: i == idx ? C.text : (i < idx ? (widget.big ? const Color(0x4DFFFFFF) : C.faint) : (widget.big ? const Color(0x80FFFFFF) : C.muted)),
-                  ),
-                  child: widget.karaoke && i == idx && ly.lines[i].text.isNotEmpty && wordsOf(i).isNotEmpty
-                      ? KaraokeText(text: ly.lines[i].text, words: wordsOf(i), player: app.player, shiftMs: _offMs)
-                      : Text(ly.lines[i].text.isEmpty ? '♪' : ly.lines[i].text),
-                ),
-              ),
-              ),
             ),
-            // К4: долгий проигрыш между строками — три дышащие точки
-            if (widget.big && widget.karaoke && i == idx && i + 1 < ly.lines.length) _breakDots(wordsOf(i), ly.lines[i + 1].at!, app.player),
-          ],
           Padding(padding: const EdgeInsets.symmetric(horizontal: 8), child: _again()),
         ]),
       ))),
@@ -418,10 +393,211 @@ class _LyricsBodyState extends State<LyricsBody> {
   }
 }
 
+/// Одна строка текста. Подписана на номер текущей строки и перестраивается, только когда её положение относительно
+/// текущей изменилось в пределах окна ±5; дальние строки не перестраиваются совсем.
+/// Размытие — только у строк в окне ±4, у остальных одна прозрачность; каждая строка в своём RepaintBoundary
+class _LyricLine extends StatefulWidget {
+  final int index;
+  final _ActiveLine active;
+  final Lyrics ly;
+  final bool big;
+  final bool karaoke;
+  final PlayerController player;
+  final GlobalKey itemKey;
+  final VoidCallback onTap;
+  const _LyricLine({
+    super.key,
+    required this.index,
+    required this.active,
+    required this.ly,
+    required this.big,
+    required this.karaoke,
+    required this.player,
+    required this.itemKey,
+    required this.onTap,
+  });
+
+  @override
+  State<_LyricLine> createState() => _LyricLineState();
+}
+
+class _LyricLineState extends State<_LyricLine> {
+  late int _bucket;
+
+  int _bucketOf() => math.max(-5, math.min(5, widget.index - widget.active.idx));
+
+  @override
+  void initState() {
+    super.initState();
+    _bucket = _bucketOf();
+    widget.active.addListener(_onActive);
+  }
+
+  @override
+  void didUpdateWidget(_LyricLine old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.active, widget.active)) {
+      old.active.removeListener(_onActive);
+      widget.active.addListener(_onActive);
+    }
+    _bucket = _bucketOf();
+  }
+
+  @override
+  void dispose() {
+    widget.active.removeListener(_onActive);
+    super.dispose();
+  }
+
+  void _onActive() {
+    final b = _bucketOf();
+    if (b == _bucket || !mounted) return;
+    setState(() => _bucket = b);
+  }
+
+  /// К2: текущая строка в полный размер, остальные тем меньше, прозрачнее и размытее, чем дальше от неё
+  Widget _focus(int offset, Widget child) {
+    final d = math.min(offset.abs(), 4).toDouble();
+    final blur = offset.abs() <= 4;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(end: d),
+      duration: const Duration(milliseconds: 450),
+      curve: Curves.easeOutBack,
+      child: child,
+      builder: (context, v, child) {
+        final k = v.clamp(0.0, 4.0);
+        final scale = k <= 0 ? 1.0 : 0.94 - 0.005 * math.min(k, 4);
+        final sigma = k < 1 ? 0.0 : math.min(3.0, 0.8 + 0.7 * (k - 1));
+        Widget w = Transform.scale(scale: scale, alignment: Alignment.centerLeft, child: child);
+        if (blur && sigma > 0.05) {
+          w = ImageFiltered(imageFilter: ui.ImageFilter.blur(sigmaX: sigma, sigmaY: sigma, tileMode: TileMode.decal), child: w);
+        }
+        return w;
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final i = widget.index;
+    final off = i - widget.active.idx;
+    final line = widget.ly.lines[i];
+    final words = line.words ?? const <KWord>[];
+    final big = widget.big;
+    final now = off == 0;
+    final Widget row = InkWell(
+      key: widget.itemKey,
+      borderRadius: BorderRadius.circular(8),
+      onTap: widget.onTap,
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 8, vertical: big ? 10 : 6),
+        child: AnimatedDefaultTextStyle(
+          duration: const Duration(milliseconds: 250),
+          style: TextStyle(
+            fontSize: big ? 34 : 19,
+            height: big ? 1.25 : 1.35,
+            fontWeight: big ? FontWeight.w700 : FontWeight.w600,
+            letterSpacing: big ? -0.4 : null,
+            color: now ? C.text : (off < 0 ? (big ? const Color(0x4DFFFFFF) : C.faint) : (big ? const Color(0x80FFFFFF) : C.muted)),
+          ),
+          child: widget.karaoke && now && line.text.isNotEmpty && words.isNotEmpty
+              ? KaraokeText(text: line.text, words: words, player: widget.player)
+              : Text(line.text.isEmpty ? '♪' : line.text),
+        ),
+      ),
+    );
+    final lines = widget.ly.lines;
+    return RepaintBoundary(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
+        big ? _focus(off, row) : row,
+        // К4: долгий проигрыш между строками — три дышащие точки
+        if (big && widget.karaoke && now && i + 1 < lines.length && lines[i + 1].at != null)
+          _BreakDots(words: words, next: lines[i + 1].at!, player: widget.player),
+      ]),
+    );
+  }
+}
+
+/// К4: если до следующей строки больше 4 секунд без слов, показываем три точки, которые заполняются к её началу.
+/// Время берёт с общих часов плеера и обновляется на каждый кадр, пока песня играет
+class _BreakDots extends StatefulWidget {
+  final List<KWord> words;
+  final Duration next;
+  final PlayerController player;
+  const _BreakDots({required this.words, required this.next, required this.player});
+
+  @override
+  State<_BreakDots> createState() => _BreakDotsState();
+}
+
+class _BreakDotsState extends State<_BreakDots> with SingleTickerProviderStateMixin {
+  late final Ticker _ticker = createTicker(_onTick);
+
+  @override
+  void initState() {
+    super.initState();
+    widget.player.addListener(_wake);
+    widget.player.position.addListener(_wake);
+    if (widget.player.playing) _ticker.start();
+  }
+
+  @override
+  void dispose() {
+    widget.player.removeListener(_wake);
+    widget.player.position.removeListener(_wake);
+    _ticker.dispose();
+    super.dispose();
+  }
+
+  void _wake() {
+    if (!mounted) return;
+    if (widget.player.playing && !_ticker.isActive) _ticker.start();
+    setState(() {});
+  }
+
+  void _onTick(Duration _) {
+    if (!mounted) return;
+    setState(() {});
+    if (!widget.player.playing) _ticker.stop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final words = widget.words;
+    if (words.isEmpty) return const SizedBox.shrink();
+    final from = words.last.end;
+    final next = widget.next;
+    if (next - from < const Duration(seconds: 4)) return const SizedBox.shrink();
+    final p = widget.player.now();
+    if (p < from) return const SizedBox.shrink();
+    final prog = ((p - from).inMilliseconds / (next - from).inMilliseconds).clamp(0.0, 1.0);
+    final breathe = 1 + 0.15 * math.sin(p.inMilliseconds / 350);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+      child: Row(children: [
+        for (var k = 0; k < 3; k++)
+          Padding(
+            padding: const EdgeInsets.only(right: 10),
+            child: Transform.scale(
+              scale: breathe,
+              child: Container(
+                width: 14,
+                height: 14,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.white.withValues(alpha: 0.25 + 0.75 * (prog * 3 - k).clamp(0.0, 1.0)),
+                ),
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+}
 
 /// Строка в режиме караоке: тусклый текст, поверх — яркий, слова (или слоги) открываются каждое
-/// в своё время. Перенос на несколько строк учитывается. Между обновлениями позиции от плеера
-/// заливка движется плавно — досчитываем время сами
+/// в своё время. Перенос на несколько строк учитывается. Время берётся с общих часов плеера
+/// (PlayerController.now), поэтому заливка движется плавно между событиями позиции и совпадает со сменой строки
 class KaraokeText extends StatefulWidget {
   final String text;
   final List<KWord> words;
@@ -437,30 +613,35 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
   // И5: раскладку текста и прямоугольники слов считаем один раз на текст, стиль и ширину;
   // каждый кадр меняется только степень заливки, а перерисовывается один CustomPaint
   final ValueNotifier<int> _frame = ValueNotifier(0);
-  late final Ticker _ticker = createTicker(_onTick)..start();
-  Duration _lastPos = Duration.zero;
-  DateTime _lastAt = DateTime.now();
+  late final Ticker _ticker = createTicker(_onTick);
   Duration _lastFrame = Duration.zero;
 
   _Layout? _layout;
   String? _layoutKey;
+  List<KWord>? _layoutWords;
 
   @override
   void initState() {
     super.initState();
     widget.player.position.addListener(_wake);
+    widget.player.addListener(_wake);
+    _ticker.start();
   }
 
   /// Перемотали назад внутри строки или сняли с паузы — заливка снова должна двигаться
   void _wake() {
-    if (!_ticker.isActive) _ticker.start();
+    if (_ticker.isActive || !mounted) return;
+    _lastFrame = Duration.zero; // после остановки счёт времени тикера начинается с нуля
+    _ticker.start();
   }
 
   @override
   void dispose() {
     widget.player.position.removeListener(_wake);
+    widget.player.removeListener(_wake);
     _ticker.dispose();
     _frame.dispose();
+    _layout?.dispose();
     super.dispose();
   }
 
@@ -469,18 +650,11 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
     if (elapsed - _lastFrame < const Duration(milliseconds: 16)) return;
     _lastFrame = elapsed;
     _frame.value++;
+    // На паузе после последней перерисовки кадры больше не нужны: нагрузка на процессор падает до нуля
+    if (!widget.player.playing) _ticker.stop();
   }
 
-  Duration _now() {
-    final p = widget.player;
-    final pos = p.position.value;
-    if (pos != _lastPos) {
-      _lastPos = pos;
-      _lastAt = DateTime.now();
-    }
-    final shift = Duration(milliseconds: widget.shiftMs);
-    return (p.playing ? pos + DateTime.now().difference(_lastAt) : pos) + shift;
-  }
+  Duration _now() => widget.player.now() + Duration(milliseconds: widget.shiftMs);
 
   @override
   Widget build(BuildContext context) {
@@ -488,11 +662,12 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
     return LayoutBuilder(builder: (context, box) {
       final scaler = MediaQuery.textScalerOf(context);
       final key = '${widget.text}|${box.maxWidth}|${style.fontSize}|${style.fontWeight}|${style.height}|${style.letterSpacing}|${scaler.hashCode}';
-      if (_layoutKey != key || _layout == null) {
+      if (_layoutKey != key || _layout == null || !identical(_layoutWords, widget.words)) {
         _layout?.dispose();
         _layout = _Layout.build(widget.text, widget.words, style, box.maxWidth, Directionality.of(context), scaler);
         _layoutKey = key;
-        if (!_ticker.isActive) _ticker.start();
+        _layoutWords = widget.words;
+        _wake();
       }
       final l = _layout!;
       return CustomPaint(
@@ -505,16 +680,27 @@ class _KaraokeTextState extends State<KaraokeText> with SingleTickerProviderStat
   }
 }
 
-/// Раскладка строки: три варианта текста (тусклый, яркий, свечение) и прямоугольники каждого слова
+/// Раскладка строки: тексты (тусклый, яркий, свечение, мягкий край) и прямоугольники каждого слова
 class _Layout {
-  final TextPainter dim, bright, glow;
+  final TextPainter dim, bright, glow, edge;
   final List<List<Rect>> wordBoxes;
   final double height, fontSize;
-  _Layout(this.dim, this.bright, this.glow, this.wordBoxes, this.height, this.fontSize);
+
+  /// Ширина мягкого края заливки (около полбуквы)
+  final double edgeWidth;
+
+  /// Когда спето последнее слово
+  final Duration endAll;
+
+  /// Готовая картинка полностью спетой строки: когда строка спета целиком, она больше не пересчитывается
+  ui.Picture? finished;
+  _Layout(this.dim, this.bright, this.glow, this.edge, this.wordBoxes, this.height, this.fontSize, this.edgeWidth, this.endAll);
 
   static _Layout build(String text, List<KWord> words, TextStyle style, double maxWidth, TextDirection dir, TextScaler scaler) {
     TextPainter make(TextStyle st) => TextPainter(text: TextSpan(text: text, style: st), textDirection: dir, textScaler: scaler)
       ..layout(maxWidth: maxWidth);
+    final fontSize = style.fontSize ?? 20;
+    final edgeWidth = fontSize * 0.35; // К1: мягкий край заливки шириной около полбуквы
     final dim = make(style.copyWith(color: style.color?.withValues(alpha: 0.35)));
     final bright = make(style.copyWith(color: Colors.white));
     final glow = make(style.copyWith(
@@ -522,8 +708,16 @@ class _Layout {
         ..color = const Color(0x66FFFFFF)
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7),
     ));
+    // Мягкий край без saveLayer: яркий текст с градиентной прозрачностью в шейдере. Градиент задан у нуля (от -edgeWidth до 0),
+    // а при рисовании холст сдвигается на положение края, так что шейдер едет вместе с ним
+    final edge = make(style.copyWith(
+      foreground: Paint()..shader = ui.Gradient.linear(Offset(-edgeWidth, 0), Offset.zero, [Colors.white, const Color(0x00FFFFFF)]),
+    ));
     final boxes = <List<Rect>>[];
+    var end = Duration.zero;
     for (final w in words) {
+      if (w.end > end) end = w.end;
+      if (w.start > end) end = w.start;
       final from = w.from.clamp(0, text.length), to = w.to.clamp(0, text.length);
       if (to <= from) {
         boxes.add(const []);
@@ -534,13 +728,16 @@ class _Layout {
           Rect.fromLTRB(b.left, b.top - 2, b.right, b.bottom + 2),
       ]);
     }
-    return _Layout(dim, bright, glow, boxes, bright.height, style.fontSize ?? 20);
+    return _Layout(dim, bright, glow, edge, boxes, bright.height, fontSize, edgeWidth, end);
   }
 
   void dispose() {
     dim.dispose();
     bright.dispose();
     glow.dispose();
+    edge.dispose();
+    finished?.dispose();
+    finished = null;
   }
 }
 
@@ -554,14 +751,21 @@ class _KaraokePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final t = now();
+    // Строка спета целиком: рисуем записанную картинку, ничего не пересчитывая
+    if (words.isNotEmpty && t >= l.endAll) {
+      canvas.drawPicture(l.finished ??= _record());
+      WidgetsBinding.instance.addPostFrameCallback((_) => onDone());
+      return;
+    }
     l.dim.paint(canvas, Offset.zero);
-    final edge = l.fontSize * 0.35; // К1: мягкий край заливки шириной около полбуквы
-    final sung = <Rect>[]; // целиком спетое — для свечения
-    var done = true;
+    // Все целиком спетые слова и их твёрдая часть — в один путь: один clipPath и одна отрисовка яркого текста
+    final bright = Path();
+    final glowArea = Path(); // целиком спетое — для свечения
+    final soft = <Rect>[]; // мягкий край у слова, которое поют сейчас
+    var hasBright = false, hasGlow = false;
     for (var k = 0; k < words.length; k++) {
       final w = words[k];
       final f = w.end <= w.start ? (t >= w.start ? 1.0 : 0.0) : ((t - w.start).inMilliseconds / (w.end - w.start).inMilliseconds).clamp(0.0, 1.0);
-      if (f < 1) done = false;
       if (f <= 0) continue;
       final boxes = l.wordBoxes[k];
       var left = boxes.fold<double>(0, (a, b) => a + b.width) * f;
@@ -570,50 +774,64 @@ class _KaraokePainter extends CustomPainter {
         final bw = math.min(left, r.width);
         left -= r.width;
         if (bw >= r.width - 0.5) {
-          sung.add(r);
-          _clipped(canvas, r);
+          bright.addRect(r);
+          glowArea.addRect(r.inflate(2));
+          hasBright = hasGlow = true;
         } else {
           final x = r.left + bw;
-          final ew = math.min(edge, bw);
-          _clipped(canvas, Rect.fromLTRB(r.left, r.top, x - ew, r.bottom));
-          _soft(canvas, Rect.fromLTRB(x - ew, r.top, x, r.bottom));
+          final solidTo = x - l.edgeWidth;
+          if (solidTo > r.left) {
+            bright.addRect(Rect.fromLTRB(r.left, r.top, solidTo, r.bottom));
+            hasBright = true;
+          }
+          soft.add(Rect.fromLTRB(math.max(r.left, solidTo), r.top, x, r.bottom));
         }
       }
     }
-    // К1: спетое слегка светится
-    if (sung.isNotEmpty) {
+    if (hasBright) {
       canvas.save();
-      final path = Path();
-      for (final r in sung) {
-        path.addRect(r.inflate(2));
-      }
-      canvas.clipPath(path);
+      canvas.clipPath(bright);
+      l.bright.paint(canvas, Offset.zero);
+      canvas.restore();
+    }
+    for (final r in soft) {
+      if (r.width <= 0) continue;
+      canvas.save();
+      canvas.clipRect(r);
+      canvas.translate(r.right, 0);
+      l.edge.paint(canvas, Offset(-r.right, 0));
+      canvas.restore();
+    }
+    // К1: спетое слегка светится
+    if (hasGlow) {
+      canvas.save();
+      canvas.clipPath(glowArea);
       l.glow.paint(canvas, Offset.zero);
       canvas.restore();
     }
-    if (done) WidgetsBinding.instance.addPostFrameCallback((_) => onDone());
   }
 
-  void _clipped(Canvas canvas, Rect r) {
-    if (r.width <= 0) return;
-    canvas.save();
-    canvas.clipRect(r);
-    l.bright.paint(canvas, Offset.zero);
-    canvas.restore();
-  }
-
-  void _soft(Canvas canvas, Rect r) {
-    if (r.width <= 0) return;
-    canvas.saveLayer(r, Paint());
-    canvas.clipRect(r);
-    l.bright.paint(canvas, Offset.zero);
-    canvas.drawRect(
-      r,
-      Paint()
-        ..blendMode = BlendMode.dstIn
-        ..shader = const LinearGradient(colors: [Colors.white, Color(0x00FFFFFF)]).createShader(r),
-    );
-    canvas.restore();
+  /// Полностью спетая строка, записанная в картинку: тусклый текст, яркие слова и свечение
+  ui.Picture _record() {
+    final rec = ui.PictureRecorder();
+    final c = Canvas(rec);
+    l.dim.paint(c, Offset.zero);
+    final bright = Path(), glowArea = Path();
+    for (final boxes in l.wordBoxes) {
+      for (final r in boxes) {
+        bright.addRect(r);
+        glowArea.addRect(r.inflate(2));
+      }
+    }
+    c.save();
+    c.clipPath(bright);
+    l.bright.paint(c, Offset.zero);
+    c.restore();
+    c.save();
+    c.clipPath(glowArea);
+    l.glow.paint(c, Offset.zero);
+    c.restore();
+    return rec.endRecording();
   }
 
   @override
