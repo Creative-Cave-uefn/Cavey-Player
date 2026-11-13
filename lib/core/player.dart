@@ -1649,6 +1649,12 @@ class PlayerController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _openSeq++;
+    _fadeGeneration++;
+    _fading = false;
+    _stopClocks();
+    _rateTimer?.cancel();
+    _normTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
