@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:file_selector/file_selector.dart';
 
 import '../app.dart';
 import '../core/intel/service.dart';
@@ -44,6 +45,30 @@ class _IntelBodyState extends State<_IntelBody> {
       ),
     );
     if (ok == true) intel.reanalyzeAll();
+  }
+
+  Future<void> _importVocals() async {
+    final app = Services.of(context);
+    final file = await openFile(acceptedTypeGroups: [const XTypeGroup(label: 'JSON', extensions: ['json'])]);
+    if (file == null) return;
+    try {
+      if (await file.length() > 4 * 1024 * 1024) throw const FormatException('Файл больше 4 МБ');
+      final n = intel.importVocalEvidence(await file.readAsString());
+      app.player.refreshMixSettings();
+      app.lib.messages.add('Вокальные метки импортированы: $n треков');
+    } catch (e) { app.lib.messages.add('Импорт вокальных меток: $e'); }
+  }
+
+  Future<void> _exportDj() async {
+    final app = Services.of(context);
+    final location = await getSaveLocation(suggestedName: 'cavey-dj-transitions.jsonl');
+    if (location == null) return;
+    try {
+      await app.djJournal.exportTo(location.path);
+      app.lib.messages.add('DJ-диагностика сохранена');
+    } catch (e) {
+      app.lib.messages.add('Не удалось сохранить DJ-диагностику: $e');
+    }
   }
 
   @override
@@ -104,6 +129,26 @@ class _IntelBodyState extends State<_IntelBody> {
             icon: const Icon(Icons.refresh_rounded, size: 18),
             label: const Text('Пересчитать всё'),
           ),
+        OutlinedButton.icon(
+          onPressed: _importVocals,
+          icon: const Icon(Icons.record_voice_over_rounded, size: 18),
+          label: const Text('Импорт вокальных меток'),
+        ),
+        OutlinedButton.icon(
+          onPressed: _exportDj,
+          icon: const Icon(Icons.save_alt_rounded, size: 18),
+          label: const Text('Экспорт DJ-диагностики'),
+        ),
+        if (canHere && intel.enabled) OutlinedButton.icon(
+          onPressed: () {
+            final p = Services.of(context).player;
+            final ids = [if (p.current != null) p.current!.id, ...p.queue.skip(p.index + 1).take(5)];
+            intel.setMode('full');
+            intel.reanalyze(ids);
+          },
+          icon: const Icon(Icons.queue_music_rounded, size: 18),
+          label: const Text('Полный анализ очереди'),
+        ),
         OutlinedButton.icon(
           onPressed: intel.syncEnabled ? () => intel.syncNow() : null,
           icon: const Icon(Icons.cloud_sync_rounded, size: 18),

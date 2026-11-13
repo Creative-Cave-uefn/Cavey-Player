@@ -1477,6 +1477,23 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
         child: Text('Экспериментальный: выбирает из следующих пяти треков, планирует до трёх шагов. '
             'При слабом анализе — обычный AutoMix. Решения — в журнале.'),
       ),
+      if (style == 'adaptive') Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Row(children: [
+          const SizedBox(width: 150, child: Text('Характер сета')),
+          DropdownButton<String>(
+            value: const ['balanced', 'rise', 'relax', 'explore'].contains(app.settings.viewOf('mix.intent', 'balanced'))
+                ? app.settings.viewOf('mix.intent', 'balanced') : 'balanced',
+            items: const [
+              DropdownMenuItem(value: 'balanced', child: Text('Ровно')),
+              DropdownMenuItem(value: 'rise', child: Text('Нарастание')),
+              DropdownMenuItem(value: 'relax', child: Text('Спокойнее')),
+              DropdownMenuItem(value: 'explore', child: Text('Больше контрастов')),
+            ],
+            onChanged: enabled ? (v) { if (v != null) put('mix.intent', v); } : null,
+          ),
+        ]),
+      ),
       if (dj) ...[
         const SizedBox(height: 8),
         Row(children: [

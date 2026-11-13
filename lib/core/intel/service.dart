@@ -22,6 +22,7 @@ import 'record.dart';
 import 'similarity.dart';
 import 'sync.dart';
 import 'viz.dart';
+import 'vocal_annotations.dart';
 
 // Audio Intelligence Engine: локальный разбор оригинальных записей, общий индекс признаков и подбор похожих.
 //
@@ -230,6 +231,38 @@ class IntelService extends ChangeNotifier {
   }
 
   TrackFeatures? features(String id) => store.get(id);
+
+  /// Import optional vocal evidence without changing audio or accepting stale IDs.
+  /// Validate the complete batch before mutating the index.
+  int importVocalEvidence(String text) {
+    final raw = jsonDecode(text);
+    if (raw is! Map || raw['version'] != 1 || raw['tracks'] is! List) {
+      throw const FormatException('Ожидается version: 1 и tracks: []');
+    }
+    final rows = raw['tracks'] as List;
+    if (rows.length > 1000) throw const FormatException('Слишком много треков');
+    final updates = <TrackFeatures>[];
+    final seen = <String>{};
+    for (final row in rows) {
+      if (row is! Map || row['id'] is! String || row['revision'] is! String || row['segments'] is! List) {
+        throw const FormatException('Повреждённая запись трека');
+      }
+      final id = row['id'] as String, t = lib.data.tracks[id], f = store.get(id);
+      if (!seen.add(id) || t == null || f == null || !f.isCompatibleFor(revisionOf(t)) ||
+          f.revision != row['revision'] || f.sections == null) {
+        throw FormatException('Нет актуальных секций или не совпадает версия файла: $id');
+      }
+      final segments = row['segments'] as List;
+      if (segments.length > 10000) throw const FormatException('Слишком много интервалов');
+      final sx = applyVocalAnnotations(f.sections!, [for (final v in segments) VocalObservation.parse(v)], row['source'] as String? ?? 'annotation');
+      final updated = TrackFeatures.fromJson({...f.toJson(), 'sx': sx.toJson(), 'at': DateTime.now().millisecondsSinceEpoch});
+      if (updated == null) throw const FormatException('Не удалось прочитать обновлённую запись');
+      updates.add(updated);
+    }
+    for (final updated in updates) { store.put(updated, local: true, force: true); }
+    _notify();
+    return updates.length;
+  }
 
   /// Насколько каждый трек библиотеки похож на один из [seeds]: id → 0…1, только выше [floor].
   /// Пусто, если признаков у исходных треков ещё нет

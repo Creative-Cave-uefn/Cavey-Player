@@ -19,6 +19,18 @@ import 'record.dart';
 const String intelFolderName = 'audio-intel';
 const int _shardFormat = 1;
 
+/// Keep richer section records from turning a shard into an unbounded upload.
+List<TrackFeatures> boundedIntelBatch(List<TrackFeatures> candidates, {int maxBytes = 1024 * 1024}) {
+  final out = <TrackFeatures>[];
+  var bytes = 256;
+  for (final record in candidates) {
+    final size = utf8.encode(jsonEncode(record.toJson())).length + 1;
+    if (out.isNotEmpty && bytes + size > maxBytes) break;
+    out.add(record); bytes += size;
+  }
+  return out;
+}
+
 /// Что произошло за один обмен с Диском
 class IntelSyncReport {
   final int shardsRead;
@@ -163,7 +175,7 @@ class IntelSync {
     var shardsOut = 0, recordsOut = 0;
     if (publish) {
       for (var i = 0; i < maxPublish; i++) {
-        final batch = store.pendingRecords(shardSize);
+        final batch = boundedIntelBatch(store.pendingRecords(shardSize));
         if (batch.isEmpty) break;
         final now = DateTime.now().millisecondsSinceEpoch;
         final body = IntelShard(store.deviceId, batch).encode();

@@ -5,15 +5,17 @@ import '../automix.dart';
 import '../dj.dart';
 import 'dj_plan.dart';
 import 'record.dart';
+import 'section_plan.dart';
+import 'set_context.dart';
 
-enum AdaptiveTechnique { autoMix, beatBlend, shortFade, cut }
+enum AdaptiveTechnique { autoMix, beatBlend, shortFade, cut, atmospheric }
 
 class AdaptiveTrack {
   final String id;
   final MixProfile? profile;
   final TrackFeatures? features;
-  final String artist;
-  const AdaptiveTrack(this.id, this.profile, this.features, {this.artist = ''});
+  final String artist, genre;
+  const AdaptiveTrack(this.id, this.profile, this.features, {this.artist = '', this.genre = ''});
 
   bool get reliable {
     final p = profile, f = features;
@@ -61,11 +63,12 @@ class AdaptiveDecision {
   final List<String> reasons;
   final List<String> path;
   final List<Map<String, Object?>> alternatives;
+  final Map<String, double> components;
   const AdaptiveDecision(this.to, this.plan, this.technique, this.score, this.reasons,
-      {this.path = const [], this.alternatives = const []});
+      {this.path = const [], this.alternatives = const [], this.components = const {}});
   Map<String, Object?> toJson() => {
     'to': to, 'technique': technique.name, 'score': score, 'reasons': reasons, 'path': path,
-    'alternatives': alternatives,
+    'alternatives': alternatives, 'components': components,
     'outMs': plan?.start.inMilliseconds, 'inMs': plan?.inStart.inMilliseconds,
     'lengthMs': plan?.length.inMilliseconds, 'rate': plan?.rate,
   };
@@ -86,23 +89,34 @@ class AdaptiveDj {
   }
 
   static AdaptiveDecision choose(AdaptiveTrack from, List<AdaptiveTrack> pool,
-      {DjMix options = const DjMix(), int maxSec = 8, int earliestMs = 0, bool allowCut = true}) {
+      {DjMix options = const DjMix(), int maxSec = 8, int earliestMs = 0, int? manualPositionMs, bool allowCut = true, DjSetContext context = const DjSetContext()}) {
     if (pool.isEmpty) throw ArgumentError('Empty candidate pool');
     final candidates = pool.where((t) => t.id != from.id).take(maxCandidates).toList();
     if (!from.reliable || candidates.isEmpty) return fallback(from, pool.first, maxSec);
+    final pairCache = <String, AdaptiveDecision>{};
+    AdaptiveDecision evaluate(AdaptiveTrack a, AdaptiveTrack b, int earliest) =>
+        pairCache.putIfAbsent('${a.id}:${b.id}:$earliest', () => pair(a, b, options: options,
+            maxSec: maxSec, earliestMs: earliest, manualPositionMs: a.id == from.id ? manualPositionMs : null, allowCut: allowCut));
+    DjHistoryEntry historyEntry(AdaptiveTrack t, String technique) => DjHistoryEntry(t.id,
+        artist: t.artist, genre: t.genre, technique: technique, energyDb: t.features?.rmsDb ?? t.profile?.loudDb ?? -20);
+    final byId = {for (final t in candidates) t.id: t};
+    final seeded = context.history.isEmpty ? context.append(historyEntry(from, '')) : context;
     var beam = <_Path>[_Path(from, const [], const [], 0)];
     for (var depth = 0; depth < math.min(horizon, candidates.length); depth++) {
       final expanded = <_Path>[];
       for (final path in beam) {
         for (final next in candidates) {
           if (path.ids.contains(next.id) || !next.reliable) continue;
-          final decision = pair(path.last, next, options: options, maxSec: maxSec,
-              earliestMs: depth == 0 ? earliestMs : 0, allowCut: allowCut);
+          final decision = evaluate(path.last, next, depth == 0 ? earliestMs : 0);
           if (decision.technique == AdaptiveTechnique.autoMix) continue;
-          final repeat = next.artist.isNotEmpty && next.artist == path.last.artist ? 0.12 : 0.0;
-          final repeatedTechnique = path.decisions.isNotEmpty && path.decisions.last.technique == decision.technique ? 0.025 : 0.0;
+          var projected = seeded;
+          for (var i = 0; i < path.ids.length; i++) {
+            projected = projected.append(historyEntry(byId[path.ids[i]]!, path.decisions[i].technique.name));
+          }
+          final setScore = projected.score(historyEntry(next, decision.technique.name),
+              timbreFit: decision.components['timbre'] ?? 0.5);
           expanded.add(_Path(next, [...path.ids, next.id], [...path.decisions, decision],
-              path.score + math.pow(0.7, depth) * (decision.score - repeat - repeatedTechnique)));
+              path.score + math.pow(0.7, depth) * (decision.score + setScore)));
         }
       }
       if (expanded.isEmpty) break;
@@ -115,17 +129,27 @@ class AdaptiveDj {
     final best = beam.first;
     if (best.decisions.isEmpty) return fallback(from, pool.first, maxSec);
     final first = best.decisions.first;
-    return AdaptiveDecision(first.to, first.plan, first.technique, first.score, first.reasons,
-        path: best.ids, alternatives: [
+    return AdaptiveDecision(first.to, first.plan, first.technique, first.score,
+        [...first.reasons, 'Характер сета: ${context.intent.name}; маршрут до ${best.ids.length} треков'],
+        path: best.ids, components: {...first.components,
+          'setContext': seeded.score(historyEntry(byId[first.to]!, first.technique.name), timbreFit: first.components['timbre'] ?? 0.5),
+          'pathScore': best.score}, alternatives: [
           for (final next in candidates)
-            pair(from, next, options: options, maxSec: maxSec, earliestMs: earliestMs, allowCut: allowCut).toJson(),
+            evaluate(from, next, earliestMs).toJson(),
         ]);
   }
 
   static AdaptiveDecision pair(AdaptiveTrack from, AdaptiveTrack next,
-      {DjMix options = const DjMix(), int maxSec = 8, int earliestMs = 0, bool allowCut = true}) {
+      {DjMix options = const DjMix(), int maxSec = 8, int earliestMs = 0, int? manualPositionMs, bool allowCut = true}) {
     if (!from.reliable || !next.reliable) return fallback(from, next, maxSec);
     final a = from.planningProfile, b = next.planningProfile, fa = from.features!, fb = next.features!;
+    if (fa.sections != null && fb.sections != null) {
+      final local = SectionPlanner.plan(a, b, fa, fb, options: options,
+          beatAllowed: _gridReady(from) && _gridReady(next), earliestMs: earliestMs, manualPositionMs: manualPositionMs, allowCut: allowCut);
+      if (local == null) return fallback(from, next, maxSec);
+      final technique = AdaptiveTechnique.values.firstWhere((k) => k.name == local.technique);
+      return AdaptiveDecision(next.id, local.plan, technique, local.score, local.reasons, components: local.components);
+    }
     final da = fa.dj, db = fb.dj;
     final normal = MixPlan.make(a, b, maxSec: maxSec);
     var plan = MixPlan.make(a, b, maxSec: maxSec,

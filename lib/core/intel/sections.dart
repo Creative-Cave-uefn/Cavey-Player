@@ -33,11 +33,16 @@ class AudioRegion {
       activeFraction: activeFraction, mfcc: mfcc, chroma: chroma, boundaryConfidence: confidence,
       vocalProbability: vocalProbability, vocalConfidence: vocalConfidence, vocalSource: vocalSource, samplePeakDb: samplePeakDb);
 
-  Map<String, Object?> toJson() => {'s': startMs, 'e': endMs, 'db': energyDb, 'hz': centroidHz,
-    'bass': bassRatio, 'onsets': onsetDensity, 'active': activeFraction, 'mfcc': mfcc, 'chroma': chroma,
-    'boundary': boundaryConfidence, if (samplePeakDb != null) 'peak': samplePeakDb,
-    if (vocalProbability != null) 'vocal': vocalProbability,
-    if (vocalConfidence != null) 'vocalConf': vocalConfidence, 'vocalSource': vocalSource};
+  static double _round(double x, int digits) {
+    final scale = math.pow(10, digits);
+    return (x * scale).round() / scale;
+  }
+  Map<String, Object?> toJson() => {'s': startMs, 'e': endMs, 'db': _round(energyDb, 1), 'hz': centroidHz.round(),
+    'bass': _round(bassRatio, 3), 'onsets': _round(onsetDensity, 2), 'active': _round(activeFraction, 3),
+    'mfcc': [for (final x in mfcc) _round(x, 2)], 'chroma': [for (final x in chroma) _round(x, 4)],
+    'boundary': _round(boundaryConfidence, 3), if (samplePeakDb != null) 'peak': _round(samplePeakDb!, 2),
+    if (vocalProbability != null) 'vocal': _round(vocalProbability!, 3),
+    if (vocalConfidence != null) 'vocalConf': _round(vocalConfidence!, 3), 'vocalSource': vocalSource};
 
   static AudioRegion? fromJson(Object? raw) {
     if (raw is! Map) return null;

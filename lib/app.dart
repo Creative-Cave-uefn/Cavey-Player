@@ -15,6 +15,7 @@ import 'core/app_icon.dart';
 import 'core/audio_cache.dart';
 import 'core/automix.dart';
 import 'core/intel/service.dart';
+import 'core/intel/dj_journal.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
@@ -81,6 +82,7 @@ class AppServices {
 
   /// Audio Intelligence: локальный разбор звука, общий индекс признаков и подбор похожих по звуку
   late final IntelService intel;
+  late final DjJournal djJournal;
   late final ListenBrainz listenBrainz;
   late final MixBook mixBook;
   late final KaraokeService karaoke;
@@ -227,6 +229,8 @@ class AppServices {
     app.mixBook = MixBook(File('${store.sub('mixbook').path}${Platform.pathSeparator}transitions.json'));
     player.mixBook = app.mixBook;
     unawaited(mixer.preload()); // сохранённые разборы звука — в память, в фоне
+    app.djJournal = DjJournal(store.sub('dj'), onError: (e) => AppLog.warn('DJ journal', e));
+    player.djTrace = app.djJournal.append;
     app.sim = SimIndex(lib, () => player.mixer);
     app.intel = IntelService(dir: store.sub('intel'), lib: lib, drive: drive, cache: cache, tools: Tools(store.sub('tools')));
     // Переменная CAVEY_NO_INTEL=1 полностью отключает анализ звука (для проверки, не он ли виноват в сбое)
@@ -374,6 +378,7 @@ class AppServices {
       await lib.flushNow();
     } catch (_) {}
     try {
+      await djJournal.flush();
       await intel.store.flush(); // готовые результаты разбора звука не теряются при выходе
     } catch (_) {}
     await AppLog.flush();
