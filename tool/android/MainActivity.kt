@@ -74,9 +74,10 @@ class MainActivity : AudioServiceActivity() {
                 YtDlp.init(applicationContext)
                 val music = File(getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: filesDir, "YouTube")
                 check(music.exists() || music.mkdirs()) { "Не удалось открыть папку Music/YouTube" }
-                // A unique prefix lets us detect the exact file returned by yt-dlp.
-                val prefix = "cavey_${System.currentTimeMillis()}_"
-                val template = File(music, prefix + "%(title).80B.%(ext)s").absolutePath
+                // Keep song names clean: isolate each download in its own directory.
+                val taskDir = File(music, "download_${System.currentTimeMillis()}")
+                check(taskDir.mkdirs()) { "Не удалось создать папку загрузки" }
+                val template = File(taskDir, "%(title).100B.%(ext)s").absolutePath
                 val request = YtDlpRequest(url).setOutputTemplate(template)
                     .addOption("--no-playlist")
                     .addOption("--no-mtime")
@@ -93,8 +94,8 @@ class MainActivity : AudioServiceActivity() {
                     }
                 }
                 check(response.isSuccess) { "yt-dlp завершился с кодом ${response.exitCode}" }
-                val file = music.listFiles()
-                    ?.filter { it.isFile && it.name.startsWith(prefix) && it.extension.lowercase(Locale.ROOT) == "m4a" && it.length() > 0L }
+                val file = taskDir.listFiles()
+                    ?.filter { it.isFile && it.extension.lowercase(Locale.ROOT) == "m4a" && it.length() > 0L }
                     ?.maxByOrNull { it.lastModified() }
                     ?: throw IllegalStateException("Загрузчик не создал M4A файл")
                 runOnUiThread {
