@@ -121,26 +121,22 @@ class _BannerStrip extends StatelessWidget {
             duration: const Duration(milliseconds: 500),
             child: colors == null || colors.isEmpty
                 ? const SizedBox.shrink(key: ValueKey('none'))
-                : ValueListenableBuilder<double>(
+                : ValueListenableBuilder<(double, double)?>(
                     key: ValueKey(colors),
-                    valueListenable: StripTint.fade,
-                    builder: (context, fade, _) => Opacity(
-                      opacity: fade,
-                      child: ValueListenableBuilder<(double, double)?>(
-                        valueListenable: StripTint.span,
-                        builder: (context, span, _) => ShaderMask(
-                          blendMode: BlendMode.dstIn,
-                          shaderCallback: (r) => const LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            // у верхнего края чуть слабее, к баннеру — полный цвет
-                            colors: [Color(0x99FFFFFF), Colors.white],
-                          ).createShader(r),
-                          child: ImageFiltered(
-                            imageFilter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 2, tileMode: TileMode.clamp),
-                            child: CustomPaint(painter: _StripPainter(colors, span, StripTint.base.value), size: Size.infinite),
-                          ),
-                        ),
+                    valueListenable: StripTint.span,
+                    builder: (context, span, _) => ShaderMask(
+                      blendMode: BlendMode.dstIn,
+                      shaderCallback: (r) => const LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        // у верхнего края чуть слабее, к баннеру — полный цвет
+                        colors: [Color(0x99FFFFFF), Colors.white],
+                      ).createShader(r),
+                      child: ImageFiltered(
+                        imageFilter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 2, tileMode: TileMode.clamp),
+                        // Угасание при прокрутке рисует сам painter (repaint: fade): виджет Opacity над размытием
+                        // обновлял только свой слой, и полоса не успевала за прокруткой, пока по ней не проведёшь мышью
+                        child: CustomPaint(painter: _StripPainter(colors, span, StripTint.base.value, StripTint.fade), size: Size.infinite),
                       ),
                     ),
                   ),
@@ -156,7 +152,10 @@ class _StripPainter extends CustomPainter {
   final List<Color> colors;
   final (double, double)? span;
   final Color? base;
-  const _StripPainter(this.colors, this.span, this.base);
+
+  /// 0…1: насколько баннер ещё виден; при каждом изменении полоса перерисовывается сама
+  final ValueListenable<double> fade;
+  _StripPainter(this.colors, this.span, this.base, this.fade) : super(repaint: fade);
 
   static double _smooth(double t) {
     final x = t.clamp(0.0, 1.0);
@@ -194,13 +193,15 @@ class _StripPainter extends CustomPainter {
     }
     cols.add(bg);
     xs.add(w);
+    final k = fade.value.clamp(0.0, 1.0);
     final paint = Paint()
-      ..shader = ui.Gradient.linear(Offset.zero, Offset(w, 0), cols, [for (final x in xs) (x / w).clamp(0.0, 1.0)], TileMode.clamp);
+      ..shader = ui.Gradient.linear(Offset.zero, Offset(w, 0), [for (final c in cols) c.withValues(alpha: k)],
+          [for (final x in xs) (x / w).clamp(0.0, 1.0)], TileMode.clamp);
     canvas.drawRect(Offset.zero & size, paint);
   }
 
   @override
-  bool shouldRepaint(_StripPainter old) => !identical(old.colors, colors) || old.span != span || old.base != base;
+  bool shouldRepaint(_StripPainter old) => !identical(old.colors, colors) || old.span != span || old.base != base || !identical(old.fade, fade);
 }
 
 class _CaptionButton extends StatefulWidget {
