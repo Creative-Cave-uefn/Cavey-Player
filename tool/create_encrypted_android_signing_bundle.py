@@ -83,7 +83,7 @@ def main() -> None:
         "expected_sha1": sha1,
     }
     cleartext = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("ascii")
-    output = Path(".secure-recovery")
+    output = Path("signing-transfer-output")
     output.mkdir(exist_ok=True)
     envelope = output / "CaveyAndroidSigning.p7m"
 
