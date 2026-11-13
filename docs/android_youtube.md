@@ -35,6 +35,30 @@ transitive licenses and attribution before public distribution.
 Do not substitute yausername/youtubedl-android (GPLv3), or the Flutter
 plugin ytdlp_flutter which wraps that GPL dependency.
 
+## Recommended: one local signed-build command
+
+After checking out the branch, set the *original* release JKS, its password,
+and Google OAuth client IDs as environment variables on your Windows computer
+(never put these in Git or this chat). Use the permanent SHA-1 fingerprint
+already registered for package app.cavey.cave_player in Google Cloud.
+
+The command below runs local setup, static analysis, URL tests, builds
+the arm64 APK, and **REFUSES to install or publish** if signing SHA-1 differs:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File tool/build_android_local.ps1 -Version '1.0.220' -BuildNumber 220 -ExpectedSha1 'YOUR_EXISTING_40_HEX_SHA1' -Install
+
+To publish this already-built and verified local APK with the GitHub CLI:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File tool/build_android_local.ps1 -Version '1.0.220' -BuildNumber 220 -ExpectedSha1 'YOUR_EXISTING_40_HEX_SHA1' -Publish
+
+-Publish still builds locally; it only uploads CaveyPlayer.apk to
+Creative-Cave-uefn/cave-player-releases using the gh client on your PC.
+It never invokes GitHub Actions. Omit -Install and -Publish to build only.
+
+The original keystore is not recoverable from its SHA-1 fingerprint.
+GitHub Actions secrets are write-only and cannot be downloaded via API:
+retrieve the original JKS from your own secure backup.
+
 ## Local build — Windows PowerShell 5.1
 
 From the project folder:
