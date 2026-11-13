@@ -41,6 +41,8 @@ class DjJournal {
 /// beat accuracy. Keep phase error samples bounded for long blends.
 class TransitionProbe {
   final String from, to, technique;
+  final String? decisionId;
+  final String eqMode;
   final int requestedStartMs, actualStartMs, cueInMs, plannedLengthMs, actualLengthMs, prepareMs;
   final double requestedRate, actualRate;
   final List<double> _phase = [];
@@ -49,6 +51,7 @@ class TransitionProbe {
   int? bassSwapMs;
   final Stopwatch elapsed = Stopwatch()..start();
   TransitionProbe({required this.from, required this.to, required this.technique,
+    this.decisionId, this.eqMode = 'none',
     required this.requestedStartMs, required this.actualStartMs, required this.cueInMs,
     required this.plannedLengthMs, required this.actualLengthMs, required this.prepareMs,
     required this.requestedRate, required this.actualRate});
@@ -65,6 +68,7 @@ class TransitionProbe {
     final sorted = List<double>.of(_phase)..sort();
     double? percentile(double fraction) => sorted.isEmpty ? null : sorted[((sorted.length - 1) * fraction).round()];
     return {'kind': 'execution', 'from': from, 'to': to, 'technique': technique, 'outcome': outcome,
+      if (decisionId != null) 'decisionId': decisionId, 'eqMode': eqMode,
       'requestedStartMs': requestedStartMs, 'actualStartMs': actualStartMs,
       'startErrorMs': actualStartMs - requestedStartMs, 'cueInMs': cueInMs,
       'plannedLengthMs': plannedLengthMs, 'actualLengthMs': actualLengthMs,

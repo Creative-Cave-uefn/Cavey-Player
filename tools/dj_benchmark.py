@@ -28,12 +28,18 @@ class Plan:
     gain: float
     technique: str
     swap_ms: int | None = None
+    eq_mode: str = 'legacyBass'
+    out_amplitude: float = 1
+    in_amplitude: float = 1
 
     @classmethod
     def read(cls, data: dict, *, baseline: bool = False) -> 'Plan':
+        levels = data.get('levels') or {}
+        match = levels.get('matchGain')
         plan = cls(int(data['outMs']), int(data['inMs']), int(data['lengthMs']),
-                   float(data.get('rate', 1)), float(data.get('inGain', 1)),
-                   'autoMix' if baseline else str(data['technique']), data.get('swapMs'))
+                   float(data.get('rate', 1)), float(match if match is not None else data.get('inGain', 1)),
+                   'autoMix' if baseline else str(data['technique']), data.get('swapMs'), data.get('eqMode', 'legacyBass'),
+                   float(levels.get('outAmplitude', 1)), float(levels.get('inAmplitude', 1)))
         if not (plan.out_ms >= 0 and plan.in_ms >= 0 and 200 <= plan.length_ms <= 180000):
             raise ValueError('Invalid cue/length')
         if not (math.isfinite(plan.rate) and 0.5 <= plan.rate <= 2 and math.isfinite(plan.gain) and 0.25 <= plan.gain <= 4):
@@ -42,11 +48,15 @@ class Plan:
             raise ValueError('Unknown transition technique')
         if plan.swap_ms is not None and not (0 < plan.swap_ms < plan.length_ms):
             raise ValueError('Invalid bass swap')
+        if plan.eq_mode not in {'legacyBass', 'threeBandV1'}:
+            raise ValueError('Unknown EQ automation version')
+        if any(not math.isfinite(v) or v <= 0 for v in (plan.out_amplitude, plan.in_amplitude)):
+            raise ValueError('Invalid normalization amplitude')
         return plan
 
 
 def read_decisions(path: Path) -> list[dict]:
-    decisions = []
+    decisions, by_id = [], {}
     for number, line in enumerate(path.read_text(encoding='utf-8-sig').splitlines(), 1):
         if not line.strip():
             continue
@@ -58,6 +68,16 @@ def read_decisions(path: Path) -> list[dict]:
             raise ValueError(f'Expected a JSON object on line {number}')
         if row.get('kind') == 'decision' and row.get('outMs') is not None:
             decisions.append(row)
+            if row.get('decisionId'):
+                by_id[(row.get('session'), row['decisionId'])] = row
+        elif row.get('kind') == 'preflight':
+            decision = by_id.get((row.get('session'), row.get('decisionId')))
+            if decision is not None:
+                decision['verification'] = {k: row.get(k) for k in ['verdict', 'reason', 'truePeakDbtp', 'cueStillAhead']}
+        elif row.get('kind') == 'execution':
+            decision = by_id.get((row.get('session'), row.get('decisionId')))
+            if decision is not None:
+                decision.setdefault('executions', []).append({k: row.get(k) for k in ['technique', 'outcome', 'eqMode', 'actualStartMs']})
     return decisions
 
 
@@ -65,6 +85,30 @@ def _number(value: float) -> str:
     if not math.isfinite(value):
         raise ValueError('Non-finite filter parameter')
     return f'{value:.9f}'
+
+
+def eq_at(progress: float, swap: float) -> tuple[list[float], list[float]]:
+    x, s = min(1, max(0, progress)), min(.75, max(.25, swap))
+    def ramp(a, b):
+        t = min(1, max(0, (x - a) / (b - a)))
+        return t * t * (3 - 2 * t)
+    bass = ramp(s - .1, s + .1)
+    return ([-18 * bass, -12 * ramp(.35, .75), -6 * ramp(.75, 1)],
+            [-18 * (1 - bass), -12 * (1 - ramp(.25, .65)), -6 * (1 - ramp(0, .2))])
+
+
+def eq_graph(duration: float, swap: float, incoming: bool, delay: float = 0) -> str:
+    commands, last = [], [None] * 3
+    for ms in range(0, round(duration * 1000) + 1, 100):
+        bands = eq_at(ms / (duration * 1000), swap)[int(incoming)]
+        for k, value in enumerate(bands):
+            q = -math.floor(-value * 2 + .5) / 2
+            if q != last[k]:
+                target = ['bass@low', 'equalizer@mid', 'treble@high'][k]
+                commands.append(f'{delay + ms / 1000:.3f} {target} g {q}')
+                last[k] = q
+    return (",asendcmd=c='" + ';'.join(commands) + "',bass@low=f=180:g=0,"
+            'equalizer@mid=f=1400:t=o:w=2:g=0,treble@high=f=6000:g=0')
 
 
 def filter_graph(plan: Plan, *, lead: float = 6, tail: float = 6) -> str:
@@ -84,7 +128,12 @@ def filter_graph(plan: Plan, *, lead: float = 6, tail: float = 6) -> str:
         out_gain = f'pow(cos(({x_out})*PI/2),3)'
         in_gain = f'pow(sin(({x_in})*PI/2)*({_number(plan.gain)}+(1-{_number(plan.gain)})*({x_in})),3)'
     out_fx = in_fx = ''
-    if plan.technique == 'beatBlend' and plan.swap_ms is not None:
+    out_gain = f'({out_gain})*{_number(plan.out_amplitude)}'
+    in_gain = f'({in_gain})*{_number(plan.in_amplitude)}'
+    if plan.technique == 'beatBlend' and plan.eq_mode == 'threeBandV1':
+        swap = (plan.swap_ms or plan.length_ms / 2) / plan.length_ms
+        out_fx, in_fx = eq_graph(duration, swap, False, delay), eq_graph(duration, swap, True)
+    elif plan.technique == 'beatBlend' and plan.swap_ms is not None:
         swap = plan.swap_ms / 1000
         out_fx = f",highpass=f=220:enable='gte(t,{_number(delay + swap)})'"
         in_fx = f",highpass=f=220:enable='lt(t,{_number(swap)})'"
@@ -162,6 +211,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--out', type=Path, default=Path('dj-benchmark'))
     parser.add_argument('--ffmpeg', default='ffmpeg')
     parser.add_argument('--blind-seed', type=int, default=17)
+    parser.add_argument('--all', action='store_true', help='Render a reproducible set of automatic decisions')
+    parser.add_argument('--limit', type=int, default=12, help='Maximum pairs for --all (1..100)')
     args = parser.parse_args(argv)
     rows = read_decisions(args.journal)
     if not rows:
@@ -176,6 +227,31 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args.files:
         parser.error('--files is required for rendering')
+    if args.all:
+        if not 1 <= args.limit <= 100:
+            parser.error('--limit must be between 1 and 100')
+        args.out.mkdir(parents=True, exist_ok=True)
+        selected, seen = [], set()
+        for i, row in enumerate(rows):
+            identity = (row['from'], row['to'], row['outMs'], row['inMs'], row['technique'])
+            if row.get('manual') or identity in seen:
+                continue
+            seen.add(identity)
+            folder = f'pair-{len(selected) + 1:02d}'
+            main(['--journal', str(args.journal), '--files', str(args.files), '--decision', str(i),
+                  '--out', str(args.out / folder), '--blind-seed', str(args.blind_seed + len(selected)), '--ffmpeg', args.ffmpeg])
+            selected.append({'folder': folder, 'decision': i, 'from': row['from'], 'to': row['to']})
+            if len(selected) == args.limit:
+                break
+        if not selected:
+            raise ValueError('No automatic decisions available for a test set')
+        (args.out / 'set.json').write_text(json.dumps({'seed': args.blind_seed, 'pairs': selected}, indent=2), encoding='utf-8')
+        (args.out / 'listening-sheet.csv').write_text('pair,label,timing,smoothness,vocal_conflict,fit,notes\n' +
+            ''.join(f"{row['folder']},{label},,,,,\n" for row in selected for label in ['A', 'B']), encoding='utf-8')
+        (args.out / 'playlist.m3u').write_text('#EXTM3U\n' +
+            ''.join(f"{row['folder']}/{label}.wav\n" for row in selected for label in ['A', 'B']), encoding='utf-8')
+        print(f'Created {len(selected)} blind A/B pairs in {args.out}')
+        return 0
     ffmpeg = shutil.which(args.ffmpeg)
     if not ffmpeg:
         raise ValueError('FFmpeg not found; pass --ffmpeg with its executable path')

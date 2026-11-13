@@ -233,6 +233,7 @@ class AppServices {
     player.djTrace = app.djJournal.append;
     app.sim = SimIndex(lib, () => player.mixer);
     app.intel = IntelService(dir: store.sub('intel'), lib: lib, drive: drive, cache: cache, tools: Tools(store.sub('tools')));
+    player.verifyTransition = app.intel.verifyTransition;
     // Переменная CAVEY_NO_INTEL=1 полностью отключает анализ звука (для проверки, не он ли виноват в сбое)
     final intelOff = Platform.environment['CAVEY_NO_INTEL'] == '1';
     if (!intelOff) {

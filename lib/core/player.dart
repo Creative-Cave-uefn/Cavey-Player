@@ -10,10 +10,12 @@ import 'automix.dart';
 import 'auth.dart';
 import 'crossfade.dart';
 import 'crossfade_handoff.dart';
+import 'dj_eq.dart';
 import 'intel/adaptive_dj.dart';
 import 'intel/record.dart';
 import 'intel/set_context.dart';
 import 'intel/dj_journal.dart';
+import 'intel/transition_verifier.dart';
 import 'drive.dart';
 import 'library.dart';
 import 'mixbook.dart';
@@ -659,6 +661,10 @@ class PlayerController extends ChangeNotifier {
   }
   TrackFeatures? Function(String id)? adaptiveFeatures;
   void Function(Map<String, Object?> event)? djTrace;
+  Future<TransitionCheck> Function(String from, String to, MixPlan plan, bool eq, TransitionLevels levels)? verifyTransition;
+  Future<void>? _adaptiveCheck;
+  bool _adaptiveReady = false;
+  String? _adaptiveDecisionId;
   TransitionProbe? _transitionProbe;
   Map<String, Object?>? lastDjExecution;
   void _traceDj(Map<String, Object?> event) {
@@ -674,6 +680,7 @@ class PlayerController extends ChangeNotifier {
     if (!adaptiveStyle) return djStyle ? 'DJ: сведение по доступным сеткам' : 'AutoMix: плавный переход';
     final d = _adaptiveDecision;
     if (d == null) return 'Adaptive: план ещё не выбран; проверьте полный анализ';
+    if (!_adaptiveReady) return 'Adaptive: проверяю переход; до результата доступен обычный AutoMix';
     final technique = switch (d.technique) {
       AdaptiveTechnique.autoMix => 'обычный AutoMix',
       AdaptiveTechnique.beatBlend => 'beat blend',
@@ -704,22 +711,26 @@ class PlayerController extends ChangeNotifier {
     final ids = queue.skip(index + 1).take(AdaptiveDj.maxCandidates).toList();
     if (_previewOverride != null || ids.any((id) => _prefFor(cur.id, id) != null)) return;
     final analysisKey = [cur.id, ...ids].map((id) => adaptiveFeatures?.call(id)?.analyzedAt ?? 0).join(',');
-    final key = '$manual:$_openSeq:${cur.id}:${ids.join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:${m.profileCount}:$analysisKey:${setIntent.name}';
+    final cachedIds = [cur.id, ...ids]..sort();
+    final cacheKey = cachedIds.map((id) => cache.has(id) ? '1' : '0').join();
+    final key = '$manual:$_openSeq:${cur.id}:${ids.join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:${m.profileCount}:$analysisKey:${setIntent.name}:$normalize:$normLevel:${settings.viewOf('intel.cut', '0')}:$cacheKey';
     if (_adaptiveKey == key) return;
     AdaptiveTrack track(String id) => AdaptiveTrack(id, m.profile(id), adaptiveFeatures?.call(id),
         artist: lib.data.tracks[id]?.artist.toLowerCase() ?? '', genre: m.profileCached(id)?.genre ?? '');
     try {
       final planningClock = Stopwatch()..start();
+      _adaptiveCheck = null;
       final result = AdaptiveDj.choose(track(cur.id), [for (final id in ((userAhead > 0 || _preparing || _preparedId != null) ? ids.take(1) : ids)) track(id)],
           options: _djMix ?? const DjMix(), maxSec: crossfadeSecNow.clamp(1, 12).toInt(),
           earliestMs: position.value.inMilliseconds + 2000,
           manualPositionMs: manual ? position.value.inMilliseconds : null,
-          allowCut: settings.viewOf('intel.cut', '1') == '1',
+          allowCut: settings.viewOf('intel.cut', '0') == '1',
           context: DjSetContext(intent: setIntent, history: List.of(_djHistory)));
       // Do not replace a duration-mismatched profile with an adaptive plan.
       final pa = m.profile(cur.id);
       if (pa != null && duration > Duration.zero && (pa.durationMs - duration.inMilliseconds).abs() > 4000) return;
       _adaptiveDecision = result;
+      _adaptiveReady = result.technique == AdaptiveTechnique.autoMix;
       final selected = ids.indexOf(result.to);
       if (selected > 0 && userAhead == 0) {
         final id = queue.removeAt(index + 1 + selected);
@@ -728,17 +739,54 @@ class PlayerController extends ChangeNotifier {
         _queueChanged();
       }
       _adaptiveDecision = result;
-      _adaptiveKey = '$manual:$_openSeq:${cur.id}:${queue.skip(index + 1).take(AdaptiveDj.maxCandidates).join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:${m.profileCount}:$analysisKey:${setIntent.name}';
+      _adaptiveKey = '$manual:$_openSeq:${cur.id}:${queue.skip(index + 1).take(AdaptiveDj.maxCandidates).join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:${m.profileCount}:$analysisKey:${setIntent.name}:$normalize:$normLevel:${settings.viewOf('intel.cut', '0')}:$cacheKey';
       AppLog.info('Adaptive AutoDJ: ${jsonEncode({'from': cur.id, 'candidates': ids, ...result.toJson()})}');
       final baseline = m.profile(cur.id) != null && m.profile(result.to) != null
           ? MixPlan.make(m.profile(cur.id)!, m.profile(result.to)!, maxSec: crossfadeSecNow.clamp(1, 12).toInt()) : null;
+      final normalizationKey = '$normalize:$normLevel';
+      final levels = TransitionLevels(
+        outAmplitude: normalize ? math.pow(math.max(_normIn, _normFactorFor(cur.id)), 3).toDouble() : 1,
+        inAmplitude: normalize ? math.pow(_normFactorFor(result.to), 3).toDouble() : 1, matchGain: normalize ? 1 : null);
+      final decisionId = _adaptiveDecisionId = '$_openSeq-${DateTime.now().microsecondsSinceEpoch}';
       _traceDj({'kind': 'decision', 'from': cur.id, 'fromRevision': adaptiveFeatures?.call(cur.id)?.revision,
+        'decisionId': decisionId,
         'toRevision': adaptiveFeatures?.call(result.to)?.revision, 'manual': manual,
         'candidates': ids, 'planningMs': planningClock.elapsedMilliseconds, ...result.toJson(),
         if (baseline != null) 'baseline': {'outMs': baseline.start.inMilliseconds,
           'inMs': baseline.inStart.inMilliseconds, 'lengthMs': baseline.length.inMilliseconds,
-          'rate': 1.0, 'inGain': baseline.inGain},
-        'inGain': result.plan?.inGain, 'swapMs': result.plan?.swapAt?.inMilliseconds});
+          'rate': 1.0, 'inGain': baseline.inGain, 'levels': levels.toJson()},
+        'inGain': result.plan?.inGain, 'swapMs': result.plan?.swapAt?.inMilliseconds,
+        'eqMode': result.plan?.dj == true && result.plan?.swapAt != null ? 'threeBandV1' : 'legacyBass',
+        'levels': levels.toJson(), 'preflight': _adaptiveReady ? 'not_required' : 'pending'});
+      if (!_adaptiveReady) {
+        final seq = _openSeq;
+        _adaptiveCheck = () async {
+          TransitionCheck check;
+          try {
+            check = result.plan == null || verifyTransition == null
+                ? const TransitionCheck(TransitionVerdict.unavailable, 'verifier_unavailable')
+                : await verifyTransition!(cur.id, result.to, result.plan!, result.plan!.dj && result.plan!.swapAt != null, levels);
+          } catch (_) { check = const TransitionCheck(TransitionVerdict.unavailable, 'verifier_failed'); }
+          if (seq != _openSeq || current?.id != cur.id || !identical(_adaptiveDecision, result) || _fading ||
+              '$normalize:$normLevel' != normalizationKey || _autoNextIndex() == null || queue[_autoNextIndex()!] != result.to) return;
+          final timely = result.plan != null && result.plan!.start.inMilliseconds > position.value.inMilliseconds + 250;
+          _traceDj({'kind': 'preflight', 'from': cur.id, 'to': result.to, 'decisionId': decisionId,
+            'cueStillAhead': timely, ...check.toJson()});
+          if (check.verdict == TransitionVerdict.accepted && timely) { _adaptiveReady = true; }
+          else {
+            final normal = AdaptiveDj.fallback(track(cur.id), track(result.to), crossfadeSecNow.clamp(1, 12).toInt());
+            _adaptiveDecision = AdaptiveDecision(normal.to, normal.plan, normal.technique, 0,
+              [!timely ? 'AutoMix: точка сведения уже пройдена' : switch (check.reason) {
+                'originals_not_cached' => 'AutoMix: для проверки перехода нужны оба трека в кэше',
+                'true_peak_headroom' => 'AutoMix: у наложения недостаточно запаса по пикам',
+                'silent_render' => 'AutoMix: проверка обнаружила тишину',
+                _ => 'AutoMix: акустическая проверка перехода не пройдена',
+              }]);
+            _adaptiveReady = true;
+          }
+          notifyListeners();
+        }();
+      }
       notifyListeners();
     } catch (e) {
       _adaptiveKey = key;
@@ -795,7 +843,7 @@ class PlayerController extends ChangeNotifier {
     if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
     final selected = _adaptiveDecision;
     final auto = adaptiveStyle && !manual && selected?.to == queue[ni] && selected?.plan != null
-        ? selected!.plan!
+        ? _adaptiveReady ? selected!.plan! : MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt())
         : _autoPlan(a, b, cur.id, queue[ni], bpm: tempoOf?.call(cur));
     return manual ? MixPlan.manual(a, b, pref, auto: auto) : auto;
   }
@@ -810,13 +858,16 @@ class PlayerController extends ChangeNotifier {
   Future<void> mixNow() async {
     if (_fading || !playing || _autoNextIndex() == null) return;
     _prepareAdaptive(manual: true);
+    final seq = _openSeq;
+    await _adaptiveCheck?.timeout(const Duration(seconds: 2), onTimeout: () {});
+    if (seq != _openSeq || _fading || !playing) return;
     if (adaptiveStyle) lib.messages.add(mixStatus);
     var plan = _smartPlan();
     if (plan == null) {
       await _startCrossfade();
       return;
     }
-    if (adaptiveStyle && _adaptiveDecision?.components.isNotEmpty == true) {
+    if (adaptiveStyle && _adaptiveReady && _adaptiveDecision?.components.isNotEmpty == true) {
       await _startCrossfade(plan);
       return;
     }
@@ -1065,6 +1116,7 @@ class PlayerController extends ChangeNotifier {
       await incoming.setVolume(0);
       final djp = plan != null && plan.dj ? plan : null;
       final dj = djp != null;
+      var eqBlend = false;
       if (prepared) {
         await incoming.play();
       } else {
@@ -1077,7 +1129,16 @@ class PlayerController extends ChangeNotifier {
       if (dj) {
         _fxDirty = true;
         await _setRate(incoming, djp.rate);
-        await _setLowCut(incoming, djp.swapAt != null, force: true);
+        if (adaptiveStyle && djp.swapAt != null) {
+          final initial = djEqAt(0, djp.swapAt!.inMilliseconds / lengthMs0);
+          eqBlend = await _installEq(incoming, initial.$2);
+          if (eqBlend) eqBlend = await _installEq(_p, initial.$1);
+          if (!eqBlend) {
+            await _clearEq(incoming); await _clearEq(_p);
+            throw StateError('Three-band EQ unavailable; use AutoMix');
+          }
+        }
+        if (!eqBlend) await _setLowCut(incoming, djp.swapAt != null, force: true);
       } else if (_fxDirty) {
         await _setRate(incoming, 1.0);
         await _setLowCut(incoming, false, force: true);
@@ -1102,7 +1163,7 @@ class PlayerController extends ChangeNotifier {
       if (!ownsTransition()) return;
       if (!ready) throw StateError('Следующая дека не готова: нет длительности или продвижения воспроизведения');
       if (dj) AppLog.info('DJ execution: rate requested=${djp.rate}, actual=${incoming.state.rate}, '
-          'bassCut=${_cut.contains(incoming)}, swapMs=${djp.swapAt?.inMilliseconds}, envelope=phrase');
+          'bassCut=${_cut.contains(incoming)}, eq=$eqBlend, swapMs=${djp.swapAt?.inMilliseconds}, envelope=phrase');
       if (dj) {
         // Ждём, пока уходящий дойдёт до начала перехода (следующий всё это время уже играет без звука),
         // и сверяем доли: если расходятся заметно, один раз подтягиваем, дальше подстраиваем скоростью
@@ -1138,6 +1199,8 @@ class PlayerController extends ChangeNotifier {
       // Теперь «главный» проигрыватель — новый, а прежний доигрывает затихая
       final old = _p;
       _transitionProbe = TransitionProbe(from: fromId, to: nextTrack.id,
+          decisionId: adaptiveStyle && identical(plan, _adaptiveDecision?.plan) ? _adaptiveDecisionId : null,
+          eqMode: eqBlend ? 'threeBandV1_installed' : djp?.swapAt != null ? 'legacyBass' : 'none',
           technique: dj ? 'beatBlend' : plan == null ? 'autoMix' :
               _adaptiveDecision?.to == nextTrack.id && _adaptiveDecision?.technique != AdaptiveTechnique.beatBlend
                   ? _adaptiveDecision!.technique.name : 'autoMix',
@@ -1224,8 +1287,11 @@ class PlayerController extends ChangeNotifier {
           swapped = true;
           _transitionProbe?.bassSwapMs = elapsed.inMilliseconds;
           AppLog.info('DJ execution: bass swap at ${elapsed.inMilliseconds} ms');
-          unawaited(_setLowCut(incoming, false));
-          unawaited(_setLowCut(old, true));
+          if (!eqBlend) { unawaited(_setLowCut(incoming, false)); unawaited(_setLowCut(old, true)); }
+        }
+        if (eqBlend && swapAt != null) {
+          final eq = djEqAt(t, swapAt.inMilliseconds / lengthMs);
+          _eq[old]?.update(eq.$1); _eq[incoming]?.update(eq.$2);
         }
         final g = dj ? phraseBlendGains(t) : fadeGains(t);
         _outGain = dj ? amplitudeToMpvVolume(g.$1) : g.$1;
@@ -1276,6 +1342,32 @@ class PlayerController extends ChangeNotifier {
   double _pendingRate = 1.0;
   Timer? _rateTimer;
   final Set<Player> _cut = {};
+  final Map<Player, DjEqDriver> _eq = {};
+  final Map<Player, StreamSubscription<dynamic>> _eqLogs = {};
+  int _eqSequence = 0;
+  Future<bool> _installEq(Player p, DjEq initial) async {
+    await _clearEq(p);
+    final label = 'cave-dj-eq-${++_eqSequence}';
+    final driver = DjEqDriver(label, (args) async { await (p.platform as dynamic).command(args); }, () {
+      _traceDj({'kind': 'capability', 'effect': 'threeBandEq', 'supported': false});
+    });
+    _eq[p] = driver;
+    // Native command() reports errors on its log stream, rather than throwing.
+    _eqLogs[p] = p.stream.log.listen((log) {
+      if ((log.level == 'error' || log.level == 'fatal') &&
+          (log.text.contains(label) || log.prefix.startsWith('af') || log.text.contains('af-command'))) driver.fail();
+    });
+    if (!await driver.install(initial)) { await _clearEq(p); return false; }
+    try {
+      final filters = await (p.platform as dynamic).getProperty('af');
+      if (!'$filters'.contains(label)) { await _clearEq(p); return false; }
+    } catch (_) { await _clearEq(p); return false; }
+    _traceDj({'kind': 'capability', 'effect': 'threeBandEq', 'installed': true, 'verification': 'filter_presence_not_output_pcm'});
+    return driver.active;
+  }
+  Future<void> _clearEq(Player p) async {
+    final driver = _eq.remove(p); await _eqLogs.remove(p)?.cancel(); await driver?.close();
+  }
 
   _PosClock? _outClock;
   _PosClock? _inClock;
@@ -1315,7 +1407,12 @@ class PlayerController extends ChangeNotifier {
   Future<void> _setLowCut(Player p, bool on, {bool force = false}) async {
     if (!force && on == _cut.contains(p)) return;
     try {
-      await (p.platform as dynamic).setProperty('af', on ? 'lavfi=[highpass=f=220]' : '');
+      const label = 'cave-dj-lowcut'; final native = p.platform as dynamic;
+      var filters = '${await native.getProperty('af')}';
+      if (on && !filters.contains(label)) { await native.command(['af', 'add', '@$label:lavfi=[highpass=f=220]']); }
+      else if (!on && filters.contains(label)) { await native.command(['af', 'remove', '@$label']); }
+      filters = '${await native.getProperty('af')}';
+      if (on != filters.contains(label)) throw StateError('Bass filter not installed');
       if (on) {
         _cut.add(p);
       } else {
@@ -1376,6 +1473,7 @@ class PlayerController extends ChangeNotifier {
     _inGain = 1;
     _outGain = 1;
     if (old != null) {
+      unawaited(_clearEq(old));
       unawaited(old.stop());
       if (_fxDirty) {
         unawaited(_setRate(old, 1.0));
@@ -1383,6 +1481,8 @@ class PlayerController extends ChangeNotifier {
       }
     }
     if (_fxDirty) {
+      unawaited(_clearEq(_p));
+      if (_q != null) unawaited(_clearEq(_q!));
       unawaited(_setLowCut(_p, false));
       // Следующий трек играл с подогнанным темпом: возвращаем его к родному плавно, а не рывком
       if (stopIncoming) {
@@ -1750,6 +1850,7 @@ class PlayerController extends ChangeNotifier {
     _hoverTimer?.cancel();
     _fadeTimer?.cancel();
     _tailTimer?.cancel();
+    for (final p in _eq.keys.toList()) { unawaited(_clearEq(p)); }
     _p.dispose();
     _q?.dispose();
     unawaited(_proxy.close());

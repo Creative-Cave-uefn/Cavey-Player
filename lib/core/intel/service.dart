@@ -23,6 +23,8 @@ import 'similarity.dart';
 import 'sync.dart';
 import 'viz.dart';
 import 'vocal_annotations.dart';
+import 'vocal_worker.dart';
+import 'transition_verifier.dart';
 
 // Audio Intelligence Engine: локальный разбор оригинальных записей, общий индекс признаков и подбор похожих.
 //
@@ -41,6 +43,14 @@ class IntelService extends ChangeNotifier {
   final DriveApi drive;
   final AudioCache cache;
   final Tools tools;
+  final VocalWorker vocalWorker = VocalWorker.installed();
+  bool get vocalModelAvailable => vocalWorker.available;
+  bool get vocalModelEnabled => lib.settings.viewOf('intel.voiceModel', '1') == '1';
+  void setVocalModelEnabled(bool enabled) { _set('intel.voiceModel', enabled ? '1' : '0'); _notify(); }
+  Future<TransitionCheck> verifyTransition(String from, String to, MixPlan plan, bool eq, TransitionLevels levels) async {
+    if (!cache.has(from) || !cache.has(to)) return const TransitionCheck(TransitionVerdict.unavailable, 'originals_not_cached');
+    return TransitionVerifier(tools.ffmpeg.path).verify(cache.fileFor(from), cache.fileFor(to), plan, eq: eq, levels: levels);
+  }
 
   IntelService({required this.dir, required this.lib, required this.drive, required this.cache, required this.tools}) {
     store = IntelStore(Directory('${dir.path}${Platform.pathSeparator}index'));
@@ -70,7 +80,7 @@ class IntelService extends ChangeNotifier {
   bool get planEnabled => lib.settings.viewOf('intel.plan', '1') == '1';
 
   /// Разрешить резкие стыки (hard cut) на границе фразы, когда оба трека на полной энергии или вокал мешает наложению
-  bool get cutEnabled => lib.settings.viewOf('intel.cut', '1') == '1';
+  bool get cutEnabled => lib.settings.viewOf('intel.cut', '0') == '1';
 
   void setPlanEnabled(bool on) {
     _set('intel.plan', on ? '1' : '0');
@@ -161,6 +171,8 @@ class IntelService extends ChangeNotifier {
   /// Сколько записей в общем индексе (включая те, что пришли с других устройств)
   int get indexed => store.count;
   int get sectioned => store.records.where((r) => r.sections?.regions.isNotEmpty == true).length;
+  int get rhythmic => store.records.where((r) => r.rhythm?.windows.any((w) => w.reliable) == true).length;
+  int get vocalModelCount => store.records.where((r) => r.vocalActivity != null).length;
 
   /// Строка для настроек: что сейчас происходит
   String get statusLine {
@@ -491,7 +503,14 @@ class IntelService extends ChangeNotifier {
       if (known != null && known < 90) m = 'full';
       if (known == null) m = 'full';
       final input = m == 'full' ? await _decodeFull(t, src, rev, known) : await _decodeExcerpts(t, src, rev, known!);
-      final rec = await analyzeAudioInIsolate(input);
+      var rec = await analyzeAudioInIsolate(input);
+      if (m == 'full' && rec.sections != null && vocalModelEnabled && vocalWorker.available) {
+        _status = 'Проверяю вокальные участки «${t.title}»…'; _notify();
+        final voice = await vocalWorker.analyze(src, tools.ffmpeg.path, _work);
+        if (voice != null && (voice.durationMs - rec.durationSec * 1000).abs() <= 1000) {
+          rec = TrackFeatures.fromJson({...rec.toJson(), 'va': voice.toJson()}) ?? rec;
+        } else { AppLog.info('Audio Intelligence: голосовой риск остаётся неизвестным'); }
+      }
       store.put(rec, local: true, force: _force.contains(t.id));
     } finally {
       if (temp) {

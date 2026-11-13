@@ -109,6 +109,15 @@ class _IntelBodyState extends State<_IntelBody> {
       ],
       const SizedBox(height: 4),
       Text(intel.statusLine, style: const TextStyle(color: C.faint, fontSize: 12)),
+      const SizedBox(height: 6),
+      Text(intel.vocalModelAvailable ? 'Модель голоса установлена. Низкая оценка не доказывает отсутствие вокала.'
+          : 'Модель голоса не установлена: вокальный риск оценивается осторожно.',
+          style: const TextStyle(color: C.faint, fontSize: 12)),
+      if (canHere && intel.vocalModelAvailable) SwitchListTile.adaptive(
+        contentPadding: EdgeInsets.zero, title: const Text('Анализ вокала на этом компьютере'),
+        value: intel.vocalModelEnabled, onChanged: intel.setVocalModelEnabled,
+        subtitle: const Text('При полном анализе трека. Аудио никуда не отправляется.'),
+      ),
       if (intel.lastError.isNotEmpty && intel.failed > 0)
         Padding(
           padding: const EdgeInsets.only(top: 4),
@@ -215,7 +224,8 @@ class _IntelBodyState extends State<_IntelBody> {
             'Без этого индекс остаётся только на этом устройстве.',
       ),
       if (intel.syncStatus.isNotEmpty) Text(intel.syncStatus, style: const TextStyle(color: C.faint, fontSize: 12)),
-      Text('В индексе: ${intel.indexed}. Секционный анализ: ${intel.sectioned}.', style: const TextStyle(color: C.faint, fontSize: 12)),
+      Text('В индексе: ${intel.indexed}. Секции: ${intel.sectioned}. Локальный ритм: ${intel.rhythmic}. '
+          'Модель голоса: ${intel.vocalModelCount}.', style: const TextStyle(color: C.faint, fontSize: 12)),
     ]);
   }
 }
