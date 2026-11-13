@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'sections.dart';
 
 // Запись признаков одного трека — то, что хранится в локальном индексе и общих файлах на Диске.
 // Формат собственный и компактный: порядка килобайта на трек (≈1–2 МБ на 1000 треков), без спектрограмм.
@@ -182,7 +183,7 @@ class TrackFeatures {
   static const int schemaVersion = 1;
 
   /// Версия анализатора: растёт, когда меняются алгоритмы. Записи старее пересчитываются
-  static const int analyzerVersion = 1;
+  static const int analyzerVersion = 2;
 
   /// Кратко о том, что проверять в [flags]
   static const flagPartial = 'partial'; // разобраны только отрывки трека
@@ -241,6 +242,7 @@ class TrackFeatures {
   /// не декодировался (источник сам moно, старый декодер до этой версии анализатора, или сбой ffmpeg — не критично)
   final double? stereoWidth;
 
+  final SectionIndex? sections;
   final SegmentStats? intro;
   final SegmentStats? outro;
   final List<String> flags;
@@ -280,6 +282,7 @@ class TrackFeatures {
     this.lufs,
     this.lra,
     this.stereoWidth,
+    this.sections,
     this.intro,
     this.outro,
     this.flags = const [],
@@ -293,6 +296,9 @@ class TrackFeatures {
   double get coverage => durationSec <= 0 ? 0.0 : (coverageSec / durationSec).clamp(0.0, 1.0).toDouble();
 
   bool hasFlag(String f) => flags.contains(f);
+
+  /// Legacy v1 stays usable while the richer analyzer upgrades it in background.
+  bool isCompatibleFor(String rev) => revision == rev && schema == schemaVersion && analyzer >= 1;
 
   /// Запись соответствует текущему файлу и текущему анализатору
   bool isCurrentFor(String rev) => revision == rev && schema == schemaVersion && analyzer >= analyzerVersion;
@@ -340,6 +346,7 @@ class TrackFeatures {
         if (lufs != null) 'lu': _r(lufs!, 1),
         if (lra != null) 'lr': _r(lra!, 1),
         if (stereoWidth != null) 'sw': _r(stereoWidth!, 3),
+        if (sections != null) 'sx': sections!.toJson(),
         if (intro != null) 'in': intro!.toJson(),
         if (outro != null) 'out': outro!.toJson(),
         if (flags.isNotEmpty) 'q': flags,
@@ -392,6 +399,7 @@ class TrackFeatures {
         lufs: _dn(j['lu']),
         lra: _dn(j['lr']),
         stereoWidth: _dn(j['sw']),
+        sections: SectionIndex.fromJson(j['sx']),
         intro: SegmentStats.fromJson(j['in']),
         outro: SegmentStats.fromJson(j['out']),
         flags: q is List ? [for (final x in q) '$x'] : const [],

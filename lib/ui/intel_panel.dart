@@ -140,7 +140,7 @@ class _IntelBodyState extends State<_IntelBody> {
         const Padding(
           padding: EdgeInsets.only(top: 4, bottom: 4),
           child: Text(
-            'Весь трек — точнее, плюс сетка долей, границы фраз и громкость для будущего сведения. '
+            'Весь трек — сетка долей и локальные участки с тембром, хромой, басом и энергией. Старый индекс обновляется в фоне. '
             'Отрывки (четыре по 16 секунд) считаются в разы быстрее, но темп и тональность менее надёжны.',
             style: TextStyle(color: C.faint, fontSize: 12, height: 1.4),
           ),
@@ -170,7 +170,7 @@ class _IntelBodyState extends State<_IntelBody> {
             'Без этого индекс остаётся только на этом устройстве.',
       ),
       if (intel.syncStatus.isNotEmpty) Text(intel.syncStatus, style: const TextStyle(color: C.faint, fontSize: 12)),
-      Text('В индексе записей: ${intel.indexed}', style: const TextStyle(color: C.faint, fontSize: 12)),
+      Text('В индексе: ${intel.indexed}. Секционный анализ: ${intel.sectioned}.', style: const TextStyle(color: C.faint, fontSize: 12)),
     ]);
   }
 }

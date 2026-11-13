@@ -236,7 +236,7 @@ class AppServices {
       player.refinePlan = app.intel.refinePlan;
       player.adaptiveFeatures = (id) {
         final t = lib.data.tracks[id], f = app.intel.features(id);
-        return app.intel.enabled && t != null && f != null && f.isCurrentFor(revisionOf(t)) ? f : null;
+        return app.intel.enabled && t != null && f != null && f.isCompatibleFor(revisionOf(t)) ? f : null;
       };
     }
     // Играющий и следующий трек разбираются в первую очередь: для DJ-перехода нужны данные именно по ним

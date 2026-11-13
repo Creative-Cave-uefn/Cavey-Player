@@ -18,7 +18,7 @@ class AdaptiveTrack {
   bool get reliable {
     final p = profile, f = features;
     if (p == null || f == null) return false;
-    return f.schema == TrackFeatures.schemaVersion && f.analyzer >= TrackFeatures.analyzerVersion &&
+    return f.schema == TrackFeatures.schemaVersion && f.analyzer >= 1 &&
         f.mode == 'full' && f.coverageSec.isFinite && f.durationSec.isFinite && f.coverage >= 0.9 && !f.hasFlag(TrackFeatures.flagDecodeGap) &&
         !f.hasFlag(TrackFeatures.flagShort) && p.durationMs > 15000 && p.endMs <= p.durationMs &&
         p.endMs > p.introMs + 10000 && p.introMs >= 0 && p.loudDb.isFinite &&

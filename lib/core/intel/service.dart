@@ -159,6 +159,7 @@ class IntelService extends ChangeNotifier {
 
   /// Сколько записей в общем индексе (включая те, что пришли с других устройств)
   int get indexed => store.count;
+  int get sectioned => store.records.where((r) => r.sections?.regions.isNotEmpty == true).length;
 
   /// Строка для настроек: что сейчас происходит
   String get statusLine {
