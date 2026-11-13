@@ -1,0 +1,44 @@
+name: One-time encrypted Android signing backup
+
+# Deliberately manual only: this reads signing secrets. NEVER add push or pull_request.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  encrypted-export:
+    name: Encrypt original Android keystore to the owner's public certificate
+    if: github.repository == 'Creative-Cave-uefn/Cavey-Player' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@v4
+
+      - name: Encrypt existing secrets into CMS envelope
+        env:
+          CAVEY_RECOVERY_CERT_PEM: ${{ secrets.CAVEY_RECOVERY_CERT_PEM }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
+          GOOGLE_ANDROID_CLIENT_ID: ${{ secrets.GOOGLE_ANDROID_CLIENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # All plaintext remains in process memory and ephemeral runner RAM.
+          # The recipient public certificate is pinned by an owner-managed
+          # GitHub Secret, not a workflow_dispatch argument.
+          python3 tool/create_encrypted_android_signing_bundle.py
+
+      - name: Upload ENCRYPTED backup only
+        uses: actions/upload-artifact@v4
+        with:
+          name: cavey-android-encrypted-signing
+          path: .secure-recovery/CaveyAndroidSigning.p7m
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
