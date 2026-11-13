@@ -9,6 +9,8 @@ import 'automix.dart';
 import 'auth.dart';
 import 'crossfade.dart';
 import 'crossfade_handoff.dart';
+import 'intel/adaptive_dj.dart';
+import 'intel/record.dart';
 import 'drive.dart';
 import 'library.dart';
 import 'mixbook.dart';
@@ -563,6 +565,8 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _queueChanged() {
+    _adaptiveKey = null;
+    _adaptiveDecision = null;
     final ahead = queue.length - index - 1;
     if (userAhead > ahead) userAhead = ahead < 0 ? 0 : ahead;
     notifyListeners();
@@ -646,14 +650,66 @@ class PlayerController extends ChangeNotifier {
 
   /// Автоматический план перехода с учётом разбора звука
   MixPlan _autoPlan(MixProfile a, MixProfile b, String fromId, String toId, {double? bpm}) {
-    final plan = MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: bpm, dj: _djMix);
+    final plan = MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: bpm, dj: adaptiveStyle ? null : _djMix);
     final r = refinePlan;
-    return r == null ? plan : r(plan, a, b, fromId, toId);
+    return r == null || adaptiveStyle ? plan : r(plan, a, b, fromId, toId);
   }
+  TrackFeatures? Function(String id)? adaptiveFeatures;
+  AdaptiveDecision? _adaptiveDecision;
+  String? _adaptiveKey;
+  void refreshMixSettings() {
+    _adaptiveKey = null;
+    _adaptiveDecision = null;
+    _dropPrepared();
+    _prepareMix();
+    notifyListeners();
+  }
+
+  bool get adaptiveStyle => jamXfSec == null && smartMix && settings.viewOf('mix.style', 'fade') == 'adaptive';
+
+  /// Freeze the first transition before preloading. Never reorder explicit user
+  /// additions, a jam queue, or a saved/manual transition. Queue edits replan.
+  void _prepareAdaptive() {
+    final cur = current, m = mixer;
+    if (!adaptiveStyle || adaptiveFeatures == null || cur == null || m == null ||
+        _fading || _preparing || _preparedId != null || index < 0 || index + 1 >= queue.length) return;
+    final ids = queue.skip(index + 1).take(AdaptiveDj.maxCandidates).toList();
+    if (_previewOverride != null || ids.any((id) => _prefFor(cur.id, id) != null)) return;
+    final analysisKey = [cur.id, ...ids].map((id) => adaptiveFeatures?.call(id)?.analyzedAt ?? 0).join(',');
+    final key = '$_openSeq:${cur.id}:${ids.join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:${m.profileCount}:$analysisKey';
+    if (_adaptiveKey == key) return;
+    AdaptiveTrack track(String id) => AdaptiveTrack(id, m.profile(id), adaptiveFeatures?.call(id),
+        artist: lib.data.tracks[id]?.artist.toLowerCase() ?? '');
+    try {
+      final result = AdaptiveDj.choose(track(cur.id), [for (final id in (userAhead > 0 ? ids.take(1) : ids)) track(id)],
+          options: _djMix ?? const DjMix(), maxSec: crossfadeSecNow.clamp(1, 12).toInt(),
+          earliestMs: position.value.inMilliseconds + 2000,
+          allowCut: settings.viewOf('intel.cut', '1') == '1');
+      // Do not replace a duration-mismatched profile with an adaptive plan.
+      final pa = m.profile(cur.id);
+      if (pa != null && duration > Duration.zero && (pa.durationMs - duration.inMilliseconds).abs() > 4000) return;
+      _adaptiveDecision = result;
+      final selected = ids.indexOf(result.to);
+      if (selected > 0 && userAhead == 0) {
+        final id = queue.removeAt(index + 1 + selected);
+        queue.insert(index + 1, id);
+        _origin = List.of(queue);
+        _queueChanged();
+      }
+      _adaptiveDecision = result;
+      _adaptiveKey = '$_openSeq:${cur.id}:${queue.skip(index + 1).take(AdaptiveDj.maxCandidates).join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:${m.profileCount}:$analysisKey';
+      AppLog.info('Adaptive AutoDJ: ${jsonEncode({'from': cur.id, 'candidates': ids, ...result.toJson()})}');
+    } catch (e) {
+      _adaptiveKey = key;
+      _adaptiveDecision = null;
+      AppLog.warn('Adaptive AutoDJ: обычный AutoMix после ошибки планирования', e);
+    }
+  }
+
   bool get smartMix => jamSmart ?? settings.viewOf('mix.smart', '1') == '1';
 
   /// Диджейский стиль перехода: подгонка темпа, переход на целое число тактов, обмен басов (в джеме действует стиль организатора — обычный)
-  bool get djStyle => jamXfSec == null && smartMix && settings.viewOf('mix.style', 'fade') == 'dj';
+  bool get djStyle => jamXfSec == null && smartMix && const ['dj', 'adaptive'].contains(settings.viewOf('mix.style', 'fade'));
 
   DjMix? get _djMix => djStyle
       ? DjMix(
@@ -696,7 +752,10 @@ class PlayerController extends ChangeNotifier {
     if (a == null || b == null) return null;
     // Профиль от другого файла (трек заменили) — не доверяем
     if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
-    final auto = _autoPlan(a, b, cur.id, queue[ni], bpm: tempoOf?.call(cur));
+    final selected = _adaptiveDecision;
+    final auto = adaptiveStyle && !manual && selected?.to == queue[ni] && selected?.plan != null
+        ? selected!.plan!
+        : _autoPlan(a, b, cur.id, queue[ni], bpm: tempoOf?.call(cur));
     return manual ? MixPlan.manual(a, b, pref, auto: auto) : auto;
   }
 
@@ -709,6 +768,7 @@ class PlayerController extends ChangeNotifier {
   /// «Свести сейчас»: начать переход на следующий трек прямо сейчас, не дожидаясь конца. Темп и доли — по тем же правилам
   Future<void> mixNow() async {
     if (_fading || !playing || _autoNextIndex() == null) return;
+    _prepareAdaptive();
     var plan = _smartPlan();
     if (plan == null) {
       await _startCrossfade();
@@ -721,7 +781,7 @@ class PlayerController extends ChangeNotifier {
       final k = ((start.inMilliseconds - g.$1) / g.$2).ceil();
       start = Duration(milliseconds: (g.$1 + k * g.$2).round());
     }
-    final length = plan.dj ? plan.length : Duration(seconds: math.max(4, crossfadeSecNow));
+    final length = plan.dj || adaptiveStyle ? plan.length : Duration(seconds: math.max(4, crossfadeSecNow));
     plan = MixPlan(start, length, plan.inStart, plan.inGain,
         dj: plan.dj, rate: plan.rate, swapAt: plan.swapAt, grid: plan.grid, offsetMs: plan.offsetMs, preroll: plan.preroll);
     await _startCrossfade(plan);
@@ -871,6 +931,7 @@ class PlayerController extends ChangeNotifier {
     _prevPos = d;
     if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
     if (_autoNextIndex() == null) return;
+    if (adaptiveStyle && duration - d < const Duration(seconds: 180)) _prepareAdaptive();
     final pref = _nextPref;
     if (pref != null && pref.mode == TransitionMode.cut) return; // этот переход — без перехода: трек доиграет сам
     final manual = pref != null && pref.mode == TransitionMode.manual;
@@ -1112,7 +1173,15 @@ class PlayerController extends ChangeNotifier {
       });
     } catch (e) {
       AppLog.warn('Плавный переход не получился, трек доиграет как обычно', e);
-      if (ownsTransition()) _endFade(stopIncoming: true);
+      if (ownsTransition()) {
+        _endFade(stopIncoming: true);
+        if (plan?.dj == true && playing) {
+          AppLog.info('DJ-переход: пробую обычный crossfade без синхронизации');
+          await _startCrossfade();
+        } else {
+          lib.messages.add('Переход отменён: следующая дека не готова. Текущий трек продолжает играть; подробности в журнале.');
+        }
+      }
     }
   }
 
@@ -1286,6 +1355,8 @@ class PlayerController extends ChangeNotifier {
     final t = current;
     if (t == null) return;
     final seq = ++_openSeq;
+    _adaptiveKey = null;
+    _adaptiveDecision = null;
     jamLeadTrack = null;
     jamLead = Duration.zero;
     // Обычная смена трека без плавного перехода: полоса старого трека растворяется
@@ -1486,6 +1557,9 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> seek(Duration d) async {
     if (_fading) _endFade(stopIncoming: _outgoing == null);
+    _adaptiveKey = null;
+    _adaptiveDecision = null;
+    _dropPrepared();
     if (_resumeAt != null) {
       _resumeAt = d;
       position.value = d;

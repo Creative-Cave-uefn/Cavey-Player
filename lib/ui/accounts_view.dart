@@ -1445,10 +1445,12 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
   Widget _djBlock(AppServices app, {required bool enabled}) {
     void put(String k, String v) {
       setState(() => app.settings.view[k] = v);
+      app.player.refreshMixSettings();
       app.lib.saveSettings();
     }
 
-    final dj = app.settings.viewOf('mix.style', 'fade') == 'dj';
+    final style = app.settings.viewOf('mix.style', 'fade');
+    final dj = style == 'dj' || style == 'adaptive';
     const barSteps = [1, 2, 4, 8, 16, 32];
     final bars = app.settings.viewNum('mix.bars', 8).round();
     final barIdx = barSteps.indexOf(bars).clamp(0, barSteps.length - 1).toInt();
@@ -1465,9 +1467,15 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
         segments: const [
           ButtonSegment(value: 'fade', label: Text('Плавный')),
           ButtonSegment(value: 'dj', label: Text('DJ')),
+          ButtonSegment(value: 'adaptive', label: Text('Adaptive AutoDJ')),
         ],
-        selected: {dj ? 'dj' : 'fade'},
+        selected: {const ['fade', 'dj', 'adaptive'].contains(style) ? style : 'fade'},
         onSelectionChanged: enabled ? (v) => put('mix.style', v.first) : null,
+      ),
+      if (style == 'adaptive') const Padding(
+        padding: EdgeInsets.only(top: 8),
+        child: Text('Экспериментальный: выбирает из следующих пяти треков, планирует до трёх шагов. '
+            'При слабом анализе — обычный AutoMix. Решения — в журнале.'),
       ),
       if (dj) ...[
         const SizedBox(height: 8),

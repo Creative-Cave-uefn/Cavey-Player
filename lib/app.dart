@@ -234,16 +234,24 @@ class AppServices {
     if (!intelOff) {
       unawaited(app.intel.open()); // индекс читается и разбор идёт в фоне: запуск приложения не ждёт
       player.refinePlan = app.intel.refinePlan;
+      player.adaptiveFeatures = (id) {
+        final t = lib.data.tracks[id], f = app.intel.features(id);
+        return app.intel.enabled && t != null && f != null && f.isCurrentFor(revisionOf(t)) ? f : null;
+      };
     }
     // Играющий и следующий трек разбираются в первую очередь: для DJ-перехода нужны данные именно по ним
     String? intelSeen;
     player.addListener(() {
       if (intelOff) return;
       final cur = player.current?.id;
-      if (cur == null || cur == intelSeen) return;
-      intelSeen = cur;
-      final ni = player.index + 1;
-      if (ni >= 0 && ni < player.queue.length) app.intel.prioritize(player.queue[ni]);
+      final upcoming = player.queue.skip(player.index + 1).take(player.adaptiveStyle ? 5 : 1).toList();
+      final key = '$cur:${upcoming.join(",")}';
+      if (cur == null || key == intelSeen) return;
+      intelSeen = key;
+      for (final id in upcoming) {
+        app.intel.prioritize(id);
+        if (player.adaptiveStyle) { cache.enqueue(id); mixer.prepare(id); }
+      }
       app.intel.prioritize(cur);
     });
     app.listenBrainz = ListenBrainz(settings, player)..start();
