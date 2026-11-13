@@ -658,6 +658,19 @@ class PlayerController extends ChangeNotifier {
   TrackFeatures? Function(String id)? adaptiveFeatures;
   AdaptiveDecision? _adaptiveDecision;
   String? _adaptiveKey;
+  String get mixStatus {
+    if (!adaptiveStyle) return djStyle ? 'DJ: сведение по доступным сеткам' : 'AutoMix: плавный переход';
+    final d = _adaptiveDecision;
+    if (d == null) return 'Adaptive: план ещё не выбран; проверьте полный анализ';
+    final technique = switch (d.technique) {
+      AdaptiveTechnique.autoMix => 'обычный AutoMix',
+      AdaptiveTechnique.beatBlend => 'beat blend',
+      AdaptiveTechnique.shortFade => 'короткий crossfade',
+      AdaptiveTechnique.cut => 'стык на фразе',
+    };
+    return 'Adaptive: $technique, ${(d.plan?.length.inMilliseconds ?? 0) / 1000} с. ${d.reasons.join('; ')}';
+  }
+
   void refreshMixSettings() {
     _adaptiveKey = null;
     _adaptiveDecision = null;
@@ -700,6 +713,7 @@ class PlayerController extends ChangeNotifier {
       _adaptiveDecision = result;
       _adaptiveKey = '$_openSeq:${cur.id}:${queue.skip(index + 1).take(AdaptiveDj.maxCandidates).join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:${m.profileCount}:$analysisKey';
       AppLog.info('Adaptive AutoDJ: ${jsonEncode({'from': cur.id, 'candidates': ids, ...result.toJson()})}');
+      notifyListeners();
     } catch (e) {
       _adaptiveKey = key;
       _adaptiveDecision = null;
@@ -770,6 +784,7 @@ class PlayerController extends ChangeNotifier {
   Future<void> mixNow() async {
     if (_fading || !playing || _autoNextIndex() == null) return;
     _prepareAdaptive();
+    if (adaptiveStyle) lib.messages.add(mixStatus);
     var plan = _smartPlan();
     if (plan == null) {
       await _startCrossfade();

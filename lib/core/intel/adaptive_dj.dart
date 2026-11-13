@@ -27,6 +27,28 @@ class AdaptiveTrack {
         _validSegment(f.intro) && _validSegment(f.outro);
   }
 
+  /// Envelope and grid have separate jobs. Use the full intelligence grid for
+  /// both decks instead of demanding agreement with a second beat estimator.
+  MixProfile get planningProfile {
+    final p = profile!, g = features?.dj;
+    if (g == null) return p;
+    return MixProfile(durationMs: p.durationMs, introMs: p.introMs, outroMs: p.outroMs,
+        endMs: p.endMs, loudDb: p.loudDb, v: p.v, bpm: g.gridBpm,
+        headBeatMs: g.headBeatMs ?? g.firstBeatMs, tailBeatMs: g.tailBeatMs,
+        headBarMs: g.headBarMs, tailBarMs: g.tailBarMs,
+        key: features?.keyReliable == true ? features!.key : p.key, wave: p.wave, genre: p.genre);
+  }
+
+  String get analysisStatus {
+    final p = profile, f = features;
+    if (p == null) return 'нет профиля громкости';
+    if (f == null) return 'нет актуального полного Audio Intelligence';
+    if (f.mode != 'full') return 'быстрый анализ: нужен полный';
+    if (f.coverage < 0.9) return 'разобрано менее 90% трека';
+    if (!reliable) return 'анализ неполный или не совпадает с файлом';
+    return 'анализ готов';
+  }
+
   static bool _validSegment(SegmentStats? s) => s != null && s.energyDb.isFinite &&
       s.centroidHz.isFinite && s.centroidHz >= 0 && s.bassRatio.isFinite && s.onsetDensity.isFinite;
 }
@@ -60,7 +82,7 @@ class AdaptiveDj {
     final a = from.profile, b = next.profile;
     return AdaptiveDecision(next.id, a != null && b != null && a.endMs > a.introMs + 10000
         ? MixPlan.make(a, b, maxSec: maxSec) : null,
-        AdaptiveTechnique.autoMix, 0, const ['Недостаточный или устаревший анализ: обычный AutoMix']);
+        AdaptiveTechnique.autoMix, 0, ['AutoMix: ${from.id} — ${from.analysisStatus}; ${next.id} — ${next.analysisStatus}']);
   }
 
   static AdaptiveDecision choose(AdaptiveTrack from, List<AdaptiveTrack> pool,
@@ -103,7 +125,7 @@ class AdaptiveDj {
   static AdaptiveDecision pair(AdaptiveTrack from, AdaptiveTrack next,
       {DjMix options = const DjMix(), int maxSec = 8, int earliestMs = 0, bool allowCut = true}) {
     if (!from.reliable || !next.reliable) return fallback(from, next, maxSec);
-    final a = from.profile!, b = next.profile!, fa = from.features!, fb = next.features!;
+    final a = from.planningProfile, b = next.planningProfile, fa = from.features!, fb = next.features!;
     final da = fa.dj, db = fb.dj;
     final normal = MixPlan.make(a, b, maxSec: maxSec);
     var plan = MixPlan.make(a, b, maxSec: maxSec,
@@ -182,24 +204,20 @@ class AdaptiveDj {
       if (contrastCut) notes.add('Контрастный темп: короткий стык на границе фразы');
     }
     if (bestUnknown) notes.add('Вокал не определён: только короткое наложение');
-    if (!plan.dj && !bestRisk && !bestUnknown) notes.add('Ненадёжная сетка или несовместимый темп: короткий переход без растяжения');
+    if (!plan.dj && !bestRisk && !bestUnknown) {
+      notes.add(!_gridReady(from) || !_gridReady(next)
+          ? 'Сетка полного анализа нестабильна или неполна: короткий переход'
+          : 'Подгонка темпа превышает настройку: короткий переход');
+    }
     notes.add('Совместимость участков: энергия, спектр, бас; BPM/тональность не исключают трек');
     return AdaptiveDecision(next.id, plan, technique, best.clamp(0.0, 1.0).toDouble(), notes);
   }
 
   static bool _gridReady(AdaptiveTrack track) {
-    final p = track.profile!, f = track.features!, g = track.features!.dj;
-    final bpm = p.bpm, detected = g?.gridBpm;
-    if (g == null || !g.gridStable || f.tempoStability < 0.7 || bpm == null || detected == null ||
-        !detected.isFinite || detected <= 0 || bpmStretch(bpm, detected) > 0.01) return false;
-    final beat = 60000 / bpm;
-    bool aligned(int? anchor, int? reference) {
-      if (anchor == null || reference == null) return false;
-      final phase = ((anchor - reference) % beat).abs();
-      return math.min(phase, beat - phase) <= 50;
-    }
-    return aligned(p.headBeatMs, g.headBeatMs ?? g.firstBeatMs) &&
-        aligned(p.tailBeatMs, g.tailBeatMs ?? g.firstBeatMs);
+    final f = track.features!, g = f.dj, bpm = g?.gridBpm;
+    return g != null && g.gridStable && f.tempoReliable && f.tempoStability >= 0.7 &&
+        bpm != null && bpm.isFinite && bpm >= 60 && bpm <= 200 &&
+        (g.headBeatMs ?? g.firstBeatMs) != null && g.tailBeatMs != null;
   }
 
   static double _curve(Uint8List? curve, int at, double fallback) =>

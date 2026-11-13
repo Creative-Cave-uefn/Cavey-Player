@@ -12,7 +12,8 @@ AdaptiveTrack song(String id, {double bpm = 120, String key = '8A', int vocal = 
       loudDb: energy, bpm: bpm, key: key, headBeatMs: 0, tailBeatMs: 0, headBarMs: 0, tailBarMs: 0);
   final segment = SegmentStats(energyDb: energy, centroidHz: centroid, bassRatio: 0.3,
       onsetDensity: 2, mfcc: List.filled(12, 0.0), silenceMs: 1000);
-  final dj = DjData(gridBpm: bpm, firstBeatMs: 0, barAnchorMs: 0, gridStable: stable,
+  final dj = DjData(gridBpm: bpm, firstBeatMs: 0, headBeatMs: 0, tailBeatMs: 0,
+      headBarMs: 0, tailBarMs: 0, barAnchorMs: 0, gridStable: stable,
       phraseConf: phraseConf, phrasesMs: [for (var i = 0; i <= 240000; i += 16000) i],
       energyCurve: curves ? Uint8List.fromList(List.filled(240, (energy + 100).round())) : Uint8List(0),
       vocalCurve: curves ? Uint8List.fromList(List.filled(240, vocal)) : Uint8List(0));
@@ -28,6 +29,22 @@ void main() {
     expect(d.technique, AdaptiveTechnique.beatBlend);
     expect(d.plan!.dj, isTrue);
     expect(d.plan!.start + d.plan!.length, lessThanOrEqualTo(const Duration(milliseconds: 238000)));
+  });
+  test('full intelligence grid works without a second analyzer grid', () {
+    final original = song('a');
+    final envelopeOnly = MixProfile(durationMs: 240000, introMs: 1000,
+        outroMs: 220000, endMs: 238000, loudDb: -22);
+    final d = AdaptiveDj.pair(AdaptiveTrack('a', envelopeOnly, original.features), song('b'));
+    expect(d.technique, AdaptiveTechnique.beatBlend);
+    expect(d.plan!.grid, isNotNull);
+  });
+  test('disagreeing legacy grid does not override the complete intelligence grid', () {
+    final original = song('a');
+    final legacy = MixProfile(durationMs: 240000, introMs: 1000, outroMs: 220000,
+        endMs: 238000, loudDb: -22, bpm: 92, headBeatMs: 180, tailBeatMs: 180);
+    final d = AdaptiveDj.pair(AdaptiveTrack('a', legacy, original.features), song('b'));
+    expect(d.technique, AdaptiveTechnique.beatBlend);
+    expect(d.plan!.rate, closeTo(1, 0.001));
   });
   test('distant BPM and key remain eligible through a short fade', () {
     final d = AdaptiveDj.pair(song('a'), song('b', bpm: 92, key: '2B'), allowCut: false);

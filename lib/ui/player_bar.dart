@@ -114,7 +114,7 @@ class PlayerBar extends StatelessWidget {
             ),
           if (!compact)
             IconButton(
-              tooltip: 'Свести сейчас: начать переход на следующий трек',
+              tooltip: 'Свести сейчас\n${p.mixStatus}',
               onPressed: t == null || !p.playing ? null : () => unawaited(p.mixNow()),
               icon: const Icon(Icons.swap_horiz_rounded, size: 22, color: C.muted),
             ),
