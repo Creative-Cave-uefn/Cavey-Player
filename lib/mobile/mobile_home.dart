@@ -19,6 +19,7 @@ import 'mobile_lyrics.dart';
 import 'mobile_pages.dart';
 import 'mobile_social.dart';
 import 'mobile_updater.dart';
+import 'mobile_youtube_page.dart';
 
 /// Android-версия в том же «стеклянном» стиле, что и Windows: тёмная основа, под всем —
 /// размытая обложка текущего трека, панели — матовое стекло, жёлтый акцент.
@@ -342,7 +343,13 @@ class _MobileShellState extends State<MobileShell> {
         ]);
       default:
         return Column(children: [
-          pageTitle('Скачано', ''),
+          pageTitle('Скачано', '', trailing: IconButton(
+            tooltip: 'Скачать аудио с YouTube',
+            icon: const Icon(Icons.add_link_rounded, color: C.accent),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
+              builder: (_) => MobileYoutubePage(services: s),
+            )),
+          )),
           const SizedBox(height: 4),
           Expanded(child: downloads()),
         ]);
