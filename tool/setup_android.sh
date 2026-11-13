@@ -25,6 +25,8 @@ if application is None:
 application.set(f"{{{ANDROID}}}label", "Cavey Player")
 # The shared media engine uses HTTP only for its local 127.0.0.1 stream proxy.
 application.set(f"{{{ANDROID}}}usesCleartextTraffic", "true")
+# Native embedded CPython libraries must remain loadable on Android.
+application.set(f"{{{ANDROID}}}extractNativeLibs", "true")
 application.set(f"{{{ANDROID}}}icon", "@mipmap/ic_launcher")
 # Установка обновлений из приложения
 for perm in ("android.permission.REQUEST_INSTALL_PACKAGES", "android.permission.WAKE_LOCK",
@@ -100,5 +102,25 @@ mkdir -p android/app/src/main/kotlin/app/cavey/cave_player
 cp tool/android/MainActivity.kt android/app/src/main/kotlin/app/cavey/cave_player/MainActivity.kt
 mkdir -p "$HOME/.gradle/init.d"
 cp tool/android/signing.init.gradle "$HOME/.gradle/init.d/cavey-signing.gradle"
+
+# Install the MIT-licensed Android on-device extractor into the generated
+# Flutter Android runner. Only Android gets this dependency; Windows is unchanged.
+python3 - <<'PY'
+from pathlib import Path
+
+base = Path("android/app")
+gradle = next((p for p in (base / "build.gradle.kts", base / "build.gradle") if p.exists()), None)
+if gradle is None:
+    raise RuntimeError("Android Gradle project has not been generated")
+text = gradle.read_text(encoding="utf-8")
+artifact = "dev.ffmpegkit-maintained:yt-dlp-android:2.0.2"
+if artifact not in text:
+    if gradle.suffix == ".kts":
+        text += '\n// Cavey Android: on-device YouTube audio extractor.\ndependencies {\n    implementation("' + artifact + '")\n}\n'
+    else:
+        text += "\n// Cavey Android: on-device YouTube audio extractor.\ndependencies {\n    implementation '" + artifact + "'\n}\n"
+    gradle.write_text(text, encoding="utf-8")
+print("Android yt-dlp dependency installed")
+PY
 
 flutter pub get
