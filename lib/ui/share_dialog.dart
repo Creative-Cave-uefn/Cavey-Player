@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../app.dart';
 import '../core/models.dart';
 import '../core/share_link.dart';
+import '../core/track_tags.dart';
 import '../core/library.dart' show LibraryController;
 import 'shell.dart' show Nav, shellNav;
 import 'theme.dart';
@@ -33,6 +34,7 @@ Nav? navForThing(String thing, String key) => switch (thing) {
       'album' => Nav('album', key),
       'artist' => Nav('artist', key.toLowerCase()),
       'playlist' => Nav('playlist', key),
+      'tag' => Nav('tag', key),
       _ => null,
     };
 
@@ -41,6 +43,10 @@ bool thingExists(LibraryController lib, String thing, String key) => switch (thi
       'album' => lib.album(key) != null,
       'artist' => lib.artist(key) != null,
       'playlist' => lib.playlist(key) != null,
+      'tag' => () {
+          final k = parseTagKey(key, lib.me);
+          return k.owner.isNotEmpty && lib.tagBookOf(k.owner).exists(k.id);
+        }(),
       _ => false,
     };
 
@@ -104,6 +110,11 @@ class _ShareDialogState extends State<_ShareDialog> {
             if (s.kind == ShareKind.playlist && app.lib.playlist(s.key) != null && !app.lib.isPlaylistPublic(s.key)) ...[
               const SizedBox(height: 8),
               const Text('Плейлист приватный: друзья его не увидят, пока вы не сделаете его открытым.',
+                  style: TextStyle(color: C.faint, fontSize: 12.5, height: 1.4)),
+            ],
+            if (s.kind == ShareKind.tag) ...[
+              const SizedBox(height: 8),
+              const Text('Теги личные: друг увидит этот тег и его треки только по вашей ссылке или отправке. Изменить его он не сможет.',
                   style: TextStyle(color: C.faint, fontSize: 12.5, height: 1.4)),
             ],
             const SizedBox(height: 18),

@@ -11,6 +11,8 @@ import '../core/library.dart' show LibraryController;
 import '../core/album_order.dart';
 import '../core/models.dart';
 import '../core/pin_order.dart';
+import '../core/track_tags.dart';
+import 'tags_ui.dart';
 import 'ambient.dart';
 import 'delete_dialog.dart';
 import 'library_tabs.dart';
@@ -647,6 +649,11 @@ class _TracksPageState extends State<TracksPage> {
                 label: const Text('В плейлист…'),
               ),
               OutlinedButton.icon(
+                onPressed: none ? null : () => showTagsDialog(context, picked),
+                icon: const Icon(Icons.tag_rounded, size: 18),
+                label: const Text('Теги…'),
+              ),
+              OutlinedButton.icon(
                 onPressed: none
                     ? null
                     : () async {
@@ -774,13 +781,16 @@ class _TracksPageState extends State<TracksPage> {
         _memoRevision == lib.revision) {
       return _memoVisible!;
     }
-    final q = _query.trim().toLowerCase();
+    // «#рок #вечер nirvana»: теги отбирают треки, остальной текст ищется по названию, исполнителю и альбому
+    final tq = parseTagQuery(_query);
+    final q = tq.text.trim().toLowerCase();
+    final tagOk = tagFilterFor(lib.myTags, tq);
     final filterMine = _mineOnly && widget.mineFilter;
     final filterBy = _by.isNotEmpty && widget.mineFilter;
-    final base = filterMine || filterBy
+    final base = filterMine || filterBy || tagOk != null
         ? [
             for (final t in widget.tracks)
-              if ((!filterMine || lib.isMyAccount(t.by)) && (!filterBy || passesUploaders(_by, t.by))) t
+              if ((!filterMine || lib.isMyAccount(t.by)) && (!filterBy || passesUploaders(_by, t.by)) && (tagOk == null || tagOk(t))) t
           ]
         : widget.tracks;
     var list = q.isEmpty
@@ -924,6 +934,10 @@ class _TracksPageState extends State<TracksPage> {
           child: Align(alignment: Alignment.centerLeft, child: _titleArtistLabel()),
         ),
         if (!compact) ...[
+          if (TrackColumns.tagsVisible(Services.of(context).lib)) ...[
+            const SizedBox(width: 16),
+            const SizedBox(width: kTagsColW, child: Text('Теги', style: TextStyle(fontSize: 12, color: C.faint, fontWeight: FontWeight.w500))),
+          ],
           if (show('album')) ...[
             const SizedBox(width: 16),
             Expanded(flex: 3, child: Align(alignment: Alignment.centerLeft, child: label('album', 'Альбом'))),
@@ -958,11 +972,14 @@ class _TracksPageState extends State<TracksPage> {
     }
 
     // Поле поиска одной высоты с кнопками рядом
+    // Когда у человека есть теги, подсказка в поле напоминает про «#»
+    String withTags(String hint) => app.lib.myTags.isEmpty ? hint : '$hint · #тег';
     Widget searchBox(String hint, {double width = 300}) => RowSearchField(
           controller: _search,
           focusNode: _searchFocus,
-          hint: hint,
+          hint: withTags(hint),
           width: width,
+          tagSuggest: true,
           onChanged: (v) => setState(() => _query = v),
           onClear: () => setState(() {
             _search.clear();
@@ -1102,12 +1119,16 @@ class _TracksPageState extends State<TracksPage> {
           const SizedBox(width: 20),
           SizedBox(
             width: 240,
-            child: TextField(
+            child: TagSuggest(
+              controller: _search,
+              focusNode: _searchFocus,
+              onChanged: (v) => setState(() => _query = v),
+              child: TextField(
               controller: _search,
               focusNode: _searchFocus,
               onChanged: (v) => setState(() => _query = v),
               decoration: InputDecoration(
-                hintText: 'Найти трек или исполнителя',
+                hintText: withTags('Найти трек или исполнителя'),
                 prefixIcon: const Icon(Icons.search_rounded, size: 18),
                 suffixIcon: _query.isEmpty
                     ? null
@@ -1119,6 +1140,7 @@ class _TracksPageState extends State<TracksPage> {
                         }),
                       ),
               ),
+            ),
             ),
           ),
         ],
@@ -1161,6 +1183,7 @@ class _TracksPageState extends State<TracksPage> {
               selecting: _selecting,
               selected: _sel.contains(visible[i].id),
               onSelect: (shift) => _onSelect(visible, i, shift),
+              group: () => [for (final t in _visibleNow) if (_sel.contains(t.id)) t],
               addedAt: addedAt?[visible[i].id],
               dragIndex: _canReorder ? i : null,
             );
@@ -1249,6 +1272,9 @@ class TrackRow extends StatelessWidget {
   final bool selected;
   final void Function(bool shift)? onSelect;
 
+  /// Выбранные сейчас треки: теги из меню и «+» в столбце получит весь выбор, если эта строка в нём
+  final List<Track> Function()? group;
+
   /// Когда трек добавлен в этот плейлист (мс); есть только на страницах плейлистов
   final int? addedAt;
 
@@ -1265,6 +1291,7 @@ class TrackRow extends StatelessWidget {
     this.selecting = false,
     this.selected = false,
     this.onSelect,
+    this.group,
     this.addedAt,
     this.dragIndex,
   });
@@ -1294,7 +1321,7 @@ class TrackRow extends StatelessWidget {
       onHover: (inside) => app.player.hover(track, inside),
       // Правый клик — то же меню, что под «…»
       onSecondaryTapUp: (d) => showTrackMenu(context, track, playlistId, d.globalPosition,
-          onSelect: onSelect == null ? null : () => onSelect!(false), selected: selected),
+          onSelect: onSelect == null ? null : () => onSelect!(false), selected: selected, group: selecting && selected ? group : null),
       borderRadius: BorderRadius.circular(8),
       child: DecoratedBox(
         decoration: BoxDecoration(
@@ -1347,6 +1374,10 @@ class TrackRow extends StatelessWidget {
             ]),
           ),
           if (!compact) ...[
+            if (TrackColumns.tagsVisible(app.lib)) ...[
+              const SizedBox(width: 16),
+              TrackTagsCell(track: track, group: selecting && selected ? group : null),
+            ],
             if (TrackColumns.shows('album')) ...[
               const SizedBox(width: 16),
               Expanded(
@@ -1380,7 +1411,11 @@ class TrackRow extends StatelessWidget {
             width: 40,
             child: Center(
               child: TrackMenu(
-                  track: track, playlistId: playlistId, onSelect: onSelect == null ? null : () => onSelect!(false), selected: selected),
+                  track: track,
+                  playlistId: playlistId,
+                  onSelect: onSelect == null ? null : () => onSelect!(false),
+                  selected: selected,
+                  group: selecting && selected ? group : null),
             ),
           ),
           // Длительность — в самом правом столбце, правее кнопки «…»
@@ -1405,6 +1440,7 @@ class TrackRow extends StatelessWidget {
 /// «#», «Название / Исполнитель» и длительность скрыть нельзя
 class TrackColumns {
   static const optional = [
+    ('tags', 'Теги'),
     ('album', 'Альбом'),
     ('by', 'Загрузил(а)'),
     ('padded', 'Дата добавления (в плейлистах)'),
@@ -1421,6 +1457,9 @@ class TrackColumns {
   }
 
   static bool shows(String key) => !hidden.value.contains(key);
+
+  /// Столбец «Теги» показывается, когда он включён и у человека есть хотя бы один тег
+  static bool tagsVisible(LibraryController lib) => shows('tags') && !lib.myTags.isEmpty;
 
   static void toggle(AppServices app, String key) {
     final next = {...hidden.value};
@@ -1572,40 +1611,46 @@ class TrackMenu extends StatelessWidget {
 
   /// Плейлист, из которого играет трек: даёт пункт «Перейти в плейлист»
   final String? openPlaylist;
-  const TrackMenu({super.key, required this.track, this.playlistId, this.onSelect, this.selected = false, this.openPlaylist});
+
+  /// Весь групповой выбор, если трек в нём: «Теги…» применится ко всем
+  final List<Track> Function()? group;
+  const TrackMenu({super.key, required this.track, this.playlistId, this.onSelect, this.selected = false, this.openPlaylist, this.group});
 
   @override
   Widget build(BuildContext context) {
     return GlassMenuButton<String>(
       tooltip: 'Действия',
       icon: const Icon(Icons.more_horiz_rounded, size: 20),
-      onSelected: (v) => onTrackMenu(context, v, track, playlistId, onSelect: onSelect),
-      itemBuilder: (ctx) => trackMenuItems(ctx, track, playlistId, canSelect: onSelect != null, selected: selected, openPlaylist: openPlaylist),
+      onSelected: (v) => onTrackMenu(context, v, track, playlistId, onSelect: onSelect, group: group),
+      itemBuilder: (ctx) =>
+          trackMenuItems(ctx, track, playlistId, canSelect: onSelect != null, selected: selected, openPlaylist: openPlaylist, group: group),
     );
   }
 }
 
 /// Меню трека по правому клику, в точке клика
 Future<void> showTrackMenu(BuildContext context, Track track, String? playlistId, Offset at,
-    {VoidCallback? onSelect, bool selected = false, String? openPlaylist}) async {
+    {VoidCallback? onSelect, bool selected = false, String? openPlaylist, List<Track> Function()? group}) async {
   final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
   final v = await showGlassMenu<String>(
     context: context,
     position: RelativeRect.fromRect(at & const Size(1, 1), Offset.zero & overlay.size),
-    items: trackMenuItems(context, track, playlistId, canSelect: onSelect != null, selected: selected, openPlaylist: openPlaylist),
+    items: trackMenuItems(context, track, playlistId, canSelect: onSelect != null, selected: selected, openPlaylist: openPlaylist, group: group),
   );
-  if (v != null && context.mounted) await onTrackMenu(context, v, track, playlistId, onSelect: onSelect);
+  if (v != null && context.mounted) await onTrackMenu(context, v, track, playlistId, onSelect: onSelect, group: group);
 }
 
 List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, String? playlistId,
-    {bool canSelect = false, bool selected = false, String? openPlaylist}) {
+    {bool canSelect = false, bool selected = false, String? openPlaylist, List<Track> Function()? group}) {
   final names = track.artists;
+  final groupSize = group?.call().length ?? 1;
   final liked = Services.of(context).lib.isLiked(track.id);
   return [
     PopupMenuItem(value: 'like', child: Text(liked ? 'Убрать из любимого' : 'Добавить в любимое')),
     const PopupMenuItem(value: 'queue', child: Text('Добавить в очередь')),
     const PopupMenuItem(value: 'wave', child: Text('Моя волна по треку')),
     const PopupMenuItem(value: 'playlist', child: Text('Добавить в плейлист…')),
+    PopupMenuItem(value: 'tags', child: Text(groupSize > 1 ? 'Теги… (выбрано: $groupSize)' : 'Теги…')),
     if (playlistId != null) const PopupMenuItem(value: 'remove', child: Text('Убрать из этого плейлиста')),
     const PopupMenuDivider(),
     if (openPlaylist != null && Services.of(context).lib.playlist(openPlaylist) != null)
@@ -1629,7 +1674,8 @@ List<PopupMenuEntry<String>> trackMenuItems(BuildContext context, Track track, S
   ];
 }
 
-Future<void> onTrackMenu(BuildContext context, String v, Track track, String? playlistId, {VoidCallback? onSelect}) async {
+Future<void> onTrackMenu(BuildContext context, String v, Track track, String? playlistId,
+    {VoidCallback? onSelect, List<Track> Function()? group}) async {
   final app = Services.of(context);
   if (v.startsWith('artist:')) {
     final i = int.tryParse(v.substring(7)) ?? 0;
@@ -1662,6 +1708,8 @@ Future<void> onTrackMenu(BuildContext context, String v, Track track, String? pl
       await showPlaysDialog(context, track);
     case 'playlist':
       await addToPlaylistDialog(context, [track.id]);
+    case 'tags':
+      await showTagsDialog(context, group?.call() ?? [track]);
     case 'remove':
       app.lib.removeFromPlaylist(playlistId!, track.id);
     case 'album':

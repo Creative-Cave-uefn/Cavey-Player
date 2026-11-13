@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/library.dart';
 import '../core/models.dart';
+import '../core/track_tags.dart';
 import 'profile_view.dart';
 import 'shell.dart';
 import 'library_tabs.dart';
@@ -64,13 +65,16 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
 
   /// Результаты поиска по всей библиотеке: исполнители, альбомы и треки
   List<Widget> _results(BuildContext context, AppServices app, List<Track> tracks, List<Album> albums, List<Artist> artists, bool compact) {
-    final words = _words(_query);
-    final foundArtists = artists.where((a) => _hasAll(a.name, words)).toList()
+    // С тегами («#рок #вечер») ищутся только треки: у исполнителей и альбомов тегов нет
+    final tq = parseTagQuery(_query);
+    final tagOk = tagFilterFor(app.lib.myTags, tq);
+    final words = _words(tq.text);
+    final foundArtists = tagOk != null ? <Artist>[] : artists.where((a) => _hasAll(a.name, words)).toList()
       ..sort((a, b) {
         final r = b.tracks.length.compareTo(a.tracks.length);
         return r != 0 ? r : a.key.compareTo(b.key);
       });
-    final foundAlbums = albums.where((a) => _hasAll('${a.title} ${a.artist}', words)).toList()
+    final foundAlbums = (tagOk != null ? <Album>[] : albums.where((a) => _hasAll('${a.title} ${a.artist}', words)).toList())
       ..sort((a, b) {
         // Сначала те, у кого запрос в названии, потом по числу треков
         final ta = _hasAll(a.title, words) ? 0 : 1, tb = _hasAll(b.title, words) ? 0 : 1;
@@ -78,7 +82,7 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
         final r = b.tracks.length.compareTo(a.tracks.length);
         return r != 0 ? r : a.key.compareTo(b.key);
       });
-    final foundTracks = tracks.where((t) => _hasAll('${t.title} ${t.artist} ${t.album}', words)).toList();
+    final foundTracks = tracks.where((t) => (tagOk == null || tagOk(t)) && _hasAll('${t.title} ${t.artist} ${t.album}', words)).toList();
     if (foundArtists.isEmpty && foundAlbums.isEmpty && foundTracks.isEmpty) {
       return [
         const SizedBox(height: 40),
@@ -217,8 +221,9 @@ class _LibraryHomePageState extends State<LibraryHomePage> {
             Wrap(spacing: 12, runSpacing: 10, crossAxisAlignment: WrapCrossAlignment.center, children: [
               RowSearchField(
                 controller: _search,
-                hint: 'Найти исполнителя, альбом или трек',
+                hint: app.lib.myTags.isEmpty ? 'Найти исполнителя, альбом или трек' : 'Найти исполнителя, альбом или трек · #тег',
                 width: compact ? 300 : 400,
+                tagSuggest: true,
                 onChanged: (v) => setState(() => _query = v),
                 onClear: () => setState(() {
                   _search.clear();

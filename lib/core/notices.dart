@@ -130,7 +130,7 @@ String noticeText(Notice n, {required String who, required String Function(Strin
 
 /// «альбомом «Название»» / «исполнителем «Имя»» / «плейлистом «Название»»
 String thingPhrase(Notice n) {
-  final what = switch (n.thing) { 'album' => 'альбомом', 'artist' => 'исполнителем', _ => 'плейлистом' };
+  final what = switch (n.thing) { 'album' => 'альбомом', 'artist' => 'исполнителем', 'tag' => 'тегом', _ => 'плейлистом' };
   final t = (n.thingTitle ?? '').trim();
   return t.isEmpty ? what : '$what «$t»';
 }

@@ -12,6 +12,7 @@ import 'drive.dart';
 import 'library.dart';
 import 'log.dart';
 import 'models.dart';
+import 'track_tags.dart';
 import 'store.dart';
 
 class AudioCache extends ChangeNotifier {
@@ -246,7 +247,26 @@ class AudioCache extends ChangeNotifier {
       final a = lib.album(key);
       if (a != null) ids.addAll(a.tracks.map((t) => t.id));
     }
+    final me = lib.me;
+    if (me != null) {
+      for (final tag in settings.offlineTags) {
+        ids.addAll(lib.tagTracks(me, tag).map((t) => t.id));
+      }
+    }
     return ids;
+  }
+
+  bool isTagOffline(String id) => settings.offlineTags.contains(id);
+
+  Future<void> setTagOffline(String id, bool on) async {
+    if (on) {
+      settings.offlineTags.add(id);
+    } else {
+      settings.offlineTags.remove(id);
+    }
+    await lib.saveSettings();
+    _schedulePinSync();
+    notifyListeners();
   }
 
   bool isAlbumOffline(String key) => settings.offlineAlbums.contains(key);

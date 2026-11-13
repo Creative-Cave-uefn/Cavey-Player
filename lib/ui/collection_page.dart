@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../core/library.dart';
 import '../core/pin_order.dart';
+import '../core/track_tags.dart';
+import 'tag_page.dart';
 import 'collection_menu.dart';
 import 'library_tabs.dart';
 import 'list_filter.dart' show AnimatedTileGrid;
@@ -36,7 +38,8 @@ class CollectionPage extends StatelessWidget {
         ];
         final albums = favs?.albums ?? const <Album>[];
         final artists = favs?.artists ?? const <Artist>[];
-        if (lists.isEmpty && albums.isEmpty && artists.isEmpty) {
+        final tags = lib.myTags.all;
+        if (lists.isEmpty && albums.isEmpty && artists.isEmpty && tags.isEmpty) {
           return const EmptyState(
             icon: Icons.favorite_border_rounded,
             title: 'В коллекции пока пусто',
@@ -61,6 +64,24 @@ class CollectionPage extends StatelessWidget {
                 onSecondaryTapUp: (d) => showCollectionMenu(context, d.globalPosition, playlist: p),
                 onPlay: () {
                   final list = lib.playlistTracks(p.id);
+                  if (list.isNotEmpty) app.player.playTracks(list, 0);
+                },
+              ),
+            ),
+          for (final t in tags)
+            _Item(
+              kind: 3,
+              tokens: [tagPinToken(t.id)],
+              menu: (c, at) => showTagMenu(c, at, t.id),
+              tile: (pinned, onDrop, token) => _Tile(
+                cover: (s) => TagMark(size: s),
+                title: '#${t.name}',
+                subtitle: countTracks(lib.tagCount(me ?? '', t.id)),
+                pinned: pinned,
+                onTap: () => nav.go(Nav('tag', t.id)),
+                onSecondaryTapUp: (d) => showTagMenu(context, d.globalPosition, t.id),
+                onPlay: () {
+                  final list = lib.tagTracks(me ?? '', t.id);
                   if (list.isNotEmpty) app.player.playTracks(list, 0);
                 },
               ),
@@ -118,6 +139,7 @@ class CollectionPage extends StatelessWidget {
         Widget grid(Iterable<_Item> items, double w) =>
             AnimatedTileGrid(tile: w, extra: 56, children: [for (final e in items) wrap(e)]);
         final restLists = rest.where((e) => e.kind == 0);
+        final restTags = rest.where((e) => e.kind == 3);
         final restAlbums = rest.where((e) => e.kind == 1);
         final restArtists = rest.where((e) => e.kind == 2);
         return ListView(key: const PageStorageKey('library:collection'), padding: EdgeInsets.fromLTRB(pad, pageTop(context), pad, 40), children: [
@@ -139,6 +161,21 @@ class CollectionPage extends StatelessWidget {
             grid(restLists, 176),
             const SizedBox(height: 30),
           ],
+          // Теги: отдельная строка; закреплённые уходят наверх вместе с остальным закреплённым
+          SectionTitle('Теги', trailing: TextButton.icon(
+            onPressed: () => newTagFlow(context),
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: const Text('Новый тег'),
+          )),
+          if (tags.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Text('Тегов пока нет. Вешайте их на треки правым кликом: «Теги…». Тег можно найти в поиске по «#».',
+                  style: TextStyle(color: C.faint, fontSize: 13, height: 1.4)),
+            )
+          else if (restTags.isNotEmpty)
+            grid(restTags, 176),
+          const SizedBox(height: 30),
           if (restAlbums.isNotEmpty) ...[
             const SectionTitle('Альбомы'),
             grid(restAlbums, 176),
@@ -155,7 +192,7 @@ class CollectionPage extends StatelessWidget {
 }
 
 class _Item {
-  final int kind; // 0 плейлист, 1 альбом, 2 исполнитель
+  final int kind; // 0 плейлист, 1 альбом, 2 исполнитель, 3 тег
   final List<String> tokens;
   final Future<void> Function(BuildContext, Offset) menu;
   final Widget Function(bool pinned, void Function(String, String) onDrop, String token) tile;

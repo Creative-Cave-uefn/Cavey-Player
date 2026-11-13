@@ -24,6 +24,17 @@ void main() {
     expect(trackIdFromLink(web), 'abc');
   });
 
+  test('Ссылка на тег: почта владельца и id тега', () {
+    const key = 'ivan@gmail.com|g1abc2';
+    final app = appShareLink(ShareKind.tag, key);
+    expect(shareTargetFromLink(app), const ShareTarget(ShareKind.tag, key));
+    final web = webShareLink(ShareKind.tag, key, base: 'https://example.com/open');
+    expect(web, 'https://example.com/open/?tg=ivan%40gmail.com%7Cg1abc2');
+    expect(shareTargetFromLink(web!), const ShareTarget(ShareKind.tag, key));
+    expect(shareTargetFromLink('caveplayer://tag/just-an-id'), isNull);
+    expect(shareTargetFromLink('caveplayer://tag/a%20b%7Cg1'), isNull);
+  });
+
   test('Чужие и испорченные ссылки не принимаются', () {
     expect(trackIdFromLink('https://example.com/'), isNull);
     expect(trackIdFromLink('caveplayer://album/abc'), isNull);

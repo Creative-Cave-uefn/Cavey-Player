@@ -39,6 +39,8 @@ import 'library_home.dart';
 import 'library_tabs.dart';
 import 'collection_menu.dart';
 import 'share_dialog.dart' show openSharedThing;
+import 'tag_page.dart';
+import '../core/track_tags.dart';
 import 'collection_page.dart';
 import 'device_export_ui.dart';
 import 'migration_ui.dart';
@@ -290,10 +292,12 @@ class _ShellState extends State<Shell> {
       case ShareKind.album:
       case ShareKind.artist:
       case ShareKind.playlist:
+      case ShareKind.tag:
         if (!openSharedThing(app.lib, target.kind.name, target.key)) {
           _showToast(switch (target.kind) {
             ShareKind.album => 'Этого альбома нет в вашей библиотеке',
             ShareKind.artist => 'Этого исполнителя нет в вашей библиотеке',
+            ShareKind.tag => 'Этот тег недоступен: его удалили или переименовали',
             _ => 'Этого плейлиста нет у вас: возможно, он приватный',
           });
         }
@@ -656,6 +660,8 @@ class _ShellState extends State<Shell> {
         return LikedPage(key: const ValueKey('liked'), compact: compact);
       case 'playlist':
         return PlaylistPage(key: ValueKey('pl:${nav.id}'), playlistId: nav.id!, compact: compact);
+      case 'tag':
+        return TagPage(key: ValueKey('tag:${nav.id}'), id: nav.id!, compact: compact);
       case 'download':
         return DownloadPage(key: const ValueKey('download'), compact: compact);
       case 'company':
@@ -921,6 +927,8 @@ class _Sidebar extends StatelessWidget {
             if (on('sidebar.showPl'))
               for (final p in lib.visiblePlaylists)
                 if (p.by.isEmpty || p.by == lib.me || lib.isFavPlaylist(p.id)) _SideEntry.playlist(p),
+            // Теги: только те, что человек вынес в панель или закрепил
+            for (final t in lib.sidebarTags) _SideEntry.tag(t),
             if (on('sidebar.showAl') && favs != null)
               for (final a in favs.albums) _SideEntry.album(a),
             if (on('sidebar.showAr') && favs != null)
@@ -1269,10 +1277,13 @@ class _SideEntry {
   final Playlist? playlist;
   final Album? album;
   final Artist? artist;
-  const _SideEntry(this.label, this.target, this.cover, {this.round = false, this.owner, this.playlist, this.album, this.artist});
+  final TagInfo? tag;
+  const _SideEntry(this.label, this.target, this.cover, {this.round = false, this.owner, this.playlist, this.album, this.artist, this.tag});
 
   /// Жетоны закрепа: у склеенного альбома их несколько
-  List<String> get tokens => playlist != null
+  List<String> get tokens => tag != null
+      ? [tagPinToken(tag!.id)]
+      : playlist != null
       ? [LibraryController.playlistPin(playlist!.id)]
       : album != null
           ? LibraryController.albumPins(album!).toList()
@@ -1283,6 +1294,8 @@ class _SideEntry {
 
   factory _SideEntry.playlist(Playlist p) => _SideEntry(p.name, Nav('playlist', p.id),
       (size) => PlaylistCover(playlist: p, size: size, radius: 5), owner: p.by, playlist: p);
+
+  factory _SideEntry.tag(TagInfo t) => _SideEntry('#${t.name}', Nav('tag', t.id), (size) => TagMark(size: size, radius: 5), tag: t);
 
   factory _SideEntry.album(Album a) =>
       _SideEntry(a.title, Nav('album', a.key), (size) => CoverImage(track: a.coverTrack, size: size, radius: 5), album: a);
@@ -1300,7 +1313,9 @@ class _SideEntry {
 
 /// Правый клик по плейлисту, альбому или исполнителю в боковой панели
 Future<void> _showSideMenu(BuildContext context, _SideEntry e, Offset at) =>
-    showCollectionMenu(context, at, playlist: e.playlist, album: e.album, artist: e.artist);
+    e.tag != null
+        ? showTagMenu(context, at, e.tag!.id)
+        : showCollectionMenu(context, at, playlist: e.playlist, album: e.album, artist: e.artist);
 
 /// Строка «Коллекции»: миниатюра и название
 class _SideRow extends StatelessWidget {

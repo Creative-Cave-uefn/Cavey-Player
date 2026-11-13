@@ -24,14 +24,15 @@
   <p><small>Cave Player должен быть установлен на этом компьютере (Windows).</small></p>
 </main>
 <script>
-  // Адрес вида …/open/?t=<id трека> (или al=альбом, ar=исполнитель, pl=плейлист) превращаем в caveplayer://…
+  // Адрес вида …/open/?t=<id трека> (или al=альбом, ar=исполнитель, pl=плейлист, tg=тег: почта|id) превращаем в caveplayer://…
   var q = new URLSearchParams(location.search);
-  var kinds = { t: 'track', al: 'album', ar: 'artist', pl: 'playlist' };
+  var kinds = { t: 'track', al: 'album', ar: 'artist', pl: 'playlist', tg: 'tag' };
   var link = '', ok = false;
   Object.keys(kinds).forEach(function (k) {
     var v = q.get(k) || '';
     if (ok || !v) return;
     if ((k === 't' || k === 'pl') && !/^[A-Za-z0-9_-]+$/.test(v)) return;
+    if (k === 'tg' && !/^[^\s|]+\|[A-Za-z0-9_-]+$/.test(v)) return;
     ok = true;
     link = 'caveplayer://' + kinds[k] + '/' + encodeURIComponent(v);
   });

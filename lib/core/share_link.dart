@@ -24,7 +24,8 @@ String? webLinkFor(String trackId, {String base = kShareRedirectUrl}) =>
     base.isEmpty ? null : '${base.endsWith('/') ? base : '$base/'}?t=${Uri.encodeQueryComponent(trackId)}';
 
 /// Что можно отправить ссылкой
-enum ShareKind { track, album, artist, playlist }
+/// tag: ключ — «почта владельца|id тега» (чужой тег виден по ссылке, как открытый плейлист)
+enum ShareKind { track, album, artist, playlist, tag }
 
 /// Ссылка на что-то в Cavey: [key] — id трека, ключ альбома, ключ исполнителя или id плейлиста
 class ShareTarget {
@@ -39,7 +40,7 @@ class ShareTarget {
   int get hashCode => Object.hash(kind, key);
 }
 
-const _webParam = {ShareKind.track: 't', ShareKind.album: 'al', ShareKind.artist: 'ar', ShareKind.playlist: 'pl'};
+const _webParam = {ShareKind.track: 't', ShareKind.album: 'al', ShareKind.artist: 'ar', ShareKind.playlist: 'pl', ShareKind.tag: 'tg'};
 
 /// Ссылка для открытия в приложении
 String appShareLink(ShareKind kind, String key) =>
@@ -54,11 +55,18 @@ String? webShareLink(ShareKind kind, String key, {String base = kShareRedirectUr
 String shareLinkText(ShareKind kind, String key) => webShareLink(kind, key) ?? appShareLink(kind, key);
 
 final _trackIdPattern = RegExp(r'^[A-Za-z0-9_\-]+$');
+final _tagKeyPattern = RegExp(r'^[^\s|]+\|[A-Za-z0-9_\-]+$');
+
+bool _keyOk(ShareKind kind, String key) => switch (kind) {
+      ShareKind.track || ShareKind.playlist => _trackIdPattern.hasMatch(key),
+      ShareKind.tag => _tagKeyPattern.hasMatch(key),
+      _ => true,
+    };
 
 /// Разбирает ссылку любого вида (caveplayer:// или страница-переадресация); null, если это не ссылка Cavey
 ShareTarget? shareTargetFromLink(String link) {
   final text = link.trim();
-  final app = RegExp('^$_scheme:(?://)?(track|album|artist|playlist)/(.+?)/?\$', caseSensitive: false).firstMatch(text);
+  final app = RegExp('^$_scheme:(?://)?(track|album|artist|playlist|tag)/(.+?)/?\$', caseSensitive: false).firstMatch(text);
   if (app != null) {
     final kind = ShareKind.values.byName(app.group(1)!.toLowerCase());
     String key;
@@ -68,9 +76,7 @@ ShareTarget? shareTargetFromLink(String link) {
       return null;
     }
     if (key.isEmpty) return null;
-    if (kind == ShareKind.track || kind == ShareKind.playlist) {
-      if (!_trackIdPattern.hasMatch(key)) return null;
-    }
+    if (!_keyOk(kind, key)) return null;
     return ShareTarget(kind, key);
   }
   final uri = Uri.tryParse(text);
@@ -78,7 +84,7 @@ ShareTarget? shareTargetFromLink(String link) {
   for (final e in _webParam.entries) {
     final v = uri.queryParameters[e.value];
     if (v == null || v.isEmpty) continue;
-    if ((e.key == ShareKind.track || e.key == ShareKind.playlist) && !_trackIdPattern.hasMatch(v)) return null;
+    if (!_keyOk(e.key, v)) return null;
     return ShareTarget(e.key, v);
   }
   return null;
