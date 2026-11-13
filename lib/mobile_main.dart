@@ -25,6 +25,7 @@ import 'core/web_info.dart';
 import 'mobile/mobile_auth.dart';
 import 'mobile/mobile_home.dart';
 import 'mobile/mobile_updater.dart';
+import 'mobile/mobile_youtube_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -71,10 +72,11 @@ class MobileServices {
   final WebInfoService web;
   final PreviewPlayer preview;
   final WaveService wave;
+  final MobileYoutubeService youtube;
 
   MobileServices._(this.store, this.settings, this.accounts, this.drive,
       this.library, this.covers, this.cache, this.player, this.updater,
-      this.lyrics, this.social, this.web, this.preview, this.wave);
+      this.lyrics, this.social, this.web, this.preview, this.wave, this.youtube);
 
   static Future<MobileServices> open() async {
     final store = await AppStore.open();
@@ -161,8 +163,9 @@ class MobileServices {
     final downloads = DownloadService(library, store.sub('downloads'), cache: cache, covers: covers);
     final wave = await WaveService.open(store, library, player, social, web, downloads);
     wave.discover = false;
+    final youtube = MobileYoutubeService(library);
     return MobileServices._(
         store, settings, accounts, drive, library, covers, cache, player, updater,
-        lyrics, social, web, preview, wave);
+        lyrics, social, web, preview, wave, youtube);
   }
 }
