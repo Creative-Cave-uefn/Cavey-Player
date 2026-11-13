@@ -1007,13 +1007,11 @@ class PlayerController extends ChangeNotifier {
         final e = _phaseErr(djp, oc.now(), ic.now());
         if (e != null && e.abs() > 60) {
           final back = Duration(microseconds: ((e - 45) * djp.rate * 1000).round()); // 45 мс — на саму перемотку
-          await incoming.seek(ic.now() - back);
+          final corrected = ic.now() - back;
+          await incoming.seek(corrected < Duration.zero ? Duration.zero : corrected);
         }
       }
       if (!ownsTransition()) return;
-      if (!readIncoming().readyAfter(inStart)) {
-        throw StateError('Следующая дека потеряла готовность до передачи управления');
-      }
       // Уходящему осталось звучать не дольше, чем он ещё длится: переход укорачивается на время ожидания
       final oldRemaining = duration - _p.state.position;
       final lengthMs = oldRemaining > Duration.zero
@@ -1041,8 +1039,11 @@ class PlayerController extends ChangeNotifier {
       // Новый проигрыватель уже сообщил длительность до того, как мы подписались на него: берём её из его состояния,
       // иначе полоса перемотки считает трек нулевой длины и перематывать нельзя
       position.value = _p.state.position;
-      duration = _p.state.duration;
-      playing = true;
+      duration = _p.state.duration > Duration.zero
+          ? _p.state.duration
+          : Duration(milliseconds: nextTrack.durationMs ?? mixer?.profile(nextTrack.id)?.durationMs ?? 0);
+      buffering = _p.state.buffering;
+      playing = _p.state.playing;
       _inGain = 0;
       _outGain = 1;
       _normTimer?.cancel();

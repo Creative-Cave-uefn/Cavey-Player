@@ -13,13 +13,29 @@ void main() {
         isCurrent: () => true, cue: cue), isTrue);
   });
 
-  test('moving deck without duration cannot take over; timeout cancels subscription', () async {
+  test('stalled deck times out and cancels subscription', () async {
     var cancelled = false;
     final events = StreamController<void>(onCancel: () { cancelled = true; });
-    const unknown = HandoffState(moving, Duration.zero, playing: true, buffering: false);
+    const unknown = HandoffState(cue, Duration.zero, playing: true, buffering: false);
     expect(await waitForHandoff(read: () => unknown, changes: events.stream,
         isCurrent: () => true, cue: cue, timeout: const Duration(milliseconds: 10)), isFalse);
     expect(cancelled, isTrue);
+    await events.close();
+  });
+
+  test('late duration metadata does not block a moving stream', () async {
+    const unknown = HandoffState(moving, Duration.zero, playing: true, buffering: false);
+    expect(await waitForHandoff(read: () => unknown, changes: const Stream<void>.empty(),
+        isCurrent: () => true, cue: cue), isTrue);
+  });
+
+  test('buffering changes are observed without another position event', () async {
+    final events = StreamController<void>();
+    var state = const HandoffState(moving, duration, playing: true, buffering: true);
+    final waiting = waitForHandoff(read: () => state, changes: events.stream,
+        isCurrent: () => true, cue: cue);
+    state = ready;
+    expect(await waiting, isTrue);
     await events.close();
   });
 

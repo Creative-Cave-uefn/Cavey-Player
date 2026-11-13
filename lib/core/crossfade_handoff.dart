@@ -9,8 +9,9 @@ class HandoffState {
   final bool buffering;
   const HandoffState(this.position, this.duration, {required this.playing, required this.buffering});
 
-  bool readyAfter(Duration cue) => playing && !buffering && duration > Duration.zero &&
-      position > cue + const Duration(milliseconds: 40) && position < duration;
+  bool readyAfter(Duration cue) => playing && !buffering &&
+      position > cue + const Duration(milliseconds: 40) &&
+      (duration <= Duration.zero || position < duration);
 }
 
 /// Recheck ownership after asynchronous waits: pause/seek/next may cancel a mix.
@@ -38,6 +39,7 @@ Future<bool> waitForHandoff({
       }, onDone: () {
         if (!result.isCompleted) result.complete(false);
       });
+  final pollTimer = Timer.periodic(const Duration(milliseconds: 50), (_) => poll());
   final timer = Timer(timeout, () {
     if (!result.isCompleted) result.complete(false);
   });
@@ -47,6 +49,7 @@ Future<bool> waitForHandoff({
     return ready && isCurrent() && read().readyAfter(cue);
   } finally {
     timer.cancel();
+    pollTimer.cancel();
     await subscription.cancel();
   }
 }
