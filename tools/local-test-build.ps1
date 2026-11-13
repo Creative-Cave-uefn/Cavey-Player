@@ -10,6 +10,7 @@
 #   -SkipChecks     не гонять flutter analyze и flutter test (быстрее, но ошибки вылезут уже при сборке)
 #   -Stable         стабильная сборка с main (канал пустой, как в CI); сам ничего не публикует. Его вызывает tools\publish-release.ps1
 #   -NoPublish      только собрать, на GitHub ничего не выкладывать (файлы будут в папке dist)
+#   -Publish        после успешных проверок опубликовать тестовую сборку и отчёт без дополнительного вопроса
 #   -Downloader     путь к cave-downloader-windows-x64.exe (по умолчанию берётся из установленной Cavey)
 #   -GoogleClientId / -GoogleClientSecret   ключи Google (или переменные окружения GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).
 #                   Без них сборка работает, но при первом запуске приложение попросит ввести ключи.
@@ -18,6 +19,7 @@
 param(
     [switch]$SkipChecks,
     [switch]$NoPublish,
+    [switch]$Publish,
     [switch]$Stable,
     [string]$Downloader = '',
     [string]$GoogleClientId = $env:GOOGLE_CLIENT_ID,
@@ -36,7 +38,17 @@ $ReleasesRepo = 'Creative-Cave-uefn/cave-player-releases'
 
 function Say([string]$text) { Write-Host ""; Write-Host "== $text" -ForegroundColor Cyan }
 function Warn([string]$text) { Write-Host "! $text" -ForegroundColor Yellow }
-function Fail([string]$text) { Write-Host ""; Write-Host "ОШИБКА: $text" -ForegroundColor Red; exit 1 }
+function Fail([string]$text) {
+    if ($script:verification) { Write-Verification }
+    Write-Host ""; Write-Host "ОШИБКА: $text" -ForegroundColor Red; exit 1
+}
+
+if ($Publish -and ($NoPublish -or $Stable -or $SkipChecks)) {
+    Fail '-Publish нельзя сочетать с -NoPublish, -Stable или -SkipChecks.'
+}
+if ($SkipChecks -and -not ($NoPublish -or $Stable)) {
+    Fail 'Тестовая публикация требует проверок. Для локальной сборки без проверок используйте -SkipChecks -NoPublish.'
+}
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -48,6 +60,7 @@ Set-Content -Path $logFile -Value ("Сборка " + (Get-Date)) -Encoding UTF8
 function Run([string]$exe, [string[]]$arguments) {
     $old = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = 1
     & $exe @arguments 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logFile -Append | Out-Host
     $code = $LASTEXITCODE
     $ErrorActionPreference = $old
@@ -117,7 +130,9 @@ if (($branch -eq 'main' -or $branch -eq 'beta') -and -not $Stable) {
 $dirty = Capture 'git' @('status', '--porcelain', '--untracked-files=no')
 if ($dirty) { Warn 'В папке есть незакоммиченные изменения — они попадут в сборку.' }
 $sha = Capture 'git' @('rev-parse', '--short', 'HEAD')
+$sourceSha = Capture 'git' @('rev-parse', 'HEAD')
 $subject = Capture 'git' @('log', '-1', '--format=%s')
+if ($Publish -and $dirty) { Fail 'Перед публикацией закоммитьте изменения: сборка должна соответствовать SHA коммита.' }
 
 $slug = ($branch.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
 if (-not $slug) { $slug = 'branch' }
@@ -131,6 +146,47 @@ if (-not $Version) {
     $Version = "0.4.0.$minutes"
 }
 Write-Host "Ветка: $branch ($sha), версия: $Version"
+
+# Публикуем только итоги проверок и хеши артефактов. Полный build-log.txt остаётся локально.
+# Playback/прослушивание не подменяем результатами unit-тестов или успешной компиляцией.
+$verification = [ordered]@{
+    branch = $branch
+    commit = $sourceSha
+    version = $Version
+    dirtyWorktree = [bool]$dirty
+    flutter = ($flutterVersion -split "`n")[0].Trim()
+    platform = 'Windows'
+    startedAtUtc = [DateTime]::UtcNow.ToString('o')
+    checks = [ordered]@{ analyze = 'not_run'; tests = 'not_run'; windowsRelease = 'not_run'; packaging = 'not_run' }
+    exitCodes = [ordered]@{}
+    listening = 'not_run'
+    playbackRegression = 'not_run'
+    downloaderIncluded = $false
+    artifacts = @()
+}
+function Write-Verification {
+    $verification['updatedAtUtc'] = [DateTime]::UtcNow.ToString('o')
+    New-Item -ItemType Directory -Force (Join-Path $root 'dist') | Out-Null
+    $encoding = New-Object Text.UTF8Encoding($false)
+    $json = $verification | ConvertTo-Json -Depth 6
+    [IO.File]::WriteAllText((Join-Path $root 'dist\verification.json'), $json, $encoding)
+    $lines = @(
+        '# Проверки тестовой Windows-сборки', '',
+        "Ветка: $branch", "Коммит: $sourceSha", "Версия: $Version",
+        "Flutter: $($verification.flutter)", "Локальные изменения: $($verification.dirtyWorktree)", '',
+        '| Проверка | Результат |', '|---|---|',
+        "| flutter analyze --no-fatal-infos --no-fatal-warnings | $($verification.checks.analyze) |",
+        "| flutter test --reporter expanded | $($verification.checks.tests) |",
+        "| flutter build windows --release | $($verification.checks.windowsRelease) |",
+        "| Установщик и portable ZIP | $($verification.checks.packaging) |", '',
+        'Прослушивание и проверка регрессий воспроизведения: ещё не выполнены.', '',
+        "Загрузчик включён в пакет: $($verification.downloaderIncluded)", '',
+        '## SHA-256 файлов', ''
+    )
+    foreach ($artifact in $verification.artifacts) { $lines += "- $($artifact.name): $($artifact.sha256)" }
+    [IO.File]::WriteAllText((Join-Path $root 'dist\verification.md'), ($lines -join "`n"), $encoding)
+}
+Write-Verification
 
 # ---------- 3. Переменные репозитория (не секретные) ----------
 Say 'Читаю настройки репозитория'
@@ -169,18 +225,27 @@ if (-not $SkipChecks) {
     Say 'Проверка кода (flutter analyze)'
     $old = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = 1
     $analysis = & flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1 | ForEach-Object { "$_" } | Out-String
+    $analysisCode = $LASTEXITCODE
     $ErrorActionPreference = $old
     Add-Content -Path $logFile -Value $analysis
     $errors = @($analysis -split "`n" | Where-Object { $_ -match '^\s*error - ' })
-    if ($errors.Count -gt 0) {
+    $verification.exitCodes['analyze'] = $analysisCode
+    $verification.checks['analyze'] = if ($analysisCode -eq 0 -and $errors.Count -eq 0) { 'passed' } else { 'failed' }
+    Write-Verification
+    if ($analysisCode -ne 0 -or $errors.Count -gt 0) {
         Write-Host $analysis
-        Fail "flutter analyze нашёл ошибок: $($errors.Count). Пришлите мне файл build-log.txt (или текст выше) — я поправлю код."
+        Fail "flutter analyze завершился с кодом $analysisCode; ошибок в выводе: $($errors.Count). Подробности в build-log.txt."
     }
     Write-Host 'Ошибок нет.'
 
     Say 'Тесты (flutter test)'
-    if ((Run 'flutter' @('test', '--reporter', 'expanded')) -ne 0) {
+    $testCode = Run 'flutter' @('test', '--reporter', 'expanded')
+    $verification.exitCodes['tests'] = $testCode
+    $verification.checks['tests'] = if ($testCode -eq 0) { 'passed' } else { 'failed' }
+    Write-Verification
+    if ($testCode -ne 0) {
         Fail 'Тесты не прошли. Пришлите мне файл build-log.txt — я разберусь.'
     }
 }
@@ -203,7 +268,11 @@ $vp = $Version.Split('.')
 $buildName = ($vp | Select-Object -First 3) -join '.'
 $buildNumber = if ($vp.Count -gt 3) { $vp[3] } else { '1' }
 $buildArgs = @('build', 'windows', '--release', '--build-name', $buildName, '--build-number', $buildNumber) + $defines
-if ((Run 'flutter' $buildArgs) -ne 0) { Fail 'Сборка не удалась. Пришлите мне файл build-log.txt — по нему видно, что не так.' }
+$buildCode = Run 'flutter' $buildArgs
+$verification.exitCodes['windowsRelease'] = $buildCode
+$verification.checks['windowsRelease'] = if ($buildCode -eq 0) { 'passed' } else { 'failed' }
+Write-Verification
+if ($buildCode -ne 0) { Fail 'Сборка не удалась. Пришлите мне файл build-log.txt — по нему видно, что не так.' }
 
 $release = Join-Path $root 'build\windows\x64\runner\Release'
 if (-not (Test-Path (Join-Path $release 'cave_player.exe'))) { Fail "Не нашёл cave_player.exe в $release" }
@@ -228,6 +297,7 @@ if (-not $dlSource) {
 }
 if ($dlSource) {
     Copy-Item $dlSource (Join-Path $release $dlName) -Force
+    $verification.downloaderIncluded = $true
     Write-Host "Загрузчик: $dlSource"
 } else {
     Warn 'Загрузчик не найден: скачивание треков в этой сборке работать не будет. Укажите путь параметром -Downloader.'
@@ -238,10 +308,18 @@ Say 'Собираю установщик и portable-архив'
 New-Item -ItemType Directory -Force 'dist' | Out-Null
 Remove-Item 'dist\CavePlayer-Setup.exe', 'dist\CavePlayer-portable.zip' -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $release '*') -DestinationPath 'dist\CavePlayer-portable.zip' -Force
-if ((Run $iscc @("/DMyVersion=$Version", 'installer\cave_player.iss')) -ne 0) { Fail 'Inno Setup не собрал установщик. Подробности в build-log.txt' }
+$packageCode = Run $iscc @("/DMyVersion=$Version", 'installer\cave_player.iss')
+$verification.exitCodes['packaging'] = $packageCode
+if ($packageCode -ne 0) {
+    $verification.checks['packaging'] = 'failed'
+    Fail 'Inno Setup не собрал установщик. Подробности в build-log.txt'
+}
 foreach ($file in @('dist\CavePlayer-Setup.exe', 'dist\CavePlayer-portable.zip')) {
     if (-not (Test-Path $file) -or (Get-Item $file).Length -le 0) { Fail "Не создан файл $file" }
+    $verification.artifacts += [ordered]@{ name = (Split-Path -Leaf $file); sha256 = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
+$verification.checks['packaging'] = 'passed'
+Write-Verification
 Write-Host ""
 Write-Host "Готово. Файлы лежат в: $(Join-Path $root 'dist')" -ForegroundColor Green
 
@@ -252,23 +330,25 @@ if ($NoPublish -or $Stable) {
 }
 
 Say 'Публикую тестовую сборку'
+if ($dirty) { Fail 'Сборка содержит незакоммиченные изменения. Перед публикацией закоммитьте их и соберите заново.' }
+foreach ($result in $verification.checks.Values) {
+    if ($result -ne 'passed') { Fail 'Публикация запрещена: не все проверки прошли.' }
+}
 $prefix = "test-$slug-v"
 $tag = "$prefix$Version"
-Write-Host "Будет создан пререлиз $tag в $ReleasesRepo; прежние тестовые сборки этой ветки удалятся (как это делает CI)."
-$answer = Read-Host 'Продолжить? (y/n)'
-if ($answer -notmatch '^[yYдД]') { Write-Host 'Отменено. Файлы остались в dist.'; exit 0 }
-
-$old = & gh release list --repo $ReleasesRepo --limit 200 --json tagName --jq '.[].tagName' 2>$null
-foreach ($t in @($old)) {
-    if ($t -and $t.StartsWith($prefix)) { & gh release delete $t --repo $ReleasesRepo --cleanup-tag --yes | Out-Null }
+Write-Host "Будет создан пререлиз $tag в $ReleasesRepo со сборкой и отчётом проверок."
+if (-not $Publish) {
+    $answer = Read-Host 'Продолжить? (y/n)'
+    if ($answer -notmatch '^[yYдД]') { Write-Host 'Отменено. Файлы остались в dist.'; exit 0 }
 }
-$notesFile = Join-Path $env:TEMP 'cavey-notes.txt'
-[IO.File]::WriteAllText($notesFile, "Локальная тестовая сборка ветки $branch ($sha)`n$subject", (New-Object Text.UTF8Encoding($false)))
+$notesFile = Join-Path $root 'dist\test-release-notes.md'
+$notes = "Локальная тестовая сборка ветки $branch ($sha)`n$subject`n`n" + [IO.File]::ReadAllText((Join-Path $root 'dist\verification.md'))
+[IO.File]::WriteAllText($notesFile, $notes, (New-Object Text.UTF8Encoding($false)))
 $title = "Тест: $branch · $Version"
-& gh release create $tag 'dist\CavePlayer-Setup.exe' 'dist\CavePlayer-portable.zip' --repo $ReleasesRepo --prerelease --title $title --notes-file $notesFile
+& gh release create $tag 'dist\CavePlayer-Setup.exe' 'dist\CavePlayer-portable.zip' 'dist\verification.md' 'dist\verification.json' --repo $ReleasesRepo --prerelease --latest=false --title $title --notes-file $notesFile
 if ($LASTEXITCODE -ne 0) {
     Warn 'Не получилось выложить автоматически. Выложите вручную: https://github.com/Creative-Cave-uefn/cave-player-releases/releases/new'
-    Warn "  Tag: $tag; Title: $title; галочка «Set as a pre-release»; прикрепите оба файла из папки dist."
+    Warn "  Tag: $tag; Title: $title; галочка «Set as a pre-release»; прикрепите установщик, ZIP и verification.md/verification.json из dist."
     exit 1
 }
 Write-Host "Выложено: $tag" -ForegroundColor Green
