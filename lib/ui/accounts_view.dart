@@ -17,6 +17,8 @@ import '../core/store.dart' show Settings;
 import '../core/updater.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
+import 'intel_panel.dart';
+import 'intel_viz.dart';
 import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength, seekWaveMin, seekWaveMax;
 import 'migration_ui.dart';
 import 'theme.dart';
@@ -200,7 +202,7 @@ class _AccountsPageState extends State<AccountsPage> {
           ],
         ];
         final List<Widget> page = switch (tab) {
-          'playback' => const [_PlaybackSection(), gap, _KaraokeSection()],
+          'playback' => const [_PlaybackSection(), gap, _AutoDjSection(), gap, _KaraokeSection()],
           'look' => const [_AccentSection(), gap, _SeekEdgeSection(), gap, _LookSection()],
           'account' => [
               ...accountsBlock,
@@ -326,8 +328,203 @@ class _DebugSection extends StatelessWidget {
       SizedBox(height: 32),
       LibraryDebug(),
       SizedBox(height: 32),
+      _WaveDebugSection(),
+      SizedBox(height: 32),
+      _IntelDebugSection(),
+      SizedBox(height: 32),
       _LogSection(),
     ]);
+  }
+}
+
+/// Анализ звука для отладки: карта схожести библиотеки и спектрограмма играющего трека
+class _IntelDebugSection extends StatefulWidget {
+  const _IntelDebugSection();
+  @override
+  State<_IntelDebugSection> createState() => _IntelDebugSectionState();
+}
+
+class _IntelDebugSectionState extends State<_IntelDebugSection> {
+  bool _building = false;
+  bool _hashNames = true;
+
+  Future<void> _buildReport() async {
+    final app = Services.of(context);
+    setState(() => _building = true);
+    String text;
+    try {
+      text = await app.intel.buildQualityReport(hashNames: _hashNames);
+    } catch (e) {
+      text = 'Не получилось построить отчёт: $e';
+    }
+    if (!mounted) return;
+    setState(() => _building = false);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Отчёт качества — Анализ звука'),
+        content: SizedBox(
+          width: 640,
+          height: 480,
+          child: SingleChildScrollView(child: SelectableText(text, style: const TextStyle(fontSize: 13, height: 1.5))),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              final loc = await getSaveLocation(suggestedName: 'quality-report.txt');
+              if (loc == null) return;
+              try {
+                await File(loc.path).writeAsString(text);
+                if (ctx.mounted) Services.of(ctx).lib.messages.add('Отчёт сохранён: ${loc.path}');
+              } catch (e) {
+                if (ctx.mounted) Services.of(ctx).lib.messages.add('Не получилось сохранить: $e');
+              }
+            },
+            child: const Text('Сохранить в файл'),
+          ),
+          TextButton(onPressed: () => Clipboard.setData(ClipboardData(text: text)), child: const Text('Скопировать')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрыть')),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    return ListenableBuilder(
+      listenable: app.intel,
+      builder: (context, _) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Анализ звука', style: display(17)),
+        const SizedBox(height: 8),
+        Text(
+          'В индексе записей: ${app.intel.indexed}. Карта показывает, как библиотека раскладывается по звучанию, '
+          'спектрограмма — один трек с долями, фразами, энергией и вокалом. Отчёт качества — числовая проверка '
+          'разбора и подбора (без прослушивания и без переразбора).',
+          style: const TextStyle(color: C.muted, fontSize: 13, height: 1.5),
+        ),
+        const SizedBox(height: 12),
+        Wrap(spacing: 10, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+          FilledButton.tonalIcon(
+            onPressed: () => showSoundMap(context),
+            icon: const Icon(Icons.bubble_chart_rounded, size: 18),
+            label: const Text('Карта схожести'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () {
+              final t = app.player.current;
+              if (t == null) {
+                app.lib.messages.add('Включите трек: спектрограмма строится для играющего.');
+                return;
+              }
+              showTrackSpectrogram(context, t);
+            },
+            icon: const Icon(Icons.graphic_eq_rounded, size: 18),
+            label: const Text('Спектрограмма играющего трека'),
+          ),
+          OutlinedButton.icon(
+            onPressed: _building ? null : _buildReport,
+            icon: const Icon(Icons.fact_check_rounded, size: 18),
+            label: Text(_building ? 'Считаю…' : 'Отчёт качества'),
+          ),
+          FilterChip(
+            label: const Text('Хешировать названия'),
+            selected: _hashNames,
+            onSelected: (v) => setState(() => _hashNames = v),
+          ),
+        ]),
+      ]),
+    );
+  }
+}
+
+/// «Моя волна» для отладки: режим быстрой настройки и проверка связи с Last.fm
+class _WaveDebugSection extends StatefulWidget {
+  const _WaveDebugSection();
+  @override
+  State<_WaveDebugSection> createState() => _WaveDebugSectionState();
+}
+
+class _WaveDebugSectionState extends State<_WaveDebugSection> {
+  bool _checking = false;
+
+  Future<void> _check() async {
+    final wave = Services.of(context).wave;
+    setState(() => _checking = true);
+    String text;
+    try {
+      text = await wave.lastfm.diagnoseNow();
+    } catch (e) {
+      text = 'Не получилось проверить: $e';
+    }
+    if (!mounted) return;
+    setState(() => _checking = false);
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Связь с Last.fm'),
+        content: SizedBox(
+          width: 560,
+          child: SingleChildScrollView(child: SelectableText(text, style: const TextStyle(fontSize: 13, height: 1.5))),
+        ),
+        actions: [
+          TextButton(onPressed: () => Clipboard.setData(ClipboardData(text: text)), child: const Text('Скопировать')),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрыть')),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    final wave = app.wave;
+    return ListenableBuilder(
+      listenable: wave,
+      builder: (context, _) {
+        final st = wave.lastfmStatus;
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Моя волна', style: display(17)),
+          const SizedBox(height: 10),
+          HintSwitch(
+            contentPadding: EdgeInsets.zero,
+            value: wave.tuning,
+            title: 'Режим настройки',
+            hint: 'Для быстрой настройки вкуса. Пропуск ничего не штрафует: ни трек, ни исполнителя, '
+                'пробный трек не удаляется. Лайки, «нравится в волне» и дослушивания весят в полтора раза больше. '
+                '«Не нравится» работает как обычно. Закончили настраивать — выключите.',
+            onChanged: wave.setTuning,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            st.isEmpty ? 'Last.fm: проблем сейчас не видно.' : st,
+            style: TextStyle(color: st.isEmpty ? C.muted : C.danger, fontSize: 14, height: 1.5),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Каждый сбой Last.fm пишется в журнал: причина, время ответа, заголовки и начало ответа. '
+            'При паузе волна сама проверяет связь по шагам (DNS, TCP, TLS, запрос), чтобы было видно, где рвётся.',
+            style: TextStyle(color: C.muted, fontSize: 13, height: 1.5),
+          ),
+          const SizedBox(height: 12),
+          Wrap(spacing: 12, runSpacing: 10, children: [
+            OutlinedButton.icon(
+              onPressed: _checking ? null : _check,
+              icon: const Icon(Icons.network_check_rounded, size: 18),
+              label: Text(_checking ? 'Проверяю…' : 'Проверить связь с Last.fm'),
+            ),
+            OutlinedButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: wave.lastfm.report()));
+                app.lib.messages.add('Отчёт Last.fm скопирован');
+              },
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Скопировать отчёт'),
+            ),
+          ]),
+        ]);
+      },
+    );
   }
 }
 
@@ -1062,6 +1259,174 @@ class _KaraokeSection extends StatelessWidget {
   }
 }
 
+/// АвтоDJ (подбор по темпу и тональности) и скробблинг в ListenBrainz
+class _AutoDjSection extends StatefulWidget {
+  const _AutoDjSection();
+  @override
+  State<_AutoDjSection> createState() => _AutoDjSectionState();
+}
+
+class _AutoDjSectionState extends State<_AutoDjSection> {
+  final _token = TextEditingController();
+  bool _inited = false;
+  bool _busy = false;
+  String _msg = '';
+
+  @override
+  void dispose() {
+    _token.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveToken(AppServices app) async {
+    final t = _token.text.trim();
+    if (t.isEmpty) {
+      app.settings.view.remove('lb.token');
+      await app.lib.saveSettings();
+      if (mounted) setState(() => _msg = 'ListenBrainz отключён');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _msg = '';
+    });
+    final user = await app.listenBrainz.validate(t);
+    if (!mounted) return;
+    if (user == null) {
+      setState(() {
+        _busy = false;
+        _msg = 'Токен не принят или нет связи с ListenBrainz';
+      });
+      return;
+    }
+    app.settings.view['lb.token'] = t;
+    await app.lib.saveSettings();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _msg = 'Подключено: ${user.isEmpty ? 'ListenBrainz' : user}';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = Services.of(context);
+    if (!_inited) {
+      _inited = true;
+      _token.text = app.settings.view['lb.token'] ?? '';
+    }
+    final bpm = app.settings.viewNum('dj.bpm', 25).clamp(5, 50).toDouble();
+    final avoid = app.settings.viewNum('dj.avoid', 60).clamp(0, 240).toDouble();
+    final mixer = app.player.mixer;
+    final lb = app.listenBrainz;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const HintHeading('АвтоDJ', null),
+      const SizedBox(height: 4),
+      const Text(
+        'Кнопка «АвтоDJ» есть у каждого плейлиста и альбома, а в панели очереди — радио и перестановка. '
+        'Следующий трек подбирается по темпу (двойной и половинный считаются своими) и по тональности на круге Camelot. '
+        'Темп и тональность берутся из тегов файла, а если их нет — считаются по звуку, когда трек в кэше.',
+        style: TextStyle(color: C.muted, fontSize: 13, height: 1.5),
+      ),
+      const SizedBox(height: 8),
+      Row(children: [
+        const SizedBox(width: 170, child: Text('Разница в темпе')),
+        Expanded(
+          child: Slider(
+            value: bpm,
+            min: 5,
+            max: 50,
+            divisions: 9,
+            label: 'до ${bpm.round()} %',
+            onChanged: (v) => setState(() => app.settings.view['dj.bpm'] = '${v.round()}'),
+            onChangeEnd: (_) => app.lib.saveSettings(),
+          ),
+        ),
+        SizedBox(width: 80, child: Text('до ${bpm.round()} %', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+      ]),
+      Row(children: [
+        const SizedBox(width: 170, child: Text('Не повторять треки')),
+        Expanded(
+          child: Slider(
+            value: avoid,
+            min: 0,
+            max: 240,
+            divisions: 16,
+            label: avoid == 0 ? 'можно сразу' : '${avoid.round()} мин',
+            onChanged: (v) => setState(() => app.settings.view['dj.avoid'] = '${v.round()}'),
+            onChangeEnd: (_) => app.lib.saveSettings(),
+          ),
+        ),
+        SizedBox(
+          width: 80,
+          child: Text(avoid == 0 ? 'можно' : '${avoid.round()} мин', textAlign: TextAlign.right, style: const TextStyle(color: C.muted)),
+        ),
+      ]),
+      HintSwitch(
+        contentPadding: EdgeInsets.zero,
+        value: app.settings.viewOf('dj.key', '1') == '1',
+        onChanged: (v) {
+          setState(() => app.settings.view['dj.key'] = v ? '1' : '0');
+          app.lib.saveSettings();
+        },
+        title: 'Учитывать тональность',
+        hint: 'Тональности рядом на круге Camelot (например, 8A и 9A или 8A и 8B) звучат вместе, дальние «режут слух».',
+      ),
+      if (mixer != null) ...[
+        const SizedBox(height: 4),
+        ValueListenableBuilder<int>(
+          valueListenable: mixer.pending,
+          builder: (context, left, _) => Text(
+            left > 0
+                ? 'Разбор звука: осталось треков — $left. Идёт в фоне.'
+                : 'Разобрано треков: ${mixer.profileCount}. Новые разбираются по мере прослушивания.',
+            style: const TextStyle(color: C.faint, fontSize: 12),
+          ),
+        ),
+      ],
+      const SizedBox(height: 20),
+      const IntelPanel(),
+      const SizedBox(height: 20),
+      const HintHeading('ListenBrainz', null),
+      const SizedBox(height: 4),
+      const Text(
+        'Открытая история прослушиваний, как Last.fm: по ней строятся рекомендации. Токен — на странице listenbrainz.org/settings. '
+        'Трек засчитывается, когда прослушана половина или четыре минуты.',
+        style: TextStyle(color: C.muted, fontSize: 13, height: 1.5),
+      ),
+      const SizedBox(height: 10),
+      TextField(
+        controller: _token,
+        obscureText: true,
+        decoration: const InputDecoration(labelText: 'Токен пользователя ListenBrainz', isDense: true),
+      ),
+      const SizedBox(height: 10),
+      Wrap(spacing: 10, runSpacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+        FilledButton.icon(
+          onPressed: _busy ? null : () => _saveToken(app),
+          icon: const Icon(Icons.check_rounded, size: 18),
+          label: const Text('Сохранить и проверить'),
+        ),
+        if (_busy) const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+      ]),
+      if (_msg.isNotEmpty || lb.status.isNotEmpty) ...[
+        const SizedBox(height: 8),
+        Text(_msg.isNotEmpty ? _msg : lb.status, style: const TextStyle(color: C.muted, fontSize: 12)),
+      ],
+      if (lb.token.isNotEmpty)
+        HintSwitch(
+          contentPadding: EdgeInsets.zero,
+          value: app.settings.viewOf('lb.on', '1') == '1',
+          onChanged: (v) {
+            setState(() => app.settings.view['lb.on'] = v ? '1' : '0');
+            app.lib.saveSettings();
+          },
+          title: 'Отправлять прослушивания',
+        ),
+    ]);
+  }
+}
+
 class _PlaybackSection extends StatefulWidget {
   const _PlaybackSection();
   @override
@@ -1074,6 +1439,123 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
     final app = Services.of(context);
     // В джеме плавный переход задаёт организатор: пока я участник, мои настройки не действуют и ниже не меняются
     return ListenableBuilder(listenable: app.jam, builder: (context, _) => _content(app));
+  }
+
+  /// Диджейский стиль перехода и его ручные настройки
+  Widget _djBlock(AppServices app, {required bool enabled}) {
+    void put(String k, String v) {
+      setState(() => app.settings.view[k] = v);
+      app.player.refreshMixSettings();
+      app.lib.saveSettings();
+    }
+
+    final style = app.settings.viewOf('mix.style', 'fade');
+    final dj = style == 'dj' || style == 'adaptive';
+    const barSteps = [1, 2, 4, 8, 16, 32];
+    final bars = app.settings.viewNum('mix.bars', 8).round();
+    final barIdx = barSteps.indexOf(bars).clamp(0, barSteps.length - 1).toInt();
+    final range = app.settings.viewNum('mix.range', 8).clamp(2, 16).toDouble();
+    final offset = app.settings.viewNum('mix.offset', 0).clamp(-150, 150).toDouble();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const HintHeading('Стиль перехода',
+          'Плавный: громкость одного трека затихает, другого нарастает. DJ: следующий трек подгоняется по темпу, доли двух треков '
+          'совпадают, переход длится целое число тактов, а низкие частоты передаются от одного трека другому на середине. '
+          'Диджейский стиль работает, когда у обоих треков известны темп и доли (кнопка «АвтоDJ → Разобрать темп и тональность»); '
+          'иначе звучит обычный переход.'),
+      const SizedBox(height: 8),
+      SegmentedButton<String>(
+        segments: const [
+          ButtonSegment(value: 'fade', label: Text('Плавный')),
+          ButtonSegment(value: 'dj', label: Text('DJ')),
+          ButtonSegment(value: 'adaptive', label: Text('Adaptive AutoDJ')),
+        ],
+        selected: {const ['fade', 'dj', 'adaptive'].contains(style) ? style : 'fade'},
+        onSelectionChanged: enabled ? (v) => put('mix.style', v.first) : null,
+      ),
+      if (style == 'adaptive') const Padding(
+        padding: EdgeInsets.only(top: 8),
+        child: Text('Экспериментальный: выбирает из следующих пяти треков, планирует до трёх шагов. '
+            'При слабом анализе — обычный AutoMix. Решения — в журнале.'),
+      ),
+      if (style == 'adaptive') Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Row(children: [
+          const SizedBox(width: 150, child: Text('Характер сета')),
+          DropdownButton<String>(
+            value: const ['balanced', 'rise', 'relax', 'explore'].contains(app.settings.viewOf('mix.intent', 'balanced'))
+                ? app.settings.viewOf('mix.intent', 'balanced') : 'balanced',
+            items: const [
+              DropdownMenuItem(value: 'balanced', child: Text('Ровно')),
+              DropdownMenuItem(value: 'rise', child: Text('Нарастание')),
+              DropdownMenuItem(value: 'relax', child: Text('Спокойнее')),
+              DropdownMenuItem(value: 'explore', child: Text('Больше контрастов')),
+            ],
+            onChanged: enabled ? (v) { if (v != null) put('mix.intent', v); } : null,
+          ),
+        ]),
+      ),
+      if (dj) ...[
+        const SizedBox(height: 8),
+        Row(children: [
+          const SizedBox(width: 150, child: Text('Длина перехода')),
+          Expanded(
+            child: Slider(
+              value: barIdx.toDouble(),
+              min: 0,
+              max: (barSteps.length - 1).toDouble(),
+              divisions: barSteps.length - 1,
+              label: '${barSteps[barIdx]} тактов',
+              onChanged: enabled ? (v) => setState(() => app.settings.view['mix.bars'] = '${barSteps[v.round()]}') : null,
+              onChangeEnd: (_) => app.lib.saveSettings(),
+            ),
+          ),
+          SizedBox(width: 80, child: Text('${barSteps[barIdx]} тактов', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+        ]),
+        Row(children: [
+          const SizedBox(width: 150, child: Text('Подгонка темпа до')),
+          Expanded(
+            child: Slider(
+              value: range,
+              min: 2,
+              max: 16,
+              divisions: 14,
+              label: '${range.round()} %',
+              onChanged: enabled ? (v) => setState(() => app.settings.view['mix.range'] = '${v.round()}') : null,
+              onChangeEnd: (_) => app.lib.saveSettings(),
+            ),
+          ),
+          SizedBox(width: 80, child: Text('${range.round()} %', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+        ]),
+        Row(children: [
+          const SizedBox(width: 150, child: Text('Сдвиг долей')),
+          Expanded(
+            child: Slider(
+              value: offset,
+              min: -150,
+              max: 150,
+              divisions: 60,
+              label: '${offset.round()} мс',
+              onChanged: enabled ? (v) => setState(() => app.settings.view['mix.offset'] = '${(v / 5).round() * 5}') : null,
+              onChangeEnd: (_) => app.lib.saveSettings(),
+            ),
+          ),
+          SizedBox(width: 80, child: Text('${offset.round()} мс', textAlign: TextAlign.right, style: const TextStyle(color: C.muted))),
+        ]),
+        const Padding(
+          padding: EdgeInsets.only(bottom: 4),
+          child: Text('Если на слух следующий трек чуть опережает ударные или отстаёт, сдвиньте: «+» — позже, «−» — раньше.',
+              style: TextStyle(color: C.muted, fontSize: 12, height: 1.4)),
+        ),
+        HintSwitch(
+          contentPadding: EdgeInsets.zero,
+          value: app.settings.viewOf('mix.bass', '1') == '1',
+          onChanged: enabled ? (v) => put('mix.bass', v ? '1' : '0') : null,
+          title: 'Обмен басов',
+          hint: 'У следующего трека сначала срезаны низы, чтобы два баса не сливались в кашу. На середине перехода низы переходят к нему, '
+              'а у уходящего пропадают. Если разница в темпе больше допустимой, переход остаётся обычным.',
+        ),
+      ],
+    ]);
   }
 
   Widget _content(AppServices app) {
@@ -1126,6 +1608,8 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
           'пропускается, громкость двух треков выравнивается, а длина перехода — целое число тактов, если известен темп. '
           'Ползунок выше задаёт самый длинный переход. Звук трека разбирается один раз в фоне; пока не готово — обычный переход.',
       ),
+      const SizedBox(height: 8),
+      _djBlock(app, enabled: sec != 0 && !locked && app.player.smartMix),
       const SizedBox(height: 8),
       HintSwitch(
         contentPadding: EdgeInsets.zero,

@@ -13,3 +13,8 @@ deezer_auth.ini
 sockseek.conf
 .env
 .env.*
+
+# Python benchmark bytecode
+tools/__pycache__/
+
+tools/**/__pycache__/
