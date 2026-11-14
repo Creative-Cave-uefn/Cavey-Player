@@ -24,6 +24,14 @@ AdaptiveTrack song(String id, {double bpm = 120, String key = '8A', int vocal = 
 }
 
 void main() {
+  test('legacy analysis cannot certify a long instrumental overlap', () {
+    final a = song('a'), b = song('b');
+    final fa = TrackFeatures.fromJson({...a.features!.toJson(), 'av': 1})!;
+    final fb = TrackFeatures.fromJson({...b.features!.toJson(), 'av': 1})!;
+    final d = AdaptiveDj.pair(AdaptiveTrack(a.id, a.profile, fa), AdaptiveTrack(b.id, b.profile, fb));
+    expect(d.plan!.length.inMilliseconds, lessThanOrEqualTo(4000));
+    expect(d.to, b.id);
+  });
   test('cuts require explicit opt-in', () {
     final d = AdaptiveDj.pair(song('a', vocal: 90), song('b', bpm: 92, vocal: 90));
     expect(d.technique, isNot(AdaptiveTechnique.cut));

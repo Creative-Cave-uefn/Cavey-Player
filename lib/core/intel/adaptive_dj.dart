@@ -176,6 +176,9 @@ class AdaptiveDj {
       for (final enter in entries) {
         var len = math.min(plan.length.inMilliseconds, a.endMs - exit);
         len = math.min(len, ((b.endMs - enter) / plan.rate).floor());
+        // Legacy records have only a midrange proxy, never calibrated absence.
+        // Keep them usable during upgrades without authorizing a long overlay.
+        len = math.min(len, 4000);
         if (!plan.dj) len = math.min(len, 2500);
         if (len < 200) continue;
         final va = _vocal(da?.vocalCurve, exit, len);
