@@ -4,6 +4,7 @@ import 'dart:io';
 import '../automix.dart';
 import '../dj_eq.dart';
 import '../dj_transition.dart';
+import '../dj_effects.dart';
 
 enum TransitionVerdict { accepted, rejected, unavailable }
 
@@ -175,7 +176,9 @@ class TransitionVerifier {
     final inPitch =
         p.transpose == 0 ? '' : ',${pitchFilter(p.transpose)}';
     return '[0:a]atrim=duration=$len,asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo'
-        "$outPitch$outFx,volume='($outGain)*${levels.outAmplitude}':eval=frame[a];"
+        "$outPitch$outFx[effectIn];"
+        '${djEffectGraph(DjEffect.values.byName(p.effect), input: '[effectIn]', output: '[effectOut]', start: 0, length: len, beat: (p.grid?.$2 ?? 500) / 1000)};'
+        "[effectOut]volume='($outGain)*${levels.outAmplitude}':eval=frame[a];"
         '[1:a]atrim=duration=${len * p.rate},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
         "atempo=${p.rate}$inPitch$inFx,volume='($inGain)*${levels.inAmplitude}':eval=frame[b];"
         '[a][b]amix=inputs=2:duration=shortest:normalize=0,astats=reset=0,ebur128=peak=true[out]';

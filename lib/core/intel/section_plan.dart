@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import '../automix.dart';
 import '../dj.dart' show Camelot;
 import '../dj_transition.dart';
+import '../dj_effects.dart';
 import 'record.dart';
 import 'sections.dart';
 import 'rhythm.dart';
@@ -326,6 +327,9 @@ class SectionPlanner {
               transpose: shift,
               outgoingShift: options.outgoingShift,
               tempoRamp: isBeat,
+              effect: chooseDjEffect(vocalRisk: components['vocalRisk']!,
+                  onsets: ra.onsetDensity, brightness: ra.centroidHz,
+                  reliableBeat: isBeat && len >= 2000).name,
               rate: rate,
               grid: grid,
               offsetMs: isBeat ? options.offsetMs : 0,

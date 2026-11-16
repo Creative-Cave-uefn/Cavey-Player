@@ -12,6 +12,7 @@ import 'crossfade.dart';
 import 'crossfade_handoff.dart';
 import 'dj_eq.dart';
 import 'dj_transition.dart';
+import 'dj_effects.dart';
 import 'intel/adaptive_dj.dart';
 import 'intel/record.dart';
 import 'intel/set_context.dart';
@@ -953,7 +954,7 @@ class PlayerController extends ChangeNotifier {
         preroll: plan.preroll,
         transpose: plan.transpose,
         outgoingShift: plan.outgoingShift,
-        tempoRamp: plan.tempoRamp);
+        tempoRamp: plan.tempoRamp, effect: plan.effect);
     await _startCrossfade(plan);
   }
 
@@ -1280,6 +1281,18 @@ class PlayerController extends ChangeNotifier {
       }
       if (!ownsTransition()) return;
       // Уходящему осталось звучать не дольше, чем он ещё длится: переход укорачивается на время ожидания
+      if (plan != null && plan.effect != 'none') {
+        final effect = DjEffect.values.byName(plan.effect);
+        final graph = djEffectGraph(effect, input: '[in]', output: '[out]',
+            start: _p.state.position.inMilliseconds / 1000,
+            length: lengthWanted / 1000, beat: (plan.grid?.$2 ?? 500) / 1000);
+        final effectDeck = _p;
+        final native = effectDeck.platform as dynamic;
+        await native.command(['af', 'add', '@cave-dj-effect:lavfi=[$graph]']);
+        _effectDecks.add(effectDeck);
+        AppLog.info('DJ effect: ${plan.effect}');
+        if (!ownsTransition()) { await _clearDjEffect(effectDeck); return; }
+      }
       final oldRemaining = duration - _p.state.position;
       final lengthMs = oldRemaining > Duration.zero
           ? math.min(lengthWanted, math.max(800, oldRemaining.inMilliseconds))
@@ -1469,6 +1482,12 @@ class PlayerController extends ChangeNotifier {
   Timer? _rateTimer;
   final Set<Player> _cut = {};
   final Map<Player, int> _pitch = {};
+  final Set<Player> _effectDecks = {};
+  Future<void> _clearDjEffect(Player p) async {
+    if (!_effectDecks.remove(p)) return;
+    try { await (p.platform as dynamic).command(['af', 'remove', '@cave-dj-effect']); }
+    catch (e) { AppLog.warn('DJ: сброс эффекта', e); }
+  }
   Future<void> _applyPitch(Player p, int semitones) async {
     if (semitones.abs() > 1) throw ArgumentError.value(semitones, 'semitones');
     const label = 'cave-dj-pitch';
@@ -1628,6 +1647,7 @@ class PlayerController extends ChangeNotifier {
     final wasFading = _fading;
     _fading = false;
     final old = _outgoing;
+    for (final deck in _effectDecks.toList()) { unawaited(_clearDjEffect(deck)); }
     _outgoing = null;
     _inGain = 1;
     _outGain = 1;

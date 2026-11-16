@@ -73,6 +73,7 @@ class AdaptiveDecision {
     'lengthMs': plan?.length.inMilliseconds, 'rate': plan?.rate,
     'transposeSemitones': plan?.transpose, 'outgoingShift': plan?.outgoingShift,
     'tempoRamp': plan?.tempoRamp,
+    'effect': plan?.effect,
   };
 }
 

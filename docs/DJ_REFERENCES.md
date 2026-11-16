@@ -35,6 +35,23 @@ and durations at 0.92/1.08 playback speed. Unit tests cover harmonic shifts,
 phrase endpoints, rate ratios, source consumption and default-off behavior.
 These measurements do not replace listening to real transitions.
 
+## Effect programs
+
+Adaptive plans carry `echoOut`, `filterOut`, `rhythmicGate` or `none` separately
+from volume/tempo envelopes. Reliable rhythmic blends select a bounded echo send
+for vocal-risk windows, a half-beat gate for dense percussion, or a rising
+high-pass sweep for bright sparse material. Unknown rhythm uses no effect.
+Programs run over the final four beats in source time; the echo has two bounded
+dotted-eighth taps. Filters are owned by the outgoing deck and removed when the
+transition completes or is cancelled. The same graph builder is used by mpv and
+offline peak preflight. This implements a subset of the reference performance
+systems: stem separation, scratching and sample-loop engines are not included.
+
+Export exact graphs with `dart tools/export-dj-effects.dart native-effects.json`.
+Pass that JSON as the optional third argument of `tools/verify-dj-native.py`.
+The native probe checks processed PCM: filter-out attenuation, rhythmic-gate
+energy and audible echo contribution, alongside pitch/tempo checks.
+
 Offline preflight includes both actual pitch shifts and the original source
 windows. It is a source-time level check, not a capture of the live variable-tempo
 mpv output, and does not certify perceptual quality or exact live true peaks.

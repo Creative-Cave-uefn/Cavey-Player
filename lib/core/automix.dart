@@ -246,6 +246,7 @@ class DjMix {
 }
 
 class MixPlan {
+  final String effect;
   /// Absolute pitch shifts relative to the recordings, not successive deltas.
   final int transpose, outgoingShift;
   final bool tempoRamp;
@@ -282,7 +283,7 @@ class MixPlan {
       this.preroll = Duration.zero,
       this.transpose = 0,
       this.outgoingShift = 0,
-      this.tempoRamp = false});
+      this.tempoRamp = false, this.effect = 'none'});
 
   /// [maxSec] — самый длинный переход (настройка), [bpm] — темп уходящего трека, если известен
   /// (свой разбор звука важнее, он в профиле). Если у обоих треков известна сетка долей и темпы близки,
