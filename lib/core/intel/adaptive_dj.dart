@@ -85,11 +85,11 @@ class AdaptiveDj {
   static const horizon = 3;
   static const beamWidth = 6;
 
-  static AdaptiveDecision fallback(AdaptiveTrack from, AdaptiveTrack next, int maxSec) {
+  static AdaptiveDecision fallback(AdaptiveTrack from, AdaptiveTrack next, int maxSec, {String? reason}) {
     final a = from.profile, b = next.profile;
     return AdaptiveDecision(next.id, a != null && b != null && a.endMs > a.introMs + 10000
         ? MixPlan.make(a, b, maxSec: maxSec) : null,
-        AdaptiveTechnique.autoMix, 0, ['AutoMix: ${from.id} — ${from.analysisStatus}; ${next.id} — ${next.analysisStatus}']);
+        AdaptiveTechnique.autoMix, 0, [reason ?? 'AutoMix: ${from.id} — ${from.analysisStatus}; ${next.id} — ${next.analysisStatus}']);
   }
 
   static AdaptiveDecision choose(AdaptiveTrack from, List<AdaptiveTrack> pool,
@@ -114,7 +114,7 @@ class AdaptiveDj {
           if (path.ids.contains(next.id) || !next.reliable) continue;
           final pitch = depth == 0
               ? options.outgoingShift
-              : path.decisions.last.plan?.transpose ?? 0;
+              : 0; // Pitch is restored before the next track's own transition.
           final decision =
               evaluate(path.last, next, depth == 0 ? earliestMs : 0, pitch);
           if (decision.technique == AdaptiveTechnique.autoMix) continue;
@@ -136,7 +136,8 @@ class AdaptiveDj {
       beam = expanded.take(beamWidth).toList();
     }
     final best = beam.first;
-    if (best.decisions.isEmpty) return fallback(from, pool.first, maxSec);
+    if (best.decisions.isEmpty) return fallback(from, pool.first, maxSec,
+        reason:'AutoMix: среди доступных кандидатов нет допустимого DJ-перехода');
     final first = best.decisions.first;
     return AdaptiveDecision(first.to, first.plan, first.technique, first.score,
         [...first.reasons, 'Характер сета: ${context.intent.name}; маршрут до ${best.ids.length} треков'],
@@ -155,7 +156,8 @@ class AdaptiveDj {
     if (fa.sections != null && fb.sections != null) {
       final local = SectionPlanner.plan(a, b, fa, fb, options: options,
           beatAllowed: _gridReady(from) && _gridReady(next), earliestMs: earliestMs, manualPositionMs: manualPositionMs, allowCut: allowCut);
-      if (local == null) return fallback(from, next, maxSec);
+      if (local == null) return fallback(from, next, maxSec,
+          reason:'AutoMix: не найден допустимый локальный переход по ритму, вокалу и доступным окнам');
       final technique = AdaptiveTechnique.values.firstWhere((k) => k.name == local.technique);
       return AdaptiveDecision(next.id, local.plan, technique, local.score, local.reasons, components: local.components);
     }

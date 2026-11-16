@@ -20,9 +20,21 @@ planned phrase windows remain valid. The ordinary DJ/manual path stays separate.
 
 `Подстраивать тональность` is optional and defaults off. With reliable keys,
 the adaptive planner considers only -1, 0 and +1 semitone, preferring the original
-when it already fits. The chosen shift remains for that track; the next planning
-pass uses its actual shifted key, including in lookahead. A new file resets pitch.
+when it already fits. After the transition the original pitch returns with a
+1.2-second smooth Rubber Band ramp; planning waits for restoration and lookahead
+assumes the native key for later tracks. A new file cancels any pending recovery.
 Unsupported filter setup aborts preparation and uses an ordinary crossfade.
+
+Phase alignment uses mpv `audio-pts`, which accounts for output delay, rather than
+the coarse UI position stream. Exact seeks while the incoming deck is muted are
+checked up to three times with measured seek latency. A residual above 45 ms
+rejects beat sync with an explicit error; phase control samples audio PTS during
+the blend. Two native test transports exercise initial misalignment and a tempo
+glide in `tools/verify-dj-phase.py`. This is transport verification, not a PCM
+capture of two music tracks or a guarantee about beat-analysis correctness.
+
+The standard progress line matches main again; the experimental waveform bars
+are removed. Full-track tempo/key changes are not retained after a transition.
 
 The stock media_kit Windows audio and video distributions omit needed FFmpeg
 filters. A vendored MIT plugin wrapper instead downloads a full pinned libmpv,

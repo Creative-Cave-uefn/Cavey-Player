@@ -733,7 +733,7 @@ class PlayerController extends ChangeNotifier {
   void _prepareAdaptive({bool manual = false}) {
     final cur = current, m = mixer;
     if (!adaptiveStyle || adaptiveFeatures == null || cur == null || m == null ||
-        _fading || (!manual && (_preparing || _preparedId != null)) || index < 0 || index + 1 >= queue.length) return;
+        _fading || _pitchRestoring.contains(_p) || (!manual && (_preparing || _preparedId != null)) || index < 0 || index + 1 >= queue.length) return;
     // Вызывается на каждом отсчёте позиции (десятки раз в секунду): сверяем состояние не чаще нескольких раз в секунду
     if (!manual && _adaptiveKey != null && _adaptiveChecked.isRunning && _adaptiveChecked.elapsedMilliseconds < 400) return;
     _adaptiveChecked
@@ -1303,12 +1303,26 @@ class PlayerController extends ChangeNotifier {
         if (!ownsTransition()) {
           return;
         }
-        final e = _phaseErr(djp, oc.now(), ic.now());
-        if (e != null && e.abs() > 60) {
-          final back = Duration(microseconds: ((e - 45) * djp.rate * 1000).round()); // 45 мс — на саму перемотку
-          final corrected = ic.now() - back;
-          await incoming.seek(corrected < Duration.zero ? Duration.zero : corrected);
+        var latency = 0.0;
+        for (var attempt=0; attempt<3; attempt++) {
+          final positions = await _nativePositions(_p,incoming);
+          if (!ownsTransition()) return;
+          final e = djPhaseError(djp.grid,djp.rate,positions.$1,positions.$2,offsetMs:djp.offsetMs);
+          if (e == null) throw StateError('phase_measurement_unavailable');
+          AppLog.info('DJ alignment: attempt=$attempt errorMs=$e seekLatencyMs=$latency');
+          if (e.abs()<=30) break;
+          final watch=Stopwatch()..start();
+          final target=alignedIncomingPosition(positions.$2,e,djp.rate,1,latency);
+          await (incoming.platform as dynamic).command(['seek','${target/1000}','absolute+exact']);
+          await Future<void>.delayed(const Duration(milliseconds:40));
+          latency=watch.elapsedMicroseconds/1000;
         }
+        final aligned=await _nativePositions(_p,incoming);
+        if (!ownsTransition()) return;
+        final residual=djPhaseError(djp.grid,djp.rate,aligned.$1,aligned.$2,offsetMs:djp.offsetMs);
+        if (residual==null || residual.abs()>45) throw StateError('phase_lock_failed: $residual ms');
+        oc.reset(Duration(microseconds:(aligned.$1*1000).round()));
+        ic.reset(Duration(microseconds:(aligned.$2*1000).round()));
       }
       if (!ownsTransition()) return;
       // Уходящему осталось звучать не дольше, чем он ещё длится: переход укорачивается на время ожидания
@@ -1398,6 +1412,8 @@ class PlayerController extends ChangeNotifier {
       var cmdRate = djp?.rate ?? 1.0;
       var cmdOutRate = 1.0;
       var rateBusy = false;
+      double? nativePhase;
+      var phaseBusy=false;
       final sourceStart = _outClock?.now().inMicroseconds;
       // Громкость меняется ступеньками. На длинном переходе десяти шагов в секунду хватает, а короткий (стык на фразе —
       // четверть секунды, короткий crossfade — пара секунд) состоял бы из двух-трёх слышимых скачков: шаг делаем мельче
@@ -1423,7 +1439,21 @@ class PlayerController extends ChangeNotifier {
         if (djp != null && elapsed.inMilliseconds - phaseCheckedMs >= 200) {
           phaseCheckedMs = elapsed.inMilliseconds;
           final oc = _outClock, ic = _inClock;
-          final e = oc == null || ic == null ? null : _phaseErr(djp, oc.now(), ic.now());
+          if (!phaseBusy) {
+            phaseBusy=true;
+            unawaited(() async {
+              try {
+                final sample=await _nativePositions(old,incoming);
+                if (!ownsTransition()) return;
+                nativePhase=djPhaseError(djp.grid,djp.rate,sample.$1,sample.$2,offsetMs:djp.offsetMs);
+                if(nativePhase!=null) _transitionProbe?.phase(nativePhase!);
+                oc?.reset(Duration(microseconds:(sample.$1*1000).round()));
+                ic?.reset(Duration(microseconds:(sample.$2*1000).round()));
+              } catch(e) { AppLog.warn('DJ: native phase sample',e); }
+              finally { phaseBusy=false; }
+            }());
+          }
+          final e = nativePhase;
           if (e != null || djp.tempoRamp) {
             final rates =
                 djp.tempoRamp ? djTempoAt(t, djp.rate) : (1.0, djp.rate);
@@ -1431,7 +1461,6 @@ class PlayerController extends ChangeNotifier {
                 ? 1.0
                 : 1 + (-e / 1500).clamp(-0.02, 0.02);
             final want = rates.$2 * correction;
-            if (e != null) _transitionProbe?.phase(e);
             if (!rateBusy &&
                 ((want - cmdRate).abs() > 0.0005 ||
                     (rates.$1 - cmdOutRate).abs() > 0.0005)) {
@@ -1474,7 +1503,7 @@ class PlayerController extends ChangeNotifier {
       });
     } catch (e) {
       AppLog.warn('Плавный переход не получился, трек доиграет как обычно', e);
-      _traceDj({'kind': 'executionAbort', 'from': fromId, 'to': nextTrack.id,
+      _traceDj({'kind': 'executionAbort', 'from': fromId, 'to': nextTrack.id,'detail':e.toString(),
         'cause': e.runtimeType.toString(), 'cancelled': !ownsTransition(), 'hadHandoff': _transitionProbe != null});
       if (ownsTransition()) {
         _endFade(stopIncoming: true);
@@ -1517,6 +1546,29 @@ class PlayerController extends ChangeNotifier {
   Timer? _rateTimer;
   final Set<Player> _cut = {};
   final Map<Player, int> _pitch = {};
+  final Map<Player,int> _pitchEpoch={};
+  final Set<Player> _pitchRestoring={};
+  Future<void> _restorePitch(Player p) async {
+    final shift=_pitch[p]??0;
+    if(shift==0 || _pitchRestoring.contains(p)) return;
+    final epoch=_pitchEpoch[p];
+    _pitchRestoring.add(p);
+    try {
+      for(var i=1;i<=12;i++) {
+        await Future<void>.delayed(const Duration(milliseconds:100));
+        if(_pitchEpoch[p]!=epoch) return;
+        await (p.platform as dynamic).command(['af-command','cave-dj-pitch','set-pitch','${restoredPitchScale(shift,i/12)}']);
+      }
+      if(_pitchEpoch[p]==epoch) {
+        await _applyPitch(p,0);
+        final actualRate=await (p.platform as dynamic).getProperty('speed');
+        AppLog.info('DJ restoration: pitch=original, nativeRate=$actualRate');
+      }
+    } catch(e) {
+      AppLog.warn('DJ: восстановление тональности',e);
+      if(_pitchEpoch[p]==epoch) await _applyPitch(p,0);
+    } finally { _pitchRestoring.remove(p); _adaptiveKey=null; }
+  }
   final Set<Player> _effectDecks = {};
   Future<void> _clearDjEffect(Player p) async {
     if (!_effectDecks.remove(p)) return;
@@ -1524,6 +1576,7 @@ class PlayerController extends ChangeNotifier {
     catch (e) { AppLog.warn('DJ: сброс эффекта', e); }
   }
   Future<void> _applyPitch(Player p, int semitones) async {
+    _pitchEpoch[p]=(_pitchEpoch[p]??0)+1;
     if (semitones.abs() > 1) throw ArgumentError.value(semitones, 'semitones');
     const label = 'cave-dj-pitch';
     final native = p.platform as dynamic;
@@ -1537,7 +1590,7 @@ class PlayerController extends ChangeNotifier {
         await native.command([
           'af',
           'add',
-          '@$label:lavfi=[${pitchFilter(semitones)}]'
+          '@$label:rubberband=pitch-scale=${pitchScale(semitones)}'
         ]);
         final filters = '${await native.getProperty('af')}';
         if (!filters.contains(label))
@@ -1594,17 +1647,11 @@ class PlayerController extends ChangeNotifier {
 
   /// Насколько следующий трек «впереди» доли уходящего, мс (— отстаёт); нужен период, на который доли совпадают.
   /// Время доли отсчитывается от сетки: у каждого трека время с последней доли, пересчитанное в часы уходящего
-  double? _phaseErr(MixPlan plan, Duration pOut, Duration pIn) {
-    final g = plan.grid;
-    if (g == null || plan.rate <= 0) return null;
-    final outBeat = g.$2;
-    final inBeat = g.$4 / plan.rate; // доля следующего в часах уходящего
-    final per = math.min(outBeat, inBeat);
-    final tOut = (pOut.inMicroseconds / 1000 - g.$1) % outBeat;
-    final tIn = ((pIn.inMicroseconds / 1000 - g.$3) % g.$4) / plan.rate;
-    var d = (tIn - tOut + plan.offsetMs) % per;
-    if (d > per / 2) d -= per;
-    return d;
+  Future<(double,double)> _nativePositions(Player a,Player b) async {
+    final values=await Future.wait([for(final p in [a,b]) (p.platform as dynamic).getProperty('audio-pts') as Future<dynamic>]);
+    final x=double.tryParse('${values[0]}'),y=double.tryParse('${values[1]}');
+    if(x==null || y==null || !x.isFinite || !y.isFinite) throw StateError('native_audio_pts_unavailable');
+    return (x*1000,y*1000);
   }
 
   /// Скорость проигрывателя; высота звука не меняется (mpv сам подтягивает её обратно)
@@ -1648,7 +1695,7 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     final started = DateTime.now();
-    const rampMs = 8000;
+    const rampMs = 1200;
     _rateTimer = Timer.periodic(const Duration(milliseconds: 250), (timer) {
       if (!identical(_p, p)) {
         timer.cancel();
@@ -1709,6 +1756,7 @@ class PlayerController extends ChangeNotifier {
       }
     }
     if (_fxDirty) {
+      unawaited(_restorePitch(_p));
       unawaited(_clearEq(_p));
       if (_q != null) unawaited(_clearEq(_q!));
       unawaited(_setLowCut(_p, false));
@@ -2075,6 +2123,7 @@ class PlayerController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _pitchEpoch.clear();
     _headroomRecovery?.cancel();
     if (_transitionProbe != null) {
       _traceDj(_transitionProbe!.finish('disposed'));
@@ -2116,11 +2165,14 @@ class _PosClock {
   }
 
   Duration _pos;
+  bool _native=false;
+  void reset(Duration position) { _native=true; _pos=position; _at=DateTime.now(); }
   DateTime _at = DateTime.now();
   StreamSubscription<Duration>? _sub;
 
   _PosClock(this.p, this._speed) : _pos = p.state.position {
     _sub = p.stream.position.listen((d) {
+      if (_native) return;
       _pos = d;
       _at = DateTime.now();
     });

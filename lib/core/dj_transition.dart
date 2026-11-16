@@ -26,9 +26,29 @@ double pitchScale(int semitones) => math.pow(2, semitones / 12).toDouble();
 /// resampling with the actual rounded rate, avoiding a cumulative tempo error.
 String pitchFilter(int semitones) {
   if (semitones.abs() > 1) throw ArgumentError.value(semitones, 'semitones');
-  final rate = (48000 * pitchScale(semitones)).round();
-  return 'aresample=sample_rate=48000,asetrate=sample_rate=$rate,aresample=sample_rate=48000,atempo=tempo=${48000 / rate}';
+  return 'rubberband=pitch=${pitchScale(semitones)}';
 }
+
+double restoredPitchScale(int semitones, double progress) {
+  final t=progress.clamp(0.0,1.0), smooth=t*t*(3-2*t);
+  return math.pow(2,semitones*(1-smooth)/12).toDouble();
+}
+
+/// Compare on the common pulse lattice; half/double-time beats remain congruent.
+double? djPhaseError((double,double,double,double)? grid, double ratio,
+    double outgoingMs,double incomingMs,{int offsetMs=0}) {
+  if(grid==null || ratio<=0 || !ratio.isFinite) return null;
+  final period=math.min(grid.$2,grid.$4/ratio);
+  if(!period.isFinite || period<=0) return null;
+  var error=((incomingMs-grid.$3)/ratio-(outgoingMs-grid.$1)+offsetMs)%period;
+  if(error>period/2) error-=period;
+  return error;
+}
+
+/// The muted incoming deck must advance by the measured seek elapsed time.
+double alignedIncomingPosition(double incomingMs,double errorMs,double ratio,
+    double outgoingRate,double seekLatencyMs) =>
+    math.max(0.0,incomingMs-errorMs*ratio+seekLatencyMs*outgoingRate*ratio);
 
 /// Shared tempo ramp, expressed in outgoing SOURCE progress. Keeping the
 /// incoming/outgoing rate ratio constant preserves half/double-time alignment

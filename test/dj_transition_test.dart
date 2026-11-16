@@ -5,6 +5,28 @@ import 'package:cave_player/core/automix.dart';
 import 'package:cave_player/core/intel/transition_verifier.dart';
 
 void main() {
+  test('phase sign and seek latency correction converge without 45ms guess', () {
+    const g=(0.0,500.0,0.0,500.0);
+    expect(djPhaseError(g,1,1000,1167),167);
+    expect(djPhaseError(g,1,1167,1000),-167);
+    final target=alignedIncomingPosition(1167,167,1,1,80);
+    expect(target,1080);
+    expect(djPhaseError(g,1,1080,target),0);
+    expect(djPhaseError((0,500,0,250),1,1250,1250),0);
+    expect(djPhaseError((0,250,0,500),1,1250,1250),0);
+  });
+  test('pitch restoration is bounded, monotonic, and ends at original', () {
+    for(final shift in [-1,1]) {
+      var previous=restoredPitchScale(shift,0);
+      expect(previous,pitchScale(shift));
+      for(var i=1;i<=12;i++) {
+        final next=restoredPitchScale(shift,i/12);
+        expect((next-1).abs(),lessThanOrEqualTo((previous-1).abs()+1e-12));
+        previous=next;
+      }
+      expect(previous,1);
+    }
+  });
   test('semitone transposition follows pitches, not Camelot neighbours', () {
     expect(shiftedKey(Camelot.parse('C')!, 1), Camelot.parse('C#'));
     expect(shiftedKey(Camelot.parse('Am')!, -1), Camelot.parse('Abm'));
