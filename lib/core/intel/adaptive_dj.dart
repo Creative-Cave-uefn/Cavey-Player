@@ -74,6 +74,7 @@ class AdaptiveDecision {
     'transposeSemitones': plan?.transpose, 'outgoingShift': plan?.outgoingShift,
     'tempoRamp': plan?.tempoRamp,
     'effect': plan?.effect,
+    'headroomGain': plan?.headroom,
   };
 }
 

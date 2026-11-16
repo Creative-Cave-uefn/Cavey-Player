@@ -37,6 +37,15 @@ These measurements do not replace listening to real transitions.
 
 ## Effect programs
 
+Measured peak rejection now attempts one bounded correction before abandoning
+the plan: attenuate both decks by at most 6 dB toward -1.5 dBTP, then render and
+measure again. Only an accepted repeat render enables the corrected plan.
+The effect, rate and pitch remain unchanged. The volume recovers over one second
+after completion. Preflight, headroom adjustment, fallback reasons and execution
+errors are included in the ordinary app log; execution records carry the actual
+effect and headroom gain. A replay test reproduced the reported real pair:
++2.8 dBTP rejected, -4.3 dB correction, -1.5 dBTP accepted with echoOut retained.
+
 Adaptive plans carry `echoOut`, `filterOut`, `rhythmicGate` or `none` separately
 from volume/tempo envelopes. Reliable rhythmic blends select a bounded echo send
 for vocal-risk windows, a half-beat gate for dense percussion, or a rising

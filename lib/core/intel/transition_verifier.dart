@@ -1,12 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import '../automix.dart';
 import '../dj_eq.dart';
 import '../dj_transition.dart';
 import '../dj_effects.dart';
 
 enum TransitionVerdict { accepted, rejected, unavailable }
+
+/// At most 6 dB of explicit attenuation, followed by another real render.
+double? headroomCorrection(TransitionCheck check) {
+  final peak = check.truePeakDb;
+  if (check.reason != 'true_peak_headroom' || peak == null || !peak.isFinite) return null;
+  final db = -1.5 - peak;
+  return db < -6 || db >= 0 ? null : math.pow(10, db / 20).toDouble();
+}
 
 class TransitionLevels {
   final double outAmplitude, inAmplitude;
@@ -52,6 +61,7 @@ class TransitionVerifier {
         p.transpose.abs() > 1 ||
         p.outgoingShift.abs() > 1 ||
         !p.inGain.isFinite ||
+        !p.headroom.isFinite || p.headroom <= 0 || p.headroom > 1 ||
         !levels.outAmplitude.isFinite ||
         !levels.inAmplitude.isFinite ||
         levels.outAmplitude <= 0 ||
@@ -178,9 +188,9 @@ class TransitionVerifier {
     return '[0:a]atrim=duration=$len,asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo'
         "$outPitch$outFx[effectIn];"
         '${djEffectGraph(DjEffect.values.byName(p.effect), input: '[effectIn]', output: '[effectOut]', start: 0, length: len, beat: (p.grid?.$2 ?? 500) / 1000)};'
-        "[effectOut]volume='($outGain)*${levels.outAmplitude}':eval=frame[a];"
+        "[effectOut]volume='($outGain)*${levels.outAmplitude * p.headroom}':eval=frame[a];"
         '[1:a]atrim=duration=${len * p.rate},asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,'
-        "atempo=${p.rate}$inPitch$inFx,volume='($inGain)*${levels.inAmplitude}':eval=frame[b];"
+        "atempo=${p.rate}$inPitch$inFx,volume='($inGain)*${levels.inAmplitude * p.headroom}':eval=frame[b];"
         '[a][b]amix=inputs=2:duration=shortest:normalize=0,astats=reset=0,ebur128=peak=true[out]';
   }
 }

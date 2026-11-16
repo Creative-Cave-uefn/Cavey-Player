@@ -670,6 +670,9 @@ class PlayerController extends ChangeNotifier {
   TransitionProbe? _transitionProbe;
   Map<String, Object?>? lastDjExecution;
   void _traceDj(Map<String, Object?> event) {
+    if (event['kind'] == 'preflight' || event['kind'] == 'fallback' || event['kind'] == 'headroom' || event['kind'] == 'executionAbort') {
+      AppLog.info('DJ check: ${jsonEncode(event)}');
+    }
     try { djTrace?.call(event); } catch (e) { AppLog.warn('DJ: не удалось записать диагностику', e); }
   }
   final List<DjHistoryEntry> _djHistory = [];
@@ -795,19 +798,40 @@ class PlayerController extends ChangeNotifier {
       if (!_adaptiveReady) {
         final seq = _openSeq;
         _adaptiveCheck = () async {
+          var checkedDecision = result;
           TransitionCheck check;
           try {
             check = result.plan == null || verifyTransition == null
                 ? const TransitionCheck(TransitionVerdict.unavailable, 'verifier_unavailable')
                 : await verifyTransition!(cur.id, result.to, result.plan!, result.plan!.dj && result.plan!.swapAt != null, levels);
           } catch (_) { check = const TransitionCheck(TransitionVerdict.unavailable, 'verifier_failed'); }
-          if (seq != _openSeq || current?.id != cur.id || !identical(_adaptiveDecision, result) || _fading ||
+          final correction = headroomCorrection(check);
+          if (correction != null && result.plan != null && verifyTransition != null &&
+              seq == _openSeq && identical(_adaptiveDecision, result)) {
+            final adjusted = result.plan!.withHeadroom(correction);
+            _traceDj({'kind':'headroom','decisionId':decisionId,'measuredPeakDbtp':check.truePeakDb,
+              'gain':correction,'attenuationDb':20*math.log(correction)/math.ln10});
+            try {
+              final retry = await verifyTransition!(cur.id, result.to, adjusted,
+                  adjusted.dj && adjusted.swapAt != null, levels);
+              check = retry;
+              if (retry.verdict == TransitionVerdict.accepted && seq == _openSeq && identical(_adaptiveDecision, result)) {
+                _adaptiveDecision = checkedDecision = AdaptiveDecision(result.to, adjusted, result.technique, result.score,
+                    [...result.reasons, 'Запас по пикам восстановлен ослаблением'],
+                    path:result.path, alternatives:result.alternatives, components:result.components);
+              }
+            } catch (_) { check = const TransitionCheck(TransitionVerdict.unavailable, 'verifier_failed'); }
+          }
+          if (seq != _openSeq || current?.id != cur.id || !identical(_adaptiveDecision, checkedDecision) || _fading ||
               '$normalize:$normLevel' != normalizationKey || _autoNextIndex() == null || queue[_autoNextIndex()!] != result.to) return;
           final timely = result.plan != null && result.plan!.start.inMilliseconds > position.value.inMilliseconds + 250;
           _traceDj({'kind': 'preflight', 'from': cur.id, 'to': result.to, 'decisionId': decisionId,
             'cueStillAhead': timely, ...check.toJson()});
           if (check.verdict == TransitionVerdict.accepted && timely) { _adaptiveReady = true; }
           else {
+            _traceDj({'kind':'fallback','decisionId':decisionId,'selectedTechnique':result.technique.name,
+              'selectedEffect':result.plan?.effect,'reason':!timely?'cue_passed':check.reason,
+              'verdict':check.verdict.name,'peakDbtp':check.truePeakDb});
             final normal = AdaptiveDj.fallback(track(cur.id), track(result.to), crossfadeSecNow.clamp(1, 12).toInt());
             _adaptiveDecision = AdaptiveDecision(normal.to, normal.plan, normal.technique, 0,
               [!timely ? 'AutoMix: точка сведения уже пройдена' : switch (check.reason) {
@@ -954,7 +978,7 @@ class PlayerController extends ChangeNotifier {
         preroll: plan.preroll,
         transpose: plan.transpose,
         outgoingShift: plan.outgoingShift,
-        tempoRamp: plan.tempoRamp, effect: plan.effect);
+        tempoRamp: plan.tempoRamp, effect: plan.effect, headroom: plan.headroom);
     await _startCrossfade(plan);
   }
 
@@ -1002,6 +1026,7 @@ class PlayerController extends ChangeNotifier {
   int _fadeGeneration = 0;
   Timer? _fadeTimer;
   double _inGain = 1;
+  Timer? _headroomRecovery;
   double _outGain = 1;
   Player? _outgoing;
 
@@ -1161,6 +1186,11 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> _startCrossfade([MixPlan? plan]) async {
+    if (adaptiveStyle && !_adaptiveReady && _adaptiveDecision != null) {
+      _traceDj({'kind':'fallback','decisionId':_adaptiveDecisionId,
+        'selectedTechnique':_adaptiveDecision!.technique.name,
+        'selectedEffect':_adaptiveDecision!.plan?.effect,'reason':'preflight_pending_at_start'});
+    }
     final nextIndex = _autoNextIndex();
     if (nextIndex == null || _fading) return;
     final nextTrack = lib.data.tracks[queue[nextIndex]];
@@ -1168,6 +1198,7 @@ class PlayerController extends ChangeNotifier {
     final fromId = current?.id ?? '';
     final prepareClock = Stopwatch()..start();
     _fading = true;
+    _headroomRecovery?.cancel();
     final seq = ++_openSeq;
     final generation = ++_fadeGeneration;
     bool ownsTransition() => seq == _openSeq && generation == _fadeGeneration && _fading;
@@ -1306,6 +1337,7 @@ class PlayerController extends ChangeNotifier {
       // Теперь «главный» проигрыватель — новый, а прежний доигрывает затихая
       final old = _p;
       _transitionProbe = TransitionProbe(from: fromId, to: nextTrack.id,
+          effect:plan?.effect ?? 'none',headroomGain:plan?.headroom ?? 1,
           decisionId: adaptiveStyle && identical(plan, _adaptiveDecision?.plan) ? _adaptiveDecisionId : null,
           eqMode: eqBlend ? 'threeBandV1_installed' : djp?.swapAt != null ? 'legacyBass' : 'none',
           technique: dj ? 'beatBlend' : plan == null ? 'autoMix' :
@@ -1336,7 +1368,7 @@ class PlayerController extends ChangeNotifier {
       buffering = _p.state.buffering;
       playing = _p.state.playing;
       _inGain = 0;
-      _outGain = 1;
+      _outGain = math.pow(plan?.headroom ?? 1, 1/3).toDouble();
       _normTimer?.cancel();
       _normOut = _normIn;
       _normIn = _normFactorFor(nextTrack.id);
@@ -1435,6 +1467,9 @@ class PlayerController extends ChangeNotifier {
         // DJ envelopes are amplitudes; convert to the cubic mpv slider once.
         final inAmplitude = g.$2 * (match + (1 - match) * t);
         _inGain = dj ? math.pow(math.max(0.0, inAmplitude), 1 / 3).toDouble() : inAmplitude;
+        final reserve = math.pow(plan?.headroom ?? 1, 1/3).toDouble();
+        _outGain *= reserve;
+        _inGain *= reserve;
         _applyVolume();
       });
     } catch (e) {
@@ -1649,7 +1684,18 @@ class PlayerController extends ChangeNotifier {
     final old = _outgoing;
     for (final deck in _effectDecks.toList()) { unawaited(_clearDjEffect(deck)); }
     _outgoing = null;
-    _inGain = 1;
+    final recoverFrom = reason == 'completed' ? _inGain.clamp(0.0, 1.0).toDouble() : 1.0;
+    _headroomRecovery?.cancel();
+    _inGain = recoverFrom;
+    if (recoverFrom < 0.999) {
+      var step = 0;
+      _headroomRecovery = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+        if (_fading) { timer.cancel(); return; }
+        _inGain = recoverFrom + (1-recoverFrom) * (++step / 10).clamp(0.0, 1.0);
+        _applyVolume();
+        if (step >= 10) timer.cancel();
+      });
+    }
     _outGain = 1;
     if (old != null) {
       unawaited(_applyPitch(old, 0).catchError((Object e) {
@@ -1675,7 +1721,7 @@ class PlayerController extends ChangeNotifier {
     }
     _pendingRate = 1.0;
     _normOut = 1;
-    if (wasFading || old != null) unawaited(_p.setVolume(_scaled(volume * _normIn)));
+    if (wasFading || old != null) _applyVolume();
     // Переход отменён до передачи звука новой деке (пауза, перемотка, выбран другой трек): она уже открыта и играет
     // без звука. Останавливаем её всегда — иначе неслышный трек доигрывал до конца, занимая процессор и сеть
     if ((stopIncoming || wasFading) && old == null) {
@@ -2029,6 +2075,7 @@ class PlayerController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _headroomRecovery?.cancel();
     if (_transitionProbe != null) {
       _traceDj(_transitionProbe!.finish('disposed'));
       _transitionProbe = null;

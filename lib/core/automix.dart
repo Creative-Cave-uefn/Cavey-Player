@@ -246,6 +246,11 @@ class DjMix {
 }
 
 class MixPlan {
+  final double headroom;
+  MixPlan withHeadroom(double gain) => MixPlan(start, length, inStart, inGain,
+      dj: dj, rate: rate, swapAt: swapAt, grid: grid, offsetMs: offsetMs,
+      preroll: preroll, transpose: transpose, outgoingShift: outgoingShift,
+      tempoRamp: tempoRamp, effect: effect, headroom: gain);
   final String effect;
   /// Absolute pitch shifts relative to the recordings, not successive deltas.
   final int transpose, outgoingShift;
@@ -283,7 +288,7 @@ class MixPlan {
       this.preroll = Duration.zero,
       this.transpose = 0,
       this.outgoingShift = 0,
-      this.tempoRamp = false, this.effect = 'none'});
+      this.tempoRamp = false, this.effect = 'none', this.headroom = 1});
 
   /// [maxSec] — самый длинный переход (настройка), [bpm] — темп уходящего трека, если известен
   /// (свой разбор звука важнее, он в профиле). Если у обоих треков известна сетка долей и темпы близки,

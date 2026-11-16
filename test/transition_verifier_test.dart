@@ -6,6 +6,15 @@ import 'package:cave_player/core/intel/transition_verifier.dart';
 void main() {
   const p = MixPlan(Duration.zero, Duration(seconds: 4), Duration.zero, 1,
       dj: true, swapAt: Duration(seconds: 2));
+  test('measured peak correction targets -1.5 dBTP and never exceeds six dB', () {
+    final gain = headroomCorrection(const TransitionCheck(TransitionVerdict.rejected,'true_peak_headroom',2.8));
+    expect(gain, closeTo(0.6095,0.001));
+    expect(headroomCorrection(const TransitionCheck(TransitionVerdict.unavailable,'render_failed')),isNull);
+    expect(headroomCorrection(const TransitionCheck(TransitionVerdict.rejected,'true_peak_headroom',6)),isNull);
+    final fixed=p.withHeadroom(gain!);
+    expect(fixed.dj,isTrue); expect(fixed.swapAt,p.swapAt);
+    expect(fixed.headroom,gain);
+  });
   test(
       'preflight rejects missing measurements, silence, nonfinite and inadequate headroom',
       () {
@@ -80,6 +89,11 @@ void main() {
       final bad = await v.verify(loud, loud, plain);
       expect(bad.verdict, TransitionVerdict.rejected);
       expect(bad.truePeakDb, greaterThan(0));
+      final gain = headroomCorrection(bad);
+      expect(gain,isNotNull);
+      final corrected = await v.verify(loud,loud,plain.withHeadroom(gain!));
+      expect(corrected.verdict,TransitionVerdict.accepted,reason:corrected.reason);
+      expect(corrected.truePeakDb,lessThanOrEqualTo(-1.0));
       final normal = await v.verify(loud, loud, plain,
           levels: const TransitionLevels(
               outAmplitude: 0.4, inAmplitude: 0.4, matchGain: 1));
