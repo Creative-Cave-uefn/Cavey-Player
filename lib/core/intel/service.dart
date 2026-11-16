@@ -141,6 +141,9 @@ class IntelService extends ChangeNotifier {
   final Set<String> _queued = {};
   final Set<String> _force = {};
   final Map<String, int> _failed = {};
+  /// true — сейчас идёт переход между треками: разбор следующего трека подождёт (задаёт приложение)
+  bool Function()? holdOff;
+
   bool _paused = false;
   bool _running = false;
   bool _noTool = false;
@@ -170,9 +173,25 @@ class IntelService extends ChangeNotifier {
 
   /// Сколько записей в общем индексе (включая те, что пришли с других устройств)
   int get indexed => store.count;
-  int get sectioned => store.records.where((r) => r.sections?.regions.isNotEmpty == true).length;
-  int get rhythmic => store.records.where((r) => r.rhythm?.windows.any((w) => w.reliable) == true).length;
-  int get vocalModelCount => store.records.where((r) => r.vocalActivity != null).length;
+  int get sectioned => _counts().$1;
+  int get rhythmic => _counts().$2;
+  int get vocalModelCount => _counts().$3;
+
+  // Панель настроек перерисовывается на каждое уведомление разбора, а подсчёт — это проход по всему индексу:
+  // считаем один раз на версию индекса, а не три раза на каждую перерисовку
+  int _countsVersion = -1;
+  (int, int, int) _countsValue = (0, 0, 0);
+  (int, int, int) _counts() {
+    if (_countsVersion == store.version) return _countsValue;
+    var sections = 0, rhythm = 0, voice = 0;
+    for (final r in store.records) {
+      if (r.sections?.regions.isNotEmpty == true) sections++;
+      if (r.rhythm?.windows.any((w) => w.reliable) == true) rhythm++;
+      if (r.vocalActivity != null) voice++;
+    }
+    _countsVersion = store.version;
+    return _countsValue = (sections, rhythm, voice);
+  }
 
   /// Строка для настроек: что сейчас происходит
   String get statusLine {
@@ -384,6 +403,15 @@ class IntelService extends ChangeNotifier {
         _queued.remove(id);
         final t = lib.data.tracks[id];
         if (t == null) continue;
+        // Пока плеер сводит два трека, новый разбор не начинаем: декодирование и расчёт заняли бы процессор
+        // именно тогда, когда двум проигрывателям нужно ровное время. Ждём не дольше минуты
+        for (var i = 0; i < 120 && (holdOff?.call() ?? false) && canRun && !_paused && !_disposed; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+        }
+        if (!canRun || _paused || _disposed) {
+          if (_queued.add(id)) _queue.addFirst(id);
+          break;
+        }
         _currentTrack = t;
         _status = '';
         _notify();
@@ -610,26 +638,37 @@ class IntelService extends ChangeNotifier {
   }
 
   Future<AnalysisInput> _decodeFull(Track t, File src, String rev, double? known) async {
-    final w22 = _w('a22.raw'), w4 = _w('a4.raw');
+    final w22 = _w('a22.raw'), w4 = _w('a4.raw'), wSide = _w('a4side.raw');
     double? lufs, lra;
-    var ok = false;
+    var ok = false, sideInPass = false;
     try {
-      for (final withLoudness in [true, false]) {
-        _clean([w22, w4]);
-        final lines = await Tools.run(tools.ffmpeg.path, [
-          '-y',
-          '-v',
-          withLoudness ? 'info' : 'error',
-          '-nostats',
-          ..._threads,
-          '-i',
-          src.path,
-          '-map', '0:a:0', '-ac', '1', '-ar', '$intelRate', '-f', 's16le', w22.path,
-          '-map', '0:a:0', '-ac', '1', '-ar', '4000', '-f', 's16le', w4.path,
-          if (withLoudness) ...['-map', '0:a:0', '-af', 'ebur128=framelog=quiet', '-f', 'null', '-'],
-        ]);
+      // Боковой канал декодируется тем же проходом ffmpeg, что и основной звук: отдельный проход — это ещё одно
+      // полное декодирование файла (около трети всей работы ffmpeg на трек). Если с ним команда не выполнилась
+      // (необычная раскладка каналов, старая сборка), повторяем как раньше: без него, а потом и без громкости
+      for (final (withLoudness, withSide) in const [(true, true), (true, false), (false, false)]) {
+        _clean([w22, w4, wSide]);
+        List<String> lines = const [];
+        try {
+          lines = await Tools.run(tools.ffmpeg.path, [
+            '-y',
+            '-v',
+            withLoudness ? 'info' : 'error',
+            '-nostats',
+            ..._threads,
+            '-i',
+            src.path,
+            '-map', '0:a:0', '-ac', '1', '-ar', '$intelRate', '-f', 's16le', w22.path,
+            '-map', '0:a:0', '-ac', '1', '-ar', '4000', '-f', 's16le', w4.path,
+            if (withSide) ...['-map', '0:a:0', '-af', 'pan=mono|c0=0.5*c0-0.5*c1', '-ar', '4000', '-f', 's16le', wSide.path],
+            if (withLoudness) ...['-map', '0:a:0', '-af', 'ebur128=framelog=quiet', '-f', 'null', '-'],
+          ]);
+        } catch (_) {
+          if (!withSide) rethrow;
+          continue; // без бокового канала команда прежняя: пусть решает она
+        }
         if (w22.existsSync() && w22.lengthSync() > intelRate && w4.existsSync() && w4.lengthSync() > 8000) {
           ok = true;
+          sideInPass = withSide;
           if (withLoudness) {
             final r = parseLoudness(lines);
             lufs = r.$1;
@@ -641,7 +680,13 @@ class IntelService extends ChangeNotifier {
       if (!ok) return _stub(t, rev, known, 'full');
       final b22 = await w22.readAsBytes();
       final b4 = await w4.readAsBytes();
-      final side = await _decodeSide(src);
+      Uint8List? side;
+      if (sideInPass && wSide.existsSync() && wSide.lengthSync() >= 2000) {
+        try {
+          side = await wSide.readAsBytes();
+        } catch (_) {}
+      }
+      side ??= await _decodeSide(src);
       final decoded = b22.length / 2 / intelRate;
       return AnalysisInput(
         trackId: t.id,
@@ -655,7 +700,7 @@ class IntelService extends ChangeNotifier {
         nowMs: DateTime.now().millisecondsSinceEpoch,
       );
     } finally {
-      _clean([w22, w4]);
+      _clean([w22, w4, wSide]);
     }
   }
 

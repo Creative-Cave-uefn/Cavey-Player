@@ -234,6 +234,8 @@ class AppServices {
     app.sim = SimIndex(lib, () => player.mixer);
     app.intel = IntelService(dir: store.sub('intel'), lib: lib, drive: drive, cache: cache, tools: Tools(store.sub('tools')));
     player.verifyTransition = app.intel.verifyTransition;
+    // Во время сведения новый разбор звука не начинается: процессор нужен двум проигрывателям
+    app.intel.holdOff = () => player.transitionActive;
     // Переменная CAVEY_NO_INTEL=1 полностью отключает анализ звука (для проверки, не он ли виноват в сбое)
     final intelOff = Platform.environment['CAVEY_NO_INTEL'] == '1';
     if (!intelOff) {

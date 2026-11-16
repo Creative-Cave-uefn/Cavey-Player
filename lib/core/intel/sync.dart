@@ -108,6 +108,11 @@ class IntelSync {
   bool _busy = false;
   bool get busy => _busy;
 
+  /// Шарды, которые не удалось разобрать (повреждены или от более новой версии): id файла → время его изменения.
+  /// Пока файл не изменился, в этом запуске его больше не качаем — иначе те же файлы скачивались бы при каждом
+  /// обмене и занимали собой весь лимит загрузок, не пропуская остальные
+  final Map<String, String> _unreadable = {};
+
   /// Обмен с Диском: сначала читаем чужое, потом публикуем своё. [publish] = false — только читать
   Future<IntelSyncReport> sync({bool publish = true}) async {
     if (_busy) return const IntelSyncReport(error: 'Обмен уже идёт');
@@ -152,6 +157,7 @@ class IntelSync {
         store.shards[f.id] = f.modifiedTime;
         continue;
       }
+      if (_unreadable[f.id] == f.modifiedTime) continue;
       if (downloads >= maxDownloads) break;
       downloads++;
       try {
@@ -159,7 +165,8 @@ class IntelSync {
         final shard = IntelShard.decode(utf8.decode(bytes, allowMalformed: true));
         if (shard == null) {
           skipped++;
-          continue; // не помечаем слитым: возможно, файл ещё дописывается
+          _unreadable[f.id] = f.modifiedTime;
+          continue; // не помечаем слитым: если файл допишут, время изменения станет другим и он прочитается
         }
         for (final r in shard.records) {
           if (store.put(r)) merged++;

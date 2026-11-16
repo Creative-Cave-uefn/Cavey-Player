@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 /// Source-time descriptors. Unknown vocals stay null: a midrange proxy is not
 /// a measured singing probability. Older index readers ignore this extension.
@@ -137,6 +138,14 @@ class AudioRegion {
         'function': 'unknown'
       };
 
+  /// Every decoded region would otherwise own a separate copy of the same word.
+  static String _source(String? raw) => switch (raw) {
+        null || 'unknown' => 'unknown',
+        'heuristic' => 'heuristic',
+        'annotation' => 'annotation',
+        _ => raw,
+      };
+
   static AudioRegion? fromJson(Object? raw) {
     if (raw is! Map) return null;
     try {
@@ -149,14 +158,15 @@ class AudioRegion {
           onsetDensity: (raw['onsets'] as num).toDouble(),
           activeFraction: (raw['active'] as num).toDouble(),
           boundaryConfidence: (raw['boundary'] as num? ?? 0).toDouble(),
-          mfcc: [for (final x in raw['mfcc'] as List) (x as num).toDouble()],
-          chroma: [
-            for (final x in raw['chroma'] as List) (x as num).toDouble()
-          ],
+          // Compact typed storage: the index keeps every record in memory.
+          mfcc: Float64List.fromList(
+              [for (final x in raw['mfcc'] as List) (x as num).toDouble()]),
+          chroma: Float64List.fromList(
+              [for (final x in raw['chroma'] as List) (x as num).toDouble()]),
           samplePeakDb: (raw['peak'] as num?)?.toDouble(),
           vocalProbability: (raw['vocal'] as num?)?.toDouble(),
           vocalConfidence: (raw['vocalConf'] as num?)?.toDouble(),
-          vocalSource: raw['vocalSource'] as String? ?? 'unknown',
+          vocalSource: _source(raw['vocalSource'] as String?),
           attackCentroidHz: (raw['attackHz'] as num?)?.toDouble(),
           attackBassRatio: (raw['attackBass'] as num?)?.toDouble(),
           recurrenceCluster: (raw['cluster'] as num?)?.toInt(),

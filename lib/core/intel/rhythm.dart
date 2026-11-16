@@ -9,7 +9,7 @@ class RhythmWindow {
   final double bpm, confidence, support, residualMs;
   final List<int> beatsMs;
   final List<double> groove, lowGroove;
-  const RhythmWindow(
+  RhythmWindow(
       {required this.startMs,
       required this.endMs,
       required this.bpm,
@@ -19,33 +19,57 @@ class RhythmWindow {
       required this.beatsMs,
       required this.groove,
       required this.lowGroove});
-  bool get valid =>
-      startMs >= 0 &&
-      endMs > startMs &&
-      bpm.isFinite &&
-      bpm >= 40 &&
-      bpm <= 250 &&
-      confidence.isFinite &&
-      confidence >= 0 &&
-      confidence <= 1 &&
-      support.isFinite &&
-      support >= 0 &&
-      support <= 1 &&
-      residualMs.isFinite &&
-      residualMs >= 0 &&
-      beatsMs.length <= 256 &&
-      beatsMs.every((t) => t >= startMs && t < endMs) &&
-      List.generate(math.max(0, beatsMs.length - 1),
-          (i) => beatsMs[i + 1] > beatsMs[i]).every((v) => v) &&
-      [groove, lowGroove].every((p) =>
-          p.length == 8 && p.every((x) => x.isFinite && x >= 0 && x <= 1));
-  bool get reliable =>
-      valid &&
+  // Both checks walk every beat and are asked for thousands of times by one
+  // planning pass (windows x windows x cue pairs), so they are computed once.
+  late final bool valid = _checkValid();
+  late final bool reliable = valid &&
       confidence >= 0.1 &&
       support >= 0.72 &&
       residualMs <= 30 &&
       beatsMs.length >= 12;
-  bool onBeat(int at) => beatsMs.any((b) => (b - at).abs() <= 25);
+  bool _checkValid() {
+    if (startMs < 0 ||
+        endMs <= startMs ||
+        !bpm.isFinite ||
+        bpm < 40 ||
+        bpm > 250 ||
+        !confidence.isFinite ||
+        confidence < 0 ||
+        confidence > 1 ||
+        !support.isFinite ||
+        support < 0 ||
+        support > 1 ||
+        !residualMs.isFinite ||
+        residualMs < 0 ||
+        beatsMs.length > 256) return false;
+    for (var i = 0; i < beatsMs.length; i++) {
+      final t = beatsMs[i];
+      if (t < startMs || t >= endMs || (i > 0 && t <= beatsMs[i - 1])) {
+        return false;
+      }
+    }
+    for (final p in [groove, lowGroove]) {
+      if (p.length != 8) return false;
+      for (final x in p) {
+        if (!x.isFinite || x < 0 || x > 1) return false;
+      }
+    }
+    return true;
+  }
+
+  /// Beats are strictly ascending, so the nearest one is found by bisection.
+  bool onBeat(int at) {
+    var lo = 0, hi = beatsMs.length;
+    while (lo < hi) {
+      final mid = (lo + hi) >> 1;
+      if (beatsMs[mid] < at - 25) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo < beatsMs.length && beatsMs[lo] <= at + 25;
+  }
   Map<String, Object> toJson() => {
         's': startMs,
         'e': endMs,
@@ -67,15 +91,13 @@ class RhythmWindow {
           confidence: (raw['conf'] as num).toDouble(),
           support: (raw['support'] as num).toDouble(),
           residualMs: (raw['residual'] as num).toDouble(),
-          beatsMs: [
-            for (final x in raw['beats'] as List) (x as num).toInt()
-          ],
-          groove: [
-            for (final x in raw['groove'] as List) (x as num).toDouble()
-          ],
-          lowGroove: [
-            for (final x in raw['low'] as List) (x as num).toDouble()
-          ]);
+          // Compact typed storage: the index keeps every record in memory.
+          beatsMs: Int32List.fromList(
+              [for (final x in raw['beats'] as List) (x as num).toInt()]),
+          groove: Float64List.fromList(
+              [for (final x in raw['groove'] as List) (x as num).toDouble()]),
+          lowGroove: Float64List.fromList(
+              [for (final x in raw['low'] as List) (x as num).toDouble()]));
       return w.valid ? w : null;
     } catch (_) {
       return null;
