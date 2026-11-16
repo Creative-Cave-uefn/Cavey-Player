@@ -702,19 +702,48 @@ class PlayerController extends ChangeNotifier {
 
   bool get adaptiveStyle => jamXfSec == null && smartMix && settings.viewOf('mix.style', 'fade') == 'adaptive';
 
+  final Stopwatch _adaptiveChecked = Stopwatch();
+
+  /// Идёт переход между треками или следующая дека прямо сейчас открывается: фоновым задачам лучше подождать
+  bool get transitionActive => _fading || _preparing;
+
+  /// Профиль звука явно от другого файла: длительность расходится с тем, что играет
+  bool _profileMismatch(MixProfile? p) =>
+      p != null && duration > Duration.zero && (p.durationMs - duration.inMilliseconds).abs() > 4000;
+
+  /// Всё, от чего зависит адаптивный план: пока строка та же, план не пересчитывается. В ключе — только профили и
+  /// разборы треков, участвующих в выборе: чужой фоновый разбор библиотеки план не сбрасывает
+  String _adaptiveKeyOf(bool manual, Track cur, List<String> ids, MixAnalyzer m) {
+    final all = [cur.id, ...ids];
+    final analysis = all.map((id) => adaptiveFeatures?.call(id)?.analyzedAt ?? 0).join(',');
+    final profiles = all.map((id) => identityHashCode(m.profileCached(id))).join(',');
+    final cached = (List.of(all)..sort()).map((id) => cache.has(id) ? '1' : '0').join();
+    return '$manual:$_openSeq:${cur.id}:${ids.join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:'
+        '${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:$profiles:$analysis:'
+        '${setIntent.name}:$normalize:$normLevel:${settings.viewOf('intel.cut', '0')}:$cached:${_profileMismatch(m.profileCached(cur.id))}';
+  }
+
   /// Freeze the first transition before preloading. Never reorder explicit user
   /// additions, a jam queue, or a saved/manual transition. Queue edits replan.
   void _prepareAdaptive({bool manual = false}) {
     final cur = current, m = mixer;
     if (!adaptiveStyle || adaptiveFeatures == null || cur == null || m == null ||
         _fading || (!manual && (_preparing || _preparedId != null)) || index < 0 || index + 1 >= queue.length) return;
+    // Вызывается на каждом отсчёте позиции (десятки раз в секунду): сверяем состояние не чаще нескольких раз в секунду
+    if (!manual && _adaptiveKey != null && _adaptiveChecked.isRunning && _adaptiveChecked.elapsedMilliseconds < 400) return;
+    _adaptiveChecked
+      ..reset()
+      ..start();
     final ids = queue.skip(index + 1).take(AdaptiveDj.maxCandidates).toList();
     if (_previewOverride != null || ids.any((id) => _prefFor(cur.id, id) != null)) return;
-    final analysisKey = [cur.id, ...ids].map((id) => adaptiveFeatures?.call(id)?.analyzedAt ?? 0).join(',');
-    final cachedIds = [cur.id, ...ids]..sort();
-    final cacheKey = cachedIds.map((id) => cache.has(id) ? '1' : '0').join();
-    final key = '$manual:$_openSeq:${cur.id}:${ids.join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:${m.profileCount}:$analysisKey:${setIntent.name}:$normalize:$normLevel:${settings.viewOf('intel.cut', '0')}:$cacheKey';
+    final key = _adaptiveKeyOf(manual, cur, ids, m);
     if (_adaptiveKey == key) return;
+    // Профиль от другого файла (трек заменили): адаптивный план не строим. Проверяем ДО планирования и запоминаем
+    // ключ — иначе тяжёлый перебор запускался заново на каждом отсчёте позиции до самого конца трека
+    if (_profileMismatch(m.profile(cur.id))) {
+      _adaptiveKey = key;
+      return;
+    }
     AdaptiveTrack track(String id) => AdaptiveTrack(id, m.profile(id), adaptiveFeatures?.call(id),
         artist: lib.data.tracks[id]?.artist.toLowerCase() ?? '', genre: m.profileCached(id)?.genre ?? '');
     try {
@@ -726,9 +755,6 @@ class PlayerController extends ChangeNotifier {
           manualPositionMs: manual ? position.value.inMilliseconds : null,
           allowCut: settings.viewOf('intel.cut', '0') == '1',
           context: DjSetContext(intent: setIntent, history: List.of(_djHistory)));
-      // Do not replace a duration-mismatched profile with an adaptive plan.
-      final pa = m.profile(cur.id);
-      if (pa != null && duration > Duration.zero && (pa.durationMs - duration.inMilliseconds).abs() > 4000) return;
       _adaptiveDecision = result;
       _adaptiveReady = result.technique == AdaptiveTechnique.autoMix;
       final selected = ids.indexOf(result.to);
@@ -739,7 +765,9 @@ class PlayerController extends ChangeNotifier {
         _queueChanged();
       }
       _adaptiveDecision = result;
-      _adaptiveKey = '$manual:$_openSeq:${cur.id}:${queue.skip(index + 1).take(AdaptiveDj.maxCandidates).join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:${m.profileCount}:$analysisKey:${setIntent.name}:$normalize:$normLevel:${settings.viewOf('intel.cut', '0')}:$cacheKey';
+      // Ключ — по очереди ПОСЛЕ перестановки и тем же расчётом, что и при сверке: иначе следующий отсчёт позиции
+      // видел «другое» состояние и планирование вместе с проверочным рендером выполнялись второй раз
+      _adaptiveKey = _adaptiveKeyOf(manual, cur, queue.skip(index + 1).take(AdaptiveDj.maxCandidates).toList(), m);
       AppLog.info('Adaptive AutoDJ: ${jsonEncode({'from': cur.id, 'candidates': ids, ...result.toJson()})}');
       final baseline = m.profile(cur.id) != null && m.profile(result.to) != null
           ? MixPlan.make(m.profile(cur.id)!, m.profile(result.to)!, maxSec: crossfadeSecNow.clamp(1, 12).toInt()) : null;
@@ -840,13 +868,34 @@ class PlayerController extends ChangeNotifier {
     final a = m.profile(cur.id), b = m.profile(queue[ni]);
     if (a == null || b == null) return null;
     // Профиль от другого файла (трек заменили) — не доверяем
-    if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
+    if (_profileMismatch(a)) return null;
     final selected = _adaptiveDecision;
-    final auto = adaptiveStyle && !manual && selected?.to == queue[ni] && selected?.plan != null
+    final nextId = queue[ni];
+    final bpm = tempoOf?.call(cur);
+    // План спрашивают на каждом отсчёте позиции в последние минуты трека. Пока ничего из исходных данных не изменилось,
+    // отдаём готовый: раньше расчёт (и строка в журнале от уточнения по разбору звука) повторялись десятки раз в секунду
+    final key = (
+      cur.id, nextId, a, b, pref, selected, _adaptiveReady, crossfadeSecNow, bpm, smartMix, adaptiveStyle, djStyle,
+      settings.viewOf('mix.bars', '8'), settings.viewOf('mix.range', '8'), settings.viewOf('mix.bass', '1'),
+      settings.viewOf('mix.offset', '0'), settings.viewOf('intel.plan', '1'), settings.viewOf('intel.cut', '0'),
+      adaptiveFeatures?.call(cur.id), adaptiveFeatures?.call(nextId),
+    );
+    if (_planKey == key && _planAge.elapsedMilliseconds < 5000) return _planMemo;
+    final auto = adaptiveStyle && !manual && selected?.to == nextId && selected?.plan != null
         ? _adaptiveReady ? selected!.plan! : MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt())
-        : _autoPlan(a, b, cur.id, queue[ni], bpm: tempoOf?.call(cur));
-    return manual ? MixPlan.manual(a, b, pref, auto: auto) : auto;
+        : _autoPlan(a, b, cur.id, nextId, bpm: bpm);
+    final plan = manual ? MixPlan.manual(a, b, pref, auto: auto) : auto;
+    _planKey = key;
+    _planMemo = plan;
+    _planAge
+      ..reset()
+      ..start();
+    return plan;
   }
+
+  Object? _planKey;
+  MixPlan? _planMemo;
+  final Stopwatch _planAge = Stopwatch();
 
   /// Переход между текущим треком и следующим настроен вручную (или хоть как-то задан)
   TransitionPref? get _nextPref {
@@ -1098,6 +1147,20 @@ class PlayerController extends ChangeNotifier {
     bool ownsTransition() => seq == _openSeq && generation == _fadeGeneration && _fading;
     final lengthWanted = plan?.length.inMilliseconds ?? crossfadeSecNow.clamp(1, 10).toInt() * 1000;
     final lengthMs0 = lengthWanted;
+    var handedOff = false;
+    Player? opened;
+    // Переход отменили, пока новая дека готовилась: возвращаем ей обычный темп и убираем фильтры, чтобы следующий
+    // трек на ней не заиграл со срезанными частотами. Если деку уже занял новый переход или подготовка — не трогаем
+    Future<void> release() async {
+      final deck = opened;
+      if (deck == null || handedOff || _fading || _preparing || _preparedId != null || identical(_p, deck)) return;
+      await _clearEq(deck);
+      if (_fxDirty) {
+        await _setRate(deck, 1.0);
+        await _setLowCut(deck, false);
+      }
+      if (!_fading && !_preparing && _preparedId == null && !identical(_p, deck)) await deck.stop();
+    }
     // С выравниванием громкости оба трека уже приведены к одному уровню — свою подгонку перехода не добавляем
     final match = normalize ? 1.0 : (plan?.inGain ?? 1.0);
     try {
@@ -1114,6 +1177,8 @@ class PlayerController extends ChangeNotifier {
       final prepared = _preparedId == nextTrack.id;
       _preparedId = null;
       await incoming.setVolume(0);
+      if (!ownsTransition()) return;
+      opened = incoming;
       final djp = plan != null && plan.dj ? plan : null;
       final dj = djp != null;
       var eqBlend = false;
@@ -1208,6 +1273,7 @@ class PlayerController extends ChangeNotifier {
           actualStartMs: old.state.position.inMilliseconds, cueInMs: incoming.state.position.inMilliseconds,
           plannedLengthMs: lengthWanted, actualLengthMs: lengthMs, prepareMs: prepareClock.elapsedMilliseconds,
           requestedRate: djp?.rate ?? 1, actualRate: incoming.state.rate);
+      handedOff = true;
       _p = incoming;
       _q = old;
       _outgoing = old;
@@ -1254,16 +1320,20 @@ class PlayerController extends ChangeNotifier {
       final started = DateTime.now();
       final swapAt = djp?.swapAt;
       var swapped = false;
-      var ticks = 0;
+      var phaseCheckedMs = 0;
       var cmdRate = djp?.rate ?? 1.0;
-      _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      // Громкость меняется ступеньками. На длинном переходе десяти шагов в секунду хватает, а короткий (стык на фразе —
+      // четверть секунды, короткий crossfade — пара секунд) состоял бы из двух-трёх слышимых скачков: шаг делаем мельче
+      final stepMs = lengthMs < 1500 ? 25 : (lengthMs < 4000 ? 50 : 100);
+      _fadeTimer = Timer.periodic(Duration(milliseconds: stepMs), (timer) {
         if (!ownsTransition()) {
           timer.cancel();
           return;
         }
         final elapsed = DateTime.now().difference(started);
         // Подстройка скоростью: раз в 200 мс смотрим, не уехали ли доли, и чуть ускоряем или замедляем следующий трек
-        if (djp != null && ++ticks % 2 == 0) {
+        if (djp != null && elapsed.inMilliseconds - phaseCheckedMs >= 200) {
+          phaseCheckedMs = elapsed.inMilliseconds;
           final oc = _outClock, ic = _inClock;
           final e = oc == null || ic == null ? null : _phaseErr(djp, oc.now(), ic.now());
           if (e != null) {
@@ -1313,6 +1383,8 @@ class PlayerController extends ChangeNotifier {
           lib.messages.add('Переход отменён: следующая дека не готова. Текущий трек продолжает играть; подробности в журнале.');
         }
       }
+    } finally {
+      if (!handedOff && !ownsTransition()) await release();
     }
   }
 
@@ -1494,7 +1566,18 @@ class PlayerController extends ChangeNotifier {
     _pendingRate = 1.0;
     _normOut = 1;
     if (wasFading || old != null) unawaited(_p.setVolume(_scaled(volume * _normIn)));
-    if (stopIncoming && old == null) unawaited(_q?.stop() ?? Future<void>.value());
+    // Переход отменён до передачи звука новой деке (пауза, перемотка, выбран другой трек): она уже открыта и играет
+    // без звука. Останавливаем её всегда — иначе неслышный трек доигрывал до конца, занимая процессор и сеть
+    if ((stopIncoming || wasFading) && old == null) {
+      final q = _q;
+      if (q != null) {
+        if (_fxDirty) {
+          unawaited(_setRate(q, 1.0));
+          unawaited(_setLowCut(q, false));
+        }
+        unawaited(q.stop());
+      }
+    }
   }
 
   // ---------- воспроизведение ----------

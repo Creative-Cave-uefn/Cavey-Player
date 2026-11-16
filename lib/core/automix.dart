@@ -438,16 +438,26 @@ class MixAnalyzer {
   MixProfile? profile(String id) {
     final m = _mem[id];
     if (m != null) return m;
+    // Плеер спрашивает профиль на каждом отсчёте позиции: пока трек не разобран, не ходим каждый раз на диск.
+    // Файл профиля появляется только из _analyze, а он сразу кладёт профиль в память
+    if (_absent.contains(id)) return null;
     final f = _file(id);
-    if (!f.existsSync()) return null;
+    MixProfile? p;
     try {
-      final p = MixProfile.fromJson(jsonDecode(f.readAsStringSync()));
-      if (p != null) _mem[id] = p;
-      return p;
+      if (f.existsSync()) p = MixProfile.fromJson(jsonDecode(f.readAsStringSync()));
     } catch (_) {
-      return null;
+      p = null;
     }
+    if (p != null) {
+      _mem[id] = p;
+    } else {
+      _absent.add(id);
+    }
+    return p;
   }
+
+  /// Треки, у которых на диске нет читаемого профиля (чтобы не проверять это снова и снова)
+  final Set<String> _absent = {};
 
   /// Профиль из памяти, без чтения диска: для проходов по всей библиотеке
   MixProfile? profileCached(String id) => _mem[id];
@@ -561,6 +571,7 @@ class MixAnalyzer {
       // Если разбор упал, сохраняем прежний профиль без отметки о новой версии: попробуем в следующий раз
       final p = failed ? base : base.withAnalysis(a, tagBpm: tags.$1, tagKey: tags.$2, genre: tags.$3);
       _mem[id] = p;
+      _absent.remove(id);
       await _file(id).writeAsString(jsonEncode(p.toJson()));
       onProfile?.call(id);
     } catch (e) {
