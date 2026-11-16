@@ -60,6 +60,21 @@ void main() {
     expect(d.components['keyCompatibility'], 0);
     expect(d.plan!.length.inMilliseconds, lessThanOrEqualTo(4000));
   });
+  test('opt-in transposition is bounded and accounts for the outgoing pitch',
+      () {
+    final a = keyed('a', '8A'), b = keyed('b', '3A');
+    final off = AdaptiveDj.pair(a, b);
+    expect(off.plan!.transpose, 0);
+    final on = AdaptiveDj.pair(a, b, options: const DjMix(transpose: true));
+    expect(on.plan!.transpose, -1);
+    expect(on.components['keyCompatibility'], 1);
+    expect(on.plan!.tempoRamp, isTrue);
+    final next = AdaptiveDj.pair(b, keyed('c', '8A'),
+        options: const DjMix(transpose: true, outgoingShift: -1));
+    expect(next.plan!.transpose, 0);
+    expect(next.plan!.outgoingShift, -1);
+    expect(next.components['keyCompatibility'], 1);
+  });
   test('compatible keys permit a phrase-complete eight-bar mix', () {
     final a = keyed('a', '8A'), b = keyed('b', '9A');
     final d = AdaptiveDj.pair(a, b, options: const DjMix(bars: 8));

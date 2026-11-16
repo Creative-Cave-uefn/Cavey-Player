@@ -71,6 +71,8 @@ class AdaptiveDecision {
     'alternatives': alternatives, 'components': components,
     'outMs': plan?.start.inMilliseconds, 'inMs': plan?.inStart.inMilliseconds,
     'lengthMs': plan?.length.inMilliseconds, 'rate': plan?.rate,
+    'transposeSemitones': plan?.transpose, 'outgoingShift': plan?.outgoingShift,
+    'tempoRamp': plan?.tempoRamp,
   };
 }
 
@@ -94,8 +96,9 @@ class AdaptiveDj {
     final candidates = pool.where((t) => t.id != from.id).take(maxCandidates).toList();
     if (!from.reliable || candidates.isEmpty) return fallback(from, pool.first, maxSec);
     final pairCache = <String, AdaptiveDecision>{};
-    AdaptiveDecision evaluate(AdaptiveTrack a, AdaptiveTrack b, int earliest) =>
-        pairCache.putIfAbsent('${a.id}:${b.id}:$earliest', () => pair(a, b, options: options,
+    AdaptiveDecision evaluate(AdaptiveTrack a, AdaptiveTrack b, int earliest, int pitch) =>
+        pairCache.putIfAbsent('${a.id}:${b.id}:$earliest:$pitch',
+            () => pair(a, b, options: options.withOutgoingShift(pitch),
             maxSec: maxSec, earliestMs: earliest, manualPositionMs: a.id == from.id ? manualPositionMs : null, allowCut: allowCut));
     DjHistoryEntry historyEntry(AdaptiveTrack t, String technique) => DjHistoryEntry(t.id,
         artist: t.artist, genre: t.genre, technique: technique, energyDb: t.features?.rmsDb ?? t.profile?.loudDb ?? -20);
@@ -107,7 +110,11 @@ class AdaptiveDj {
       for (final path in beam) {
         for (final next in candidates) {
           if (path.ids.contains(next.id) || !next.reliable) continue;
-          final decision = evaluate(path.last, next, depth == 0 ? earliestMs : 0);
+          final pitch = depth == 0
+              ? options.outgoingShift
+              : path.decisions.last.plan?.transpose ?? 0;
+          final decision =
+              evaluate(path.last, next, depth == 0 ? earliestMs : 0, pitch);
           if (decision.technique == AdaptiveTechnique.autoMix) continue;
           var projected = seeded;
           for (var i = 0; i < path.ids.length; i++) {
@@ -135,7 +142,7 @@ class AdaptiveDj {
           'setContext': seeded.score(historyEntry(byId[first.to]!, first.technique.name), timbreFit: first.components['timbre'] ?? 0.5),
           'pathScore': best.score}, alternatives: [
           for (final next in candidates)
-            evaluate(from, next, earliestMs).toJson(),
+            evaluate(from, next, earliestMs, options.outgoingShift).toJson(),
         ]);
   }
 

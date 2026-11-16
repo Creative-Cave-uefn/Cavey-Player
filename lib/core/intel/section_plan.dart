@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import '../automix.dart';
 import '../dj.dart' show Camelot;
+import '../dj_transition.dart';
 import 'record.dart';
 import 'sections.dart';
 import 'rhythm.dart';
@@ -32,10 +33,15 @@ class SectionPlanner {
     final matched = beat?.dj == true;
     // Global key estimates are useful only when the analyzer trusts them.
     // Missing/weak keys remain neutral; chroma still describes the local audio.
-    final keyA = fa.keyReliable ? Camelot.parse(fa.key) : null;
+    final rawA = fa.keyReliable ? Camelot.parse(fa.key) : null;
+    final keyA = rawA == null ? null : shiftedKey(rawA, options.outgoingShift);
     final keyB = fb.keyReliable ? Camelot.parse(fb.key) : null;
+    final shift =
+        options.transpose && options.harmonic && keyA != null && keyB != null
+            ? harmonicShift(keyA, keyB)
+            : 0;
     final keyFit = options.harmonic && keyA != null && keyB != null
-        ? Camelot.compat(keyA, keyB)
+        ? Camelot.compat(keyA, shiftedKey(keyB, shift))
         : null;
     final earliest =
         math.max(earliestMs, math.max(a.introMs + 10000, a.endMs - 60000));
@@ -178,7 +184,9 @@ class SectionPlanner {
             timbreDistance += math.pow(ra.mfcc[k] - rb.mfcc[k], 2);
           }
           final timbre = math.exp(-math.sqrt(timbreDistance / 12) / 16);
-          final harmonic = _cosine(ra.chroma, rb.chroma);
+          final harmonic = _cosine(
+              _shiftChroma(ra.chroma, options.outgoingShift),
+              _shiftChroma(rb.chroma, shift));
           final harmony = keyFit == null ? harmonic : 0.5 * (harmonic + keyFit);
           final phrasing = isBeat ? (phraseIn + phraseOut) / 2 : 0.0;
           final durationFit = !isBeat
@@ -237,6 +245,7 @@ class SectionPlanner {
             'timbre': timbre,
             'harmony': harmony,
             if (keyFit != null) 'keyCompatibility': keyFit,
+            'transposeSemitones': shift.toDouble(),
             'phrasing': phrasing,
             'durationFit': durationFit,
             'rhythm': rhythm,
@@ -284,6 +293,7 @@ class SectionPlanner {
                           ? 0.04
                           : 0) -
                   0.06 * stretch -
+                  0.01 * shift.abs() -
                   peakPenalty -
                   (vocalClash || modelClash
                       ? 0.1
@@ -313,6 +323,9 @@ class SectionPlanner {
           final p = MixPlan(Duration(milliseconds: exit),
               Duration(milliseconds: len), Duration(milliseconds: enter), gain,
               dj: isBeat,
+              transpose: shift,
+              outgoingShift: options.outgoingShift,
+              tempoRamp: isBeat,
               rate: rate,
               grid: grid,
               offsetMs: isBeat ? options.offsetMs : 0,
@@ -327,6 +340,8 @@ class SectionPlanner {
             'Энергия/тембр/гармония/ритм оценены в выбранных окнах',
             if (keyFit != null)
               'Совместимость Camelot: ${keyFit.toStringAsFixed(2)}',
+            if (shift != 0)
+              'Тональность следующего трека: ${shift > 0 ? '+' : ''}$shift полутон',
             if (isBeat && phraseIn >= 0.5 && phraseOut >= 0.5)
               'Вход и завершение микса согласованы с найденными фразами',
             if (wa != null && wb != null)
@@ -491,6 +506,11 @@ class SectionPlanner {
         ? (dot / math.sqrt(aa * bb)).clamp(0.0, 1.0).toDouble()
         : 0.5;
   }
+
+  static List<double> _shiftChroma(List<double> chroma, int semitones) =>
+      semitones == 0
+          ? chroma
+          : [for (var pc = 0; pc < 12; pc++) chroma[(pc - semitones) % 12]];
 
   static double? _proxy(DjData? d, int start, int len) {
     final c = d?.vocalCurve,

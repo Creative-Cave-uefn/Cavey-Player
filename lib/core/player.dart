@@ -11,6 +11,7 @@ import 'auth.dart';
 import 'crossfade.dart';
 import 'crossfade_handoff.dart';
 import 'dj_eq.dart';
+import 'dj_transition.dart';
 import 'intel/adaptive_dj.dart';
 import 'intel/record.dart';
 import 'intel/set_context.dart';
@@ -719,7 +720,7 @@ class PlayerController extends ChangeNotifier {
     final profiles = all.map((id) => identityHashCode(m.profileCached(id))).join(',');
     final cached = (List.of(all)..sort()).map((id) => cache.has(id) ? '1' : '0').join();
     return '$manual:$_openSeq:${cur.id}:${ids.join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:'
-        '${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:$crossfadeSecNow:$profiles:$analysis:'
+        '${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:${settings.viewOf('mix.transpose', '0')}:${_pitch[_p] ?? 0}:$crossfadeSecNow:$profiles:$analysis:'
         '${setIntent.name}:$normalize:$normLevel:${settings.viewOf('intel.cut', '0')}:$cached:${_profileMismatch(m.profileCached(cur.id))}';
   }
 
@@ -768,7 +769,11 @@ class PlayerController extends ChangeNotifier {
       // Ключ — по очереди ПОСЛЕ перестановки и тем же расчётом, что и при сверке: иначе следующий отсчёт позиции
       // видел «другое» состояние и планирование вместе с проверочным рендером выполнялись второй раз
       _adaptiveKey = _adaptiveKeyOf(manual, cur, queue.skip(index + 1).take(AdaptiveDj.maxCandidates).toList(), m);
-      AppLog.info('Adaptive AutoDJ: ${jsonEncode({'from': cur.id, 'candidates': ids, ...result.toJson()})}');
+      AppLog.info('Adaptive AutoDJ: ${jsonEncode({
+            'from': cur.id,
+            'candidates': ids,
+            ...result.toJson()
+          })}');
       final baseline = m.profile(cur.id) != null && m.profile(result.to) != null
           ? MixPlan.make(m.profile(cur.id)!, m.profile(result.to)!, maxSec: crossfadeSecNow.clamp(1, 12).toInt()) : null;
       final normalizationKey = '$normalize:$normLevel';
@@ -833,7 +838,14 @@ class PlayerController extends ChangeNotifier {
           bars: settings.viewNum('mix.bars', 8).round().clamp(1, 32).toInt(),
           range: (settings.viewNum('mix.range', 8) / 100).clamp(0.01, 0.2).toDouble(),
           bass: settings.viewOf('mix.bass', '1') == '1',
-          offsetMs: settings.viewNum('mix.offset', 0).round().clamp(-200, 200).toInt())
+          transpose:
+              adaptiveStyle && settings.viewOf('mix.transpose', '0') == '1',
+          outgoingShift: _pitch[_p] ?? 0,
+          offsetMs: settings
+              .viewNum('mix.offset', 0)
+              .round()
+              .clamp(-200, 200)
+              .toInt())
       : null;
 
   /// Джем: настройки плавного перехода организатора (секунды, 0 — выключен; умный переход). null — действуют мои.
@@ -877,7 +889,11 @@ class PlayerController extends ChangeNotifier {
     final key = (
       cur.id, nextId, a, b, pref, selected, _adaptiveReady, crossfadeSecNow, bpm, smartMix, adaptiveStyle, djStyle,
       settings.viewOf('mix.bars', '8'), settings.viewOf('mix.range', '8'), settings.viewOf('mix.bass', '1'),
-      settings.viewOf('mix.offset', '0'), settings.viewOf('intel.plan', '1'), settings.viewOf('intel.cut', '0'),
+      settings.viewOf('mix.offset', '0'),
+      settings.viewOf('intel.plan', '1'),
+      settings.viewOf('intel.cut', '0'),
+      settings.viewOf('mix.transpose', '0'),
+      _pitch[_p] ?? 0,
       adaptiveFeatures?.call(cur.id), adaptiveFeatures?.call(nextId),
     );
     if (_planKey == key && _planAge.elapsedMilliseconds < 5000) return _planMemo;
@@ -929,7 +945,15 @@ class PlayerController extends ChangeNotifier {
     }
     final length = plan.dj || adaptiveStyle ? plan.length : Duration(seconds: math.max(4, crossfadeSecNow));
     plan = MixPlan(start, length, plan.inStart, plan.inGain,
-        dj: plan.dj, rate: plan.rate, swapAt: plan.swapAt, grid: plan.grid, offsetMs: plan.offsetMs, preroll: plan.preroll);
+        dj: plan.dj,
+        rate: plan.rate,
+        swapAt: plan.swapAt,
+        grid: plan.grid,
+        offsetMs: plan.offsetMs,
+        preroll: plan.preroll,
+        transpose: plan.transpose,
+        outgoingShift: plan.outgoingShift,
+        tempoRamp: plan.tempoRamp);
     await _startCrossfade(plan);
   }
 
@@ -1113,6 +1137,7 @@ class PlayerController extends ChangeNotifier {
         if (seq != _openSeq || _fading) return;
         final q = _q ??= Player();
         await q.setVolume(0);
+        await _applyPitch(q, 0);
         await q.open(media, play: false);
         if (seq != _openSeq) {
           await q.stop();
@@ -1155,6 +1180,7 @@ class PlayerController extends ChangeNotifier {
       final deck = opened;
       if (deck == null || handedOff || _fading || _preparing || _preparedId != null || identical(_p, deck)) return;
       await _clearEq(deck);
+      await _applyPitch(deck, 0);
       if (_fxDirty) {
         await _setRate(deck, 1.0);
         await _setLowCut(deck, false);
@@ -1174,6 +1200,7 @@ class PlayerController extends ChangeNotifier {
       }
       if (!ownsTransition()) return;
       final incoming = _q ??= Player();
+      await _applyPitch(incoming, 0);
       final prepared = _preparedId == nextTrack.id;
       _preparedId = null;
       await incoming.setVolume(0);
@@ -1191,6 +1218,8 @@ class PlayerController extends ChangeNotifier {
       }
       if (!ownsTransition()) return;
       // Configure the already opened, silent deck; open may reset transport FX.
+      await _applyPitch(incoming, plan?.transpose ?? 0);
+      if (!ownsTransition()) return;
       if (dj) {
         _fxDirty = true;
         await _setRate(incoming, djp.rate);
@@ -1322,6 +1351,9 @@ class PlayerController extends ChangeNotifier {
       var swapped = false;
       var phaseCheckedMs = 0;
       var cmdRate = djp?.rate ?? 1.0;
+      var cmdOutRate = 1.0;
+      var rateBusy = false;
+      final sourceStart = _outClock?.now().inMicroseconds;
       // Громкость меняется ступеньками. На длинном переходе десяти шагов в секунду хватает, а короткий (стык на фразе —
       // четверть секунды, короткий crossfade — пара секунд) состоял бы из двух-трёх слышимых скачков: шаг делаем мельче
       final stepMs = lengthMs < 1500 ? 25 : (lengthMs < 4000 ? 50 : 100);
@@ -1331,29 +1363,51 @@ class PlayerController extends ChangeNotifier {
           return;
         }
         final elapsed = DateTime.now().difference(started);
+        // With a shared tempo ramp, envelopes and EQ follow consumed source
+        // audio, not wall time: both planned phrase endpoints remain exact.
+        final t =
+            djp?.tempoRamp == true && sourceStart != null && _outClock != null
+                ? (_outClock!.now().inMicroseconds - sourceStart) /
+                    (lengthMs * 1000)
+                : elapsed.inMilliseconds / lengthMs;
+        if (t >= 1) {
+          _endFade(reason: 'completed');
+          return;
+        }
         // Подстройка скоростью: раз в 200 мс смотрим, не уехали ли доли, и чуть ускоряем или замедляем следующий трек
         if (djp != null && elapsed.inMilliseconds - phaseCheckedMs >= 200) {
           phaseCheckedMs = elapsed.inMilliseconds;
           final oc = _outClock, ic = _inClock;
           final e = oc == null || ic == null ? null : _phaseErr(djp, oc.now(), ic.now());
-          if (e != null) {
-            _transitionProbe?.phase(e);
-            final want = e.abs() < 10 ? djp.rate : djp.rate * (1 + (-e / 1500).clamp(-0.02, 0.02));
-            if ((want - cmdRate).abs() > 0.0005) {
+          if (e != null || djp.tempoRamp) {
+            final rates =
+                djp.tempoRamp ? djTempoAt(t, djp.rate) : (1.0, djp.rate);
+            final correction = e == null || e.abs() < 10
+                ? 1.0
+                : 1 + (-e / 1500).clamp(-0.02, 0.02);
+            final want = rates.$2 * correction;
+            if (e != null) _transitionProbe?.phase(e);
+            if (!rateBusy &&
+                ((want - cmdRate).abs() > 0.0005 ||
+                    (rates.$1 - cmdOutRate).abs() > 0.0005)) {
               cmdRate = want;
+              cmdOutRate = rates.$1;
               _pendingRate = want;
               _inClock?.speed = want;
-              unawaited(_setRate(incoming, want));
+              _outClock?.speed = rates.$1;
+              rateBusy = true;
+              unawaited(() async {
+                await Future.wait(
+                    [_setRate(incoming, want), _setRate(old, rates.$1)]);
+                rateBusy = false;
+              }());
             }
           }
         }
-        final t = elapsed.inMilliseconds / lengthMs;
-        if (t >= 1) {
-          _endFade(reason: 'completed');
-          return;
-        }
         // Обмен басов: низы переходят от уходящего к следующему на сильной доле посередине перехода
-        if (swapAt != null && !swapped && elapsed >= swapAt) {
+        if (swapAt != null &&
+            !swapped &&
+            t * lengthMs >= swapAt.inMilliseconds) {
           swapped = true;
           _transitionProbe?.bassSwapMs = elapsed.inMilliseconds;
           AppLog.info('DJ execution: bass swap at ${elapsed.inMilliseconds} ms');
@@ -1414,6 +1468,39 @@ class PlayerController extends ChangeNotifier {
   double _pendingRate = 1.0;
   Timer? _rateTimer;
   final Set<Player> _cut = {};
+  final Map<Player, int> _pitch = {};
+  Future<void> _applyPitch(Player p, int semitones) async {
+    if (semitones.abs() > 1) throw ArgumentError.value(semitones, 'semitones');
+    const label = 'cave-dj-pitch';
+    final native = p.platform as dynamic;
+    if ((_pitch[p] ?? 0) == semitones) return;
+    try {
+      if (_pitch.containsKey(p))
+        await native.command(['af', 'remove', '@$label']);
+      _pitch.remove(p);
+      if (semitones != 0) {
+        _fxDirty = true;
+        await native.command([
+          'af',
+          'add',
+          '@$label:lavfi=[${pitchFilter(semitones)}]'
+        ]);
+        final filters = '${await native.getProperty('af')}';
+        if (!filters.contains(label))
+          throw StateError('Pitch filter unavailable');
+        _pitch[p] = semitones;
+      }
+    } catch (_) {
+      try {
+        await native.command(['af', 'remove', '@$label']);
+      } catch (_) {}
+      _pitch.remove(p);
+      _traceDj(
+          {'kind': 'capability', 'effect': 'pitchShift', 'supported': false});
+      rethrow;
+    }
+  }
+
   final Map<Player, DjEqDriver> _eq = {};
   final Map<Player, StreamSubscription<dynamic>> _eqLogs = {};
   int _eqSequence = 0;
@@ -1545,6 +1632,9 @@ class PlayerController extends ChangeNotifier {
     _inGain = 1;
     _outGain = 1;
     if (old != null) {
+      unawaited(_applyPitch(old, 0).catchError((Object e) {
+        AppLog.warn('DJ: сброс тональности', e);
+      }));
       unawaited(_clearEq(old));
       unawaited(old.stop());
       if (_fxDirty) {
@@ -1571,6 +1661,9 @@ class PlayerController extends ChangeNotifier {
     if ((stopIncoming || wasFading) && old == null) {
       final q = _q;
       if (q != null) {
+        unawaited(_applyPitch(q, 0).catchError((Object e) {
+          AppLog.warn('DJ: сброс тональности', e);
+        }));
         if (_fxDirty) {
           unawaited(_setRate(q, 1.0));
           unawaited(_setLowCut(q, false));
@@ -1656,6 +1749,7 @@ class PlayerController extends ChangeNotifier {
         await _setRate(_p, 1.0);
         await _setLowCut(_p, false);
       }
+      await _applyPitch(_p, 0);
       await _p.open(media, play: at == null && play);
       _openedAt = DateTime.now();
       if (at != null) {
@@ -1946,12 +2040,19 @@ class PlayerController extends ChangeNotifier {
 /// Позиция проигрывателя с поправкой на время с последнего отсчёта: события позиции приходят редко, а доли считаются в миллисекундах
 class _PosClock {
   final Player p;
-  double speed;
+  double _speed;
+  double get speed => _speed;
+  set speed(double value) {
+    _pos = now();
+    _at = DateTime.now();
+    _speed = value;
+  }
+
   Duration _pos;
   DateTime _at = DateTime.now();
   StreamSubscription<Duration>? _sub;
 
-  _PosClock(this.p, this.speed) : _pos = p.state.position {
+  _PosClock(this.p, this._speed) : _pos = p.state.position {
     _sub = p.stream.position.listen((d) {
       _pos = d;
       _at = DateTime.now();

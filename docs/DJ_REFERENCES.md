@@ -1,0 +1,40 @@
+# DJ transition references and implementation
+
+Reviewed references:
+
+- https://github.com/byronxu99/AutoDJ — Mixxx controller, GPLv3-or-later. Tempo/key matching, half/double-time sync, cue handoff and bass EQ.
+- https://github.com/rdircio/autodj — extended version of that controller. Its current defaults differ from README: EQ is disabled, randomized transitions enabled. Resetting pitch abruptly after a transition and random effects are not adopted.
+- https://github.com/yask123/ai-dj — MIT. Its conductor restricts available moves by phrase position, recent moves and a decision deadline; the audio engine owns execution. The current Python set targets short performance mixes rather than uninterrupted whole-song listening.
+- https://github.com/beneaze/ClubCraft — MIT OR Apache-2.0. Joint mix points, phrase-aligned automatic cues and a shared tempo timeline are useful references. Stem separation and its complete Rust engine are separate systems, not part of this change.
+
+No source from these projects is copied into the transition implementation.
+The Dart planner and equal-tempered pitch/tempo calculations are implemented for
+Cavey's existing two-deck playback path. No cloud model or new account is required.
+
+## Current behavior
+
+Adaptive beat blends glide both decks toward the incoming track's native tempo,
+finishing the glide at 75% of the transition. Their relative speed stays fixed;
+envelopes, bass handoff and completion follow outgoing source position so the
+planned phrase windows remain valid. The ordinary DJ/manual path stays separate.
+
+`Подстраивать тональность` is optional and defaults off. With reliable keys,
+the adaptive planner considers only -1, 0 and +1 semitone, preferring the original
+when it already fits. The chosen shift remains for that track; the next planning
+pass uses its actual shifted key, including in lookahead. A new file resets pitch.
+Unsupported filter setup aborts preparation and uses an ordinary crossfade.
+
+The stock media_kit Windows audio and video distributions omit needed FFmpeg
+filters. A vendored MIT plugin wrapper instead downloads a full pinned libmpv,
+checks SHA-256 and bundles upstream licensing notices. Other platforms still use
+the existing packages. The installer is larger as a result.
+
+`tools/verify-dj-native.py` renders a synthetic tone through the exact bundled
+DLL with no speaker output. It checks EQ command support, semitone frequencies
+and durations at 0.92/1.08 playback speed. Unit tests cover harmonic shifts,
+phrase endpoints, rate ratios, source consumption and default-off behavior.
+These measurements do not replace listening to real transitions.
+
+Offline preflight includes both actual pitch shifts and the original source
+windows. It is a source-time level check, not a capture of the live variable-tempo
+mpv output, and does not certify perceptual quality or exact live true peaks.

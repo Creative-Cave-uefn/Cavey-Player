@@ -224,10 +224,31 @@ class DjMix {
   /// Сдвиг долей следующего трека вручную, мс: «+» — позже. Нужен, если на слух доли чуть расходятся
   final int offsetMs;
 
-  const DjMix({this.bars = 8, this.range = 0.08, this.bass = true, this.harmonic = true, this.offsetMs = 0});
+  final bool transpose;
+  final int outgoingShift;
+  const DjMix(
+      {this.bars = 8,
+      this.range = 0.08,
+      this.bass = true,
+      this.harmonic = true,
+      this.offsetMs = 0,
+      this.transpose = false,
+      this.outgoingShift = 0});
+
+  DjMix withOutgoingShift(int value) => DjMix(
+      bars: bars,
+      range: range,
+      bass: bass,
+      harmonic: harmonic,
+      offsetMs: offsetMs,
+      transpose: transpose,
+      outgoingShift: value);
 }
 
 class MixPlan {
+  /// Absolute pitch shifts relative to the recordings, not successive deltas.
+  final int transpose, outgoingShift;
+  final bool tempoRamp;
   final Duration start; // когда в уходящем треке начать
   final Duration length; // сколько длится
   final Duration inStart; // с какого места начать следующий
@@ -253,7 +274,15 @@ class MixPlan {
   final Duration preroll;
 
   const MixPlan(this.start, this.length, this.inStart, this.inGain,
-      {this.dj = false, this.rate = 1.0, this.swapAt, this.grid, this.offsetMs = 0, this.preroll = Duration.zero});
+      {this.dj = false,
+      this.rate = 1.0,
+      this.swapAt,
+      this.grid,
+      this.offsetMs = 0,
+      this.preroll = Duration.zero,
+      this.transpose = 0,
+      this.outgoingShift = 0,
+      this.tempoRamp = false});
 
   /// [maxSec] — самый длинный переход (настройка), [bpm] — темп уходящего трека, если известен
   /// (свой разбор звука важнее, он в профиле). Если у обоих треков известна сетка долей и темпы близки,
