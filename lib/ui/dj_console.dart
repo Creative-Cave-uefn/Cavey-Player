@@ -39,6 +39,35 @@ class _DjConsoleState extends State<_DjConsole> {
   Timer? _refresh, _gainTimer;
   bool _applyingGain = false, _gainDirty = false;
 
+  /// What the last repaint showed; the console repaints only when it changes.
+  Object? _shown;
+
+  // Position events arrive several times a second, each some milliseconds old.
+  // SYNC compares beat phases of two decks, so each position is extrapolated
+  // from the moment it was reported instead of being read as "now".
+  final _clock = Stopwatch()..start();
+  final _reported = <Duration>[Duration.zero, Duration.zero];
+  final _reportedAt = <int>[0, 0];
+  final _positions = <StreamSubscription<Duration>>[];
+
+  Duration _now(int i) {
+    final p = _decks[i];
+    if (!p.state.playing || p.state.buffering) return p.state.position;
+    final sinceUs = _clock.elapsedMicroseconds - _reportedAt[i];
+    // A stale report (no event for a while) is not extrapolated further.
+    if (sinceUs < 0 || sinceUs > 500000) return p.state.position;
+    return _reported[i] + Duration(microseconds: (sinceUs * _rates[i]).round());
+  }
+
+  /// Nearest known beat to the playhead: a head anchor drifts by the end of a
+  /// track when the tempo estimate is off by a few hundredths of a BPM.
+  int? _beatAnchor(MixProfile profile, Duration position) {
+    final head = profile.headBeatMs, tail = profile.tailBeatMs;
+    if (head == null || tail == null) return head ?? tail;
+    final at = position.inMilliseconds;
+    return (at - tail).abs() < (at - head).abs() ? tail : head;
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -61,8 +90,24 @@ class _DjConsoleState extends State<_DjConsole> {
       await Future.wait([_decks[0].setVolume(0), _decks[1].setVolume(0)]);
       if (!mounted) return;
       setState(() => _ready = true);
-      _refresh = Timer.periodic(const Duration(milliseconds: 120), (_) {
-        if (mounted && !_closing) setState(() {});
+      for (var i = 0; i < 2; i++) {
+        _positions.add(_decks[i].stream.position.listen((d) {
+          _reported[i] = d;
+          _reportedAt[i] = _clock.elapsedMicroseconds;
+        }));
+      }
+      // Repaint only when a deck actually moved or changed state. The whole
+      // dialog used to be rebuilt 8 times a second even with both decks idle.
+      _refresh = Timer.periodic(const Duration(milliseconds: 125), (_) {
+        if (!mounted || _closing) return;
+        final a = _decks[0].state, b = _decks[1].state;
+        final now = (
+          a.position.inMilliseconds ~/ 125, a.duration, a.playing, a.buffering,
+          b.position.inMilliseconds ~/ 125, b.duration, b.playing, b.buffering,
+        );
+        if (now == _shown) return;
+        _shown = now;
+        setState(() {});
       });
       if (current != null) await _load(0, current, start: position);
       if (next != null && mounted) await _load(1, next);
@@ -207,18 +252,19 @@ class _DjConsoleState extends State<_DjConsole> {
     }
     setState(() => _rates[follower] = rate);
     await _setRate(follower);
-    final lh = a.headBeatMs, fh = b.headBeatMs;
+    final leaderAt = _now(leader), followerAt = _now(follower);
+    final lh = _beatAnchor(a, leaderAt), fh = _beatAnchor(b, followerAt);
     if (lh == null || fh == null) {
       _message('Темп совпадает. Фазу долей настройте кнопками ±20 мс.');
       return;
     }
     final shift = djBeatNudgeMs(
-      leaderPositionMs: _decks[leader].state.position.inMilliseconds.toDouble(),
+      leaderPositionMs: leaderAt.inMicroseconds / 1000,
       leaderBeatOriginMs: lh.toDouble(), leaderBpm: a.bpm!,
-      followerPositionMs: _decks[follower].state.position.inMilliseconds.toDouble(),
+      followerPositionMs: followerAt.inMicroseconds / 1000,
       followerBeatOriginMs: fh.toDouble(), followerBpm: b.bpm!,
     );
-    await _seek(follower, _decks[follower].state.position +
+    await _seek(follower, followerAt +
         Duration(microseconds: (shift * 1000).round()));
     _message('SYNC: темп и доли выровнены приблизительно. Проверьте на слух.');
   }
@@ -268,6 +314,7 @@ class _DjConsoleState extends State<_DjConsole> {
     setState(() => _closing = true);
     _refresh?.cancel();
     _gainTimer?.cancel();
+    for (final s in _positions) { unawaited(s.cancel()); }
     try {
       await Future.wait([_decks[0].stop(), _decks[1].stop()]);
     } catch (_) {}
@@ -281,6 +328,7 @@ class _DjConsoleState extends State<_DjConsole> {
     _closing = true;
     _refresh?.cancel();
     _gainTimer?.cancel();
+    for (final s in _positions) { unawaited(s.cancel()); }
     for (final p in _decks) { unawaited(p.dispose()); }
     super.dispose();
   }
@@ -338,9 +386,9 @@ class _DjConsoleState extends State<_DjConsole> {
             ],
           ]),
           const SizedBox(height: 8),
-          SizedBox(height: 65, child: CustomPaint(
+          SizedBox(height: 65, child: RepaintBoundary(child: CustomPaint(
             painter: _DeckWavePainter(info?.wave ?? const [], progress),
-            child: const SizedBox.expand())),
+            child: const SizedBox.expand()))),
           Slider(
             value: seek, min: 0, max: maxMs,
             onChanged: can ? (v) => setState(() => _preview[i] = v) : null,
