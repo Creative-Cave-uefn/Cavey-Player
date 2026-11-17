@@ -417,7 +417,9 @@ if ($script:Interactive) {
     Say '  CAVEY DEVKIT' Cyan
     Hint 'DevKit for Cavey Player · GitHub branches · Local builds'
     Hint 'Команды: /help · /build · /agent · /quit'
-    try { Status } catch { Say "  ! $_" Yellow }
+    # Keep startup responsive: Git and GitHub checks run only on explicit commands.
+    # A slow git/gh invocation must never hide the interactive input prompt.
+    Hint "Проект: $script:Root"
     while ($true) {
         Write-Host ''
         Write-Host '  ❯ ' -NoNewline -ForegroundColor Cyan
