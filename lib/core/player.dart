@@ -98,7 +98,23 @@ class PlayerController extends ChangeNotifier {
   /// Деки проигрывателя: треки с диска играют через аудиодвижок Cavey Mix (если он включён в настройках),
   /// остальное — через mpv. Первая созданная дека — 0-я дека движка, вторая — 1-я
   int _decksMade = 0;
-  HybridDeck _newDeck() => HybridDeck(_decksMade++ % 2, () => useMixEngine);
+  HybridDeck _newDeck() {
+    // ffmpeg из папки инструментов: им движок читает M4A, Opus и Ogg. Если его ещё нет — докачиваем в фоне
+    // (тот же ffmpeg нужен анализатору переходов); пока качается, такие треки играют через mpv
+    SharedMix.ffmpegPath ??= () {
+      final tools = mixer?.tools;
+      if (tools == null) return null;
+      if (tools.ffmpeg.existsSync()) return tools.ffmpeg.path;
+      if (useMixEngine && !_ffmpegRequested) {
+        _ffmpegRequested = true;
+        unawaited(tools.ensure((l) => AppLog.info(l)).catchError((Object e) => AppLog.warn('FFmpeg не скачался', e)));
+      }
+      return null;
+    };
+    return HybridDeck(_decksMade++ % 2, () => useMixEngine);
+  }
+
+  bool _ffmpegRequested = false;
 
   /// Играть сохранённые треки через новый аудиодвижок (тестовая настройка DJ-режима)
   bool get useMixEngine => settings.viewOf('dj.engine', '0') == '1';

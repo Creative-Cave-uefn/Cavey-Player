@@ -19,6 +19,18 @@ class SharedMix {
 
   static MixEngine? _engine;
   static bool _failed = false;
+
+  /// Где взять ffmpeg (для M4A, Opus, Ogg). Задаёт PlayerController; путь может появиться позже —
+  /// когда приложение докачает ffmpeg, поэтому спрашиваем при каждой загрузке трека.
+  static String? Function()? ffmpegPath;
+  static String _ffmpegSet = '';
+
+  static void _syncFfmpeg(MixEngine e) {
+    final p = ffmpegPath?.call() ?? '';
+    if (p == _ffmpegSet) return;
+    _ffmpegSet = p;
+    e.ffmpegPath = p;
+  }
   static Timer? _poll;
   static final Set<HybridDeck> _listeners = {};
 
@@ -161,6 +173,7 @@ class HybridDeck {
     final path = _localPath(media);
     final eng = path != null && engineEnabled() ? SharedMix.engine : null;
     if (eng != null && path != null) {
+      SharedMix._syncFfmpeg(eng);
       final id = eng.load(engineDeck, path);
       if (id > 0) {
         if (!_onEngine) {

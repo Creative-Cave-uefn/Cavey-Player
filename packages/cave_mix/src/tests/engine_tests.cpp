@@ -367,8 +367,11 @@ static void testControlFlow() {
   writeWav(path("short.wav"), noise(sr * 2, 0.2f, 5), sr);
   Rig r;
   CHECK(cm_load(r.e, 0, path("nope.flac").c_str(), 0.0) > 0, "load call");
-  for (int i = 0; i < 200 && r.state().deck[0].status != CM_ERROR; ++i) r.render(256);
-  CHECK(r.state().deck[0].status == CM_ERROR, "missing file not reported");
+  for (int i = 0; i < 400 && r.state().deck[0].status != CM_ERROR; ++i) {
+    r.render(256);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  CHECK(r.state().deck[0].status == CM_ERROR, "missing file not reported (status %d)", r.state().deck[0].status);
   cm_load(r.e, 0, path("short.wav").c_str(), 0.0);
   CHECK(r.waitReady(0, 500), "deck not ready");
   cm_play_at(r.e, 0, -1);
@@ -384,12 +387,76 @@ static void testControlFlow() {
   cm_seek(r.e, 0, 1.5);
   r.render(sr / 10);
   CHECK(std::abs(r.state().deck[0].position_sec - 1.5) < 0.01, "seek position %.3f", r.state().deck[0].position_sec);
+  // декодер перематывается в своём потоке: ждём звук с новой позиции в реальном времени
+  for (int i = 0; i < 400 && r.state().deck[0].buffered_ms < 400; ++i) {
+    r.render(256);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
   cm_play_at(r.e, 0, -1);
   r.render(sr);
   s = r.state();
   std::printf("    end of track: status %d, position %.3f / %.3f\n", s.deck[0].status, s.deck[0].position_sec, s.deck[0].duration_sec);
-  CHECK(s.deck[0].status == CM_ENDED, "end of track not reported");
+  CHECK(s.deck[0].status == CM_ENDED, "end of track not reported (status %d, position %.3f, buffered %d ms)", s.deck[0].status, s.deck[0].position_sec, s.deck[0].buffered_ms);
   CHECK(std::abs(s.deck[0].duration_sec - 2.0) < 0.01, "duration");
+}
+
+
+// M4A/AAC, Opus, Ogg через ffmpeg: клики на своих местах (задержка кодера убрана),
+// перемотка точна, длительность известна
+static void testFfmpegFormats() {
+  const int sr = 48000;
+  writeWav(path("clk.wav"), clicks(sr * 12, sr, 0.5, 120.0, 2), sr);
+  struct F { const char *ext; const char *args; } fmts[] = {
+      {"m4a", "-c:a aac -b:a 192k -ar 44100"},
+      {"opus", "-c:a libopus -b:a 160k"},
+      {"ogg", "-c:a libvorbis -q:a 6 -ar 44100"},
+  };
+  for (auto &f : fmts) {
+    const std::string out = path((std::string("clk.") + f.ext).c_str());
+    const std::string cmd = "ffmpeg -y -v error -i " + path("clk.wav") + " " + f.args + " " + out;
+    if (std::system(cmd.c_str()) != 0) {
+      std::printf("    skipped: no ffmpeg in PATH to encode test files\n");
+      return;
+    }
+    Rig r;
+    cm_set_ffmpeg(r.e, "ffmpeg");
+    cm_load(r.e, 0, out.c_str(), 0.0);
+    CHECK(r.waitReady(0, 1000), "%s not ready: %s", f.ext, cm_last_error(r.e));
+    const int64_t S = r.clock() + 100;
+    cm_play_at(r.e, 0, S);
+    r.render(sr * 4);
+    auto got = onsets(r.out, 0, sr, 0.2);
+    double worst = 0; int n = 0;
+    for (double t = 0.5; t < 3.6; t += 0.5) {
+      const double expect = (double)(S + kLim) / sr + t;
+      double best = 1e9;
+      for (double g : got) best = std::min(best, std::abs(g - expect));
+      worst = std::max(worst, best); ++n;
+    }
+    // перемотка на 7,25 с: следующий клик (7,5 с) должен прозвучать через 0,25 с
+    cm_seek(r.e, 0, 7.25);
+    cm_pause(r.e, 0);
+    r.render(512);  // движок принимает команды только в рендере
+    // ffmpeg перезапускается с новой позиции: ждём буфер в реальном времени, как плеер
+    for (int i = 0; i < 400 && r.state().deck[0].buffered_ms < 800; ++i) {
+      r.render(256);
+      std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+    const size_t mark = r.out.size() / 2;
+    const int64_t S2 = r.clock() + 100;
+    cm_play_at(r.e, 0, S2);
+    r.render(sr);
+    std::vector<float> tail(r.out.begin() + (long)mark * 2, r.out.end());
+    auto g2 = onsets(tail, 0, sr, 0.2);
+    const double expect2 = (double)(S2 - (int64_t)mark + kLim) / sr + 0.25;
+    const double seekErr = g2.empty() ? 1e9 : std::abs(g2[0] - expect2);
+    const double dur = r.state().deck[0].duration_sec;
+    std::printf("    %-4s: %d clicks, worst %.2f ms; after seek %.2f ms; duration %.3f s\n", f.ext, n, worst * 1000,
+                seekErr * 1000, dur);
+    CHECK(worst < 0.002, "%s clicks off by %.2f ms", f.ext, worst * 1000);
+    CHECK(seekErr < 0.002, "%s seek off by %.2f ms", f.ext, seekErr * 1000);
+    CHECK(std::abs(dur - 12.0) < 0.1, "%s duration %.3f", f.ext, dur);
+  }
 }
 
 int main(int argc, char **argv) {
@@ -403,6 +470,7 @@ int main(int argc, char **argv) {
       {"beatmatch 125 -> 120 BPM", testBeatmatch},
       {"equal-power crossfade", testEqualPowerCrossfade},
       {"pause, seek, end, errors", testControlFlow},
+      {"M4A / Opus / Ogg via ffmpeg", testFfmpegFormats},
   };
   for (auto &t : tests) {
     const int before = g_failed;

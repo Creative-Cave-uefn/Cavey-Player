@@ -127,6 +127,8 @@ typedef _IntN = Void Function(Pointer<Void>, Int32);
 typedef _IntD = void Function(Pointer<Void>, int);
 typedef _StateN = Void Function(Pointer<Void>, Pointer<_CmState>);
 typedef _StateD = void Function(Pointer<Void>, Pointer<_CmState>);
+typedef _StrN = Void Function(Pointer<Void>, Pointer<Utf8>);
+typedef _StrD = void Function(Pointer<Void>, Pointer<Utf8>);
 typedef _RenderN = Int32 Function(Pointer<Void>, Pointer<Float>, Int32);
 typedef _RenderD = int Function(Pointer<Void>, Pointer<Float>, int);
 
@@ -137,6 +139,7 @@ class _Lib {
         lastError = l.lookupFunction<_ErrN, _ErrN>('cm_last_error'),
         load = l.lookupFunction<_LoadN, _LoadD>('cm_load'),
         unload = l.lookupFunction<_DeckN, _DeckD>('cm_unload'),
+        setFfmpeg = l.lookupFunction<_StrN, _StrD>('cm_set_ffmpeg'),
         playAt = l.lookupFunction<_DeckClockN, _DeckClockD>('cm_play_at'),
         pause = l.lookupFunction<_DeckN, _DeckD>('cm_pause'),
         seek = l.lookupFunction<_DeckDoubleN, _DeckDoubleD>('cm_seek'),
@@ -154,6 +157,7 @@ class _Lib {
   final _ErrN lastError;
   final _LoadD load;
   final _DeckD unload;
+  final _StrD setFfmpeg;
   final _DeckClockD playAt;
   final _DeckD pause;
   final _DeckDoubleD seek;
@@ -225,6 +229,16 @@ class MixEngine {
   }
 
   void unload(int deck) => _l.unload(_e, deck);
+
+  /// Путь к ffmpeg: им движок читает M4A/AAC, Opus, Ogg и прочие форматы, которых нет во встроенных декодерах
+  set ffmpegPath(String path) {
+    final p = path.toNativeUtf8(allocator: malloc);
+    try {
+      _l.setFfmpeg(_e, p);
+    } finally {
+      malloc.free(p);
+    }
+  }
 
   /// Запустить деку на кадре часов [atClock]; null — как только будет звук.
   void play(int deck, {int? atClock}) => _l.playAt(_e, deck, atClock ?? -1);

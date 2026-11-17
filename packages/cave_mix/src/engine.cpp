@@ -27,14 +27,12 @@
 #include <vector>
 
 #include "dsp.h"
+#include "readers.h"
 #include "spsc.h"
 #include "third_party/miniaudio/miniaudio.h"
 #include "third_party/rubberband/rubberband/RubberBandStretcher.h"
 #include "third_party/rubberband/src/common/Resampler.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 namespace cm {
 
@@ -201,6 +199,12 @@ class Source {
     std::lock_guard<std::mutex> g(m_);
     return err_;
   }
+  void setFfmpeg(const std::string &path) {
+    std::lock_guard<std::mutex> g(m_);
+    ffmpeg_ = path;
+  }
+  // Каким декодером открыт текущий файл (для журнала)
+  std::atomic<const char *> decoderKind{""};
 
  private:
   struct Req {
@@ -248,6 +252,7 @@ class Source {
       }
       gen_ = r.gen;
       seekTo(r.sec);
+      decoderKind.store(reader_->kind());
       status.store(CM_READY);
       loadedId.store(r.loadId);  // последним: аудиопоток считает загрузку законченной по совпадению id
     } else if (r.kind == Req::SEEK) {
@@ -261,27 +266,26 @@ class Source {
   }
 
   bool openDecoder(const std::string &path) {
-    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 2, 0);
-    ma_result res;
-#ifdef _WIN32
-    int wn = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::wstring w(wn > 0 ? wn : 1, L'\0');
-    if (wn > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, &w[0], wn);
-    res = ma_decoder_init_file_w(w.c_str(), &cfg, &dec_);
-#else
-    res = ma_decoder_init_file(path.c_str(), &cfg, &dec_);
-#endif
-    if (res != MA_SUCCESS) {
-      std::lock_guard<std::mutex> g(m_);
-      err_ = "не удалось открыть файл (формат не поддерживается движком?): " + path;
-      return false;
+    reader_ = openMiniaudio(path);
+    if (!reader_) {
+      std::string ff, err;
+      {
+        std::lock_guard<std::mutex> g(m_);
+        ff = ffmpeg_;
+      }
+      reader_ = openFfmpeg(ff, path, err);
+      if (!reader_) {
+        std::lock_guard<std::mutex> g(m_);
+        err_ = err;
+        return false;
+      }
     }
     open_ = true;
-    nativeRate_ = (int)dec_.outputSampleRate;
-    ma_uint64 len = 0;
-    if (ma_decoder_get_length_in_pcm_frames(&dec_, &len) == MA_SUCCESS && len > 0) {
-      duration.store((double)len / nativeRate_);
-      lengthFrames.store((int64_t)std::llround((double)len * rate_ / nativeRate_));
+    nativeRate_ = reader_->rate();
+    const double dur = reader_->durationSec();
+    if (dur > 0) {
+      duration.store(dur);
+      lengthFrames.store((int64_t)std::llround(dur * rate_));
     }
     if (nativeRate_ != rate_) {
       RubberBand::Resampler::Parameters p;
@@ -296,7 +300,7 @@ class Source {
   }
 
   void closeDecoder() {
-    if (open_) ma_decoder_uninit(&dec_);
+    reader_.reset();
     open_ = false;
     eof_ = eofPending_ = eofSent_ = false;
     resampler_.reset();
@@ -305,8 +309,7 @@ class Source {
 
   void seekTo(double sec) {
     sec = std::max(0.0, sec);
-    const ma_uint64 nf = (ma_uint64)std::llround(sec * nativeRate_);
-    ma_decoder_seek_to_pcm_frame(&dec_, nf);
+    reader_->seek(sec);
     nextFrame_ = (int64_t)std::llround(sec * rate_);
     eof_ = false;
     stage_.clear();
@@ -334,9 +337,8 @@ class Source {
     }
     if (free_.size() == 0) return false;
 
-    ma_uint64 got = 0;
-    ma_decoder_read_pcm_frames(&dec_, native.data(), kBlock, &got);
-    const bool end = got < (ma_uint64)kBlock;
+    const int got = reader_->read(native.data(), kBlock);
+    const bool end = got < kBlock;
     if (resampler_) {
       const double ratio = (double)rate_ / nativeRate_;
       const int space = (int)std::ceil(kBlock * ratio) + 64;
@@ -370,7 +372,8 @@ class Source {
 
   int rate_ = 48000;
   int nativeRate_ = 48000;
-  ma_decoder dec_{};
+  std::unique_ptr<Reader> reader_;
+  std::string ffmpeg_;  // путь к ffmpeg для форматов, которые miniaudio не читает
   bool open_ = false, eof_ = false, eofPending_ = false, eofSent_ = false;
   std::unique_ptr<RubberBand::Resampler> resampler_;
   std::vector<float> stage_;
@@ -434,10 +437,11 @@ class Deck {
   void cmdSeek(uint32_t gen, double sec) {
     const int64_t f = (int64_t)std::llround(std::max(0.0, sec) * sr_);
     if (playing_) {
-      // сначала короткое затухание, потом перемотка
+      // сначала короткое затухание, потом перемотка; если уже затухали перед паузой — пауза сохраняется
+      if (fadeOutAction_ == FO_PAUSE) pauseAfterSeek_ = true;
       pendingSeekGen_ = gen;
       pendingSeekFrame_ = f;
-      fadeOut_ = kDeclick;
+      if (fadeOutAction_ == FO_NONE) fadeOut_ = kDeclick;
       fadeOutAction_ = FO_SEEK;
     } else {
       resetPosition(gen, f);
@@ -446,14 +450,18 @@ class Deck {
   }
   void cmdPlayAt(int64_t clock) {
     if (!loaded_) return;
+    pauseAfterSeek_ = false;
     if (playing_ && fadeOutAction_ != FO_PAUSE) return;
-    if (fadeOutAction_ == FO_PAUSE) { fadeOut_ = 0; fadeOutAction_ = FO_NONE; }
+    if (fadeOutAction_ == FO_PAUSE) { fadeOut_ = 0; fadeOutAction_ = FO_NONE; fadeIn_ = kDeclick; return; }  // передумали ставить на паузу
     startClock_ = clock < 0 ? -2 : clock;  // −2 — «как только будет звук»
     ended_ = false;
   }
   void cmdPause() {
     startClock_ = -1;
-    if (playing_) { fadeOut_ = kDeclick; fadeOutAction_ = FO_PAUSE; }
+    if (!playing_) return;
+    if (fadeOutAction_ == FO_SEEK) { pauseAfterSeek_ = true; return; }  // перемотка не теряется
+    if (fadeOutAction_ == FO_NONE) fadeOut_ = kDeclick;
+    fadeOutAction_ = FO_PAUSE;
   }
   void cmdStopAt(int64_t clock) {
     if (clock < 0) { cmdPause(); return; }
@@ -524,7 +532,11 @@ class Deck {
     s.peak = peak_;
     s.start_clock = startClock_ >= 0 ? startClock_ : -1;
     s.stretching = mode_ != M_DIRECT ? 1 : 0;
-    s.buffered_ms = (int32_t)std::max<int64_t>(0, (ringEnd_ - (int64_t)ph_) * 1000 / sr_ + (int64_t)source.filled.size() * kBlock * 1000 / sr_);
+    // пока в кольце нет звука новой позиции, блоки в очереди могут быть старыми (до перемотки) — их не считаем
+    const bool fresh = ringEnd_ > ringStart_;
+    s.buffered_ms = fresh ? (int32_t)std::max<int64_t>(0, (ringEnd_ - (int64_t)ph_) * 1000 / sr_ +
+                                                          (int64_t)source.filled.size() * kBlock * 1000 / sr_)
+                          : 0;
   }
 
   void decayPeak(int frames) { peak_ *= std::pow(0.1, frames / (double)sr_); }
@@ -778,8 +790,9 @@ class Deck {
       playing_ = false;
       if (mode_ != M_DIRECT) { ph_ = std::round(ph_); mode_ = M_DIRECT; }
     } else if (fadeOutAction_ == FO_SEEK) {
-      resetPosition(pendingSeekGen_, pendingSeekFrame_);
-      return;  // resetPosition сбрасывает действия затухания
+      resetPosition(pendingSeekGen_, pendingSeekFrame_);  // сбрасывает и действия затухания
+      if (pauseAfterSeek_) { playing_ = false; pauseAfterSeek_ = false; }
+      return;
     }
     fadeOutAction_ = FO_NONE;
   }
@@ -795,6 +808,7 @@ class Deck {
   int fadeIn_ = 0, fadeOut_ = 0;
   FadeAction fadeOutAction_ = FO_NONE;
   uint32_t pendingSeekGen_ = 0;
+  bool pauseAfterSeek_ = false;
   int64_t pendingSeekFrame_ = 0;
 
   Lane lane_[CM_PARAM_COUNT];
@@ -942,6 +956,9 @@ class Engine {
   }
 
   int32_t nextLoadId() { return ++loadId_; }
+  void setFfmpeg(const std::string &path) {
+    for (auto &d : decks_) d.source.setFfmpeg(path);
+  }
 
  private:
   void apply(const Cmd &c) {
@@ -1061,6 +1078,10 @@ CM_API int32_t cm_load(cm_engine *e, int32_t deck, const char *path_utf8, double
   const int32_t id = e->engine.nextLoadId();
   e->engine.load(deck, path_utf8, start_sec, id);
   return id;
+}
+
+CM_API void cm_set_ffmpeg(cm_engine *e, const char *path_utf8) {
+  if (e) e->engine.setFfmpeg(path_utf8 ? path_utf8 : "");
 }
 
 CM_API void cm_unload(cm_engine *e, int32_t deck) {

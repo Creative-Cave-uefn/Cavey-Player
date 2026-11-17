@@ -11,6 +11,7 @@ option(CM_BUILD_TESTS "Собрать нативные тесты" OFF)
 
 set(CM_SOURCES
   ${CMAKE_CURRENT_LIST_DIR}/engine.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/readers.cpp
   ${CMAKE_CURRENT_LIST_DIR}/third_party/miniaudio/miniaudio.c
   ${CMAKE_CURRENT_LIST_DIR}/third_party/rubberband/single/RubberBandSingle.cpp
 )

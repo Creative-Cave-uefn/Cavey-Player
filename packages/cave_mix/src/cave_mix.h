@@ -94,6 +94,11 @@ CM_API const char *cm_last_error(cm_engine *e);
 CM_API int32_t cm_load(cm_engine *e, int32_t deck, const char *path_utf8, double start_sec);
 CM_API void cm_unload(cm_engine *e, int32_t deck);
 
+// Путь к ffmpeg (UTF-8). Им движок читает форматы, которых нет во встроенных декодерах
+// (M4A/AAC, Opus, Ogg и др.): ffmpeg запускается отдельным процессом и отдаёт сырой звук.
+// Пустая строка — не использовать.
+CM_API void cm_set_ffmpeg(cm_engine *e, const char *path_utf8);
+
 // Запустить деку на кадре часов at_clock (−1 — сразу). Если звук ещё не готов, дека
 // стартует, как только будет готов (при at_clock = −1), либо с пропуском (при точном старте).
 CM_API void cm_play_at(cm_engine *e, int32_t deck, int64_t at_clock);
