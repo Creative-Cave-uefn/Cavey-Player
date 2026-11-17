@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $script:RepoFallback = Split-Path -Parent $PSScriptRoot
 $script:SourceRepo = 'Creative-Cave-uefn/Cavey-Player'
-$script:ReleaseRepo = 'Creative-Cave-uefn/cave-player-releases'
+$script:ReleaseRepo = 'Creative-Cave-uefn/Cavey-Player-Releases'
 $script:DataHome = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'CaveyDevKit' } else { Join-Path $HOME '.cavey-devkit' }
 $script:HistoryFile = Join-Path $script:DataHome 'history.jsonl'
 $script:ConfigFile = Join-Path $script:DataHome 'config.json'
@@ -210,15 +210,50 @@ function Release-Channel([object]$release) {
     if ($byTag.Success) { return $byTag.Groups[1].Value }
     Fail "Cannot determine release channel: $($release.tagName)"
 }
-function Stable-Base {
-    $json = Gh @('release','list','--repo',$script:ReleaseRepo,'--limit','250','--json','tagName,isPrerelease')
-    $all = @($json | ConvertFrom-Json)
-    $stable = @($all | Where-Object { -not $_.isPrerelease -and $_.tagName -match '^v\d+\.\d+\.\d+$' } |
-        Sort-Object { [version]($_.tagName.Substring(1)) } -Descending)
-    if ($stable.Count -eq 0) { Fail 'No stable releases found. Cannot determine a base version.' }
-    $firstStable = $stable | Select-Object -First 1
-    if ($null -eq $firstStable -or $firstStable.tagName -notmatch '^v\d+\.\d+\.\d+$') { Fail 'Invalid stable release version.' }
-    return ([string]$firstStable.tagName).Substring(1)
+function Version-BaseFromReleases([object[]]$releases, [string]$mode, [string]$channel) {
+    # Updating an existing test channel must work even when the GitHub CLI
+    # doesn't return stable releases. Preserve that channel's version base.
+    if ($mode -eq 'update' -and -not [string]::IsNullOrWhiteSpace($channel)) {
+        $slug = Slug $channel
+        $pattern = '^test-' + [regex]::Escape($slug) + '-v(\d+\.\d+\.\d+)\.\d+$'
+        $existing = @($releases | Where-Object {
+            $null -ne $_ -and [string]$_.tagName -match $pattern
+        } | Sort-Object publishedAt -Descending)
+        foreach ($record in $existing) {
+            $match = [regex]::Match([string]$record.tagName, $pattern)
+            if ($match.Success) { return $match.Groups[1].Value }
+        }
+    }
+    $stable = @($releases | Where-Object {
+        $null -ne $_ -and $_.isPrerelease -ne $true -and
+        [string]$_.tagName -match '^v\d+\.\d+\.\d+$'
+    } | Sort-Object { [version](([string]$_.tagName).Substring(1)) } -Descending)
+    if ($stable.Count -gt 0) {
+        $best = $stable | Select-Object -First 1
+        return ([string]$best.tagName).Substring(1)
+    }
+    return ''
+}
+function Source-BaseVersion([string]$source) {
+    # Use the source branch version rather than a potentially stale checkout.
+    $ref = "refs/remotes/origin/$($source):pubspec.yaml"
+    $yaml = Git @('show', $ref)
+    $match = [regex]::Match($yaml, '(?m)^version:\s*(\d+\.\d+\.\d+)(?:\+\d+)?\s*$')
+    if (-not $match.Success) {
+        Fail "Cannot determine version from $ref. Check pubspec.yaml."
+    }
+    return $match.Groups[1].Value
+}
+function Stable-Base([string]$mode, [string]$channel, [string]$source) {
+    $json = Gh @('release','list','--repo',$script:ReleaseRepo,'--limit','500',
+        '--json','tagName,isPrerelease,publishedAt')
+    if ([string]::IsNullOrWhiteSpace($json)) { Fail 'GitHub CLI returned an empty release list.' }
+    $releases = @($json | ConvertFrom-Json)
+    $version = Version-BaseFromReleases $releases $mode $channel
+    if (-not [string]::IsNullOrWhiteSpace($version)) { return $version }
+    $version = Source-BaseVersion $source
+    Hint "No usable release version found; using pubspec.yaml from origin/$source : $version"
+    return $version
 }
 function Remove-TestRelease([string]$tag) {
     if ($tag -notmatch '^test-[a-z0-9-]+-v\d+(\.\d+)+$') { Fail "Deletion prohibited: $tag" }
@@ -308,7 +343,7 @@ function Build([string[]]$tokens) {
     Say "  Channel: $channel"
     Say "  Mode: $mode · $(if ($local) { 'local only' } else { 'publish to GitHub Releases' })"
     if (-not (Ask 'Create a temporary worktree and build?' (Flag $tokens '--yes'))) { return }
-    $base = if ($local) { '0.4.0' } else { Stable-Base }
+    $base = if ($local) { '0.4.0' } else { Stable-Base $mode $channel $source }
     $seconds = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 1794182400)
     if ($seconds -lt 1) { $seconds = 1 }
     $version = "$base.$seconds"
@@ -448,6 +483,29 @@ function Dispatch([string[]]$tokens) {
     if ($tokens.Count -eq 0) { Help; return }
     $command = $tokens[0].TrimStart('/').ToLower()
     switch ($command) {
+        'selftest-version' {
+            $fixtures = @(
+                [pscustomobject]@{ tagName = 'v0.3.1'; isPrerelease = $false; publishedAt = '2026-11-10' },
+                [pscustomobject]@{ tagName = 'v0.4.0'; isPrerelease = $false; publishedAt = '2026-11-13' },
+                [pscustomobject]@{ tagName = 'test-claude-dj-v2-review-fixes-v0.4.0.11451'; isPrerelease = $true; publishedAt = '2026-11-16' },
+                [pscustomobject]@{ tagName = 'test-claude-dj-v2-review-fixes-v0.4.0.11422'; isPrerelease = $true; publishedAt = '2026-11-15' }
+            )
+            if ((Version-BaseFromReleases $fixtures 'new' '') -cne '0.4.0') {
+                Fail 'Stable release version selection regression.'
+            }
+            if ((Version-BaseFromReleases $fixtures 'update' 'claude/dj-v2-review-fixes') -cne '0.4.0') {
+                Fail 'Existing release channel version selection regression.'
+            }
+            $channelOnly = @($fixtures | Where-Object { $_.isPrerelease })
+            if ((Version-BaseFromReleases $channelOnly 'update' 'claude/dj-v2-review-fixes') -cne '0.4.0') {
+                Fail 'Release channel update requires a stable release (regression).'
+            }
+            $missing = @(Version-BaseFromReleases @() 'new' '')
+            if ($missing.Count -ne 0 -and $missing[0]) {
+                Fail 'No releases should produce no base version.'
+            }
+            Say 'PASS stable and test channel version selection' Green
+        }
         'selftest-selection' {
             $empty = @()
             $demo = @('build','--branch','main','--mode','new','--yes')

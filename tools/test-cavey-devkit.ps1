@@ -58,6 +58,13 @@ if ($LASTEXITCODE -ne 0 -or $selectionOutput -notmatch 'PASS build arguments and
     throw "Build selection smoke test failed: $selectionOutput"
 }
 Write-Host 'PASS build wizard and release selection guards' -ForegroundColor Green
+
+# Ensure releases can be versioned even without a stable release in the CLI response.
+$versionOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-version 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch 'PASS stable and test channel version selection') {
+    throw "Release version selection smoke test failed: $versionOutput"
+}
+Write-Host 'PASS release base version selection' -ForegroundColor Green
 if (-not $SkipNpm) {
     Push-Location (Join-Path $PSScriptRoot 'devkit')
     try {

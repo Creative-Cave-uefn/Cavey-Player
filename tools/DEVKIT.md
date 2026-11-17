@@ -45,6 +45,8 @@ The `/build` wizard refreshes remote refs from `origin` before displaying branch
 
 ## Commands
 
+For an existing release channel, DevKit derives the version base from that channel before inspecting stable releases. If the GitHub CLI returns no compatible tags, it reads the source branch's `pubspec.yaml` rather than failing early.
+
 `/build` starts a guided sequence: branch, local build or test release, confirmation. For scripts use `/build --branch latest --local --yes` or `/build --branch <name> --mode new --yes`. `/clean` asks for confirmation unless `--dry-run` or `--yes` is supplied. `/status`, `/branches`, `/releases`, `/history`, `/logs`, `/run`, `/doctor`, and `/project` call `tools/cavey-devkit-engine.ps1` with live output.
 
 Other text (`git status`, `flutter --version`, `Get-ChildItem`) runs in a PowerShell child process. `cd` is handled by DevKit so the working directory persists between executions. **Other PowerShell variables/functions do not persist**; for prompts, REPLs or full interactive programs use `/terminal`, which opens a real PowerShell in Windows Terminal or a separate console window.

@@ -257,7 +257,7 @@ function App() {
         try {
           const result = await runCommand({
             program: "gh",
-            args: ["release", "list", "--repo", "Creative-Cave-uefn/cave-player-releases",
+            args: ["release", "list", "--repo", "Creative-Cave-uefn/Cavey-Player-Releases",
               "--limit", "500", "--json", "tagName,name,isPrerelease,publishedAt"],
             cwd: directory, label: "gh release list",
           });
