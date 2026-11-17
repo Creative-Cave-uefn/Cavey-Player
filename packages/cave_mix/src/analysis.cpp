@@ -638,43 +638,45 @@ static Grid fitGrid(const std::vector<double> &b) {
   return g;
 }
 
-// Уточнение фазы сетки по атакам: нейросеть даёт доли с шагом 20 мс, а атаки звука видны с шагом ~3 мс.
-// Огибающая атак — положительный прирост энергии (окно 256, шаг 64 сэмпла); сетка сдвигается в пределах ±25 мс
-// туда, где сумма атак на долях больше всего. Если явного максимума нет (мягкие атаки), сдвиг не применяется.
+// Уточнение фазы сетки по атакам. Beat This! даёт доли с шагом кадра 20 мс, и его сдвиг относительно настоящих
+// ударов от трека к треку разный (на тестах от −17 до +10 мс): у двух треков в переходе это и есть «доли не совпадают».
+// Поэтому фаза берётся по самим ударам: у каждой доли сетки — самая резкая атака в окне ±40 мс (подъём огибающей
+// за 2 мс, в децибелах), и сетка сдвигается на медиану этих отклонений. Порога «стоит ли сдвигать» нет: одинаковое
+// правило для всех треков важнее, чем точность любого из них. Мало атак (тихая, без ударных музыка) — сдвиг 0.
 static double refinePhase(const std::vector<float> &x, int fs, const Grid &g, double duration, double *gainOut) {
-  const int win = 256, hop = 64;
-  const size_t n = x.size() / hop;
-  std::vector<double> env(n, 0.0), onset(n, 0.0);
+  const size_t n = x.size();
+  if (n < (size_t)fs) { *gainOut = 0; return 0; }
+  // огибающая: |x| в окне 1 мс (скользящая сумма), в log10
+  const int w = std::max(1, fs / 1000);
+  std::vector<float> le(n);
+  double acc = 0;
   for (size_t i = 0; i < n; ++i) {
-    double e = 0;
-    const size_t a = i * hop;
-    for (int k = 0; k < win && a + (size_t)k < x.size(); ++k) e += (double)x[a + (size_t)k] * x[a + (size_t)k];
-    env[i] = 10 * std::log10(e / win + 1e-10);
+    acc += std::abs(x[i]);
+    if (i >= (size_t)w) acc -= std::abs(x[i - (size_t)w]);
+    le[i] = (float)std::log10(acc / w + 1e-6);
   }
-  for (size_t i = 1; i < n; ++i) onset[i] = std::max(0.0, env[i] - env[i - 1]);
-  const double hopSec = (double)hop / fs;
-  auto score = [&](double shift) {
-    double s = 0;
-    for (double t = g.firstBeat + shift; t < duration - 0.05; t += g.period) {
-      if (t < 0) continue;
-      // атака начинается чуть раньше центра окна: окно идёт вперёд от своего начала
-      const double pos = t / hopSec - (double)win / hop / 2;
-      const long c = std::lround(pos);
-      double m = 0;
-      for (long k = c - 1; k <= c + 1; ++k)
-        if (k >= 0 && k < (long)n) m = std::max(m, onset[(size_t)k]);
-      s += m;
+  // подъём за 2 мс вокруг точки; окно огибающей запаздывает на полмиллисекунды — учтено в позиции
+  const int h = std::max(1, fs / 1000);
+  auto rise = [&](size_t i) { return (double)le[std::min(n - 1, i + (size_t)h)] - le[i >= (size_t)h ? i - (size_t)h : 0]; };
+  const int span = (int)(0.040 * fs);
+  std::vector<double> offs;
+  int beats = 0;
+  for (double t = g.firstBeat; t < duration - 0.05; t += g.period) {
+    const long c = std::lround(t * fs);
+    if (c - span < 0 || c + span >= (long)n) continue;
+    ++beats;
+    double best = 0;
+    long at = -1;
+    for (long i = c - span; i <= c + span; ++i) {
+      const double r = rise((size_t)i);
+      if (r > best) { best = r; at = i; }
     }
-    return s;
-  };
-  const double base = score(0);
-  double best = base, bestShift = 0;
-  for (double d = -0.025; d <= 0.025 + 1e-9; d += hopSec) {
-    const double sc = score(d);
-    if (sc > best) { best = sc; bestShift = d; }
+    if (best >= 0.5 && at >= 0) offs.push_back((double)(at - w / 2) / fs - t);  // 0,5 — подъём в 10 дБ за 2 мс
   }
-  *gainOut = base > 0 ? best / base : 0;
-  return best > base * 1.15 ? bestShift : 0.0;
+  *gainOut = beats ? (double)offs.size() / beats : 0;
+  if (offs.size() < 16 || offs.size() < 0.3 * beats) return 0;
+  std::nth_element(offs.begin(), offs.begin() + (long)offs.size() / 2, offs.end());
+  return std::clamp(offs[offs.size() / 2], -0.040, 0.040);
 }
 
 // ================================================================ громкость EBU R128

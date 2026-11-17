@@ -619,6 +619,7 @@ class Deck {
     fadeOut_ = 0;
     fadeOutAction_ = FO_NONE;
     iso_.reset();
+    prebuf_ = true;
   }
 
   void beginPlay() {
@@ -631,6 +632,10 @@ class Deck {
   void pullBlocks() {
     Block *b = nullptr;
     while (source.filled.peek(b)) {
+      // блоки новой позиции, пока дека ещё затухает перед перемоткой, не выбрасываем — ждут своей очереди.
+      // Иначе первые блоки пропадали, кольцо начиналось позже позиции, и звук после перемотки шёл с опозданием
+      // и без плавного входа (щелчок)
+      if (b->gen != gen_ && fadeOutAction_ == FO_SEEK && b->gen == pendingSeekGen_) break;
       if (b->gen != gen_) { source.filled.pop(b); source.recycle(b); continue; }
       if (ringEnd_ - ringStart_ + b->n > kRing) {
         // кольцо полно: освобождаем то, что далеко позади позиции
@@ -640,7 +645,12 @@ class Deck {
         if (ringEnd_ - ringStart_ + b->n > kRing) break;  // всё ещё нет места — заберём позже
       }
       source.filled.pop(b);
-      if (b->frame != ringEnd_) { ringStart_ = ringEnd_ = b->frame; }  // первый блок после перемотки
+      if (b->frame != ringEnd_) {  // первый блок после перемотки
+        ringStart_ = ringEnd_ = b->frame;
+        // декодер начал не с того кадра (не должно быть, но на всякий случай): позиция — туда, где есть звук,
+        // и вход снова плавный
+        if (mode_ == M_DIRECT && (int64_t)ph_ < b->frame) { ph_ = (double)b->frame; fadeIn_ = kDeclick; prebuf_ = true; }
+      }
       for (int i = 0; i < b->n; ++i) {
         const size_t k = (size_t)((ringEnd_ + i) & (kRing - 1)) * 2;
         ring_[k] = b->data[i * 2];
@@ -787,18 +797,43 @@ class Deck {
     advanceTempoOnly(clock);
     const double tempo = sm_[CM_TEMPO].cur;
 
-    if (mode_ == M_DIRECT && wantStretch(clock)) engageStretch(tempo);
-    if (mode_ == M_STRETCH && !wantStretch(clock)) { mode_ = M_TO_DIRECT; xf_ = 0; directFrom_ = (int64_t)std::llround(ph_); }
-    if (mode_ != M_DIRECT) rb_->setTimeRatio(1.0 / tempo);
+    // После перемотки (и после опустевшего кольца) звук не идёт, пока декодер не накопит запас: иначе он
+    // начинается и обрывается кусками по блоку — на быстрых перемотках это и слышно как «скретч»
+    bool waiting = false;
+    if (prebuf_) {
+      const int64_t P = (int64_t)ph_;
+      if (eofFrame_ >= 0 || ringEnd_ - P >= kPrebuf || looping(P, n)) prebuf_ = false;
+      else waiting = true;
+    }
+    if (!waiting) {
+      if (mode_ == M_DIRECT && wantStretch(clock)) engageStretch(tempo);
+      if (mode_ == M_STRETCH && !wantStretch(clock)) { mode_ = M_TO_DIRECT; xf_ = 0; directFrom_ = (int64_t)std::llround(ph_); }
+      if (mode_ != M_DIRECT) rb_->setTimeRatio(1.0 / tempo);
+    }
 
     float bufL[kSub], bufR[kSub];
-    bool ok = true;
+    bool ok = true, rearmFadeIn = false;
 
-    if (mode_ == M_DIRECT) {
+    if (waiting) {
+      ok = false;
+    } else if (mode_ == M_DIRECT) {
       const int64_t P = (int64_t)ph_;
-      if (!looping(P, n) && !ended(P) && P + n > ringEnd_ && eofFrame_ < 0) ok = false;
       for (int i = 0; i < n; ++i) srcFrame(P + i, bufL[i], bufR[i]);
-      if (ok) ph_ = (double)wrap(P + n);
+      if (!looping(P, n) && !ended(P) && P + n + kStarve > ringEnd_ && eofFrame_ < 0) {
+        // декодер не успевает: запас почти кончился — доигрываем, что есть, с затуханием (не обрываем: затухание
+        // начинается, пока в кольце ещё есть kStarve кадров, поэтому оно не короче куска), дальше тишина и новый запас
+        const int avail = (int)std::clamp<int64_t>(ringEnd_ - P, 0, n);
+        for (int i = 0; i < n; ++i) {
+          const float g = i < avail ? (float)(1.0 - (double)i / avail) : 0.0f;
+          bufL[i] *= g; bufR[i] *= g;
+        }
+        ph_ = (double)(P + avail);
+        if (ringEnd_ > ringStart_) ++underruns;
+        prebuf_ = true;
+        rearmFadeIn = true;
+      } else {
+        ph_ = (double)wrap(P + n);
+      }
     } else {
       float wl[kSub], wr[kSub];
       ok = pullStretched(n, wl, wr);
@@ -834,10 +869,22 @@ class Deck {
     }
 
     if (!ok) {
-      if (ringEnd_ > ringStart_) ++underruns;  // пустое кольцо — это ожидание после перемотки, а не сбой
+      if (!waiting && ringEnd_ > ringStart_) ++underruns;  // ожидание запаса после перемотки — не сбой
+      if (!waiting) prebuf_ = true;                        // тайм-стретч не успел — тоже копим запас
       for (int i = 0; i < n; ++i) bufL[i] = bufR[i] = 0;
+      // звук пойдёт, когда декодер догонит: вход снова плавный. Иначе плавный вход «сгорает» на тишине ожидания,
+      // и звук после перемотки начинается щелчком (на быстрых перемотках — «скретч»)
+      rearmFadeIn = true;
     }
     if (tape_.active()) tape_.process(bufL, bufR, n);
+    // плавный вход — на сам звук деки (до фильтров и посылов, чтобы и эхо не щёлкало). Пока звука нет, вход
+    // не расходуется: он нужен в момент, когда звук пойдёт
+    if (rearmFadeIn) fadeIn_ = kDeclick;
+    else
+      for (int i = 0; i < n && fadeIn_ > 0; ++i, --fadeIn_) {
+        const float f = (float)(1.0 - fadeIn_ / (double)kDeclick);
+        bufL[i] *= f; bufR[i] *= f;
+      }
 
     // цепочка деки
     double peak = peak_;
@@ -848,7 +895,6 @@ class Deck {
       const double gm = eqKnobToGain(sm_[CM_EQ_MID].cur);
       const double gh = eqKnobToGain(sm_[CM_EQ_HIGH].cur);
       double g = std::max(0.0, sm_[CM_GAIN].cur) * dbToGain(sm_[CM_TRIM_DB].cur);
-      if (fadeIn_ > 0) { g *= 1.0 - fadeIn_ / (double)kDeclick; --fadeIn_; }
       if (fadeOut_ > 0) { g *= fadeOut_ / (double)kDeclick; }
       else if (fadeOutAction_ != FO_NONE) g = 0;
       double l = bufL[i], r = bufR[i];
@@ -929,6 +975,9 @@ class Deck {
   FadeAction fadeOutAction_ = FO_NONE;
   uint32_t pendingSeekGen_ = 0;
   bool pauseAfterSeek_ = false;
+  bool prebuf_ = false;                     // ждём запас звука (после перемотки или опустевшего кольца)
+  static constexpr int64_t kPrebuf = 4096;  // ~85 мс
+  static constexpr int64_t kStarve = 256;   // запас, при котором уже пора плавно замолкать
   int64_t pendingSeekFrame_ = 0;
 
   Lane lane_[CM_PARAM_COUNT];

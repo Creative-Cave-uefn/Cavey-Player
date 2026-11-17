@@ -619,6 +619,46 @@ static void testReverb() {
   CHECK(l4 < -70, "tail too long");
 }
 
+// Быстрые перемотки (тащат ползунок): ни одного щелчка — звук после каждой перемотки входит плавно, даже если
+// декодер ещё не успел; под тайм-стретчем тоже. Источник — тон 440 Гц: его соседние сэмплы отличаются
+// не больше чем на 2π·440/48000·0,5 ≈ 0,029; скачок больше 0,06 — щелчок
+static void testScrubNoClicks() {
+  const int sr = 48000;
+  writeWav(path("tone440.wav"), sine(sr * 30, sr, 440.0, 0.5f), sr);
+  std::vector<std::pair<const char *, std::string>> files = {{"wav", path("tone440.wav")}};
+  if (std::system(("ffmpeg -y -v error -i " + path("tone440.wav") + " -c:a aac -b:a 192k " + path("tone440.m4a") + " 2>/dev/null").c_str()) == 0)
+    files.push_back({"m4a", path("tone440.m4a")});
+  for (double tempo : {1.0, 0.97}) {
+    for (auto &f : files) {
+      Rig r;
+      cm_set_ffmpeg(r.e, "ffmpeg");
+      cm_load(r.e, 0, f.second.c_str(), 1.0);
+      CHECK(r.waitReady(0), "deck not ready");
+      cm_set(r.e, 0, CM_TEMPO, tempo);
+      cm_play_at(r.e, 0, -1);
+      r.render(sr / 2);
+      const size_t from = r.out.size() / 2;
+      unsigned rnd = 7;
+      for (int i = 0; i < 60; ++i) {  // 60 перемоток каждые 25 мс
+        rnd = rnd * 1664525u + 1013904223u;
+        cm_seek(r.e, 0, 2.0 + (rnd >> 8) % 2000 / 100.0);
+        r.render(sr / 40);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+      for (int i = 0; i < 40; ++i) { r.render(sr / 40); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+      double worst = 0;
+      size_t at = 0;
+      for (size_t i = from + 1; i < r.out.size() / 2; ++i) {
+        const double d = std::abs(r.out[i * 2] - r.out[(i - 1) * 2]);
+        if (d > worst) { worst = d; at = i; }
+      }
+      std::printf("    %s, tempo %.2f: largest sample jump %.3f (at %.3f s)\n", f.first, tempo, worst, (double)(at - from) / sr);
+      if (getenv("CM_DUMP") && worst >= 0.06) { for (long i = -2400; i < 200; i += 40) std::printf("      %+5ld %+.4f\n", i, r.out[(at + i) * 2]); std::printf("      underruns %lld\n", (long long)r.state().underruns); }
+      CHECK(worst < 0.06, "click after seek: jump %.3f", worst);
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) g_dir = argv[1];
   struct T { const char *name; void (*fn)(); } tests[] = {
@@ -632,6 +672,7 @@ int main(int argc, char **argv) {
       {"pause, seek, end, errors", testControlFlow},
       {"M4A / Opus / Ogg via ffmpeg", testFfmpegFormats},
       {"echo with tail after deck stops", testEcho},
+      {"fast seeks without clicks", testScrubNoClicks},
       {"seamless loop and loop off", testLoop},
       {"loop under time-stretch", testLoopStretched},
       {"vinyl brake", testBrake},
