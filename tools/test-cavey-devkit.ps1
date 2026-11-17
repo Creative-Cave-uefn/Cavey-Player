@@ -33,6 +33,15 @@ if ($LASTEXITCODE -ne 0 -or $output -notmatch '/build') {
     throw "Build engine help failed: $output"
 }
 Write-Host 'PASS build engine help' -ForegroundColor Green
+
+# Catch PowerShell's case-insensitive command lookup recursion: a Git helper may
+# shadow git.exe, and a Gh helper may shadow gh.exe. This test invokes both
+# wrappers through the engine without network access or authentication.
+$nativeOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-native 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $nativeOutput -notmatch 'PASS native Git executable: git version') {
+    throw "Native CLI smoke test failed (check Git/Gh recursion): $nativeOutput"
+}
+Write-Host 'PASS native Git/Gh command resolution' -ForegroundColor Green
 if (-not $SkipNpm) {
     Push-Location (Join-Path $PSScriptRoot 'devkit')
     try {

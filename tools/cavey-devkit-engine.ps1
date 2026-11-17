@@ -27,17 +27,36 @@ function Say([string]$message, [ConsoleColor]$color = [ConsoleColor]::Gray) { Wr
 function Heading([string]$message) { Write-Host ''; Say "  $message" Cyan }
 function Hint([string]$message) { Say "  $message" DarkGray }
 function Fail([string]$message) { throw $message }
+function Resolve-NativeCommand([string]$name) {
+    # PowerShell commands are case-insensitive: the Git/Gh helper functions MUST NOT
+    # shadow the native git.exe/gh.exe applications. Resolve applications only.
+    $command = Get-Command -Name $name -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $command) { Fail "Executable not found on PATH: $name" }
+    return $command.Source
+}
 function Native([string]$exe, [string[]]$arguments) {
+    $path = Resolve-NativeCommand $exe
     $old = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    try { $output = & $exe @arguments 2>&1 | Out-String; $code = $LASTEXITCODE }
-    finally { $ErrorActionPreference = $old }
+    $code = $null
+    $output = ''
+    try {
+        $output = & $path @arguments 2>&1 | Out-String
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $old
+    }
     if ($code -ne 0) { Fail "$exe $($arguments -join ' '): $($output.Trim())" }
     return $output.Trim()
 }
 function Git([string[]]$arguments) { Native 'git' $arguments }
 function Gh([string[]]$arguments) { Native 'gh' $arguments }
-function Has([string]$name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
+function Has([string]$name) {
+    # A same-named helper function is not proof that the external CLI exists.
+    return [bool](Get-Command -Name $name -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1)
+}
 function Option([string[]]$arguments, [string]$key) {
     for ($i = 0; $i -lt $arguments.Count - 1; $i++) {
         if ($arguments[$i] -eq $key) { return $arguments[$i + 1] }
@@ -391,6 +410,19 @@ function Dispatch([string[]]$tokens) {
     if ($tokens.Count -eq 0) { Help; return }
     $command = $tokens[0].TrimStart('/').ToLower()
     switch ($command) {
+        'selftest-native' {
+            # Offline smoke test: both wrappers must resolve an executable, not recurse.
+            $gitVersion = Git @('--version')
+            if ($gitVersion -notmatch '^git version ') { Fail "Unexpected Git version output: $gitVersion" }
+            Say "PASS native Git executable: $gitVersion" Green
+            if (Has 'gh') {
+                $ghVersion = Gh @('version')
+                if ($ghVersion -notmatch '^gh version ') { Fail "Unexpected GitHub CLI output: $ghVersion" }
+                Say "PASS native GitHub CLI executable" Green
+            } else {
+                Hint 'GitHub CLI is not installed; skipping optional gh check.'
+            }
+        }
         'help' { Help }
         'status' { Status }
         'doctor' { Doctor }
