@@ -263,10 +263,11 @@ Write-Host "Будет создан пререлиз $tag в $ReleasesRepo; пр
 $answer = Read-Host 'Продолжить? (y/n)'
 if ($answer -notmatch '^[yYдД]') { Write-Host 'Отменено. Файлы остались в dist.'; exit 0 }
 
-$old = & gh release list --repo $ReleasesRepo --limit 200 --json tagName --jq '.[].tagName' 2>$null
-foreach ($t in @($old)) {
-    if ($t -and $t.StartsWith($prefix)) { & gh release delete $t --repo $ReleasesRepo --cleanup-tag --yes | Out-Null }
-}
+$old = & gh release list --repo $ReleasesRepo --limit 500 --json tagName,isPrerelease 2>$null
+if ($LASTEXITCODE -ne 0) { Fail 'Не получилось проверить существующие тестовые релизы: ничего не удалено.' }
+$oldTags = @($old | ConvertFrom-Json | Where-Object {
+    $_.isPrerelease -and $_.tagName.StartsWith($prefix) -and $_.tagName -ne $tag
+} | ForEach-Object { $_.tagName })
 $notesFile = Join-Path $env:TEMP 'cavey-notes.txt'
 [IO.File]::WriteAllText($notesFile, "Локальная тестовая сборка ветки $branch ($sha)`n$subject", (New-Object Text.UTF8Encoding($false)))
 $title = "Тест: $branch · $Version"
@@ -277,4 +278,9 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-Host "Выложено: $tag" -ForegroundColor Green
+# Delete previous builds only AFTER GitHub confirms successful publication.
+foreach ($t in $oldTags) {
+    & gh release delete $t --repo $ReleasesRepo --cleanup-tag --yes | Out-Null
+    if ($LASTEXITCODE -ne 0) { Warn "Не получилось удалить устаревший $t. Новый релиз уже опубликован." }
+}
 Write-Host 'В Cavey: Настройки → Обновления → Тестовые сборки.'
