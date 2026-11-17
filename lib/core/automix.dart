@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'audio_cache.dart';
+import 'beat_analysis.dart';
 import 'dl/tools.dart';
 import 'log.dart';
 
@@ -125,6 +126,15 @@ class MixAnalyzer {
   /// Профиль трека посчитан (плеер по нему подстраивает громкость)
   void Function(String id)? onProfile;
 
+  /// Анализ для DJ-режима (доли, тональность, фразы): считается в той же очереди, если [beatEnabled]
+  BeatAnalysis? beat;
+  bool Function() beatEnabled = () => false;
+
+  bool _needsBeat(String id) {
+    final b = beat;
+    return b != null && !b.failed && beatEnabled() && !b.has(id);
+  }
+
   final Map<String, MixProfile> _mem = {};
   final Set<String> _queue = {};
   bool _running = false;
@@ -149,7 +159,7 @@ class MixAnalyzer {
 
   /// Посчитать профиль, когда звук трека будет в кэше
   void prepare(String id) {
-    if (_noTool || profile(id) != null) return;
+    if ((_noTool || profile(id) != null) && !_needsBeat(id)) return;
     _queue.add(id);
     unawaited(_pump());
   }
@@ -177,6 +187,14 @@ class MixAnalyzer {
   }
 
   Future<void> _analyze(String id, File src) async {
+    if (profile(id) == null) await _analyzeEnvelope(id, src);
+    final b = beat;
+    if (b != null && _needsBeat(id)) {
+      if (await b.analyze(id, src, tools.ffmpeg.existsSync() ? tools.ffmpeg.path : '')) onProfile?.call(id);
+    }
+  }
+
+  Future<void> _analyzeEnvelope(String id, File src) async {
     try {
       if (!tools.ffmpeg.existsSync()) {
         await tools.ensure((_) {});

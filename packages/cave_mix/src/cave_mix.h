@@ -124,6 +124,23 @@ CM_API void cm_get_state(cm_engine *e, cm_state *out);
 // Только для offline: вывести frames кадров стерео float в out. Возвращает число кадров.
 CM_API int32_t cm_render(cm_engine *e, float *out, int32_t frames);
 
+// ---------------------------------------------------------------- анализ треков
+
+// Анализатор: доли и даунбиты (нейросеть Beat This! через ONNX Runtime), сетка темпа, громкость EBU R128,
+// истинный пик, тональность (Camelot), тишина, энергия по тактам, фразы, точки входа/выхода микса.
+// ONNX Runtime подгружается из ort_lib во время работы. mel_model — ONNX лог-мел спектрограммы
+// (mel_spectrogram.onnx из beat-this-rs), beat_model — Beat This! в ONNX (малая или полная модель).
+// Создание дорогое (загрузка моделей): один анализатор на много треков. Не потокобезопасен —
+// вызывать из одного потока. При ошибке возвращает NULL и пишет текст в *error_out (освободить cm_free).
+typedef struct cm_analyzer cm_analyzer;
+CM_API cm_analyzer *cm_analyzer_create(const char *ort_lib, const char *mel_model, const char *beat_model,
+                                       int32_t threads, char **error_out);
+CM_API void cm_analyzer_destroy(cm_analyzer *a);
+// Проанализировать файл. ffmpeg — для форматов, которых нет во встроенных декодерах (может быть пустым).
+// Возвращает JSON профиля v2 (освободить cm_free) или NULL с текстом ошибки в *error_out.
+CM_API char *cm_analyze_file(cm_analyzer *a, const char *path_utf8, const char *ffmpeg_utf8, char **error_out);
+CM_API void cm_free(void *p);
+
 #ifdef __cplusplus
 }
 #endif

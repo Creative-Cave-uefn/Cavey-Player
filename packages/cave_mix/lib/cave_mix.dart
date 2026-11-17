@@ -283,3 +283,78 @@ class MixEngine {
   /// Только для offline-движка: вывести [frames] кадров стерео в [out] (длиной ≥ frames·2)
   int render(Pointer<Float> out, int frames) => _l.render(_e, out, frames);
 }
+
+// ---------------------------------------------------------------- анализ треков
+
+typedef _AnCreateN = Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Int32, Pointer<Pointer<Utf8>>);
+typedef _AnCreateD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, int, Pointer<Pointer<Utf8>>);
+typedef _AnFileN = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Pointer<Utf8>>);
+typedef _FreeN = Void Function(Pointer<Void>);
+typedef _FreeD = void Function(Pointer<Void>);
+
+/// Анализатор треков (нативный): доли и даунбиты нейросетью Beat This!, сетка темпа, громкость EBU R128,
+/// тональность, энергия по тактам, фразы, точки микса. Результат — JSON профиля v2 (ТЗ, раздел 3.3).
+/// Вызовы блокирующие и долгие (секунды на трек): держите анализатор в отдельном изоляте.
+class TrackAnalyzer {
+  TrackAnalyzer._(this._destroy, this._analyze, this._free, this._a);
+
+  final _VoidPD _destroy;
+  final _AnFileN _analyze;
+  final _FreeD _free;
+  Pointer<Void> _a;
+
+  /// [ortLib] — onnxruntime.dll / libonnxruntime.so; [melModel] — mel_spectrogram.onnx;
+  /// [beatModel] — Beat This! в ONNX. [threads] 0 — по числу ядер. Ошибка — исключение с текстом.
+  static TrackAnalyzer create({required String ortLib, required String melModel, required String beatModel, int threads = 0}) {
+    final l = _open();
+    final create = l.lookupFunction<_AnCreateN, _AnCreateD>('cm_analyzer_create');
+    final destroy = l.lookupFunction<_VoidPN, _VoidPD>('cm_analyzer_destroy');
+    final analyze = l.lookupFunction<_AnFileN, _AnFileN>('cm_analyze_file');
+    final free = l.lookupFunction<_FreeN, _FreeD>('cm_free');
+    final a = ortLib.toNativeUtf8(allocator: malloc), m = melModel.toNativeUtf8(allocator: malloc);
+    final b = beatModel.toNativeUtf8(allocator: malloc);
+    final err = malloc<Pointer<Utf8>>()..value = nullptr;
+    try {
+      final h = create(a, m, b, threads, err);
+      if (h == nullptr) {
+        final msg = err.value == nullptr ? 'анализатор не создался' : err.value.toDartString();
+        if (err.value != nullptr) free(err.value.cast());
+        throw StateError(msg);
+      }
+      return TrackAnalyzer._(destroy, analyze, free, h);
+    } finally {
+      malloc.free(a);
+      malloc.free(m);
+      malloc.free(b);
+      malloc.free(err);
+    }
+  }
+
+  /// JSON профиля трека. [ffmpeg] — для M4A/Opus/Ogg (может быть пустым). Ошибка — исключение с текстом.
+  String analyzeFile(String path, {String ffmpeg = ''}) {
+    if (_a == nullptr) throw StateError('анализатор закрыт');
+    final p = path.toNativeUtf8(allocator: malloc), f = ffmpeg.toNativeUtf8(allocator: malloc);
+    final err = malloc<Pointer<Utf8>>()..value = nullptr;
+    try {
+      final r = _analyze(_a, p, f, err);
+      if (r == nullptr) {
+        final msg = err.value == nullptr ? 'анализ не удался' : err.value.toDartString();
+        if (err.value != nullptr) _free(err.value.cast());
+        throw StateError(msg);
+      }
+      final s = r.toDartString();
+      _free(r.cast());
+      return s;
+    } finally {
+      malloc.free(p);
+      malloc.free(f);
+      malloc.free(err);
+    }
+  }
+
+  void dispose() {
+    if (_a == nullptr) return;
+    _destroy(_a);
+    _a = nullptr;
+  }
+}

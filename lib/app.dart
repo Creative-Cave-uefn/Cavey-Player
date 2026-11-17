@@ -14,6 +14,7 @@ import 'core/wave.dart';
 import 'core/app_icon.dart';
 import 'core/audio_cache.dart';
 import 'core/automix.dart';
+import 'core/beat_analysis.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
@@ -208,11 +209,18 @@ class AppServices {
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
     // Умный переход: профили звука треков и темп из Deezer (если уже узнали)
-    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))..onProfile = (id) {
+    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))
+      ..onProfile = (id) {
         if (id == player.current?.id) player.refreshNormalize();
-      };
+      }
+      // DJ-режим: анализ долей, тональности и фраз — пока включён новый аудиодвижок (тест), только на Windows
+      ..beat = BeatAnalysis(store.sub('mix'), store.sub('tools'))
+      ..beatEnabled = () => Platform.isWindows && player.useMixEngine;
     final tempo = <String, double?>{};
     player.tempoOf = (t) {
+      // темп из собственного анализа точнее Deezer: он посчитан по этой самой записи
+      final own = player.mixer?.beat?.bpm(t.id);
+      if (own != null) return own;
       if (tempo.containsKey(t.id)) return tempo[t.id];
       tempo[t.id] = null;
       if (t.artists.isNotEmpty) app.web.bpm(t.artists.first, t.title).then((b) => tempo[t.id] = b).catchError((Object _) => null);
