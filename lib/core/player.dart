@@ -11,18 +11,8 @@ import 'audio_deck.dart';
 import 'automix.dart';
 import 'auth.dart';
 import 'crossfade.dart';
-import 'crossfade_handoff.dart';
-import 'dj_eq.dart';
-import 'dj_transition.dart';
-import 'dj_effects.dart';
-import 'intel/adaptive_dj.dart';
-import 'intel/record.dart';
-import 'intel/set_context.dart';
-import 'intel/dj_journal.dart';
-import 'intel/transition_verifier.dart';
 import 'drive.dart';
 import 'library.dart';
-import 'mixbook.dart';
 import 'log.dart';
 import 'models.dart';
 import 'store.dart';
@@ -90,9 +80,6 @@ class CrossfadeInfo {
 /// Источник бесконечной очереди («Моя волна»): даёт следующие треки и узнаёт, как их слушали
 abstract class QueueFeeder {
   List<String> more(int n);
-
-  /// Заголовок раздела очереди, который пополняется из этого источника («Далее в волне», «Далее в радио»)
-  String get label;
 
   /// Трек сменился: [listened] — сколько он играл, [skipped] — переключили сами, а не доиграл
   void heard(Track t, Duration listened, {required bool skipped});
@@ -378,7 +365,6 @@ class PlayerController extends ChangeNotifier {
   /// Переключатель остаётся рабочим: его можно включить снова
   Future<void> playTracks(List<Track> list, int start, {String? playlistId, bool inOrder = false}) async {
     if (list.isEmpty) return;
-    _previewOverride = null;
     if (inOrder) shuffle = false;
     feeder = null; // выбрали что-то сами — волна выключается
     sourcePlaylist = playlistId;
@@ -495,25 +481,6 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Меняет источник бесконечной очереди, не трогая то, что уже в очереди (радио по очереди, АвтоDJ).
-  /// null — очередь больше не пополняется сама
-  void useFeeder(QueueFeeder? f) {
-    feeder = f;
-    if (f != null) _topUpFeed();
-    notifyListeners();
-  }
-
-  /// Ставит следующие за текущим треки в новом порядке (АвтоDJ выстроил их по темпу и тональности).
-  /// Остаётся только то, что в [ids]; прежнее деление на «поставил сам» и «подобрано» сбрасывается
-  void reorderUpcoming(List<String> ids) {
-    if (index < 0) return;
-    final head = queue.take(index + 1).toList();
-    queue = [...head, for (final id in ids) if (lib.data.tracks[id] != null) id];
-    _origin = List.of(queue);
-    userAhead = 0;
-    _queueChanged();
-  }
-
   /// Заменяет всё, что дальше видимых следующих треков (например, сменили характер волны)
   void replaceUpcoming(List<String> ids) {
     if (index < 0) return;
@@ -598,8 +565,6 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _queueChanged() {
-    _adaptiveKey = null;
-    _adaptiveDecision = null;
     final ahead = queue.length - index - 1;
     if (userAhead > ahead) userAhead = ahead < 0 ? 0 : ahead;
     notifyListeners();
@@ -677,227 +642,7 @@ class PlayerController extends ChangeNotifier {
   /// Умный переход: профили звука треков и темп трека (если известен)
   MixAnalyzer? mixer;
   double? Function(Track t)? tempoOf;
-
-  /// Уточнение DJ-плана по разбору звука (фразы, вокал, громкость); null — как есть. Аргументы: план, профили, id треков
-  MixPlan Function(MixPlan plan, MixProfile a, MixProfile b, String fromId, String toId)? refinePlan;
-
-  /// Автоматический план перехода с учётом разбора звука
-  MixPlan _autoPlan(MixProfile a, MixProfile b, String fromId, String toId, {double? bpm}) {
-    final plan = MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: bpm, dj: adaptiveStyle ? null : _djMix);
-    final r = refinePlan;
-    return r == null || adaptiveStyle ? plan : r(plan, a, b, fromId, toId);
-  }
-  TrackFeatures? Function(String id)? adaptiveFeatures;
-  void Function(Map<String, Object?> event)? djTrace;
-  Future<TransitionCheck> Function(String from, String to, MixPlan plan, bool eq, TransitionLevels levels)? verifyTransition;
-  Future<void>? _adaptiveCheck;
-  bool _adaptiveReady = false;
-  String? _adaptiveDecisionId;
-  TransitionProbe? _transitionProbe;
-  Map<String, Object?>? lastDjExecution;
-  void _traceDj(Map<String, Object?> event) {
-    if (event['kind'] == 'preflight' || event['kind'] == 'fallback' || event['kind'] == 'headroom' || event['kind'] == 'executionAbort') {
-      AppLog.info('DJ check: ${jsonEncode(event)}');
-    }
-    try { djTrace?.call(event); } catch (e) { AppLog.warn('DJ: не удалось записать диагностику', e); }
-  }
-  final List<DjHistoryEntry> _djHistory = [];
-  int _historySeq = -1;
-  SetIntent get setIntent => SetIntent.values.firstWhere(
-      (i) => i.name == settings.viewOf('mix.intent', 'balanced'), orElse: () => SetIntent.balanced);
-  AdaptiveDecision? _adaptiveDecision;
-  String? _adaptiveKey;
-  String get mixStatus {
-    if (!adaptiveStyle) return djStyle ? 'DJ: сведение по доступным сеткам' : 'AutoMix: плавный переход';
-    final d = _adaptiveDecision;
-    if (d == null) return 'Adaptive: план ещё не выбран; проверьте полный анализ';
-    if (!_adaptiveReady) return 'Adaptive: проверяю переход; до результата доступен обычный AutoMix';
-    final technique = switch (d.technique) {
-      AdaptiveTechnique.autoMix => 'обычный AutoMix',
-      AdaptiveTechnique.beatBlend => 'beat blend',
-      AdaptiveTechnique.shortFade => 'короткий crossfade',
-      AdaptiveTechnique.cut => 'стык на фразе',
-      AdaptiveTechnique.atmospheric => 'атмосферный переход',
-    };
-    return 'Adaptive: $technique, ${(d.plan?.length.inMilliseconds ?? crossfadeSecNow * 1000) / 1000} с. '
-        '${d.reasons.isEmpty ? '' : d.reasons.first}';
-  }
-
-  void refreshMixSettings() {
-    _adaptiveKey = null;
-    _adaptiveDecision = null;
-    _dropPrepared();
-    _prepareMix();
-    notifyListeners();
-  }
-
-  bool get adaptiveStyle => jamXfSec == null && smartMix && settings.viewOf('mix.style', 'fade') == 'adaptive';
-
-  final Stopwatch _adaptiveChecked = Stopwatch();
-
-  /// Идёт переход между треками или следующая дека прямо сейчас открывается: фоновым задачам лучше подождать
-  bool get transitionActive => _fading || _preparing || _djPending || _dj != null;
-
-  /// Профиль звука явно от другого файла: длительность расходится с тем, что играет
-  bool _profileMismatch(MixProfile? p) =>
-      p != null && duration > Duration.zero && (p.durationMs - duration.inMilliseconds).abs() > 4000;
-
-  /// Всё, от чего зависит адаптивный план: пока строка та же, план не пересчитывается. В ключе — только профили и
-  /// разборы треков, участвующих в выборе: чужой фоновый разбор библиотеки план не сбрасывает
-  String _adaptiveKeyOf(bool manual, Track cur, List<String> ids, MixAnalyzer m) {
-    final all = [cur.id, ...ids];
-    final analysis = all.map((id) => adaptiveFeatures?.call(id)?.analyzedAt ?? 0).join(',');
-    final profiles = all.map((id) => identityHashCode(m.profileCached(id))).join(',');
-    final cached = (List.of(all)..sort()).map((id) => cache.has(id) ? '1' : '0').join();
-    return '$manual:$_openSeq:${cur.id}:${ids.join(",")}:${settings.viewOf('mix.bars', '8')}:${settings.viewOf('mix.range', '8')}:'
-        '${settings.viewOf('mix.bass', '1')}:${settings.viewOf('mix.offset', '0')}:${settings.viewOf('mix.transpose', '0')}:${_pitch[_p] ?? 0}:$crossfadeSecNow:$profiles:$analysis:'
-        '${setIntent.name}:$normalize:$normLevel:${settings.viewOf('intel.cut', '0')}:$cached:${_profileMismatch(m.profileCached(cur.id))}';
-  }
-
-  /// Freeze the first transition before preloading. Never reorder explicit user
-  /// additions, a jam queue, or a saved/manual transition. Queue edits replan.
-  void _prepareAdaptive({bool manual = false}) {
-    final cur = current, m = mixer;
-    if (!adaptiveStyle || adaptiveFeatures == null || cur == null || m == null ||
-        _fading || _pitchRestoring.contains(_p) || (!manual && (_preparing || _preparedId != null)) || index < 0 || index + 1 >= queue.length) return;
-    // Вызывается на каждом отсчёте позиции (десятки раз в секунду): сверяем состояние не чаще нескольких раз в секунду
-    if (!manual && _adaptiveKey != null && _adaptiveChecked.isRunning && _adaptiveChecked.elapsedMilliseconds < 400) return;
-    _adaptiveChecked
-      ..reset()
-      ..start();
-    final ids = queue.skip(index + 1).take(AdaptiveDj.maxCandidates).toList();
-    if (_previewOverride != null || ids.any((id) => _prefFor(cur.id, id) != null)) return;
-    final key = _adaptiveKeyOf(manual, cur, ids, m);
-    if (_adaptiveKey == key) return;
-    // Профиль от другого файла (трек заменили): адаптивный план не строим. Проверяем ДО планирования и запоминаем
-    // ключ — иначе тяжёлый перебор запускался заново на каждом отсчёте позиции до самого конца трека
-    if (_profileMismatch(m.profile(cur.id))) {
-      _adaptiveKey = key;
-      return;
-    }
-    AdaptiveTrack track(String id) => AdaptiveTrack(id, m.profile(id), adaptiveFeatures?.call(id),
-        artist: lib.data.tracks[id]?.artist.toLowerCase() ?? '', genre: m.profileCached(id)?.genre ?? '');
-    try {
-      final planningClock = Stopwatch()..start();
-      _adaptiveCheck = null;
-      final result = AdaptiveDj.choose(track(cur.id), [for (final id in ((userAhead > 0 || _preparing || _preparedId != null) ? ids.take(1) : ids)) track(id)],
-          options: _djMix ?? const DjMix(), maxSec: crossfadeSecNow.clamp(1, 12).toInt(),
-          earliestMs: position.value.inMilliseconds + 2000,
-          manualPositionMs: manual ? position.value.inMilliseconds : null,
-          allowCut: settings.viewOf('intel.cut', '0') == '1',
-          context: DjSetContext(intent: setIntent, history: List.of(_djHistory)));
-      _adaptiveDecision = result;
-      _adaptiveReady = result.technique == AdaptiveTechnique.autoMix;
-      final selected = ids.indexOf(result.to);
-      if (selected > 0 && userAhead == 0) {
-        final id = queue.removeAt(index + 1 + selected);
-        queue.insert(index + 1, id);
-        _origin = List.of(queue);
-        _queueChanged();
-      }
-      _adaptiveDecision = result;
-      // Ключ — по очереди ПОСЛЕ перестановки и тем же расчётом, что и при сверке: иначе следующий отсчёт позиции
-      // видел «другое» состояние и планирование вместе с проверочным рендером выполнялись второй раз
-      _adaptiveKey = _adaptiveKeyOf(manual, cur, queue.skip(index + 1).take(AdaptiveDj.maxCandidates).toList(), m);
-      AppLog.info('Adaptive AutoDJ: ${jsonEncode({
-            'from': cur.id,
-            'candidates': ids,
-            ...result.toJson()
-          })}');
-      final baseline = m.profile(cur.id) != null && m.profile(result.to) != null
-          ? MixPlan.make(m.profile(cur.id)!, m.profile(result.to)!, maxSec: crossfadeSecNow.clamp(1, 12).toInt()) : null;
-      final normalizationKey = '$normalize:$normLevel';
-      final levels = TransitionLevels(
-        outAmplitude: normalize ? math.pow(math.max(_normIn, _normFactorFor(cur.id)), 3).toDouble() : 1,
-        inAmplitude: normalize ? math.pow(_normFactorFor(result.to), 3).toDouble() : 1, matchGain: normalize ? 1 : null);
-      final decisionId = _adaptiveDecisionId = '$_openSeq-${DateTime.now().microsecondsSinceEpoch}';
-      _traceDj({'kind': 'decision', 'from': cur.id, 'fromRevision': adaptiveFeatures?.call(cur.id)?.revision,
-        'decisionId': decisionId,
-        'toRevision': adaptiveFeatures?.call(result.to)?.revision, 'manual': manual,
-        'candidates': ids, 'planningMs': planningClock.elapsedMilliseconds, ...result.toJson(),
-        if (baseline != null) 'baseline': {'outMs': baseline.start.inMilliseconds,
-          'inMs': baseline.inStart.inMilliseconds, 'lengthMs': baseline.length.inMilliseconds,
-          'rate': 1.0, 'inGain': baseline.inGain, 'levels': levels.toJson()},
-        'inGain': result.plan?.inGain, 'swapMs': result.plan?.swapAt?.inMilliseconds,
-        'eqMode': result.plan?.dj == true && result.plan?.swapAt != null ? 'threeBandV1' : 'legacyBass',
-        'levels': levels.toJson(), 'preflight': _adaptiveReady ? 'not_required' : 'pending'});
-      if (!_adaptiveReady) {
-        final seq = _openSeq;
-        _adaptiveCheck = () async {
-          var checkedDecision = result;
-          TransitionCheck check;
-          try {
-            check = result.plan == null || verifyTransition == null
-                ? const TransitionCheck(TransitionVerdict.unavailable, 'verifier_unavailable')
-                : await verifyTransition!(cur.id, result.to, result.plan!, result.plan!.dj && result.plan!.swapAt != null, levels);
-          } catch (_) { check = const TransitionCheck(TransitionVerdict.unavailable, 'verifier_failed'); }
-          final correction = headroomCorrection(check);
-          if (correction != null && result.plan != null && verifyTransition != null &&
-              seq == _openSeq && identical(_adaptiveDecision, result)) {
-            final adjusted = result.plan!.withHeadroom(correction);
-            _traceDj({'kind':'headroom','decisionId':decisionId,'measuredPeakDbtp':check.truePeakDb,
-              'gain':correction,'attenuationDb':20*math.log(correction)/math.ln10});
-            try {
-              final retry = await verifyTransition!(cur.id, result.to, adjusted,
-                  adjusted.dj && adjusted.swapAt != null, levels);
-              check = retry;
-              if (retry.verdict == TransitionVerdict.accepted && seq == _openSeq && identical(_adaptiveDecision, result)) {
-                _adaptiveDecision = checkedDecision = AdaptiveDecision(result.to, adjusted, result.technique, result.score,
-                    [...result.reasons, 'Запас по пикам восстановлен ослаблением'],
-                    path:result.path, alternatives:result.alternatives, components:result.components);
-              }
-            } catch (_) { check = const TransitionCheck(TransitionVerdict.unavailable, 'verifier_failed'); }
-          }
-          if (seq != _openSeq || current?.id != cur.id || !identical(_adaptiveDecision, checkedDecision) || _fading ||
-              '$normalize:$normLevel' != normalizationKey || _autoNextIndex() == null || queue[_autoNextIndex()!] != result.to) return;
-          final timely = result.plan != null && result.plan!.start.inMilliseconds > position.value.inMilliseconds + 250;
-          _traceDj({'kind': 'preflight', 'from': cur.id, 'to': result.to, 'decisionId': decisionId,
-            'cueStillAhead': timely, ...check.toJson()});
-          if (check.verdict == TransitionVerdict.accepted && timely) { _adaptiveReady = true; }
-          else {
-            _traceDj({'kind':'fallback','decisionId':decisionId,'selectedTechnique':result.technique.name,
-              'selectedEffect':result.plan?.effect,'reason':!timely?'cue_passed':check.reason,
-              'verdict':check.verdict.name,'peakDbtp':check.truePeakDb});
-            final normal = AdaptiveDj.fallback(track(cur.id), track(result.to), crossfadeSecNow.clamp(1, 12).toInt());
-            _adaptiveDecision = AdaptiveDecision(normal.to, normal.plan, normal.technique, 0,
-              [!timely ? 'AutoMix: точка сведения уже пройдена' : switch (check.reason) {
-                'originals_not_cached' => 'AutoMix: для проверки перехода нужны оба трека в кэше',
-                'true_peak_headroom' => 'AutoMix: у наложения недостаточно запаса по пикам',
-                'silent_render' => 'AutoMix: проверка обнаружила тишину',
-                _ => 'AutoMix: акустическая проверка перехода не пройдена',
-              }]);
-            _adaptiveReady = true;
-          }
-          notifyListeners();
-        }();
-      }
-      notifyListeners();
-    } catch (e) {
-      _adaptiveKey = key;
-      _adaptiveDecision = null;
-      AppLog.warn('Adaptive AutoDJ: обычный AutoMix после ошибки планирования', e);
-    }
-  }
-
   bool get smartMix => jamSmart ?? settings.viewOf('mix.smart', '1') == '1';
-
-  /// Диджейский стиль перехода: подгонка темпа, переход на целое число тактов, обмен басов (в джеме действует стиль организатора — обычный)
-  bool get djStyle => jamXfSec == null && smartMix && const ['dj', 'adaptive'].contains(settings.viewOf('mix.style', 'fade'));
-
-  DjMix? get _djMix => djStyle
-      ? DjMix(
-          bars: settings.viewNum('mix.bars', 8).round().clamp(1, 32).toInt(),
-          range: (settings.viewNum('mix.range', 8) / 100).clamp(0.01, 0.2).toDouble(),
-          bass: settings.viewOf('mix.bass', '1') == '1',
-          transpose:
-              adaptiveStyle && settings.viewOf('mix.transpose', '0') == '1',
-          outgoingShift: _pitch[_p] ?? 0,
-          offsetMs: settings
-              .viewNum('mix.offset', 0)
-              .round()
-              .clamp(-200, 200)
-              .toInt())
-      : null;
 
   /// Джем: настройки плавного перехода организатора (секунды, 0 — выключен; умный переход). null — действуют мои.
   /// Организатор задаёт переход всем: включил у себя — включается у остальных, выключил — выключается
@@ -907,125 +652,21 @@ class PlayerController extends ChangeNotifier {
   /// Длина плавного перехода сейчас: в джеме — у организатора, иначе моя настройка
   int get crossfadeSecNow => jamXfSec ?? settings.crossfadeSec;
 
-  /// Ручные переходы пар треков («Микс»)
-  MixBook? mixBook;
-
-  /// Переход, который сейчас предпрослушивается из редактора: пока он не доиграл, берётся вместо сохранённого
-  ({String from, String to, TransitionPref pref})? _previewOverride;
-
-  /// Ручная настройка перехода [from] → [to]; null — автоматический. В джеме действуют настройки организатора
-  TransitionPref? _prefFor(String from, String to) {
-    if (jamXfSec != null) return null;
-    final o = _previewOverride;
-    if (o != null && o.from == from && o.to == to) return o.pref;
-    return mixBook?.get(from, to);
-  }
-
   /// План умного перехода с текущего трека на следующий; null — профили ещё не готовы, переход обычный
   MixPlan? _smartPlan() {
     final m = mixer, cur = current, ni = _autoNextIndex();
-    if (m == null || cur == null || ni == null) return null;
-    final pref = _prefFor(cur.id, queue[ni]);
-    final manual = pref != null && pref.mode == TransitionMode.manual;
-    if (!smartMix && !manual) return null;
+    if (!smartMix || m == null || cur == null || ni == null) return null;
     final a = m.profile(cur.id), b = m.profile(queue[ni]);
     if (a == null || b == null) return null;
     // Профиль от другого файла (трек заменили) — не доверяем
-    if (_profileMismatch(a)) return null;
-    final selected = _adaptiveDecision;
-    final nextId = queue[ni];
-    final bpm = tempoOf?.call(cur);
-    // План спрашивают на каждом отсчёте позиции в последние минуты трека. Пока ничего из исходных данных не изменилось,
-    // отдаём готовый: раньше расчёт (и строка в журнале от уточнения по разбору звука) повторялись десятки раз в секунду
-    final key = (
-      cur.id, nextId, a, b, pref, selected, _adaptiveReady, crossfadeSecNow, bpm, smartMix, adaptiveStyle, djStyle,
-      settings.viewOf('mix.bars', '8'), settings.viewOf('mix.range', '8'), settings.viewOf('mix.bass', '1'),
-      settings.viewOf('mix.offset', '0'),
-      settings.viewOf('intel.plan', '1'),
-      settings.viewOf('intel.cut', '0'),
-      settings.viewOf('mix.transpose', '0'),
-      _pitch[_p] ?? 0,
-      adaptiveFeatures?.call(cur.id), adaptiveFeatures?.call(nextId),
-    );
-    if (_planKey == key && _planAge.elapsedMilliseconds < 5000) return _planMemo;
-    final auto = adaptiveStyle && !manual && selected?.to == nextId && selected?.plan != null
-        ? _adaptiveReady ? selected!.plan! : MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt())
-        : _autoPlan(a, b, cur.id, nextId, bpm: bpm);
-    final plan = manual ? MixPlan.manual(a, b, pref, auto: auto) : auto;
-    _planKey = key;
-    _planMemo = plan;
-    _planAge
-      ..reset()
-      ..start();
-    return plan;
-  }
-
-  Object? _planKey;
-  MixPlan? _planMemo;
-  final Stopwatch _planAge = Stopwatch();
-
-  /// Переход между текущим треком и следующим настроен вручную (или хоть как-то задан)
-  TransitionPref? get _nextPref {
-    final cur = current, ni = _autoNextIndex();
-    return cur == null || ni == null ? null : _prefFor(cur.id, queue[ni]);
-  }
-
-  /// «Свести сейчас»: начать переход на следующий трек прямо сейчас, не дожидаясь конца. Темп и доли — по тем же правилам
-  Future<void> mixNow() async {
-    if (_fading || !playing || _autoNextIndex() == null) return;
-    _prepareAdaptive(manual: true);
-    final seq = _openSeq;
-    await _adaptiveCheck?.timeout(const Duration(seconds: 2), onTimeout: () {});
-    if (seq != _openSeq || _fading || !playing) return;
-    if (adaptiveStyle) lib.messages.add(mixStatus);
-    var plan = _smartPlan();
-    if (plan == null) {
-      await _startCrossfade();
-      return;
-    }
-    if (adaptiveStyle && _adaptiveReady && _adaptiveDecision?.components.isNotEmpty == true) {
-      await _startCrossfade(plan);
-      return;
-    }
-    var start = position.value + plan.preroll + const Duration(milliseconds: 250);
-    final g = plan.grid;
-    if (g != null) {
-      // Ближайшая доля уходящего трека
-      final k = ((start.inMilliseconds - g.$1) / g.$2).ceil();
-      start = Duration(milliseconds: (g.$1 + k * g.$2).round());
-    }
-    final length = plan.dj || adaptiveStyle ? plan.length : Duration(seconds: math.max(4, crossfadeSecNow));
-    plan = MixPlan(start, length, plan.inStart, plan.inGain,
-        dj: plan.dj,
-        rate: plan.rate,
-        swapAt: plan.swapAt,
-        grid: plan.grid,
-        offsetMs: plan.offsetMs,
-        preroll: plan.preroll,
-        transpose: plan.transpose,
-        outgoingShift: plan.outgoingShift,
-        tempoRamp: plan.tempoRamp, effect: plan.effect, headroom: plan.headroom);
-    await _startCrossfade(plan);
-  }
-
-  /// Предпрослушивание перехода из редактора: играет [a] за несколько секунд до перехода и сводит с [b] с настройками [pref]
-  Future<bool> previewTransition(Track a, Track b, TransitionPref pref) async {
-    final m = mixer;
-    final pa = m?.profile(a.id), pb = m?.profile(b.id);
-    if (pa == null || pb == null) return false;
-    final auto = _autoPlan(pa, pb, a.id, b.id);
-    final plan = pref.mode == TransitionMode.manual ? MixPlan.manual(pa, pb, pref, auto: auto) : auto;
-    final from = Duration(milliseconds: math.max(0, plan.start.inMilliseconds - plan.preroll.inMilliseconds - 8000));
-    await playTracks([a, b], 0, inOrder: true);
-    _previewOverride = (from: a.id, to: b.id, pref: pref);
-    await seek(from);
-    return true;
+    if (duration > Duration.zero && (a.durationMs - duration.inMilliseconds).abs() > 4000) return null;
+    return MixPlan.make(a, b, maxSec: crossfadeSecNow.clamp(1, 12).toInt(), bpm: tempoOf?.call(cur));
   }
 
   /// Профили звука текущего и следующего трека — считаем заранее, пока трек играет
   void _prepareMix() {
     final m = mixer;
-    final needMix = (smartMix && crossfadeSecNow > 0) || _nextPref?.mode == TransitionMode.manual;
+    final needMix = smartMix && crossfadeSecNow > 0;
     if (m == null || !(needMix || normalize)) return;
     final cur = current;
     if (cur != null) {
@@ -1049,10 +690,8 @@ class PlayerController extends ChangeNotifier {
 
   Duration _prevPos = Duration.zero;
   bool _fading = false;
-  int _fadeGeneration = 0;
   Timer? _fadeTimer;
   double _inGain = 1;
-  Timer? _headroomRecovery;
   double _outGain = 1;
   HybridDeck? _outgoing;
 
@@ -1157,29 +796,20 @@ class PlayerController extends ChangeNotifier {
     final prev = _prevPos;
     _prevPos = d;
     if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
-    if (_autoNextIndex() == null) return;
-    if (adaptiveStyle && duration - d < const Duration(seconds: 180)) _prepareAdaptive();
-    final pref = _nextPref;
-    if (pref != null && pref.mode == TransitionMode.cut) return; // этот переход — без перехода: трек доиграет сам
-    final manual = pref != null && pref.mode == TransitionMode.manual;
-    // Аудиодвижок Cavey Mix: переход планирует и играет движок (доли, фразы, техники, по сэмплам). Пока готовим
-    // или переход запланирован — обычный и mpv-переход не начинаем. Ручной переход (из MixBook) — как задан
+    if (crossfadeSecNow <= 0 || _autoNextIndex() == null) return;
+    // DJ-режим: переход планирует движок (доли, фразы, техники); пока готовим — обычный переход не начинаем
     if (_djPending || _dj != null) return;
-    if (!manual && crossfadeSecNow > 0 && duration - d < const Duration(seconds: _djLeadSec) &&
-        _djTriedFor != current?.id && _djEligible()) {
+    if (duration - d < const Duration(seconds: _djLeadSec) && _djTriedFor != current?.id && _djEligible()) {
       _djTriedFor = current?.id;
       unawaited(_djPrepare());
       return;
     }
-    if (crossfadeSecNow <= 0 && !manual) return;
-    // Профили смотрим только ближе к концу трека — не на каждом тике позиции. У ручного перехода начало может быть где угодно
-    final plan = manual || duration - d < Duration(seconds: djStyle ? 180 : 60) ? _smartPlan() : null;
+    // Профили смотрим только ближе к концу трека — не на каждом тике позиции
+    final plan = duration - d < const Duration(seconds: 60) ? _smartPlan() : null;
     _maybePrepare(d, plan);
     final step = d - prev;
-    // Диджейский переход запускает следующий трек чуть раньше (без звука), поэтому и отсчёт начинается раньше
-    final trigger = plan == null ? Duration.zero : plan.start - plan.preroll;
     final due = plan != null
-        ? d >= trigger && prev < trigger && step >= Duration.zero && step < const Duration(seconds: 2)
+        ? d >= plan.start && prev < plan.start && step >= Duration.zero && step < const Duration(seconds: 2)
         : crossfadeDue(seconds: crossfadeSecNow, duration: duration, position: d, previous: prev);
     if (!due) return;
     unawaited(_startCrossfade(plan));
@@ -1203,7 +833,6 @@ class PlayerController extends ChangeNotifier {
         if (seq != _openSeq || _fading) return;
         final q = _q ??= _newDeck();
         await q.setVolume(0);
-        await _applyPitch(q, 0);
         await q.open(media, play: false);
         if (seq != _openSeq) {
           await q.stop();
@@ -1226,39 +855,14 @@ class PlayerController extends ChangeNotifier {
   }
 
   Future<void> _startCrossfade([MixPlan? plan]) async {
-    if (adaptiveStyle && !_adaptiveReady && _adaptiveDecision != null) {
-      _traceDj({'kind':'fallback','decisionId':_adaptiveDecisionId,
-        'selectedTechnique':_adaptiveDecision!.technique.name,
-        'selectedEffect':_adaptiveDecision!.plan?.effect,'reason':'preflight_pending_at_start'});
-    }
     final nextIndex = _autoNextIndex();
     if (nextIndex == null || _fading) return;
     final nextTrack = lib.data.tracks[queue[nextIndex]];
     if (nextTrack == null) return;
-    final fromId = current?.id ?? '';
-    final prepareClock = Stopwatch()..start();
     _fading = true;
-    _headroomRecovery?.cancel();
     final seq = ++_openSeq;
-    final generation = ++_fadeGeneration;
-    bool ownsTransition() => seq == _openSeq && generation == _fadeGeneration && _fading;
     final lengthWanted = plan?.length.inMilliseconds ?? crossfadeSecNow.clamp(1, 10).toInt() * 1000;
     final lengthMs0 = lengthWanted;
-    var handedOff = false;
-    HybridDeck? opened;
-    // Переход отменили, пока новая дека готовилась: возвращаем ей обычный темп и убираем фильтры, чтобы следующий
-    // трек на ней не заиграл со срезанными частотами. Если деку уже занял новый переход или подготовка — не трогаем
-    Future<void> release() async {
-      final deck = opened;
-      if (deck == null || handedOff || _fading || _preparing || _preparedId != null || identical(_p, deck)) return;
-      await _clearEq(deck);
-      await _applyPitch(deck, 0);
-      if (_fxDirty) {
-        await _setRate(deck, 1.0);
-        await _setLowCut(deck, false);
-      }
-      if (!_fading && !_preparing && _preparedId == null && !identical(_p, deck)) await deck.stop();
-    }
     // С выравниванием громкости оба трека уже приведены к одному уровню — свою подгонку перехода не добавляем
     final match = normalize ? 1.0 : (plan?.inGain ?? 1.0);
     try {
@@ -1270,125 +874,35 @@ class PlayerController extends ChangeNotifier {
       for (var i = 0; _preparing && i < 60; i++) {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
-      if (!ownsTransition()) return;
+      if (seq != _openSeq || !_fading) return;
       final incoming = _q ??= _newDeck();
-      await _applyPitch(incoming, 0);
       final prepared = _preparedId == nextTrack.id;
       _preparedId = null;
       await incoming.setVolume(0);
-      if (!ownsTransition()) return;
-      opened = incoming;
-      var eqBlend = false;
       if (prepared) {
         await incoming.play();
       } else {
         final media = await _mediaFor(nextTrack);
-        if (!ownsTransition()) return; // пока готовили, человек сам что-то переключил
+        if (seq != _openSeq || !_fading) return; // пока готовили, человек сам что-то переключил
         await incoming.open(media, play: true);
       }
-      if (!ownsTransition()) return;
-      // Эффекты mpv (темп, эквалайзер, фильтры, сдвиг тона) — только когда обе деки на mpv. Если хоть одна на
-      // аудиодвижке, переход идёт как плавный, громкость — по часам движка
-      final mpvOnly = !_p.onEngine && !incoming.onEngine;
-      final djp = plan != null && plan.dj && mpvOnly ? plan : null;
-      final dj = djp != null;
-      // Configure the already opened, silent deck; open may reset transport FX.
-      await _applyPitch(incoming, mpvOnly ? plan?.transpose ?? 0 : 0);
-      if (!ownsTransition()) return;
-      if (dj) {
-        _fxDirty = true;
-        await _setRate(incoming, djp.rate);
-        if (adaptiveStyle && djp.swapAt != null) {
-          final initial = djEqAt(0, djp.swapAt!.inMilliseconds / lengthMs0);
-          eqBlend = await _installEq(incoming, initial.$2);
-          if (eqBlend) eqBlend = await _installEq(_p, initial.$1);
-          if (!eqBlend) {
-            await _clearEq(incoming); await _clearEq(_p);
-            throw StateError('Three-band EQ unavailable; use AutoMix');
-          }
-        }
-        if (!eqBlend) await _setLowCut(incoming, djp.swapAt != null, force: true);
-      } else if (_fxDirty) {
-        await _setRate(incoming, 1.0);
-        await _setLowCut(incoming, false, force: true);
-      }
-      if (!ownsTransition()) return;
       // Пустое вступление следующего трека пропускаем
-      // Диджейскому следующий трек запускается на preroll раньше, чтобы к началу перехода дойти ровно до своей доли
-      final inStart = djp != null
-          ? djp.inStart - Duration(microseconds: (djp.preroll.inMicroseconds * djp.rate).round())
-          : (plan != null && plan.inStart > const Duration(milliseconds: 300) ? plan.inStart : Duration.zero);
-      if (inStart > (djp != null ? const Duration(milliseconds: 20) : Duration.zero)) await incoming.seek(inStart);
-      // Уходящий трек остаётся на полной громкости, пока следующая дека не готова к воспроизведению (до 5 с),
+      final inStart = plan != null && plan.inStart > const Duration(milliseconds: 300) ? plan.inStart : Duration.zero;
+      if (inStart > Duration.zero) await incoming.seek(inStart);
+      // Уходящий трек остаётся на полной громкости, пока у следующего не пошёл звук (до 3 с),
       // и оба затихают и нарастают одновременно
-      HandoffState readIncoming() => HandoffState(incoming.state.position, incoming.state.duration,
-          playing: incoming.state.playing, buffering: incoming.state.buffering);
-      final ready = await waitForHandoff(
-        read: readIncoming,
-        changes: incoming.stream.position.map<void>((_) {}),
-        isCurrent: ownsTransition,
-        cue: inStart,
-      );
-      if (!ownsTransition()) return;
-      if (!ready) throw StateError('Следующая дека не готова: нет длительности или продвижения воспроизведения');
-      if (dj) AppLog.info('DJ execution: rate requested=${djp.rate}, actual=${incoming.state.rate}, '
-          'bassCut=${_cut.contains(incoming)}, eq=$eqBlend, swapMs=${djp.swapAt?.inMilliseconds}, envelope=phrase');
-      if (dj) {
-        // Ждём, пока уходящий дойдёт до начала перехода (следующий всё это время уже играет без звука),
-        // и сверяем доли: если расходятся заметно, один раз подтягиваем, дальше подстраиваем скоростью
-        _stopClocks();
-        final oc = _outClock = _PosClock(_p, 1.0);
-        final ic = _inClock = _PosClock(incoming, djp.rate);
-        final wait = djp.start - oc.now();
-        if (wait > const Duration(milliseconds: 5)) {
-          await Future<void>.delayed(wait < const Duration(seconds: 8) ? wait : const Duration(seconds: 8));
-        }
-        if (!ownsTransition()) {
-          return;
-        }
-        var latency = 0.0;
-        for (var attempt=0; attempt<3; attempt++) {
-          final positions = await _nativePositions(_p,incoming);
-          if (!ownsTransition()) return;
-          final e = djPhaseError(djp.grid,djp.rate,positions.$1,positions.$2,offsetMs:djp.offsetMs);
-          if (e == null) throw StateError('phase_measurement_unavailable');
-          AppLog.info('DJ alignment: attempt=$attempt errorMs=$e seekLatencyMs=$latency');
-          if (e.abs()<=30) break;
-          final watch=Stopwatch()..start();
-          final target=alignedIncomingPosition(positions.$2,e,djp.rate,1,latency);
-          await (incoming.platform as dynamic).command(['seek','${target/1000}','absolute+exact']);
-          await Future<void>.delayed(const Duration(milliseconds:40));
-          latency=watch.elapsedMicroseconds/1000;
-        }
-        final aligned=await _nativePositions(_p,incoming);
-        if (!ownsTransition()) return;
-        final residual=djPhaseError(djp.grid,djp.rate,aligned.$1,aligned.$2,offsetMs:djp.offsetMs);
-        if (residual==null || residual.abs()>45) throw StateError('phase_lock_failed: $residual ms');
-        oc.reset(Duration(microseconds:(aligned.$1*1000).round()));
-        ic.reset(Duration(microseconds:(aligned.$2*1000).round()));
+      await incoming.stream.position
+          .firstWhere((d) => d > inStart + const Duration(milliseconds: 40))
+          .timeout(const Duration(seconds: 3), onTimeout: () => Duration.zero);
+      if (seq != _openSeq || !_fading) {
+        await incoming.stop();
+        return;
       }
-      if (!ownsTransition()) return;
       // Уходящему осталось звучать не дольше, чем он ещё длится: переход укорачивается на время ожидания
-      if (plan != null && plan.effect != 'none' && mpvOnly) {
-        final effect = DjEffect.values.byName(plan.effect);
-        final graph = djEffectGraph(effect, input: '[in]', output: '[out]',
-            start: _p.state.position.inMilliseconds / 1000,
-            length: lengthWanted / 1000, beat: (plan.grid?.$2 ?? 500) / 1000);
-        final effectDeck = _p;
-        final native = effectDeck.platform as dynamic;
-        await native.command(['af', 'add', '@cave-dj-effect:lavfi=[$graph]']);
-        _effectDecks.add(effectDeck);
-        AppLog.info('DJ effect: ${plan.effect}');
-        if (!ownsTransition()) { await _clearDjEffect(effectDeck); return; }
-      }
       final oldRemaining = duration - _p.state.position;
-      // DJ-план без синхронизации (деки на движке) длинным быть не должен: доли не совпадают
-      final lengthAllowed = plan != null && plan.dj && !mpvOnly
-          ? math.min(lengthWanted, crossfadeSecNow.clamp(1, 12).toInt() * 1000)
-          : lengthWanted;
       final lengthMs = oldRemaining > Duration.zero
-          ? math.min(lengthAllowed, math.max(800, oldRemaining.inMilliseconds))
-          : lengthAllowed;
+          ? math.min(lengthWanted, math.max(800, oldRemaining.inMilliseconds))
+          : lengthWanted;
       final oldFraction = duration > Duration.zero ? (_p.state.position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0).toDouble() : 1.0;
       final oldDurationMs = duration.inMilliseconds;
       // Джем: общего времени у уходящего трека осталось на опережение больше, чем у меня на часах
@@ -1397,18 +911,6 @@ class PlayerController extends ChangeNotifier {
       final sharedRemaining = (oldRemaining > Duration.zero ? oldRemaining : Duration.zero) + prevLead;
       // Теперь «главный» проигрыватель — новый, а прежний доигрывает затихая
       final old = _p;
-      _transitionProbe = TransitionProbe(from: fromId, to: nextTrack.id,
-          effect:plan?.effect ?? 'none',headroomGain:plan?.headroom ?? 1,
-          decisionId: adaptiveStyle && identical(plan, _adaptiveDecision?.plan) ? _adaptiveDecisionId : null,
-          eqMode: eqBlend ? 'threeBandV1_installed' : djp?.swapAt != null ? 'legacyBass' : 'none',
-          technique: dj ? 'beatBlend' : plan == null ? 'autoMix' :
-              _adaptiveDecision?.to == nextTrack.id && _adaptiveDecision?.technique != AdaptiveTechnique.beatBlend
-                  ? _adaptiveDecision!.technique.name : 'autoMix',
-          requestedStartMs: plan?.start.inMilliseconds ?? old.state.position.inMilliseconds,
-          actualStartMs: old.state.position.inMilliseconds, cueInMs: incoming.state.position.inMilliseconds,
-          plannedLengthMs: lengthWanted, actualLengthMs: lengthMs, prepareMs: prepareClock.elapsedMilliseconds,
-          requestedRate: djp?.rate ?? 1, actualRate: incoming.state.rate);
-      handedOff = true;
       _p = incoming;
       _q = old;
       _outgoing = old;
@@ -1423,18 +925,14 @@ class PlayerController extends ChangeNotifier {
       // Новый проигрыватель уже сообщил длительность до того, как мы подписались на него: берём её из его состояния,
       // иначе полоса перемотки считает трек нулевой длины и перематывать нельзя
       position.value = _p.state.position;
-      duration = _p.state.duration > Duration.zero
-          ? _p.state.duration
-          : Duration(milliseconds: nextTrack.durationMs ?? mixer?.profile(nextTrack.id)?.durationMs ?? 0);
-      buffering = _p.state.buffering;
-      playing = _p.state.playing;
+      duration = _p.state.duration;
+      playing = true;
       _inGain = 0;
-      _outGain = math.pow(plan?.headroom ?? 1, 1/3).toDouble();
+      _outGain = 1;
       _normTimer?.cancel();
       _normOut = _normIn;
       _normIn = _normFactorFor(nextTrack.id);
       _applyVolume();
-      _pendingRate = djp?.rate ?? 1.0;
       _startTail(CrossfadeInfo(oldFraction, DateTime.now(), lengthMs, oldDurationMs: oldDurationMs));
       // Задаём до notifyListeners: джем по нему отличает мой переход от того, что человек переключил трек сам
       if (inJam) {
@@ -1451,138 +949,25 @@ class PlayerController extends ChangeNotifier {
       _preloadNext();
       _saveSession();
       _topUpFeed();
-      if (!ownsTransition()) return;
       final started = DateTime.now();
-      // Хотя бы одна дека на аудиодвижке: эффектов mpv нет (djp == null), громкость идёт по часам движка
-      if (old.onEngine || incoming.onEngine) {
-        double inCurve(double t) => fadeGains(t).$2 * (match + (1 - match) * t);
-        final engineRamp = _rampOnEngine(old, incoming, lengthMs, inCurve);
-        _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-          if (!ownsTransition()) {
-            timer.cancel();
-            return;
-          }
-          final t = DateTime.now().difference(started).inMilliseconds / lengthMs;
-          if (t >= 1) {
-            _endFade(reason: 'completed');
-            return;
-          }
-          _outGain = fadeGains(t).$1;
-          _inGain = inCurve(t);
-          if (!engineRamp) _applyVolume();
-        });
-        return;
-      }
-      final swapAt = djp?.swapAt;
-      var swapped = false;
-      var phaseCheckedMs = 0;
-      var cmdRate = djp?.rate ?? 1.0;
-      var cmdOutRate = 1.0;
-      var rateBusy = false;
-      double? nativePhase;
-      var phaseBusy=false;
-      final sourceStart = _outClock?.now().inMicroseconds;
-      // Громкость меняется ступеньками. На длинном переходе десяти шагов в секунду хватает, а короткий (стык на фразе —
-      // четверть секунды, короткий crossfade — пара секунд) состоял бы из двух-трёх слышимых скачков: шаг делаем мельче
-      final stepMs = lengthMs < 1500 ? 25 : (lengthMs < 4000 ? 50 : 100);
-      _fadeTimer = Timer.periodic(Duration(milliseconds: stepMs), (timer) {
-        if (!ownsTransition()) {
-          timer.cancel();
-          return;
-        }
-        final elapsed = DateTime.now().difference(started);
-        // With a shared tempo ramp, envelopes and EQ follow consumed source
-        // audio, not wall time: both planned phrase endpoints remain exact.
-        final t =
-            djp?.tempoRamp == true && sourceStart != null && _outClock != null
-                ? (_outClock!.now().inMicroseconds - sourceStart) /
-                    (lengthMs * 1000)
-                : elapsed.inMilliseconds / lengthMs;
+      // Следующий трек входит на громкости уходящего и к концу перехода выходит на свою
+      double inCurve(double t) => fadeGains(t).$2 * (match + (1 - match) * t);
+      // Обе деки на аудиодвижке: кривые громкости уходят в движок целиком и идут по сэмплам, с равной мощностью
+      // по амплитуде. Иначе (хотя бы один трек на mpv) громкость, как раньше, пересчитывает таймер
+      final engineRamp = _rampOnEngine(old, incoming, lengthMs, inCurve);
+      _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+        final t = DateTime.now().difference(started).inMilliseconds / lengthMs;
         if (t >= 1) {
-          _endFade(reason: 'completed');
+          _endFade();
           return;
         }
-        // Подстройка скоростью: раз в 200 мс смотрим, не уехали ли доли, и чуть ускоряем или замедляем следующий трек
-        if (djp != null && elapsed.inMilliseconds - phaseCheckedMs >= 200) {
-          phaseCheckedMs = elapsed.inMilliseconds;
-          final oc = _outClock, ic = _inClock;
-          if (!phaseBusy) {
-            phaseBusy=true;
-            unawaited(() async {
-              try {
-                final sample=await _nativePositions(old,incoming);
-                if (!ownsTransition()) return;
-                nativePhase=djPhaseError(djp.grid,djp.rate,sample.$1,sample.$2,offsetMs:djp.offsetMs);
-                if(nativePhase!=null) _transitionProbe?.phase(nativePhase!);
-                oc?.reset(Duration(microseconds:(sample.$1*1000).round()));
-                ic?.reset(Duration(microseconds:(sample.$2*1000).round()));
-              } catch(e) { AppLog.warn('DJ: native phase sample',e); }
-              finally { phaseBusy=false; }
-            }());
-          }
-          final e = nativePhase;
-          if (e != null || djp.tempoRamp) {
-            final rates =
-                djp.tempoRamp ? djTempoAt(t, djp.rate) : (1.0, djp.rate);
-            final correction = e == null || e.abs() < 10
-                ? 1.0
-                : 1 + (-e / 1500).clamp(-0.02, 0.02);
-            final want = rates.$2 * correction;
-            if (!rateBusy &&
-                ((want - cmdRate).abs() > 0.0005 ||
-                    (rates.$1 - cmdOutRate).abs() > 0.0005)) {
-              cmdRate = want;
-              cmdOutRate = rates.$1;
-              _pendingRate = want;
-              _inClock?.speed = want;
-              _outClock?.speed = rates.$1;
-              rateBusy = true;
-              unawaited(() async {
-                await Future.wait(
-                    [_setRate(incoming, want), _setRate(old, rates.$1)]);
-                rateBusy = false;
-              }());
-            }
-          }
-        }
-        // Обмен басов: низы переходят от уходящего к следующему на сильной доле посередине перехода
-        if (swapAt != null &&
-            !swapped &&
-            t * lengthMs >= swapAt.inMilliseconds) {
-          swapped = true;
-          _transitionProbe?.bassSwapMs = elapsed.inMilliseconds;
-          AppLog.info('DJ execution: bass swap at ${elapsed.inMilliseconds} ms');
-          if (!eqBlend) { unawaited(_setLowCut(incoming, false)); unawaited(_setLowCut(old, true)); }
-        }
-        if (eqBlend && swapAt != null) {
-          final eq = djEqAt(t, swapAt.inMilliseconds / lengthMs);
-          _eq[old]?.update(eq.$1); _eq[incoming]?.update(eq.$2);
-        }
-        final g = dj ? phraseBlendGains(t) : fadeGains(t);
-        _outGain = dj ? amplitudeToMpvVolume(g.$1) : g.$1;
-        // DJ envelopes are amplitudes; convert to the cubic mpv slider once.
-        final inAmplitude = g.$2 * (match + (1 - match) * t);
-        _inGain = dj ? math.pow(math.max(0.0, inAmplitude), 1 / 3).toDouble() : inAmplitude;
-        final reserve = math.pow(plan?.headroom ?? 1, 1/3).toDouble();
-        _outGain *= reserve;
-        _inGain *= reserve;
-        _applyVolume();
+        _outGain = fadeGains(t).$1;
+        _inGain = inCurve(t);
+        if (!engineRamp) _applyVolume();
       });
     } catch (e) {
       AppLog.warn('Плавный переход не получился, трек доиграет как обычно', e);
-      _traceDj({'kind': 'executionAbort', 'from': fromId, 'to': nextTrack.id,'detail':e.toString(),
-        'cause': e.runtimeType.toString(), 'cancelled': !ownsTransition(), 'hadHandoff': _transitionProbe != null});
-      if (ownsTransition()) {
-        _endFade(stopIncoming: true);
-        if (plan?.dj == true && playing) {
-          AppLog.info('DJ-переход: пробую обычный crossfade без синхронизации');
-          await _startCrossfade();
-        } else {
-          lib.messages.add('Переход отменён: следующая дека не готова. Текущий трек продолжает играть; подробности в журнале.');
-        }
-      }
-    } finally {
-      if (!handedOff && !ownsTransition()) await release();
+      _endFade(stopIncoming: seq == _openSeq);
     }
   }
 
@@ -1612,7 +997,7 @@ class PlayerController extends ChangeNotifier {
   final math.Random _djRandom = math.Random();
 
   /// Стиль автомикса: smooth / balanced / energetic
-  String get engineDjStyle {
+  String get djStyle {
     final v = settings.viewOf('dj.style', 'balanced');
     return v == 'smooth' || v == 'energetic' ? v : 'balanced';
   }
@@ -1622,7 +1007,7 @@ class PlayerController extends ChangeNotifier {
   /// Можно ли сделать переход движком: обе деки на нём, оба трека разобраны, не джем
   bool _djEligible() {
     final cur = current, ni = _autoNextIndex();
-    if (!useMixEngine || !djStyle || cur == null || ni == null || !_p.onEngine) return false;
+    if (!useMixEngine || cur == null || ni == null || !_p.onEngine) return false;
     if (jamActive?.call() ?? false) return false;
     final nextId = queue[ni];
     if (!cache.has(nextId) || !cache.fileFor(nextId).existsSync()) return false;
@@ -1674,7 +1059,7 @@ class PlayerController extends ChangeNotifier {
       if (pa == null || pb == null) throw StateError('нет профиля трека');
       final gA = _djGain(_normIn), gB = _djGain(_normFactorFor(t.id));
       final options = jsonEncode({
-        'style': engineDjStyle,
+        'style': djStyle,
         'maxBars': 32,
         'gainA': gA,
         'gainB': gB,
@@ -1837,258 +1222,24 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// Завершает переход: уходящий трек останавливается, у нового обычная громкость
-  // ---------- темп и басы в диджейском переходе ----------
-
-  /// Темп или фильтр басов у какого-то проигрывателя менялся: после перехода их нужно вернуть
-  bool _fxDirty = false;
-  double _pendingRate = 1.0;
-  Timer? _rateTimer;
-  final Set<HybridDeck> _cut = {};
-  final Map<HybridDeck, int> _pitch = {};
-  final Map<HybridDeck,int> _pitchEpoch={};
-  final Set<HybridDeck> _pitchRestoring={};
-  Future<void> _restorePitch(HybridDeck p) async {
-    final shift=_pitch[p]??0;
-    if(shift==0 || _pitchRestoring.contains(p)) return;
-    final epoch=_pitchEpoch[p];
-    _pitchRestoring.add(p);
-    try {
-      for(var i=1;i<=12;i++) {
-        await Future<void>.delayed(const Duration(milliseconds:100));
-        if(_pitchEpoch[p]!=epoch) return;
-        await (p.platform as dynamic).command(['af-command','cave-dj-pitch','set-pitch','${restoredPitchScale(shift,i/12)}']);
-      }
-      if(_pitchEpoch[p]==epoch) {
-        await _applyPitch(p,0);
-        final actualRate=await (p.platform as dynamic).getProperty('speed');
-        AppLog.info('DJ restoration: pitch=original, nativeRate=$actualRate');
-      }
-    } catch(e) {
-      AppLog.warn('DJ: восстановление тональности',e);
-      if(_pitchEpoch[p]==epoch) await _applyPitch(p,0);
-    } finally { _pitchRestoring.remove(p); _adaptiveKey=null; }
-  }
-  final Set<HybridDeck> _effectDecks = {};
-  Future<void> _clearDjEffect(HybridDeck p) async {
-    if (!_effectDecks.remove(p)) return;
-    try { await (p.platform as dynamic).command(['af', 'remove', '@cave-dj-effect']); }
-    catch (e) { AppLog.warn('DJ: сброс эффекта', e); }
-  }
-  Future<void> _applyPitch(HybridDeck p, int semitones) async {
-    _pitchEpoch[p]=(_pitchEpoch[p]??0)+1;
-    if (semitones.abs() > 1) throw ArgumentError.value(semitones, 'semitones');
-    const label = 'cave-dj-pitch';
-    final native = p.platform as dynamic;
-    if ((_pitch[p] ?? 0) == semitones) return;
-    try {
-      if (_pitch.containsKey(p))
-        await native.command(['af', 'remove', '@$label']);
-      _pitch.remove(p);
-      if (semitones != 0) {
-        _fxDirty = true;
-        await native.command([
-          'af',
-          'add',
-          '@$label:rubberband=pitch-scale=${pitchScale(semitones)}'
-        ]);
-        final filters = '${await native.getProperty('af')}';
-        if (!filters.contains(label))
-          throw StateError('Pitch filter unavailable');
-        _pitch[p] = semitones;
-      }
-    } catch (_) {
-      try {
-        await native.command(['af', 'remove', '@$label']);
-      } catch (_) {}
-      _pitch.remove(p);
-      _traceDj(
-          {'kind': 'capability', 'effect': 'pitchShift', 'supported': false});
-      rethrow;
-    }
-  }
-
-  final Map<HybridDeck, DjEqDriver> _eq = {};
-  final Map<HybridDeck, StreamSubscription<dynamic>> _eqLogs = {};
-  int _eqSequence = 0;
-  Future<bool> _installEq(HybridDeck p, DjEq initial) async {
-    await _clearEq(p);
-    final label = 'cave-dj-eq-${++_eqSequence}';
-    final driver = DjEqDriver(label, (args) async { await (p.platform as dynamic).command(args); }, () {
-      _traceDj({'kind': 'capability', 'effect': 'threeBandEq', 'supported': false});
-    });
-    _eq[p] = driver;
-    // Native command() reports errors on its log stream, rather than throwing.
-    _eqLogs[p] = p.stream.log.listen((log) {
-      if ((log.level == 'error' || log.level == 'fatal') &&
-          (log.text.contains(label) || log.prefix.startsWith('af') || log.text.contains('af-command'))) driver.fail();
-    });
-    if (!await driver.install(initial)) { await _clearEq(p); return false; }
-    try {
-      final filters = await (p.platform as dynamic).getProperty('af');
-      if (!'$filters'.contains(label)) { await _clearEq(p); return false; }
-    } catch (_) { await _clearEq(p); return false; }
-    _traceDj({'kind': 'capability', 'effect': 'threeBandEq', 'installed': true, 'verification': 'filter_presence_not_output_pcm'});
-    return driver.active;
-  }
-  Future<void> _clearEq(HybridDeck p) async {
-    final driver = _eq.remove(p); await _eqLogs.remove(p)?.cancel(); await driver?.close();
-  }
-
-  _PosClock? _outClock;
-  _PosClock? _inClock;
-
-  void _stopClocks() {
-    _outClock?.dispose();
-    _inClock?.dispose();
-    _outClock = null;
-    _inClock = null;
-  }
-
-  /// Насколько следующий трек «впереди» доли уходящего, мс (— отстаёт); нужен период, на который доли совпадают.
-  /// Время доли отсчитывается от сетки: у каждого трека время с последней доли, пересчитанное в часы уходящего
-  Future<(double,double)> _nativePositions(HybridDeck a,HybridDeck b) async {
-    final values=await Future.wait([for(final p in [a,b]) (p.platform as dynamic).getProperty('audio-pts') as Future<dynamic>]);
-    final x=double.tryParse('${values[0]}'),y=double.tryParse('${values[1]}');
-    if(x==null || y==null || !x.isFinite || !y.isFinite) throw StateError('native_audio_pts_unavailable');
-    return (x*1000,y*1000);
-  }
-
-  /// Скорость проигрывателя; высота звука не меняется (mpv сам подтягивает её обратно)
-  Future<void> _setRate(HybridDeck p, double r) async {
-    try {
-      await p.setRate(r);
-    } catch (e) {
-      AppLog.warn('Переход: не удалось изменить темп', e);
-    }
-  }
-
-  /// Срезает низкие частоты (фильтр высоких) у проигрывателя или возвращает как было. Если сборка mpv без фильтров — молча пропускаем
-  Future<void> _setLowCut(HybridDeck p, bool on, {bool force = false}) async {
-    if (!force && on == _cut.contains(p)) return;
-    try {
-      const label = 'cave-dj-lowcut'; final native = p.platform as dynamic;
-      var filters = '${await native.getProperty('af')}';
-      if (on && !filters.contains(label)) { await native.command(['af', 'add', '@$label:lavfi=[highpass=f=220]']); }
-      else if (!on && filters.contains(label)) { await native.command(['af', 'remove', '@$label']); }
-      filters = '${await native.getProperty('af')}';
-      if (on != filters.contains(label)) throw StateError('Bass filter not installed');
-      if (on) {
-        _cut.add(p);
-      } else {
-        _cut.remove(p);
-      }
-      AppLog.info('DJ execution: bass filter ${on ? 'on' : 'off'} applied');
-    } catch (e) {
-      // Never record an unsupported filter as successfully enabled.
-      AppLog.warn('Переход: не удалось поменять фильтр басов', e);
-      _traceDj({'kind': 'capability', 'effect': 'bassFilter', 'requested': on, 'supported': false});
-    }
-  }
-
-  /// За несколько секунд возвращает темп играющего трека от [from] к родному
-  void _rampRate(double from) {
-    _rateTimer?.cancel();
-    final p = _p;
-    if ((from - 1).abs() < 0.002) {
-      unawaited(_setRate(p, 1.0));
-      return;
-    }
-    final started = DateTime.now();
-    const rampMs = 1200;
-    _rateTimer = Timer.periodic(const Duration(milliseconds: 250), (timer) {
-      if (!identical(_p, p)) {
-        timer.cancel();
-        return;
-      }
-      final x = DateTime.now().difference(started).inMilliseconds / rampMs;
-      if (x >= 1) {
-        timer.cancel();
-        _rateTimer = null;
-        unawaited(_setRate(p, 1.0));
-        return;
-      }
-      unawaited(_setRate(p, from + (1 - from) * x));
-    });
-  }
-
-  void _endFade({bool stopIncoming = false, String reason = 'interrupted'}) {
-    // Переход ведёт аудиодвижок: его расписание снимается целиком
+  void _endFade({bool stopIncoming = false}) {
     if (_dj != null || _djPending) {
       _djCancel();
       return;
     }
-    final probe = _transitionProbe;
-    _transitionProbe = null;
-    if (probe != null) {
-      lastDjExecution = probe.finish(stopIncoming ? 'error' : reason);
-      _traceDj(lastDjExecution!);
-      AppLog.info('DJ result: ${jsonEncode(lastDjExecution)}');
-    }
-    _fadeGeneration++;
-    _previewOverride = null;
-    _stopClocks();
     _fadeTimer?.cancel();
     _fadeTimer = null;
     _preparedId = null;
     final wasFading = _fading;
     _fading = false;
     final old = _outgoing;
-    for (final deck in _effectDecks.toList()) { unawaited(_clearDjEffect(deck)); }
     _outgoing = null;
-    final recoverFrom = reason == 'completed' ? _inGain.clamp(0.0, 1.0).toDouble() : 1.0;
-    _headroomRecovery?.cancel();
-    _inGain = recoverFrom;
-    if (recoverFrom < 0.999) {
-      var step = 0;
-      _headroomRecovery = Timer.periodic(const Duration(milliseconds: 100), (timer) {
-        if (_fading) { timer.cancel(); return; }
-        _inGain = recoverFrom + (1-recoverFrom) * (++step / 10).clamp(0.0, 1.0);
-        _applyVolume();
-        if (step >= 10) timer.cancel();
-      });
-    }
+    _inGain = 1;
     _outGain = 1;
-    if (old != null) {
-      unawaited(_applyPitch(old, 0).catchError((Object e) {
-        AppLog.warn('DJ: сброс тональности', e);
-      }));
-      unawaited(_clearEq(old));
-      unawaited(old.stop());
-      if (_fxDirty) {
-        unawaited(_setRate(old, 1.0));
-        unawaited(_setLowCut(old, false));
-      }
-    }
-    if (_fxDirty) {
-      unawaited(_restorePitch(_p));
-      unawaited(_clearEq(_p));
-      if (_q != null) unawaited(_clearEq(_q!));
-      unawaited(_setLowCut(_p, false));
-      // Следующий трек играл с подогнанным темпом: возвращаем его к родному плавно, а не рывком
-      if (stopIncoming) {
-        unawaited(_setRate(_p, 1.0));
-      } else {
-        _rampRate(_pendingRate);
-      }
-    }
-    _pendingRate = 1.0;
+    if (old != null) unawaited(old.stop());
     _normOut = 1;
-    if (wasFading || old != null) _applyVolume();
-    // Переход отменён до передачи звука новой деке (пауза, перемотка, выбран другой трек): она уже открыта и играет
-    // без звука. Останавливаем её всегда — иначе неслышный трек доигрывал до конца, занимая процессор и сеть
-    if ((stopIncoming || wasFading) && old == null) {
-      final q = _q;
-      if (q != null) {
-        unawaited(_applyPitch(q, 0).catchError((Object e) {
-          AppLog.warn('DJ: сброс тональности', e);
-        }));
-        if (_fxDirty) {
-          unawaited(_setRate(q, 1.0));
-          unawaited(_setLowCut(q, false));
-        }
-        unawaited(q.stop());
-      }
-    }
+    if (wasFading || old != null) unawaited(_p.setVolume(_scaled(volume * _normIn)));
+    if (stopIncoming && old == null) unawaited(_q?.stop() ?? Future<void>.value());
   }
 
   // ---------- воспроизведение ----------
@@ -2097,10 +1248,6 @@ class PlayerController extends ChangeNotifier {
   void invalidateStream(String id) => _proxy.invalidate(id);
 
   /// Что открывать в проигрывателе: сохранённый трек играет с диска, остальные — потоком с Google Диска через прокси
-  /// Authorized media source for the two independent live DJ decks.
-  /// Reuses the existing local cache and streaming proxy.
-  Future<Media> mediaForDj(Track t) => _mediaFor(t);
-
   Future<Media> _mediaFor(Track t) async {
     final local = cache.fileFor(t.id);
     if (cache.has(t.id) && local.existsSync()) return Media(local.path);
@@ -2124,8 +1271,6 @@ class PlayerController extends ChangeNotifier {
     final t = current;
     if (t == null) return;
     final seq = ++_openSeq;
-    _adaptiveKey = null;
-    _adaptiveDecision = null;
     jamLeadTrack = null;
     jamLead = Duration.zero;
     // Обычная смена трека без плавного перехода: полоса старого трека растворяется
@@ -2161,13 +1306,6 @@ class PlayerController extends ChangeNotifier {
       final media = await _mediaFor(t);
       if (seq != _openSeq) return; // пока готовили, включили другой трек
       cache.touch(t);
-      if (_fxDirty) {
-        _rateTimer?.cancel();
-        _rateTimer = null;
-        await _setRate(_p, 1.0);
-        await _setLowCut(_p, false);
-      }
-      await _applyPitch(_p, 0);
       await _p.open(media, play: at == null && play);
       _openedAt = DateTime.now();
       if (at != null) {
@@ -2222,14 +1360,6 @@ class PlayerController extends ChangeNotifier {
             .firstWhere((d) => d > Duration.zero)
             .timeout(const Duration(seconds: 15), onTimeout: () => Duration.zero);
     if (seq != _openSeq) return;
-    if (_historySeq != seq && _p.state.playing) {
-      _historySeq = seq;
-      final f = adaptiveFeatures?.call(t.id), p = mixer?.profileCached(t.id);
-      _djHistory.add(DjHistoryEntry(t.id, artist: t.artist.toLowerCase(), genre: p?.genre ?? '',
-          technique: _transitionProbe?.to == t.id ? _transitionProbe!.technique : '',
-          energyDb: f?.rmsDb ?? p?.loudDb ?? -20));
-      if (_djHistory.length > 8) _djHistory.removeAt(0);
-    }
     if (d > Duration.zero) _failStreak = 0; // трек открылся — серия неудач прервана
     onTrackReady?.call(t, d);
   }
@@ -2327,17 +1457,13 @@ class PlayerController extends ChangeNotifier {
       await _open(at: position.value);
       return;
     }
-    _endFade(stopIncoming: _fading && _outgoing == null, reason: 'pause');
+    _endFade();
     if (playing) _userPaused = true;
     await _p.playOrPause();
     onUserAction?.call();
   }
 
   Future<void> seek(Duration d) async {
-    if (_fading) _endFade(stopIncoming: _outgoing == null, reason: 'seek');
-    _adaptiveKey = null;
-    _adaptiveDecision = null;
-    _dropPrepared();
     if (_resumeAt != null) {
       _resumeAt = d;
       position.value = d;
@@ -2429,18 +1555,6 @@ class PlayerController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _pitchEpoch.clear();
-    _headroomRecovery?.cancel();
-    if (_transitionProbe != null) {
-      _traceDj(_transitionProbe!.finish('disposed'));
-      _transitionProbe = null;
-    }
-    _openSeq++;
-    _fadeGeneration++;
-    _fading = false;
-    _stopClocks();
-    _rateTimer?.cancel();
-    _normTimer?.cancel();
     for (final s in _subs) {
       s.cancel();
     }
@@ -2449,9 +1563,6 @@ class PlayerController extends ChangeNotifier {
     _hoverTimer?.cancel();
     _fadeTimer?.cancel();
     _tailTimer?.cancel();
-    for (final p in _eq.keys.toList()) {
-      unawaited(_clearEq(p));
-    }
     unawaited(_p.dispose());
     unawaited(_q?.dispose() ?? Future<void>.value());
     unawaited(_proxy.close());
@@ -2459,36 +1570,6 @@ class PlayerController extends ChangeNotifier {
     lyricsOpen.dispose();
     super.dispose();
   }
-}
-
-/// Позиция проигрывателя с поправкой на время с последнего отсчёта: события позиции приходят редко, а доли считаются в миллисекундах
-class _PosClock {
-  final HybridDeck p;
-  double _speed;
-  double get speed => _speed;
-  set speed(double value) {
-    _pos = now();
-    _at = DateTime.now();
-    _speed = value;
-  }
-
-  Duration _pos;
-  bool _native=false;
-  void reset(Duration position) { _native=true; _pos=position; _at=DateTime.now(); }
-  DateTime _at = DateTime.now();
-  StreamSubscription<Duration>? _sub;
-
-  _PosClock(this.p, this._speed) : _pos = p.state.position {
-    _sub = p.stream.position.listen((d) {
-      if (_native) return;
-      _pos = d;
-      _at = DateTime.now();
-    });
-  }
-
-  Duration now() => _pos + Duration(microseconds: (DateTime.now().difference(_at).inMicroseconds * speed).round());
-
-  void dispose() => _sub?.cancel();
 }
 
 /// Запланированный движком DJ-переход

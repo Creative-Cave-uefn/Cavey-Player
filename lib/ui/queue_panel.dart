@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../app.dart';
 import '../core/models.dart';
-import '../core/radio.dart' show RadioFeeder;
-import 'dj_menu.dart' show toggleQueueRadio, djSortQueue;
 import 'shell.dart' show SidePanelSlot;
 import 'theme.dart';
 import 'widgets.dart';
@@ -29,28 +27,6 @@ class QueuePanel extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(22, 18, 8, 8),
           child: Row(children: [
             Expanded(child: Text('Очередь', style: display(16))),
-            ListenableBuilder(
-              listenable: app.player,
-              builder: (context, _) => MenuAnchor(
-                builder: (context, controller, _) => IconButton(
-                  tooltip: 'Радио и АвтоDJ',
-                  onPressed: app.player.current == null ? null : () => controller.isOpen ? controller.close() : controller.open(),
-                  icon: Icon(Icons.graphic_eq_rounded, size: 20, color: app.player.feeder is RadioFeeder ? C.accent : null),
-                ),
-                menuChildren: [
-                  MenuItemButton(
-                    leadingIcon: Icon(app.player.feeder is RadioFeeder ? Icons.check_box_rounded : Icons.check_box_outline_blank_rounded, size: 18),
-                    onPressed: () => toggleQueueRadio(app),
-                    child: const Text('Радио: добавлять похожее без конца'),
-                  ),
-                  MenuItemButton(
-                    leadingIcon: const Icon(Icons.swap_vert_rounded, size: 18),
-                    onPressed: () => djSortQueue(app),
-                    child: const Text('АвтоDJ: выстроить очередь по темпу и тональности'),
-                  ),
-                ],
-              ),
-            ),
             IconButton(
               tooltip: 'Закрыть',
               onPressed: () => app.player.queueOpen.value = false,
@@ -154,7 +130,7 @@ class QueuePanel extends StatelessWidget {
                             child: const Text('Очистить очередь', style: TextStyle(fontSize: 13)),
                           )
                         : null)
-                : title(p.feeder?.label ?? 'Далее подобрано'),
+                : title(p.feeder != null ? 'Далее в волне' : 'Далее подобрано'),
           );
         }
         if (e.qi == null) {

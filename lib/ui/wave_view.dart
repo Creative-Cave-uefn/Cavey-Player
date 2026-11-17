@@ -52,7 +52,7 @@ class WavePage extends StatelessWidget {
                   left: 0,
                   right: 0,
                   top: 12,
-                  child: IgnorePointer(child: Center(child: Text(wave.tuning ? 'Моя волна · режим настройки' : 'Моя волна', style: display(compact ? 24 : 30, color: C.muted)))),
+                  child: IgnorePointer(child: Center(child: Text('Моя волна', style: display(compact ? 24 : 30, color: C.muted)))),
                 ),
                 Positioned(
                   right: 18,
@@ -861,10 +861,6 @@ class _Tune extends StatelessWidget {
         const SizedBox(height: 8),
         Text('Узнаю настроение исполнителей в Last.fm: ${wave.tagsKnown} из ${wave.tagsTotal}',
             style: const TextStyle(color: C.faint, fontSize: 12)),
-        if (wave.lastfmStatus.isNotEmpty) ...[
-          const SizedBox(height: 4),
-          Text(wave.lastfmStatus, style: const TextStyle(color: C.faint, fontSize: 12)),
-        ],
       ],
       const SizedBox(height: 22),
       Row(children: [

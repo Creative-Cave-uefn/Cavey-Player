@@ -333,9 +333,7 @@ class CoverService extends ChangeNotifier {
     final until = _retryAt[key];
     if (until != null && DateTime.now().isBefore(until)) return Future.value(null);
     final load = _inflight[mk] ??=
-        _resolve(key, mk, bucket, fetch, gate ?? _driveGate).whenComplete(() {
-          _inflight.remove(mk);
-        });
+        _resolve(key, mk, bucket, fetch, gate ?? _driveGate).whenComplete(() => _inflight.remove(mk));
     if (fullscreen && bucket == 0) {
       return load.then((b) {
         if (b != null) _pin(key, b);

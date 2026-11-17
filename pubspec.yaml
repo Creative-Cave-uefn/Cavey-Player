@@ -38,12 +38,6 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^5.0.0
 
-# The stock Windows audio build omits FFmpeg audio filters used by DJ EQ.
-# Keep the plugin ABI, pin and verify the full Windows libmpv distribution.
-dependency_overrides:
-  media_kit_libs_windows_audio:
-    path: packages/media_kit_libs_windows_audio
-
 flutter:
   uses-material-design: true
   assets:

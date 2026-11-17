@@ -1,4 +1,0 @@
-# Tested CPython 3.11/3.12. Inference/packaging only; no server.
-mediapipe==0.10.21
-numpy==1.26.4
-pyinstaller==6.11.1

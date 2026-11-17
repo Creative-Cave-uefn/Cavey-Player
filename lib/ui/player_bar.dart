@@ -9,7 +9,6 @@ import 'package:flutter/services.dart';
 import '../app.dart';
 import '../core/smooth_position.dart';
 import '../core/player.dart';
-import 'dj_console.dart';
 import 'cinema_view.dart';
 import 'glass_popup.dart';
 import 'shell.dart';
@@ -111,18 +110,6 @@ class PlayerBar extends StatelessWidget {
                 size: 20,
                 color: p.repeat == RepeatSetting.off ? C.muted : C.accent,
               ),
-            ),
-          if (!compact)
-            IconButton(
-              tooltip: 'Свести сейчас\n${p.mixStatus}',
-              onPressed: t == null || !p.playing ? null : () => unawaited(p.mixNow()),
-              icon: const Icon(Icons.swap_horiz_rounded, size: 22, color: C.muted),
-            ),
-          if (!compact)
-            IconButton(
-              tooltip: 'DJ-пульт: две деки и ручной кроссфейдер',
-              onPressed: () => unawaited(showDjConsole(context)),
-              icon: const Icon(Icons.tune_rounded, size: 21, color: C.muted),
             ),
         ]);
 

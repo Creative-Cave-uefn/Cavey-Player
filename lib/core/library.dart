@@ -2180,9 +2180,7 @@ class LibraryController extends ChangeNotifier {
           if (_coverKnown.length >= 200) _coverKnown.remove(_coverKnown.keys.first);
           _coverKnown[key] = id;
           return id;
-        }).whenComplete(() {
-          _coverInflight.remove(key);
-        });
+        }).whenComplete(() => _coverInflight.remove(key));
   }
 
   Future<String> _uploadCoverUnique(Uint8List bytes, String name) async {

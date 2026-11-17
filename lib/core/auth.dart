@@ -220,9 +220,7 @@ class AccountManager extends ChangeNotifier {
     if (!force && a.accessToken != null && exp != null && exp.isAfter(DateTime.now().add(const Duration(minutes: 3)))) {
       return Future.value(a.accessToken!);
     }
-    return _refreshing[email] ??= _refresh(a).whenComplete(() {
-      _refreshing.remove(email);
-    });
+    return _refreshing[email] ??= _refresh(a).whenComplete(() => _refreshing.remove(email));
   }
 
   Future<String> _refresh(Account a) async {
