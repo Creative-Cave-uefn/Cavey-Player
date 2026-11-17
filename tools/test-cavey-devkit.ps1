@@ -50,6 +50,14 @@ if ($LASTEXITCODE -ne 0 -or $branchOutput -notmatch 'PASS malformed branch refs 
     throw "Branch parser smoke test failed: $branchOutput"
 }
 Write-Host 'PASS branch parser and real local Git refs' -ForegroundColor Green
+
+# Reproduce empty arrays, build flags and publication-channel selection offline.
+$selectionOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-selection 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $selectionOutput -notmatch 'PASS build arguments and release-channel guards' -or
+    $selectionOutput -notmatch 'PASS explicit branch validation') {
+    throw "Build selection smoke test failed: $selectionOutput"
+}
+Write-Host 'PASS build wizard and release selection guards' -ForegroundColor Green
 if (-not $SkipNpm) {
     Push-Location (Join-Path $PSScriptRoot 'devkit')
     try {

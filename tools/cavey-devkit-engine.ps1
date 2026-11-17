@@ -58,12 +58,13 @@ function Has([string]$name) {
         Select-Object -First 1)
 }
 function Option([string[]]$arguments, [string]$key) {
+    if ($null -eq $arguments -or $arguments.Count -lt 2) { return '' }
     for ($i = 0; $i -lt $arguments.Count - 1; $i++) {
         if ($arguments[$i] -eq $key) { return $arguments[$i + 1] }
     }
     return ''
 }
-function Flag([string[]]$arguments, [string]$key) { return ($arguments -contains $key) }
+function Flag([string[]]$arguments, [string]$key) { return ($null -ne $arguments -and $arguments -contains $key) }
 function Ask([string]$prompt, [bool]$approved = $false) {
     if ($approved) { return $true }
     if (-not $script:Interactive) { Fail "$prompt : add --yes to confirm." }
@@ -153,23 +154,34 @@ function Get-Branches([bool]$refresh = $true) {
 function Select-Source([string]$requested) {
     if ($requested -eq 'current') {
         $current = Git @('branch','--show-current')
-        if (-not $current) { Fail 'Detached HEAD; select a branch.' }
+        if ([string]::IsNullOrWhiteSpace($current)) { Fail 'Detached HEAD; select a branch.' }
         return $current
     }
-    $branches = @(Get-Branches)
-    if ($requested -eq 'latest' -or (-not $requested -and -not $script:Interactive)) {
-        $latest = @($branches | Where-Object { $_.branch -ne 'main' -and $_.branch -ne 'beta' -and $_.branch -notlike 'feat/keivi-devkit-*' })
-        if ($latest.Count -eq 0) { Fail 'No experimental branches found.' }
-        Hint "Latest by commit date: $($latest[0].branch), $($latest[0].sha)"
-        return $latest[0].branch
-    }
-    if ($requested) {
-        if (@($branches | Where-Object { $_.branch -ceq $requested }).Count -eq 0) { Fail "Branch $requested was not found." }
+    if ($requested -and $requested -ne 'latest') {
+        # Explicit choices from the React wizard never depend on array indexes.
+        $ref = "refs/remotes/origin/$requested"
+        $resolved = Git @('rev-parse','--verify',$ref)
+        if ($resolved -notmatch '^[0-9a-fA-F]{40,64}$') { Fail "Branch $requested was not found." }
         return $requested
     }
-    $choices = @($branches | Select-Object -First 50)
+    $branches = @(Get-Branches)
+    if ($branches.Count -eq 0) { Fail 'No remote origin branches found. Run git fetch origin.' }
+    if ($requested -eq 'latest' -or (-not $requested -and -not $script:Interactive)) {
+        $latest = @($branches | Where-Object {
+            $null -ne $_ -and $_.branch -and $_.branch -ne 'main' -and
+            $_.branch -ne 'beta' -and $_.branch -notlike 'feat/keivi-devkit-*'
+        })
+        if ($latest.Count -eq 0) { Fail 'No experimental branches found.' }
+        $candidate = $latest | Select-Object -First 1
+        Hint "Latest by commit date: $($candidate.branch), $($candidate.sha)"
+        return [string]$candidate.branch
+    }
+    $choices = @($branches | Where-Object { $null -ne $_ -and $_.branch } | Select-Object -First 50)
+    if ($choices.Count -eq 0) { Fail 'No selectable branches were found.' }
     $labels = @($choices | ForEach-Object { "$($_.branch) · $($_.sha) · $($_.date)" })
-    return $choices[(Pick 'Select a GitHub branch' $labels)].branch
+    $index = Pick 'Select a GitHub branch' $labels
+    if ($null -eq $index -or $index -lt 0 -or $index -ge $choices.Count) { Fail 'Invalid branch choice.' }
+    return [string]$choices[$index].branch
 }
 function Create-BuildWorktree([string]$source, [string]$folder) {
     $remoteSha = Git @('rev-parse',"refs/remotes/origin/$source")
@@ -191,8 +203,11 @@ function Test-Releases {
     return @($releases | Where-Object { $_.isPrerelease -and $_.tagName -match '^test-[a-z0-9-]+-v\d+(\.\d+)+$' })
 }
 function Release-Channel([object]$release) {
-    if ($release.name -match '^(?:Тест|Test):\s*(.+?)\s*·') { return $Matches[1] }
-    if ($release.tagName -match '^test-(.+)-v\d') { return $Matches[1] }
+    if ($null -eq $release) { Fail 'Cannot determine release channel from a null release.' }
+    $byName = [regex]::Match([string]$release.name, '^(?:Тест|Test):\s*(.+?)\s*·')
+    if ($byName.Success) { return $byName.Groups[1].Value }
+    $byTag = [regex]::Match([string]$release.tagName, '^test-(.+)-v\d')
+    if ($byTag.Success) { return $byTag.Groups[1].Value }
     Fail "Cannot determine release channel: $($release.tagName)"
 }
 function Stable-Base {
@@ -201,7 +216,9 @@ function Stable-Base {
     $stable = @($all | Where-Object { -not $_.isPrerelease -and $_.tagName -match '^v\d+\.\d+\.\d+$' } |
         Sort-Object { [version]($_.tagName.Substring(1)) } -Descending)
     if ($stable.Count -eq 0) { Fail 'No stable releases found. Cannot determine a base version.' }
-    return $stable[0].tagName.Substring(1)
+    $firstStable = $stable | Select-Object -First 1
+    if ($null -eq $firstStable -or $firstStable.tagName -notmatch '^v\d+\.\d+\.\d+$') { Fail 'Invalid stable release version.' }
+    return ([string]$firstStable.tagName).Substring(1)
 }
 function Remove-TestRelease([string]$tag) {
     if ($tag -notmatch '^test-[a-z0-9-]+-v\d+(\.\d+)+$') { Fail "Deletion prohibited: $tag" }
@@ -258,7 +275,9 @@ function Build([string[]]$tokens) {
             $expected = Slug $specified
             $match = @($releases | Where-Object { $_.tagName -match ('^test-' + [regex]::Escape($expected) + '-v\d') })
             if ($match.Count -eq 0) { Fail "Channel $specified was not found." }
-            $channel = Release-Channel $match[0]
+            $selectedRelease = $match | Select-Object -First 1
+            if ($null -eq $selectedRelease) { Fail "Channel $specified was not found." }
+            $channel = Release-Channel $selectedRelease
         } else {
             if (-not $script:Interactive) { Fail 'For --mode update, specify --channel.' }
             $slots = @(); $seen = @{}
@@ -269,7 +288,10 @@ function Build([string[]]$tokens) {
                 $slots += [pscustomobject]@{ channel = $name; tag = $release.tagName }
             }
             $labels = @($slots | ForEach-Object { "$($_.channel) · $($_.tag)" })
-            $channel = $slots[(Pick 'Select test channel to update' $labels)].channel
+            if ($slots.Count -eq 0) { Fail 'No selectable test channels were found.' }
+            $selection = Pick 'Select test channel to update' $labels
+            if ($null -eq $selection -or $selection -lt 0 -or $selection -ge $slots.Count) { Fail 'Invalid test channel choice.' }
+            $channel = $slots[$selection].channel
         }
     } else {
         $channel = Option $tokens '--channel'
@@ -426,6 +448,27 @@ function Dispatch([string[]]$tokens) {
     if ($tokens.Count -eq 0) { Help; return }
     $command = $tokens[0].TrimStart('/').ToLower()
     switch ($command) {
+        'selftest-selection' {
+            $empty = @()
+            $demo = @('build','--branch','main','--mode','new','--yes')
+            if ((Option $empty '--branch') -ne '') { Fail 'Empty argument list should return an empty option.' }
+            if (Flag $empty '--yes') { Fail 'Empty argument list must not indicate confirmation.' }
+            if ((Option $demo '--branch') -cne 'main' -or (Option $demo '--mode') -cne 'new' -or
+                -not (Flag $demo '--yes')) { Fail 'Build argument parsing regression.' }
+            $english = [pscustomobject]@{ name = 'Test: dj · 0.4.0'; tagName = 'test-dj-v0.4.0' }
+            $legacy = [pscustomobject]@{ name = 'Тест: wave · 0.4.0'; tagName = 'test-wave-v0.4.0' }
+            if ((Release-Channel $english) -cne 'dj' -or (Release-Channel $legacy) -cne 'wave') {
+                Fail 'Release channel parsing regression.'
+            }
+            Say 'PASS build arguments and release-channel guards' Green
+            # This is a read-only check of the branch validation path used by /build.
+            $remote = @(Get-Branches $false | Select-Object -First 1)
+            if ($remote.Count -gt 0 -and $remote[0].branch) {
+                $validated = Select-Source ([string]$remote[0].branch)
+                if ($validated -cne $remote[0].branch) { Fail 'Explicit branch resolution regression.' }
+            }
+            Say 'PASS explicit branch validation' Green
+        }
         'selftest-branches' {
             # Fixture-based, offline regression check for a malformed/non-origin ref.
             $sample = @(
@@ -513,5 +556,18 @@ function Dispatch([string[]]$tokens) {
         default { Fail "Unknown command: $command. Use /help." }
     }
 }
-try { Dispatch @($args) }
-catch { Write-Error $_.Exception.Message; exit 1 }
+try {
+    Dispatch @($args)
+} catch {
+    $errorRecord = $_
+    $line = if ($errorRecord.InvocationInfo) { $errorRecord.InvocationInfo.ScriptLineNumber } else { 0 }
+    $path = if ($errorRecord.InvocationInfo) { $errorRecord.InvocationInfo.ScriptName } else { '' }
+    if (-not $path) { $path = $PSCommandPath }
+    $location = if ($line -gt 0) { "$($path):$line" } else { [string]$path }
+    $message = "DevKit engine error at $location : $($errorRecord.Exception.Message)"
+    [Console]::Error.WriteLine($message)
+    if ($errorRecord.ScriptStackTrace) {
+        [Console]::Error.WriteLine($errorRecord.ScriptStackTrace)
+    }
+    exit 1
+}
