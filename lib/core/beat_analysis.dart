@@ -44,6 +44,14 @@ const _ortWheel = _Asset(
   '19c2d843eb074f385e8bbb753a40df780511061a63f9def1b216bf53860223fb',
 );
 
+// Разметка вокала: Spleeter 2stems (Deezer, MIT) в выгрузке sherpa-onnx (Apache-2.0), fp16. В архиве две модели,
+// берём только vocals.fp16.onnx (19,7 МБ). Без неё анализ работает, только "vocals" в профиле — null
+const _vocalAsset = _Asset(
+  'sherpa-onnx-spleeter-2stems-fp16.tar.bz2',
+  'https://github.com/k2-fsa/sherpa-onnx/releases/download/source-separation-models/sherpa-onnx-spleeter-2stems-fp16.tar.bz2',
+  'd54561979bd2e08a51e7dbd99ac36bb47564e089eefd403636dbca93e811bba2',
+);
+
 /// Файлы анализатора в папке инструментов
 class BeatAssets {
   BeatAssets(this.dir);
@@ -53,6 +61,40 @@ class BeatAssets {
   File get ortLib => File(_p(Platform.isWindows ? 'onnxruntime.dll' : 'libonnxruntime.so'));
   File get melModel => File(_p(_melAsset.name));
   File get beatModel => File(_p(_smallAsset.name));
+  File get vocalModel => File(_p('spleeter_vocals.fp16.onnx'));
+
+  /// Модель вокала: скачать архив, достать из него vocals.fp16.onnx (распаковка — в отдельном изоляте,
+  /// bzip2 на 35 МБ занимает секунды). Не вышло — анализ идёт без вокала
+  Future<bool> ensureVocals(void Function(String) log) async {
+    if (vocalModel.existsSync()) return true;
+    try {
+      await dir.create(recursive: true);
+      log('Скачиваю модель вокала (Spleeter)…');
+      final tarball = File(_p(_vocalAsset.name));
+      await _download(_vocalAsset, tarball);
+      final src = tarball.path, dest = vocalModel.path;
+      try {
+        await Isolate.run(() {
+          final bytes = BZip2Decoder().decodeBytes(File(src).readAsBytesSync());
+          final tar = TarDecoder().decodeBytes(bytes);
+          for (final f in tar.files) {
+            if (f.isFile && f.name.endsWith('/vocals.fp16.onnx')) {
+              File('$dest.part').writeAsBytesSync(f.content as List<int>);
+              File('$dest.part').renameSync(dest);
+              return;
+            }
+          }
+          throw StateError('в архиве нет vocals.fp16.onnx');
+        });
+      } finally {
+        if (tarball.existsSync()) await tarball.delete();
+      }
+      return vocalModel.existsSync();
+    } catch (e) {
+      AppLog.warn('Модель вокала не скачалась, анализ будет без вокала', e);
+      return false;
+    }
+  }
 
   bool get ready => ortLib.existsSync() && melModel.existsSync() && beatModel.existsSync();
 
@@ -120,13 +162,17 @@ class BeatAssets {
 
 /// Нативный анализатор в отдельном изоляте: модели грузятся один раз, треки идут по очереди
 class _Worker {
-  _Worker._(this._isolate, this._inbox);
+  _Worker._(this._isolate, this._inbox, this.vocals);
   final Isolate _isolate;
   final SendPort _inbox;
 
+  /// Разметка вокала работает
+  final bool vocals;
+
   static Future<_Worker> start(BeatAssets a) async {
     final hello = ReceivePort();
-    final iso = await Isolate.spawn(_main, [hello.sendPort, a.ortLib.path, a.melModel.path, a.beatModel.path]);
+    final iso = await Isolate.spawn(
+        _main, [hello.sendPort, a.ortLib.path, a.melModel.path, a.beatModel.path, a.vocalModel.existsSync() ? a.vocalModel.path : null]);
     final first = await hello.first as List<Object?>;
     hello.close();
     final err = first[1] as String?;
@@ -134,7 +180,9 @@ class _Worker {
       iso.kill(priority: Isolate.immediate);
       throw StateError(err);
     }
-    return _Worker._(iso, first[0] as SendPort);
+    final vErr = first.length > 3 ? first[3] as String? ?? '' : '';
+    if (vErr.isNotEmpty) AppLog.warn('Модель вокала не загрузилась, анализ без вокала', vErr);
+    return _Worker._(iso, first[0] as SendPort, first.length > 2 && first[2] == true);
   }
 
   static void _main(List<Object?> args) {
@@ -147,7 +195,16 @@ class _Worker {
     } catch (e) {
       err = '$e';
     }
-    reply.send([inbox.sendPort, err]);
+    final vocals = args[4] as String?;
+    var vocalErr = '';
+    if (an != null && vocals != null) {
+      try {
+        an.setVocalModel(vocals);
+      } catch (e) {
+        vocalErr = '$e';
+      }
+    }
+    reply.send([inbox.sendPort, err, vocals != null && vocalErr.isEmpty, vocalErr]);
     inbox.listen((msg) {
       final m = msg as List<Object?>;
       final to = m[0] as SendPort?;
@@ -181,7 +238,7 @@ class _Worker {
 
 /// Профили v2: анализ, хранение, чтение
 class BeatAnalysis {
-  static const _algo = 2;
+  static const _algo = 3;  // 3 — разметка вокала
 
   BeatAnalysis(this.mixDir, Directory toolsDir) : assets = BeatAssets(Directory('${toolsDir.path}${Platform.pathSeparator}beat'));
 
@@ -205,7 +262,9 @@ class BeatAnalysis {
     try {
       final p = jsonDecode(f.readAsStringSync());
       // algo — версия алгоритма сетки долей; профили старее пересчитываются (в них могла быть сетка на слабых долях)
-      if (p is Map<String, dynamic> && p['v'] == 2 && (p['algo'] is int ? p['algo'] as int : 1) >= _algo) {
+      // профиль без вокала, хотя модель вокала уже работает, — тоже пересчитать
+      final noVocals = p is Map<String, dynamic> && p['vocals'] == null && (_worker?.vocals ?? false);
+      if (p is Map<String, dynamic> && p['v'] == 2 && (p['algo'] is int ? p['algo'] as int : 1) >= _algo && !noVocals) {
         _mem[id] = p;
         return p;
       }
@@ -229,9 +288,10 @@ class BeatAnalysis {
     return _starting ??= () async {
       try {
         await assets.ensure((l) => AppLog.info(l));
+        await assets.ensureVocals((l) => AppLog.info(l));
         final w = await _Worker.start(assets);
         _worker = w;
-        AppLog.info('Анализ треков (Beat This!) готов');
+        AppLog.info('Анализ треков (Beat This!) готов${w.vocals ? ', с разметкой вокала' : ', без разметки вокала'}');
         return w;
       } finally {
         _starting = null;
@@ -258,8 +318,11 @@ class BeatAnalysis {
       await mixDir.create(recursive: true);
       await _file(id).writeAsString(jsonEncode(p));
       _mem[id] = p;
+      final v = p['vocals'];
+      final vocalBars = v is List ? v.where((x) => x is num && x > 0.15).length : -1;
       AppLog.info('Анализ трека $id: ${p['bpm']} BPM, ${p['beatsPerBar']}/4, тональность ${p['key']}, '
-          '${p['lufs']} LUFS, ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} с');
+          '${p['lufs']} LUFS, ${vocalBars < 0 ? 'вокал не размечен' : 'голос в $vocalBars тактах из ${(v as List).length}'}, '
+          '${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} с');
       return true;
     } catch (e) {
       AppLog.warn('Анализ трека $id не удался', e);

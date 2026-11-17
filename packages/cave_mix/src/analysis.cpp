@@ -246,6 +246,151 @@ class Session {
   std::vector<std::string> inputs_, outputs_;
 };
 
+
+static void fft(std::vector<std::complex<double>> &a);
+
+// ================================================================ Вокал (Spleeter 2stems, модель «vocals»)
+//
+// Модель Deezer Spleeter (MIT) в выгрузке sherpa-onnx: на входе модули STFT обоих каналов (44,1 кГц, окно Ханна
+// 4096, шаг 1024, без центрирования, первые 1024 полосы) кусками по 512 кадров, на выходе — оценка модулей голоса.
+// Нам не нужен сам голос, только где он есть: энергия голоса и всего сигнала по кадрам (~23 мс).
+// Звук идёт потоком прямо из декодера — весь трек в памяти на 44,1 кГц не держим.
+class VocalTracker {
+ public:
+  static constexpr int kRate = 44100, kN = 4096, kHop = 1024, kBins = 1024, kPatch = 512;
+
+  bool start(Session *s, int fs) {
+    s_ = s;
+    if (!s_) return false;
+    if (fs != kRate) {
+      RubberBand::Resampler::Parameters prm;
+      prm.quality = RubberBand::Resampler::FastestTolerable;
+      prm.dynamism = RubberBand::Resampler::RatioMostlyFixed;
+      prm.initialSampleRate = fs;
+      prm.maxBufferSize = 4096;
+      rs_ = std::make_unique<RubberBand::Resampler>(prm, 2);
+      ratio_ = (double)kRate / fs;
+    }
+    win_.resize(kN);
+    for (int i = 0; i < kN; ++i) win_[(size_t)i] = 0.5 - 0.5 * std::cos(2 * kPi * i / kN);
+    patch_.assign((size_t)2 * kPatch * kBins, 0.0f);
+    return true;
+  }
+  bool active() const { return s_ && ok_; }
+  const std::string &error() const { return err_; }
+
+  // n стерео-кадров на частоте декодера; end — последний кусок
+  void add(const float *st, int n, bool end) {
+    if (!active()) return;
+    if (!rs_) {
+      for (int i = 0; i < n; ++i) { L_.push_back(st[i * 2]); R_.push_back(st[i * 2 + 1]); }
+    } else {
+      inL_.resize((size_t)std::max(n, 1)); inR_.resize((size_t)std::max(n, 1));
+      for (int i = 0; i < n; ++i) { inL_[(size_t)i] = st[i * 2]; inR_[(size_t)i] = st[i * 2 + 1]; }
+      const size_t cap = (size_t)(n * ratio_) + 64;
+      outL_.resize(cap); outR_.resize(cap);
+      const float *in[2] = {inL_.data(), inR_.data()};
+      float *out[2] = {outL_.data(), outR_.data()};
+      const int got = rs_->resample(out, (int)cap, in, std::max(n, 0), ratio_, end);
+      L_.insert(L_.end(), outL_.begin(), outL_.begin() + std::max(got, 0));
+      R_.insert(R_.end(), outR_.begin(), outR_.begin() + std::max(got, 0));
+    }
+    while (L_.size() - pos_ >= (size_t)kN) {
+      frame();
+      pos_ += kHop;
+      if (pos_ > (size_t)kRate * 4) {  // отработанное начало буфера — выбросить
+        L_.erase(L_.begin(), L_.begin() + (long)pos_);
+        R_.erase(R_.begin(), R_.begin() + (long)pos_);
+        pos_ = 0;
+      }
+    }
+    if (end && inPatch_ > 0) runPatch();
+  }
+
+  // энергия голоса и всего сигнала по кадрам; время центра кадра i — (i·1024 + 2048) / 44 100
+  const std::vector<double> &voice() const { return ve_; }
+  const std::vector<double> &total() const { return te_; }
+
+ private:
+  void frame() {
+    std::vector<std::complex<double>> z((size_t)kN);
+    for (int i = 0; i < kN; ++i)
+      z[(size_t)i] = {L_[pos_ + (size_t)i] * win_[(size_t)i], R_[pos_ + (size_t)i] * win_[(size_t)i]};
+    fft(z);  // два вещественных канала одним БПФ: z = L + iR
+    for (int k = 0; k < kBins; ++k) {
+      const auto a = z[(size_t)k], b = std::conj(z[(size_t)((kN - k) % kN)]);
+      const auto l = (a + b) * 0.5, r = (a - b) * std::complex<double>(0, -0.5);
+      patch_[(size_t)inPatch_ * kBins + (size_t)k] = (float)std::abs(l);
+      patch_[(size_t)kPatch * kBins + (size_t)inPatch_ * kBins + (size_t)k] = (float)std::abs(r);
+    }
+    if (++inPatch_ == kPatch) runPatch();
+  }
+
+  void runPatch() {
+    Tensor in;
+    in.shape = {2, 1, kPatch, kBins};
+    in.data = patch_;
+    std::vector<Tensor> out;
+    if (!s_->run(in, out, err_) || out.empty() || out[0].data.size() != patch_.size()) {
+      if (err_.empty()) err_ = "модель вокала вернула не то";
+      ok_ = false;
+      return;
+    }
+    const float *v = out[0].data.data();
+    for (int f = 0; f < inPatch_; ++f) {
+      double ve = 0, te = 0;
+      for (int c = 0; c < 2; ++c) {
+        const size_t o = (size_t)c * kPatch * kBins + (size_t)f * kBins;
+        for (int k = 0; k < kBins; ++k) {
+          const double m = patch_[o + (size_t)k], vv = std::min<double>(v[o + (size_t)k], m);
+          ve += vv * vv;
+          te += m * m;
+        }
+      }
+      ve_.push_back(ve);
+      te_.push_back(te);
+    }
+    std::fill(patch_.begin(), patch_.end(), 0.0f);
+    inPatch_ = 0;
+  }
+
+  Session *s_ = nullptr;
+  bool ok_ = true;
+  std::string err_;
+  std::unique_ptr<RubberBand::Resampler> rs_;
+  double ratio_ = 1;
+  std::vector<double> win_;
+  std::vector<float> L_, R_, inL_, inR_, outL_, outR_, patch_;
+  size_t pos_ = 0;
+  int inPatch_ = 0;
+  std::vector<double> ve_, te_;
+};
+
+// Доля голоса в каждом такте: кадр «с голосом», если голос — больше 40 % энергии кадра и не тише 12 дБ
+// от громких мест трека (так тихая подтечка инструментов в «голос» не считается)
+static std::vector<double> vocalsPerBar(const VocalTracker &vt, double t0, double barLen, size_t nBars) {
+  const auto &ve = vt.voice(), &te = vt.total();
+  std::vector<double> out(nBars, 0.0);
+  if (ve.empty() || nBars == 0) return out;
+  std::vector<double> db;
+  for (double t : te) if (t > 0) db.push_back(10 * std::log10(t));
+  if (db.empty()) return out;
+  std::nth_element(db.begin(), db.begin() + (long)(db.size() * 9 / 10), db.end());
+  const double ref = db[db.size() * 9 / 10];
+  std::vector<int> on(nBars, 0), all(nBars, 0);
+  for (size_t i = 0; i < ve.size(); ++i) {
+    const double tc = ((double)i * VocalTracker::kHop + VocalTracker::kN / 2) / VocalTracker::kRate;
+    const double bt = (tc - t0) / barLen;
+    if (bt < 0) continue;
+    const size_t bi = (size_t)bt;
+    if (bi >= nBars) break;
+    ++all[bi];
+    if (te[i] > 0 && ve[i] / te[i] > 0.4 && 10 * std::log10(ve[i] + 1e-30) > ref - 12) ++on[bi];
+  }
+  for (size_t b = 0; b < nBars; ++b) out[b] = all[b] ? (double)on[b] / all[b] : 0.0;
+  return out;
+}
+
 // ================================================================ Beat This!
 
 // Лог-мел спектрограмма окнами (как mel.rs в beat-this-rs): каждое окно с «ореолом» в 64 кадра,
@@ -809,6 +954,15 @@ class Analyzer {
     net_ = std::make_unique<Session>(ort_);
     if (!mel_->open(melModel, threads, err)) return false;
     if (!net_->open(beatModel, threads, err)) return false;
+    threads_ = threads;
+    return true;
+  }
+
+  // Модель вокала (Spleeter vocals); без неё анализ идёт как раньше, «vocals» в профиле — null
+  bool setVocals(const std::string &model, std::string &err) {
+    auto s = std::make_unique<Session>(ort_);
+    if (!s->open(model, threads_, err)) return false;
+    voc_ = std::move(s);
     return true;
   }
 
@@ -841,6 +995,8 @@ class Analyzer {
     if (rd->durationSec() > 0) mono.reserve((size_t)(rd->durationSec() * kModelRate) + 4096);
     std::vector<float> st(4096 * 2), m(4096), out((size_t)(4096 * ratio) + 64);
     long long frames = 0;
+    VocalTracker vt;
+    const bool vocals = voc_ && vt.start(voc_.get(), fs);
     while (true) {
       const int got = rd->read(st.data(), 4096);
       if (got > 0) {
@@ -849,6 +1005,7 @@ class Analyzer {
         for (int i = 0; i < got; ++i) m[(size_t)i] = 0.5f * (st[(size_t)i * 2] + st[(size_t)i * 2 + 1]);
       }
       const bool end = got < 4096;
+      if (vocals) vt.add(st.data(), std::max(got, 0), end);
       if (fs == kModelRate) mono.insert(mono.end(), m.begin(), m.begin() + got);
       else {
         const float *in = m.data();
@@ -860,7 +1017,7 @@ class Analyzer {
       if (end) break;
     }
     const double duration = (double)frames / fs;
-    lap("decode + resample + loudness + true peak");
+    lap(vocals ? "decode + resample + loudness + true peak + vocals" : "decode + resample + loudness + true peak");
     if (mono.size() < (size_t)kModelRate) { err = "трек короче секунды"; return false; }
 
     // 2. Beat This!
@@ -924,8 +1081,11 @@ class Analyzer {
     lap("key");
 
     // 6. Такты: громкость (K-взвешенная, моно), энергия 1…10, хрома для поиска границ
-    struct Bar { double t, lufs; int energy; std::vector<double> chroma; };
+    struct Bar { double t, lufs; int energy; std::vector<double> chroma; double vocal = 0; };
     std::vector<Bar> bars;
+    // модель вокала отработала: массив по тактам (пустой, если тактов нет — плавающий темп), иначе null
+    const bool haveVocals = vocals && vt.active() && !vt.voice().empty();
+    if (vocals && !vt.active() && prof) std::fprintf(stderr, "  vocals failed: %s\n", vt.error().c_str());
     if (g.ok) {
       const double barLen = g.period * beatsPerBar;
       double t = firstDownbeat;
@@ -948,6 +1108,8 @@ class Analyzer {
           ++barN[bi];
         }
       }
+      std::vector<double> vpb;
+      if (vocals && vt.active() && !vt.voice().empty()) vpb = vocalsPerBar(vt, t0, barLen, nBars);
       for (size_t bi = 0; bi < nBars; ++bi, t += barLen) {
         const size_t a = (size_t)std::max(0.0, t * kModelRate), b = std::min(mono.size(), (size_t)((t + barLen) * kModelRate));
         if (b <= a || barN[bi] == 0) break;
@@ -956,6 +1118,7 @@ class Analyzer {
         Bar bar;
         bar.t = t;
         bar.lufs = l;
+        bar.vocal = bi < vpb.size() ? vpb[bi] : 0.0;
         bar.energy = (int)std::clamp(std::lround(1 + 9 * (l + 30.0) / 24.0), 1L, 10L);  // −30 LUFS → 1, −6 → 10
         bar.chroma.assign(12, 0.0);
         const size_t fa = a / 4096, fb = std::min(frameChroma.size(), b / 4096 + 1);
@@ -1072,7 +1235,15 @@ class Analyzer {
     j.key("sections"); j.open('[');
     for (auto &s : sections) { j.open('{'); j.key("startBar"); j.integer(s.bar); j.key("type"); j.str(s.type); j.close('}'); }
     j.close(']');
-    j.key("vocals"); j.raw("null");
+    // доля голоса по тактам (0…1, как energy); null — модели вокала нет
+    j.key("vocals");
+    if (haveVocals) {
+      j.open('[');
+      for (auto &b : bars) j.num(b.vocal, 2);
+      j.close(']');
+    } else {
+      j.raw("null");
+    }
     j.key("mixIn"); j.open('[');
     for (auto &p : mixIn) { j.open('{'); j.key("bar"); j.integer(p.bar); j.key("score"); j.num(p.score, 2); j.close('}'); }
     j.close(']');
@@ -1086,7 +1257,8 @@ class Analyzer {
 
  private:
   Ort ort_;
-  std::unique_ptr<Session> mel_, net_;
+  std::unique_ptr<Session> mel_, net_, voc_;
+  int threads_ = 1;
 };
 
 }  // namespace an
@@ -1122,6 +1294,16 @@ CM_API cm_analyzer *cm_analyzer_create(const char *ort_lib, const char *mel_mode
 }
 
 CM_API void cm_analyzer_destroy(cm_analyzer *z) { delete z; }
+
+CM_API int32_t cm_analyzer_set_vocals(cm_analyzer *z, const char *vocals_model, char **error_out) {
+  if (!z || !vocals_model) return 0;
+  std::string err;
+  if (!z->a.setVocals(vocals_model, err)) {
+    if (error_out) *error_out = dupString(err);
+    return 0;
+  }
+  return 1;
+}
 
 CM_API char *cm_analyze_file(cm_analyzer *z, const char *path_utf8, const char *ffmpeg_utf8, char **error_out) {
   if (!z || !path_utf8) return nullptr;

@@ -146,6 +146,8 @@ typedef _LoopD = void Function(Pointer<Void>, int, double, double);
 typedef _BrakeN = Void Function(Pointer<Void>, Int32, Int64, Double);
 typedef _BrakeD = void Function(Pointer<Void>, int, int, double);
 typedef _RankN = Pointer<Utf8> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Pointer<Utf8>>);
+typedef _SetVocalsN = Int32 Function(Pointer<Void>, Pointer<Utf8>, Pointer<Pointer<Utf8>>);
+typedef _SetVocalsD = int Function(Pointer<Void>, Pointer<Utf8>, Pointer<Pointer<Utf8>>);
 typedef _RenderN = Int32 Function(Pointer<Void>, Pointer<Float>, Int32);
 typedef _RenderD = int Function(Pointer<Void>, Pointer<Float>, int);
 
@@ -383,9 +385,10 @@ typedef _AnFileN = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<
 /// тональность, энергия по тактам, фразы, точки микса. Результат — JSON профиля v2 (ТЗ, раздел 3.3).
 /// Вызовы блокирующие и долгие (секунды на трек): держите анализатор в отдельном изоляте.
 class TrackAnalyzer {
-  TrackAnalyzer._(this._destroy, this._analyze, this._free, this._a);
+  TrackAnalyzer._(this._destroy, this._analyze, this._free, this._setVocals, this._a);
 
   final _VoidPD _destroy;
+  final _SetVocalsD _setVocals;
   final _AnFileN _analyze;
   final _FreeD _free;
   Pointer<Void> _a;
@@ -398,6 +401,7 @@ class TrackAnalyzer {
     final destroy = l.lookupFunction<_VoidPN, _VoidPD>('cm_analyzer_destroy');
     final analyze = l.lookupFunction<_AnFileN, _AnFileN>('cm_analyze_file');
     final free = l.lookupFunction<_FreeN, _FreeD>('cm_free');
+    final setVocals = l.lookupFunction<_SetVocalsN, _SetVocalsD>('cm_analyzer_set_vocals');
     final a = ortLib.toNativeUtf8(allocator: malloc), m = melModel.toNativeUtf8(allocator: malloc);
     final b = beatModel.toNativeUtf8(allocator: malloc);
     final err = malloc<Pointer<Utf8>>()..value = nullptr;
@@ -408,11 +412,29 @@ class TrackAnalyzer {
         if (err.value != nullptr) free(err.value.cast());
         throw StateError(msg);
       }
-      return TrackAnalyzer._(destroy, analyze, free, h);
+      return TrackAnalyzer._(destroy, analyze, free, setVocals, h);
     } finally {
       malloc.free(a);
       malloc.free(m);
       malloc.free(b);
+      malloc.free(err);
+    }
+  }
+
+  /// Включить разметку вокала моделью Spleeter 2stems «vocals» (ONNX): в профиле появится "vocals" — доля голоса
+  /// по тактам. Ошибка — исключение с текстом (анализ без вокала при этом работает как раньше).
+  void setVocalModel(String path) {
+    if (_a == nullptr) throw StateError('анализатор закрыт');
+    final p = path.toNativeUtf8(allocator: malloc);
+    final err = malloc<Pointer<Utf8>>()..value = nullptr;
+    try {
+      if (_setVocals(_a, p, err) == 0) {
+        final msg = err.value == nullptr ? 'модель вокала не загрузилась' : err.value.toDartString();
+        if (err.value != nullptr) _free(err.value.cast());
+        throw StateError(msg);
+      }
+    } finally {
+      malloc.free(p);
       malloc.free(err);
     }
   }

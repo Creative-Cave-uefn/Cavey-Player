@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "../cave_mix.h"
+#include "../readers.h"
 
 static int g_failed = 0;
 #define CHECK(cond, ...)                     \
@@ -234,6 +235,51 @@ static void testGrid() {
   CHECK(mixOut != std::string::npos, "no mix-out point");
 }
 
+// Вокал: ударные без голоса + песня с голосом с 20-й секунды. Голос должен найтись в тактах песни и только там
+static std::string g_vocalModel, g_vocalSong;
+static void testVocals() {
+  if (g_vocalModel.empty()) { std::printf("    skipped: no vocal model given\n"); return; }
+  char *err = nullptr;
+  CHECK(cm_analyzer_set_vocals(g_an, g_vocalModel.c_str(), &err), "vocal model: %s", err ? err : "?");
+  auto song = cm::openMiniaudio(g_vocalSong);
+  CHECK(song && song->rate() == 44100, "song not opened (need 44.1 kHz WAV)");
+  std::vector<float> sv, buf(4096 * 2);
+  for (;;) { const int n = song->read(buf.data(), 4096); sv.insert(sv.end(), buf.begin(), buf.begin() + n * 2); if (n < 4096) break; }
+  const int sr = 44100;
+  const double bpm = 124.0, p = 60.0 / bpm, first = 0.8, songAt = 20.0;
+  std::vector<float> v((size_t)sr * 60 * 2, 0.0f);
+  int k = 0;
+  for (double t = first; t < 59; t += p, ++k)
+    for (int i = (int)(t * sr); i < (int)((t + 0.25) * sr) && (size_t)i * 2 + 1 < v.size(); ++i) {
+      const double x = (i - t * sr) / sr;
+      const float y = (float)((k % 4 == 0 ? 0.9 : 0.6) * std::sin(2 * M_PI * (50 + 100 * std::exp(-x * 30)) * x) * std::exp(-x * 12));
+      v[(size_t)i * 2] += y; v[(size_t)i * 2 + 1] += y;
+    }
+  const size_t o = (size_t)(songAt * sr) * 2;
+  for (size_t i = 0; i < sv.size() && o + i < v.size(); ++i) v[o + i] += 0.8f * sv[i];
+  const double songEnd = songAt + sv.size() / 2.0 / sr;
+  const std::string path = g_dir + "/vocal_mix.wav";
+  writeWav(path, v, sr);
+  double ms = 0;
+  const std::string js = analyze(path, &ms);
+  CHECK(!js.empty(), "no result");
+  const auto voc = jsonArray(js, "vocals");
+  CHECK(!voc.empty(), "no vocals in profile");
+  const double fd = jsonNum(js, "firstDownbeatMs") / 1000, bar = jsonNum(js, "barMs") / 1000;
+  double t0 = fd;
+  while (t0 - bar > 0) t0 -= bar;
+  int inside = 0, insideOn = 0, outside = 0, outsideOn = 0;
+  for (size_t i = 0; i < voc.size(); ++i) {
+    const double a = t0 + i * bar, b = a + bar;
+    if (a >= songAt + 0.5 && b <= songEnd - 0.5) { ++inside; insideOn += voc[i] > 0.15; }
+    else if (b <= songAt || a >= songEnd) { ++outside; outsideOn += voc[i] > 0.05; }
+  }
+  std::printf("    voice found in %d/%d bars of the song, in %d/%d bars without it (analysis %.1f s)\n", insideOn, inside, outsideOn,
+              outside, ms / 1000);
+  CHECK(insideOn >= inside * 0.7, "voice missed");
+  CHECK(outsideOn == 0, "voice where there is none");
+}
+
 int main(int argc, char **argv) {
   if (argc < 7) {
     std::printf("usage: %s ort_lib mel.onnx beat.onnx ref.mp3 golden.json workdir\n", argv[0]);
@@ -242,6 +288,7 @@ int main(int argc, char **argv) {
   g_mp3 = argv[4];
   g_golden = argv[5];
   g_dir = argv[6];
+  if (argc > 8) { g_vocalModel = argv[7]; g_vocalSong = argv[8]; }
   char *err = nullptr;
   const auto t0 = std::chrono::steady_clock::now();
   g_an = cm_analyzer_create(argv[1], argv[2], argv[3], 0, &err);
@@ -255,6 +302,7 @@ int main(int argc, char **argv) {
       {"EBU R128 loudness", testLoudnessEbu},
       {"key detection", testKey},
       {"tempo grid and downbeats", testGrid},
+      {"vocals per bar (Spleeter)", testVocals},
   };
   for (auto &t : tests) {
     const int before = g_failed;

@@ -175,6 +175,9 @@ typedef struct cm_analyzer cm_analyzer;
 CM_API cm_analyzer *cm_analyzer_create(const char *ort_lib, const char *mel_model, const char *beat_model,
                                        int32_t threads, char **error_out);
 CM_API void cm_analyzer_destroy(cm_analyzer *a);
+// Включить разметку вокала: модель Spleeter 2stems «vocals» (ONNX). Тогда в профиле "vocals" — доля голоса по тактам
+// (0…1, та же нумерация, что у "energy"); без модели — null. Возвращает 1 или 0 с текстом в *error_out.
+CM_API int32_t cm_analyzer_set_vocals(cm_analyzer *a, const char *vocals_model, char **error_out);
 // Проанализировать файл. ffmpeg — для форматов, которых нет во встроенных декодерах (может быть пустым).
 // Возвращает JSON профиля v2 (освободить cm_free) или NULL с текстом ошибки в *error_out.
 CM_API char *cm_analyze_file(cm_analyzer *a, const char *path_utf8, const char *ffmpeg_utf8, char **error_out);

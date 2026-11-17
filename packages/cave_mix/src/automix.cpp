@@ -168,10 +168,17 @@ struct Profile {
   double keyConf = 0;
   double lufs = -14;
   std::vector<int> energy;
+  std::vector<double> vocal;   // доля голоса по тактам 0…1; пусто — неизвестно
   std::vector<Point> mixIn, mixOut;
   std::vector<Section> sections;
 
   double barStart(int i) const { return firstBar + i * barLen; }
+  double vocalAt(int i) const { return i >= 0 && i < (int)vocal.size() ? vocal[(size_t)i] : 0.0; }
+  double avgVocal(int a, int n) const {
+    double s = 0; int c = 0;
+    for (int i = a; i < a + n; ++i) if (i >= 0 && i < (int)vocal.size()) { s += vocal[(size_t)i]; ++c; }
+    return c ? s / c : 0.0;
+  }
   double avgEnergy(int a, int n) const {
     double s = 0; int c = 0;
     for (int i = a; i < a + n; ++i) if (i >= 0 && i < (int)energy.size()) { s += energy[(size_t)i]; ++c; }
@@ -188,6 +195,8 @@ static bool parseProfile(const char *json, Profile &p, std::string &err) {
 static bool parseProfileJ(const J &j, Profile &p, std::string &err) {
   if (j.t != J::OBJ) { err = "профиль трека не разобрался"; return false; }
   p.lufs = j.num("lufs", -14);
+  if (const J *v = j.get("vocals"); v && v->t == J::ARR)
+    for (auto &x : v->a) p.vocal.push_back(x.t == J::NUM ? std::clamp(x.n, 0.0, 1.0) : 0.0);
   p.duration = j.num("durationMs", 0) / 1000;
   p.endSec = j.num("endMs", p.duration * 1000) / 1000;
   p.introSec = j.num("introMs", 0) / 1000;
@@ -389,10 +398,13 @@ class Automix {
       if ((t == T1 || t == T2 || t == T4 || t == T5) && !canMatch && !o.force) continue;
       if (t != T11 && (!a.grid || !b.grid)) continue;
       if (!fit(a, b, o, p)) continue;
-      char why[256];
-      std::snprintf(why, sizeof(why), "темп %.2f→%.2f BPM (×%.3f), тональности %s, техника из %zu кандидатов",
+      char why[320];
+      std::snprintf(why, sizeof(why), "темп %.2f→%.2f BPM (×%.3f), тональности %s, техника из %zu кандидатов%s",
                     a.bpm * tempoA_, b.bpm, p.ratio, key > 0 ? "совместимы" : key < 0 ? "не совместимы" : "неизвестны",
-                    order.size());
+                    order.size(),
+                    a.vocal.empty() || b.vocal.empty() ? ", вокал не размечен"
+                    : vocalAvoided_ > 0 ? ", голоса не накладываются (варианты с наложением отброшены)"
+                                        : ", голоса не накладываются");
       p.reason = why;
       schedule(a, b, o, p);
       plan = p;
@@ -407,6 +419,21 @@ class Automix {
   int64_t clockAtA(double t) const { return now_ + (int64_t)std::llround((t - posA_) / tempoA_ * sr_); }
 
   // Подобрать точки и длину для техники; false — не помещается
+  // Насколько голоса наложатся: по тактам перехода — меньшая из долей голоса A и B, в среднем. A с петлёй крутит
+  // свои loopBars тактов. Порог: больше 0,15 — заметно поют оба сразу
+  static constexpr double kClash = 0.15;
+  static double clash(const Profile &a, int outBar, const Profile &b, int inBar, int L, int loopBars = 0) {
+    if (a.vocal.empty() || b.vocal.empty() || L <= 0) return 0;
+    double s = 0;
+    for (int k = 0; k < L; ++k) {
+      const int ab = loopBars > 0 ? outBar + k % loopBars : outBar + k;
+      s += std::min(a.vocalAt(ab), b.vocalAt(inBar + k));
+    }
+    return s / L;
+  }
+  bool vocalsKnown_ = false;
+  int vocalAvoided_ = 0;  // сколько вариантов отброшено из-за наложения голосов
+
   bool fit(const Profile &a, const Profile &b, const Options &o, Plan &p) {
     const double lead = posA_ + o.minLead * tempoA_;
     const double end = std::min(a.endSec, a.duration) + 0.05;
@@ -434,6 +461,14 @@ class Automix {
       if (start + 1.0 > end) return false;
       p.aOut = start;
       p.bIn = b.grid ? std::max(0.0, b.barStart(b.firstDownbeatBar)) : std::min(b.introSec, 8.0);
+      // голоса накладываются — наложение в один такт (или 2 с без сетки)
+      if (a.grid && b.grid) {
+        const int ob = (int)std::floor((start - a.firstBar) / a.barLen + 1e-6);
+        const int L = std::max(1, (int)std::lround(F / a.barLen));
+        if (clash(a, ob, b, b.firstDownbeatBar, L) > kClash) { ++vocalAvoided_; F = std::min(F, a.barLen); }
+      } else if (!a.vocal.empty() && !b.vocal.empty() && a.avgVocal(a.nBars - 4, 4) > kClash && b.avgVocal(0, 4) > kClash) {
+        F = std::min(F, 2.0);
+      }
       p.bars = p.matched ? (int)std::lround(std::min(F, end - start) / a.barLen) : 0;
       p.c0 = clockAtA(start);
       p.cEnd = p.c0 + (int64_t)std::llround(std::min(F, end - start) / tempoA_ * sr_);
@@ -446,14 +481,15 @@ class Automix {
     std::vector<Point> outs = a.mixOut;
     std::sort(outs.begin(), outs.end(), [](auto &x, auto &y) { return x.score > y.score; });
     for (int bar = a.firstDownbeatBar; bar < a.nBars; bar += 8) outs.push_back({bar, 0.1});
-    // точка входа B
-    int inBar = b.mixIn.empty() ? b.firstDownbeatBar : b.mixIn[0].bar;
+    // точки входа B: лучшая из анализа, остальные из анализа, начало; для склейки и торможения — дроп
+    std::vector<int> ins;
     if (p.tech == T4 || p.tech == T7) {  // склейка и торможение — лучше сразу на дроп или энергичную часть
       for (auto &s : b.sections)
-        if ((s.type == "drop" || s.type == "section") && s.bar > 0 && s.bar <= 48 && b.avgEnergy(s.bar, 4) >= 6) { inBar = s.bar; break; }
+        if ((s.type == "drop" || s.type == "section") && s.bar > 0 && s.bar <= 48 && b.avgEnergy(s.bar, 4) >= 6) { ins.push_back(s.bar); break; }
     }
-    p.inBar = inBar;
-    p.bIn = std::max(0.0, b.barStart(inBar));
+    for (auto &m : b.mixIn) if (std::find(ins.begin(), ins.end(), m.bar) == ins.end()) ins.push_back(m.bar);
+    if (std::find(ins.begin(), ins.end(), b.firstDownbeatBar) == ins.end()) ins.push_back(b.firstDownbeatBar);
+    if (ins.size() > 4) ins.resize(4);
 
     std::vector<int> lengths;
     if (p.tech == T1) {
@@ -465,6 +501,7 @@ class Automix {
     }
     for (int L : lengths) {
       for (const Point &m : outs) {
+       for (int inBar : ins) {
         int bar = m.bar;
         if (p.tech == T3 || p.tech == T8) bar += 8;  // эхо- и реверб-аут — в конце фразы аутро: A доигрывает её
         const double t = a.barStart(bar);
@@ -472,6 +509,12 @@ class Automix {
         const double brake = std::clamp(2 * a.barLen / a.bpb / tempoA_, 0.6, 1.6);
         if (t - (p.tech == T7 ? brake * tempoA_ : 0) < lead || t + L * a.barLen > end) continue;
         if ((p.tech == T3 || p.tech == T8) && t > end) continue;
+        // наложение голосов: в сведении (T1, T2) — по всей длине; в обрывах голос A кончается на точке, но B
+        // с первых тактов не должен перебивать хвост эха и реверберации
+        if (L > 0 && clash(a, bar, b, inBar, L) > kClash) { ++vocalAvoided_; continue; }
+        if ((p.tech == T3 || p.tech == T8) && clash(a, bar - 1, b, inBar, 1) > 0.3) { ++vocalAvoided_; continue; }
+        p.inBar = inBar;
+        p.bIn = std::max(0.0, b.barStart(inBar));
         p.brakeSec = p.tech == T7 ? brake : 0;
         p.outBar = bar;
         p.aOut = t;
@@ -481,6 +524,7 @@ class Automix {
         const double len = p.tech == T3 ? 2 * barOut : p.tech == T8 ? 4 * barOut : (p.tech == T4 || p.tech == T7) ? 0.05 : L * barOut;
         p.cEnd = p.c0 + (int64_t)std::llround(len * sr_);
         return true;
+       }
       }
     }
     return false;
@@ -503,6 +547,7 @@ class Automix {
       p.loopA = t0;
       p.loopB = t1;
       p.inBar = b.mixIn.empty() ? b.firstDownbeatBar : b.mixIn[0].bar;
+      if (clash(a, lb - 4, b, p.inBar, L, 4) > kClash) { ++vocalAvoided_; continue; }
       p.bIn = std::max(0.0, b.barStart(p.inBar));
       p.bars = L;
       p.c0 = clockAtA(t0);
@@ -703,7 +748,7 @@ struct Hist { std::string id, artist; double energy = 5; };
 
 enum Intent { BALANCED, RISE, RELAX };
 
-struct PairScore { double total = 0, tempo = 0, key = 0, energy = 0, mix = 0, loud = 0; std::string why; };
+struct PairScore { double total = 0, tempo = 0, key = 0, energy = 0, mix = 0, loud = 0, vocal = 0.5; std::string why; };
 
 static double bodyEnergy(const Profile &p) { return p.avgEnergy(p.firstDownbeatBar, std::max(1, p.nBars - p.firstDownbeatBar)); }
 
@@ -731,7 +776,13 @@ static PairScore pairScore(const Profile &a, const Profile &b, double maxTempoPc
   for (auto &m : a.mixOut) mo = std::max(mo, m.score);
   for (auto &m : b.mixIn) mi = std::max(mi, m.score);
   s.mix = (a.mixOut.empty() ? 0.3 : mo) * 0.5 + (b.mixIn.empty() ? 0.3 : mi) * 0.5;
-  s.total = 0.35 * s.tempo + 0.25 * s.key + 0.2 * s.energy + 0.1 * s.mix + 0.1 * s.loud;
+  // голоса: конец A и начало B, где идёт сведение; известно только при разметке вокала у обоих
+  if (!a.vocal.empty() && !b.vocal.empty()) {
+    const double c = std::min(a.avgVocal(a.nBars - 16, 16), b.avgVocal(0, 16));
+    s.vocal = 1.0 - std::min(1.0, c / 0.3);
+    if (c > 0.15) why += ", поют оба на стыке";
+  }
+  s.total = 0.31 * s.tempo + 0.22 * s.key + 0.18 * s.energy + 0.09 * s.mix + 0.08 * s.loud + 0.12 * s.vocal;
   s.why = why;
   return s;
 }
@@ -835,9 +886,9 @@ CM_API char *cm_rank_next(const char *current_profile, const char *candidates, c
     char buf[512];
     std::snprintf(buf, sizeof buf,
                   "%s{\"id\":\"%s\",\"score\":%.3f,\"set\":%.3f,\"tempo\":%.2f,\"key\":%.2f,\"energy\":%.2f,\"mix\":%.2f,\"loud\":%.2f,"
-                  "\"why\":\"%s\"}",
+                  "\"vocal\":%.2f,\"why\":\"%s\"}",
                   i ? "," : "", esc(cands[(size_t)i].id).c_str(), p.total, setScore(hist, cands[(size_t)i], intent), p.tempo, p.key,
-                  p.energy, p.mix, p.loud, esc(p.why).c_str());
+                  p.energy, p.mix, p.loud, p.vocal, esc(p.why).c_str());
     out += buf;
   }
   out += "]}";

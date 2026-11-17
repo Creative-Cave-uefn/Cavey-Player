@@ -408,6 +408,60 @@ static void testRank() {
   CHECK(r2.find("\"best\":\"other\"") != std::string::npos, "artist repeat not penalised");
 }
 
+// Вокал: голоса A (до 55-го такта) и B (с самого начала) не должны накладываться в сведении
+static std::string vocalsJson(int n, std::initializer_list<std::pair<int, int>> on) {
+  std::string v = "[";
+  for (int i = 0; i < n; ++i) {
+    bool x = false;
+    for (auto &r : on) x = x || (i >= r.first && i < r.second);
+    v += (i ? "," : "") + std::string(x ? "0.6" : "0");
+  }
+  return v + "]";
+}
+
+static void testVocalPlans() {
+  const std::string va = vocalsJson(64, {{16, 56}}), vb = vocalsJson(64, {{0, 12}, {24, 56}});
+  const std::string pa = withField(g_profA, "vocals", va), pb = withField(g_profB, "vocals", vb);
+  auto at = [](const std::string &v, int i) {  // i-я доля голоса из JSON-массива
+    size_t p = 1;
+    for (int k = 0; k < i; ++k) p = v.find(',', p) + 1;
+    return std::atof(v.c_str() + p);
+  };
+  for (int tech : {1, 2, 0}) {
+    Rig r;
+    cm_load(r.e, 0, (g_dir + "/a.wav").c_str(), 70.0);
+    CHECK(r.waitReady(0), "A not ready");
+    cm_play_at(r.e, 0, -1);
+    r.render(kSr / 2);
+    cm_load(r.e, 1, (g_dir + "/b.wav").c_str(), 0.0);
+    CHECK(r.waitReady(1), "B not ready");
+    char opts[160];
+    std::snprintf(opts, sizeof(opts), "{\"force\":%d,\"seed\":7}", tech);
+    char *err = nullptr;
+    char *planC = cm_automix(r.e, 0, 1, pa.c_str(), pb.c_str(), opts, &err);
+    CHECK(planC, "automix: %s", err ? err : "?");
+    const std::string plan(planC);
+    cm_free(planC);
+    const int outBar = (int)jsonNum(plan, "outBar"), inBar = (int)jsonNum(plan, "inBar"), bars = (int)jsonNum(plan, "bars");
+    double c = 0;
+    for (int k = 0; k < bars; ++k) c += std::min(at(va, outBar + k), at(vb, inBar + k));
+    c = bars ? c / bars : 0;
+    std::printf("    %s: %s, A bar %d, B bar %d, %d bars, overlap of voices %.2f — %s\n", tech ? "forced" : "free",
+                jsonStr(plan, "name").c_str(), outBar, inBar, bars, c, jsonStr(plan, "reason").c_str());
+    CHECK(c <= 0.15, "voices overlap %.2f", c);
+  }
+  // порядок: после трека с голосом в конце лучше тот, у кого в начале голоса нет
+  const std::string cands = "[{\"id\":\"sings\",\"artist\":\"x\",\"profile\":" + withField(g_profB, "vocals", vocalsJson(64, {{0, 16}})) +
+                            "},{\"id\":\"quiet\",\"artist\":\"y\",\"profile\":" + withField(g_profB, "vocals", vocalsJson(64, {{24, 40}})) + "}]";
+  const std::string cur = withField(g_profA, "vocals", vocalsJson(64, {{40, 64}}));
+  char *err = nullptr;
+  char *rk = cm_rank_next(cur.c_str(), cands.c_str(), "{}", &err);
+  const std::string out = rk ? rk : (err ? err : "?");
+  cm_free(rk); cm_free(err);
+  std::printf("    ranking: %s\n", out.substr(0, 110).c_str());
+  CHECK(out.find("\"best\":\"quiet\"") != std::string::npos, "vocal clash not penalised in ranking");
+}
+
 int main(int argc, char **argv) {
   if (argc < 5) {
     std::printf("usage: %s ort_lib mel.onnx beat.onnx workdir\n", argv[0]);
@@ -451,6 +505,12 @@ int main(int argc, char **argv) {
     const int before = g_failed;
     std::printf("• next-track ranking\n");
     testRank();
+    std::printf("  %s\n", g_failed == before ? "ok" : "FAILED");
+  }
+  {
+    const int before = g_failed;
+    std::printf("• vocals: no voice over voice\n");
+    testVocalPlans();
     std::printf("  %s\n", g_failed == before ? "ok" : "FAILED");
   }
   std::printf("• demos\n");
