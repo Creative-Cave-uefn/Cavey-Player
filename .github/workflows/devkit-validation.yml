@@ -1,0 +1,39 @@
+name: Cavey DevKit validation
+
+on:
+  push:
+    branches:
+      - feat/keivi-devkit-20261117
+    paths:
+      - tools/**
+      - .github/workflows/devkit-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-devkit:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install DevKit dependencies
+        shell: pwsh
+        run: npm install --prefix tools/devkit --no-audit --no-fund
+      - name: TypeScript typecheck
+        shell: pwsh
+        run: npm run typecheck --prefix tools/devkit
+      - name: React UI and parser tests
+        shell: pwsh
+        run: npm test --prefix tools/devkit
+      - name: Windows PowerShell 5.1 syntax and engine tests
+        shell: powershell
+        run: .\tools\test-cavey-devkit.ps1 -SkipNpm

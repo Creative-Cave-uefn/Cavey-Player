@@ -38,6 +38,9 @@ $PlayerRepo = 'Creative-Cave-uefn/Cavey-Player'
 $ReleasesRepo = 'Creative-Cave-uefn/cave-player-releases'
 
 function Say([string]$text) { Write-Host ""; Write-Host "== $text" -ForegroundColor Cyan }
+function Stage([string]$name, [string]$state, [string]$label) {
+    if ($env:CAVEY_DEVKIT_PROGRESS -eq '1') { Write-Host "@@CAVEY_STAGE|$name|$state|$label" }
+}
 function Warn([string]$text) { Write-Host "! $text" -ForegroundColor Yellow }
 function Fail([string]$text) { Write-Host ""; Write-Host "ОШИБКА: $text" -ForegroundColor Red; exit 1 }
 
@@ -152,6 +155,7 @@ if (-not $GoogleClientId -or -not $GoogleClientSecret) {
 }
 
 # ---------- 4. Подготовка проекта Windows (как в CI) ----------
+Stage 'prepare' 'running' 'Prepare Windows project'
 Say 'Готовлю проект Windows'
 # Папку windows/ генерирует Flutter; в git она не хранится, чтобы не мешала, исключаю её локально
 $exclude = Join-Path $root '.git\info\exclude'
@@ -169,8 +173,11 @@ if ((Run 'flutter' @('pub', 'get')) -ne 0) {
     Fail 'flutter pub get не сработал. Если в логе написано про symlink / Developer Mode — включите режим разработчика (docs\LOCAL_BUILD.md, шаг 5).'
 }
 
+Stage 'prepare' 'done' 'Windows project prepared'
+
 # ---------- 5. Проверки ----------
 if (-not $SkipChecks) {
+    Stage 'checks' 'running' 'Analyze and test'
     Say 'Проверка кода (flutter analyze)'
     $old = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -188,9 +195,13 @@ if (-not $SkipChecks) {
     if ((Run 'flutter' @('test', '--reporter', 'expanded')) -ne 0) {
         Fail 'Тесты не прошли. Пришлите мне файл build-log.txt — я разберусь.'
     }
+    Stage 'checks' 'done' 'Analyze and test passed'
+} else {
+    Stage 'checks' 'skipped' 'Checks skipped on request'
 }
 
 # ---------- 6. Сборка ----------
+Stage 'compile' 'running' 'Compile Flutter Windows'
 Say 'Собираю приложение (первый раз это долго, 5–15 минут)'
 $defines = @(
     "--dart-define=APP_VERSION=$Version",
@@ -209,6 +220,7 @@ $buildName = ($vp | Select-Object -First 3) -join '.'
 $buildNumber = if ($vp.Count -gt 3) { $vp[3] } else { '1' }
 $buildArgs = @('build', 'windows', '--release', '--build-name', $buildName, '--build-number', $buildNumber) + $defines
 if ((Run 'flutter' $buildArgs) -ne 0) { Fail 'Сборка не удалась. Пришлите мне файл build-log.txt — по нему видно, что не так.' }
+Stage 'compile' 'done' 'Flutter Windows compiled'
 
 $release = Join-Path $root 'build\windows\x64\runner\Release'
 if (-not (Test-Path (Join-Path $release 'cave_player.exe'))) { Fail "Не нашёл cave_player.exe в $release" }
@@ -239,6 +251,7 @@ if ($dlSource) {
 }
 
 # ---------- 8. Установщик и portable ----------
+Stage 'package' 'running' 'Package installer and portable ZIP'
 Say 'Собираю установщик и portable-архив'
 New-Item -ItemType Directory -Force 'dist' | Out-Null
 Remove-Item 'dist\CavePlayer-Setup.exe', 'dist\CavePlayer-portable.zip' -ErrorAction SilentlyContinue
@@ -248,6 +261,7 @@ foreach ($file in @('dist\CavePlayer-Setup.exe', 'dist\CavePlayer-portable.zip')
     if (-not (Test-Path $file) -or (Get-Item $file).Length -le 0) { Fail "Не создан файл $file" }
 }
 Write-Host ""
+Stage 'package' 'done' 'Installer and portable ZIP ready'
 Write-Host "Готово. Файлы лежат в: $(Join-Path $root 'dist')" -ForegroundColor Green
 
 # ---------- 9. Публикация ----------

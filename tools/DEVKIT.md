@@ -48,7 +48,7 @@ The `/build` wizard has **two separate publication actions**:
 
 The branch/release selector shows up to 12 rows on sufficiently tall terminals. Wheel scrolling is active only while the mouse is over selectable rows, not the bottom hints/input or status area. The transcript scrolls under the pointer only while the mouse is over its output area; PgUp/PgDn still work anywhere.
 
-The `/build` wizard refreshes remote refs from `origin` before displaying branches. Confirmation is mandatory before build or publication.
+The `/build` wizard refreshes remote refs from `origin` before displaying branches. Confirmation is mandatory before build or publication. The Release Manager also has an explicit rollback confirmation.
 
 ## Commands
 
@@ -74,3 +74,44 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-cavey-devkit.ps
 Windows PowerShell 5.1 source files include a UTF-8 BOM. Run the parser/smoke-test script before shipping a revision to catch encoding regressions. The launcher preserves noninteractive usage: `powershell -File .\tools\cavey-devkit.ps1 status` calls the headless engine. The UI always uses the new React frontend without arguments.
 
 Dependencies: `@claude-code-kit/ui` 0.4.0 and `@claude-code-kit/ink-renderer` 0.4.0, MIT license. Initial dependency installation needs internet.
+
+## Build Center · interactive steps and progress
+
+The pinned Build Center shows Source → Prepare → Checks → Compile → Package → Publish.
+Stage updates stream during Flutter compilation. The final transcript and `/logs` retain
+the detailed build output, while `/history` records a run status. Each build writes a
+recoverable manifest to `%LOCALAPPDATA%\CaveyDevKit\builds\<run-id>\run.json`.
+It contains the source commit, version, channel, artifact paths and SHA-256 checksums.
+The UI removes internal stage control markers from the visible transcript.
+
+## Release Manager · history, updates and rollback
+
+- `/manager` opens an interactive channel selector. Choose View versions,
+  Update channel (select source branch), or Rollback (select an older release).
+- `/manager --channel <channel>` prints the published versions.
+- `/rollback --channel <channel> --to <tag> --yes` restores an earlier version by
+  marking **newer** releases as GitHub drafts. Their tags and assets remain stored,
+  and old binaries are **not** republished under a false newer version number.
+  Existing installations already on a newer embedded APP_VERSION may require
+  manual reinstallation to downgrade; rollback does not force a client downgrade.
+- New test channels remain distinct from existing channels. Channel updates
+  publish a new version, then keep three most recent visible test releases;
+  other releases are removed only after the new release succeeds.
+
+## Build cache, recovery and updates
+
+- Builds reuse a persistent detached worktree keyed by **exact source commit SHA
+  and Flutter version**. This safely reuses Flutter's generated build data for
+  repeated builds of an unchanged revision without mixing branches or toolchains.
+  `/build --branch <branch> --fresh --local --yes` forces a clean one-off worktree.
+- `/cache` lists cached worktrees; `/cache prune` prompts before removing them.
+  Cached worktrees remain on disk until manually pruned. Monitor free disk
+  space and prune old worktrees periodically.
+- `/recover` lists saved runs. `/resume --id <run-id> --yes` checks both
+  artifacts' SHA-256 checksums and retries **publication only**. It refuses
+  already-published tags or corrupted artifacts. Incomplete compilation still
+  requires rebuilding (with the source cache available).
+- `/update` fetches `feat/keivi-devkit-20261117` and fast-forwards the dedicated
+  `devkit-live`/DevKit source branch if clean. Divergence and uncommitted changes
+  block the operation. On a successful update, the launcher reinstalls changed
+  dependencies as needed and restarts the terminal automatically (exit code 42).

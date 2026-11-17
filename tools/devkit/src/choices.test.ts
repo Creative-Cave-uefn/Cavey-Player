@@ -22,6 +22,7 @@ test("long menus keep the selected row visible within the larger viewport", () =
 test("publication channels are unique and stable releases are excluded", () => {
   const channels = releaseChannels([
     {tagName:"v1.0.0",name:"Stable",isPrerelease:false,publishedAt:"2026-11-17"},
+    {tagName:"test-hidden-v0.4.0.6",name:"Test: hidden · 0.4.0.6",isPrerelease:true,isDraft:true,publishedAt:"2026-11-18"},
     {tagName:"test-dj-v0.4.0.3",name:"Тест: DJ · 0.4.0.3",isPrerelease:true,publishedAt:"2026-11-17"},
     {tagName:"test-dj-v0.4.0.2",name:"Тест: DJ · 0.4.0.2",isPrerelease:true,publishedAt:"2026-11-16"},
     {tagName:"test-wave-v0.4.0.1",name:"Test: wave · 0.4.0.1",isPrerelease:true,publishedAt:"2026-11-15"},

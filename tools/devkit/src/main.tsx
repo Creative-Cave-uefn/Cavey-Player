@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AlternateScreen, Box, Text, render, useApp } from "@claude-code-kit/ink-renderer";
 import { MessageList, SearchOverlay, StatusLine, Spinner, useTerminalSize, type Message, type StatusLineSegment, type VirtualListHandle } from "@claude-code-kit/ui";
 import { CommandPrompt, matchCommands } from "./CommandPrompt.js";
-import { releaseChannels, type ChoiceMenu, type ReleaseRecord } from "./choices.js";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { releaseChannels, type ChoiceMenu, type ReleaseRecord, type Choice } from "./choices.js";
+import { BuildCenter } from "./BuildCenter.js";
+import { createWorkflowStream, stripWorkflowMarkers, type StageRecord } from "./build-events.js";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -29,8 +31,15 @@ function loadHistory(): string[] {
 
 const catalog = [
   { name: "build", description: "Мастер сборок / параметры ветки" },
-  { name: "branches", description: "Ветки GitHub" },
+  { name: "manager", description: "Управление каналами, версиями и откатами" },
+  { name: "recover", description: "Восстановить прерванную публикацию" },
+  { name: "cache", description: "Кеш повторных сборок и очистка" },
+  { name: "update", description: "Обновить сам DevKit" },
   { name: "terminal", description: "Открыть настоящий PowerShell" },
+  { name: "branches", description: "Ветки GitHub" },
+  { name: "rollback", description: "Вернуть прежнюю тестовую версию" },
+  { name: "resume", description: "Повторить публикацию готовых файлов" },
+  { name: "retry-publish", description: "Повторить публикацию без сборки" },
   { name: "agent", description: "Открыть установленный Claude Code" },
   { name: "project", description: "Папка исходников проекта" },
   { name: "status", description: "Git и последние сборки" },
@@ -43,6 +52,7 @@ const catalog = [
   { name: "clear", description: "Очистить историю на экране" },
   { name: "help", description: "Все доступные команды" },
   { name: "quit", description: "Выйти из DevKit" },
+
 ];
 
 const helpText = [
@@ -54,6 +64,9 @@ const helpText = [
   "/branches   /status   /releases   /history   /logs",
   "/clean --dry-run                  Просмотр без удаления",
   "/run        /doctor   /project [path]   /terminal",
+  "/manager   /rollback   /recover   /resume --id <id>",
+  "/cache     /cache prune     /update",
+  "/build --branch <branch> --fresh --local --yes",
   "/agent      /clear    /quit",
   "",
   "Commands without / run in PowerShell. cd persists between commands.",
@@ -65,8 +78,30 @@ const helpText = [
 type Wizard =
   | { kind: "branch"; branches: string[] }
   | { kind: "mode"; branch: string }
-  | { kind: "channel"; branch: string; channels: { value: string; label: string; detail?: string }[] }
-  | { kind: "confirm"; command: "build" | "clean"; args: string[]; summary: string };
+  | { kind: "channel"; branch: string; channels: Choice[] }
+  | { kind: "manager-channel"; channels: Choice[]; releases: ReleaseRecord[] }
+  | { kind: "manager-action"; channel: string; releases: ReleaseRecord[] }
+  | { kind: "manager-versions"; channel: string; releases: ReleaseRecord[] }
+  | { kind: "manager-branch"; channel: string; branches: string[] }
+  | { kind: "recover"; runs: SavedRun[] }
+  | { kind: "confirm"; command: "build" | "clean" | "rollback" | "resume" | "cache"; args: string[]; summary: string };
+
+type SavedRun = { id: string; source: string; channel: string; status: string; updatedUtc?: string };
+function loadRecoverableRuns(): SavedRun[] {
+  const root = join(DATA_HOME, "builds");
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => {
+        try {
+          const v = JSON.parse(readFileSync(join(root, d.name, "run.json"), "utf8")) as SavedRun;
+          return v;
+        } catch { return null; }
+      })
+      .filter((v): v is SavedRun => v !== null && ["built", "publish_failed"].includes(v.status))
+      .sort((a, b) => (b.updatedUtc ?? "").localeCompare(a.updatedUtc ?? ""));
+  } catch { return []; }
+}
 
 function formatMessage(m: Message): React.ReactNode {
   const body = typeof m.content === "string" ? m.content :
@@ -94,7 +129,7 @@ function Header({ directory, branch, activity, loading, compact }: {
         <Box gap={1}>
           <Text color="#DF9472" bold>✳</Text>
           <Text bold color="#E9E3E5">Cavey DevKit</Text>
-          <Text color="#77737C">v1.3</Text>
+          <Text color="#77737C">v1.4</Text>
         </Box>
         <Text color={stateColor}>{loading ? "● " + activity : activity === "error" ? "● error" : "● ready"}</Text>
       </Box>
@@ -118,6 +153,7 @@ function App() {
   const [wizard, setWizard] = useState<Wizard | null>(null);
   const [inputValue, setInputValue] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [buildStages, setBuildStages] = useState<StageRecord[]>([]);
   const terminal = useTerminalSize();
   const compact = terminal.rows < 29 || terminal.columns < 110;
   const historyRef = useRef<VirtualListHandle>(null);
@@ -161,6 +197,27 @@ function App() {
     setLoading(true);
     setActivity("running");
     setStreaming("");
+    const isBuild = /^\/(?:build|rollback|resume|retry-publish)(?:\s|$)/.test(req.label);
+    if (isBuild) setBuildStages([]);
+    let restart = false;
+    const stream = createWorkflowStream(event => {
+      if (event.kind === "restart") {
+        restart = true;
+      } else {
+        setBuildStages(previous => {
+          const old = previous.find(x => x.name === event.stage);
+          const now = Date.now();
+          const startedAt = old?.startedAt ?? now;
+          const next = previous.filter(x => x.name !== event.stage);
+          return [...next, {
+            name: event.stage, state: event.state, label: event.label,
+            startedAt, updatedAt: now,
+            durationMs: ["done", "failed", "skipped"].includes(event.state)
+              ? now - startedAt : undefined,
+          }];
+        });
+      }
+    });
     let raw = "";
     let pendingFlush: ReturnType<typeof setTimeout> | null = null;
     const flush = () => {
@@ -169,32 +226,43 @@ function App() {
     };
     try {
       const result = await runCommand(req, controller.signal, chunk => {
-        raw = (raw + chunk).slice(-60000);
+        raw = (raw + stream.push(chunk)).slice(-60000);
         if (!pendingFlush) pendingFlush = setTimeout(flush, 65);
       });
+      raw += stream.finish();
       if (pendingFlush) clearTimeout(pendingFlush);
       setStreaming(null);
-      const text = result.output.slice(-25000);
+      const output = stripWorkflowMarkers(result.output).slice(-25000);
       append("assistant", (result.cancelled ? "Cancelled by user.\n" : "") +
-        (text || (result.cancelled ? "" : "Command finished without output.")) +
+        (output || (result.cancelled ? "" : "Command finished without output.")) +
         "\n\n" + (result.cancelled ? "cancelled" : result.code === 0 ? "✓ success" : "✗ exit " + result.code) +
         "  ·  " + (result.durationMs / 1000).toFixed(1) + "s");
       setActivity(result.cancelled ? "cancelled" : result.code === 0 ? "ready" : "error");
+      if (isBuild && (result.cancelled || result.code !== 0)) {
+        setBuildStages(previous => previous.map(stage => stage.state === "running"
+          ? { ...stage, state: "failed" as const, label: "Build interrupted or failed" } : stage));
+      }
       if (req.label.startsWith("/project") && result.code === 0) {
         const updated = initialDirectory();
         if (updated !== directory) setDirectory(updated);
+      }
+      if (restart && result.code === 0) {
+        process.exitCode = 42;
+        exit();
       }
     } catch (error) {
       if (pendingFlush) clearTimeout(pendingFlush);
       setStreaming(null);
       append("assistant", "✗ " + String(error));
       setActivity("error");
+      if (isBuild) setBuildStages(previous => previous.map(stage => stage.state === "running"
+        ? { ...stage, state: "failed" as const, label: String(error) } : stage));
     } finally {
       if (active.current === controller) active.current = null;
       setLoading(false);
       void refreshBranch(directory);
     }
-  }, [append, directory, refreshBranch, remember]);
+  }, [append, directory, exit, refreshBranch, remember]);
 
   const runEngine = useCallback(async (command: string, args: string[], echo = true) => {
     const label = "/" + command + (args.length ? " " + args.join(" ") : "");
@@ -229,11 +297,140 @@ function App() {
     finally { setLoading(false); setActivity("ready"); }
   }, [append, directory, loading]);
 
+  const openReleaseManager = useCallback(async () => {
+    if (active.current || loading) return;
+    setLoading(true);
+    setActivity("loading releases");
+    try {
+      const result = await runCommand({
+        program: "gh",
+        args: ["release", "list", "--repo", "Creative-Cave-uefn/Cavey-Player-Releases",
+          "--limit", "500", "--json", "tagName,name,isPrerelease,isDraft,publishedAt"],
+        cwd: directory, label: "gh release list",
+      });
+      if (result.code !== 0) { append("assistant", "Could not load releases: " + result.output); return; }
+      const releases = JSON.parse(result.output) as ReleaseRecord[];
+      const channels = releaseChannels(releases);
+      if (!channels.length) { append("assistant", "No published test channels. Use /build to create one."); return; }
+      setWizard({ kind: "manager-channel", channels, releases });
+      append("assistant", "Release Manager: select a channel to view versions, update or roll back.");
+    } catch (error) {
+      append("assistant", "Release Manager error: " + String(error));
+    } finally {
+      setLoading(false);
+      setActivity("ready");
+    }
+  }, [append, directory, loading]);
+
+  const openRecovery = useCallback(() => {
+    const runs = loadRecoverableRuns();
+    if (!runs.length) {
+      append("assistant", "No recoverable publications. Use /recover to view other saved run states.");
+      return;
+    }
+    setWizard({ kind: "recover", runs });
+    append("assistant", "Select a saved build to retry publishing its SHA-256 verified artifacts.");
+  }, [append]);
+
   const wizardInput = useCallback(async (value: string) => {
     if (!wizard) return;
     const answer = value.trim();
     append("user", answer);
     remember(answer);
+    if (wizard.kind === "manager-channel") {
+      const index = Number(answer) - 1;
+      const channel = Number.isInteger(index) && index >= 0
+        ? wizard.channels[index]?.value : wizard.channels.find(c => c.value === answer)?.value;
+      if (!channel) { append("assistant", "Select a release channel."); return; }
+      setWizard({ kind: "manager-action", channel, releases: wizard.releases });
+      append("assistant", "Channel: " + channel + "\nChoose an action.");
+      return;
+    }
+    if (wizard.kind === "manager-action") {
+      const action = answer === "1" ? "history" : answer === "2" ? "update"
+        : answer === "3" ? "rollback" : answer;
+      if (action === "history") {
+        setWizard(null);
+        await runEngine("manager", ["--channel", wizard.channel], false);
+        return;
+      }
+      if (action === "rollback") {
+        const slug = wizard.channel.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        const matching = wizard.releases.filter(r => r.isPrerelease && !r.isDraft &&
+          r.tagName.startsWith("test-" + slug + "-v"))
+          .sort((a, b) => (b.publishedAt ?? "").localeCompare(a.publishedAt ?? ""));
+        if (matching.length < 2) {
+          append("assistant", "At least two retained versions are required to roll back.");
+          return;
+        }
+        setWizard({ kind: "manager-versions", channel: wizard.channel, releases: matching.slice(1) });
+        append("assistant", "Select an older version. Newer releases will be hidden as drafts, not deleted.");
+        return;
+      }
+      if (action === "update") {
+        setLoading(true);
+        setActivity("loading branches");
+        try {
+          const fetched = await runCommand({
+            program: "git", args: ["fetch", "origin", "--prune"],
+            cwd: directory, label: "git fetch origin",
+          });
+          if (fetched.code !== 0) {
+            append("assistant", "Could not refresh branches: " + fetched.output);
+            return;
+          }
+          const refs = await runCommand(gitBranchesRequest(directory));
+          const branches = refs.output.split(/\r?\n/).map(x => x.trim())
+            .filter(x => x.startsWith("origin/") && x !== "origin/HEAD")
+            .map(x => x.slice(7)).slice(0, 100);
+          if (refs.code !== 0 || !branches.length) { append("assistant", "No source branches found."); return; }
+          setWizard({ kind: "manager-branch", channel: wizard.channel, branches });
+          append("assistant", "Select a source branch for the channel update.");
+        } catch (error) {
+          append("assistant", "Could not load branches: " + String(error));
+        } finally {
+          setLoading(false);
+          setActivity("ready");
+        }
+        return;
+      }
+      append("assistant", "Select View versions, Update or Rollback.");
+      return;
+    }
+    if (wizard.kind === "manager-versions") {
+      const index = Number(answer) - 1;
+      const tag = Number.isInteger(index) && index >= 0
+        ? wizard.releases[index]?.tagName
+        : wizard.releases.find(r => r.tagName === answer)?.tagName;
+      if (!tag) { append("assistant", "Select an older release."); return; }
+      const args = ["--channel", wizard.channel, "--to", tag];
+      const summary = "Rollback channel: " + wizard.channel + "\nFrom: " + tag +
+        "\nNewer versions will become drafts; no assets will be deleted.";
+      setWizard({ kind: "confirm", command: "rollback", args, summary });
+      append("assistant", summary + "\nConfirm to start.");
+      return;
+    }
+    if (wizard.kind === "manager-branch") {
+      const index = Number(answer) - 1;
+      const branch = Number.isInteger(index) && index >= 0
+        ? wizard.branches[index] : wizard.branches.find(b => b === answer);
+      if (!branch) { append("assistant", "Select a source branch."); return; }
+      const args = ["--branch", branch, "--mode", "update", "--channel", wizard.channel];
+      const summary = "Update channel: " + wizard.channel + "\nSource branch: " + branch;
+      setWizard({ kind: "confirm", command: "build", args, summary });
+      append("assistant", summary + "\nConfirm to start.");
+      return;
+    }
+    if (wizard.kind === "recover") {
+      const index = Number(answer) - 1;
+      const run = Number.isInteger(index) && index >= 0
+        ? wizard.runs[index] : wizard.runs.find(r => r.id === answer);
+      if (!run) { append("assistant", "Select a saved run."); return; }
+      const summary = "Republish verified artifacts\nRun: " + run.id + "\nChannel: " + run.channel;
+      setWizard({ kind: "confirm", command: "resume", args: ["--id", run.id], summary });
+      append("assistant", summary + "\nConfirm to start.");
+      return;
+    }
     if (wizard.kind === "branch") {
       const index = Number(answer) - 1;
       const chosen = Number.isInteger(index) && index >= 0 && index < wizard.branches.length
@@ -259,7 +456,7 @@ function App() {
           const result = await runCommand({
             program: "gh",
             args: ["release", "list", "--repo", "Creative-Cave-uefn/Cavey-Player-Releases",
-              "--limit", "500", "--json", "tagName,name,isPrerelease,publishedAt"],
+              "--limit", "500", "--json", "tagName,name,isPrerelease,isDraft,publishedAt"],
             cwd: directory, label: "gh release list",
           });
           if (result.code !== 0) {
@@ -273,7 +470,7 @@ function App() {
             return;
           }
           setWizard({ kind: "channel", branch: wizard.branch, channels });
-          append("assistant", "Select an existing test channel. Older releases are removed only after the new release is published.");
+          append("assistant", "Select an existing test channel. The latest three versions are retained after a successful publish.");
         } catch (error) {
           append("assistant", "Could not load release channels: " + String(error));
         } finally {
@@ -336,6 +533,40 @@ function App() {
       subtitle: "Update an existing test release",
       choices: wizard.channels,
     };
+    if (wizard.kind === "manager-channel") return {
+      id: "manager-channel", title: "RELEASE MANAGER",
+      subtitle: "Select published channel · update, history or rollback",
+      choices: wizard.channels,
+    };
+    if (wizard.kind === "manager-action") return {
+      id: "manager-action:" + wizard.channel, title: "RELEASE ACTION",
+      subtitle: "Channel: " + wizard.channel,
+      choices: [
+        { value: "history", label: "View versions", detail: "История опубликованных сборок" },
+        { value: "update", label: "Update channel", detail: "Собрать из выбранной ветки" },
+        { value: "rollback", label: "Rollback", detail: "Вернуть рабочие файлы старой версии" },
+      ],
+    };
+    if (wizard.kind === "manager-versions") return {
+      id: "manager-versions:" + wizard.channel, title: "ROLLBACK TARGET",
+      subtitle: "Choose an older version to restore",
+      choices: wizard.releases.map(r => ({
+        value: r.tagName, label: r.tagName,
+        detail: r.publishedAt ?? "",
+      })),
+    };
+    if (wizard.kind === "manager-branch") return {
+      id: "manager-branch:" + wizard.channel, title: "SOURCE BRANCH",
+      subtitle: "Updating channel: " + wizard.channel,
+      choices: wizard.branches.map(name => ({ value: name, label: name })),
+    };
+    if (wizard.kind === "recover") return {
+      id: "recovery", title: "RECOVER BUILD",
+      subtitle: "Only SHA-256 verified artifacts will be published",
+      choices: wizard.runs.map(r => ({
+        value: r.id, label: r.id, detail: r.status + " · " + r.channel,
+      })),
+    };
     return {
       id: "confirm:" + wizard.summary, title: "CONFIRM ACTION",
       subtitle: wizard.summary.replace(/\n/g, "  ·  "),
@@ -351,13 +582,39 @@ function App() {
     const label = "/" + name + (text.trim() ? " " + text.trim() : "");
     if (name === "quit") { exit(); return; }
     if (name === "clear") {
-      setMessages([]); setWizard(null); setActivity("ready"); setStreaming(null); return;
+      setMessages([]); setWizard(null); setActivity("ready"); setStreaming(null); setBuildStages([]); return;
     }
     if (name === "help") { append("assistant", helpText); remember(label); return; }
     if (name === "terminal" || name === "agent") {
       append("user", label); remember(label);
       try { append("assistant", await launchTerminal(directory, name === "agent")); }
       catch (error) { append("assistant", "✗ " + String(error)); }
+      return;
+    }
+    if (name === "manager" && args.length === 0) {
+      append("user", label); remember(label);
+      await openReleaseManager();
+      return;
+    }
+    if (name === "rollback" && args.length === 0) {
+      append("user", label); remember(label);
+      await openReleaseManager();
+      return;
+    }
+    if (["recover", "resume", "retry-publish"].includes(name) && args.length === 0) {
+      append("user", label); remember(label);
+      openRecovery();
+      return;
+    }
+    if ((name === "rollback" || name === "resume" || name === "retry-publish" ||
+         (name === "cache" && args.includes("prune"))) && !args.includes("--yes")) {
+      append("user", label); remember(label);
+      setWizard({
+        kind: "confirm",
+        command: name === "retry-publish" ? "resume" : name as "rollback" | "resume" | "cache",
+        args, summary: "Confirm action: /" + name + " " + args.join(" "),
+      });
+      append("assistant", "Confirm the requested operation.");
       return;
     }
     if (name === "build") {
@@ -383,7 +640,7 @@ function App() {
       return;
     }
     append("assistant", "Unknown command: /" + name + ". Use /help.");
-  }, [append, buildWizard, directory, exit, remember, runEngine]);
+  }, [append, buildWizard, directory, exit, remember, openReleaseManager, openRecovery, runEngine]);
 
   const handleSubmit = useCallback(async (text: string) => {
     const trimmed = text.trim();
@@ -441,7 +698,8 @@ function App() {
   const menuCount = menu && !loading && !searchOpen ? Math.min(maxMenuRows, menu.choices.length) + (menu.subtitle ? 5 : 4) : 0;
   const paletteRows = menuCount || (matched.length > 0 && !loading && !searchOpen ? matched.length + 3 : 0);
   const promptRows = paletteRows + (paletteRows ? 4 : 5);
-  const historyHeight = Math.max(2, terminal.rows - headerRows - promptRows - (searchOpen ? 2 : 0) - 3);
+  const buildCenterRows = buildStages.length ? (compact ? 3 : 4) : 0;
+  const historyHeight = Math.max(2, terminal.rows - headerRows - promptRows - buildCenterRows - (searchOpen ? 2 : 0) - 3);
   const displayedMessages: Message[] = streaming && loading
     ? [...messages, { id: "__cavey_stream", role: "assistant", content: streaming }]
     : messages;
@@ -469,6 +727,7 @@ function App() {
             <Box marginLeft={2}><Spinner label={activity} /></Box>
           )}
         </Box>
+        <BuildCenter stages={buildStages} running={loading} compact={compact} />
         {searchOpen && (
           <SearchOverlay
             isOpen={searchOpen}

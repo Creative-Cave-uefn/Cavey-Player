@@ -90,6 +90,110 @@ function History {
     if (-not (Test-Path $script:HistoryFile)) { return @() }
     return @(Get-Content $script:HistoryFile | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json })
 }
+# Workflow events are consumed by the React Build Center; the same events
+# remain legible in terminal logs when the engine is invoked headlessly.
+$script:CurrentManifest = $null
+$script:CurrentStage = ''
+function Save-BuildState {
+    if ($null -eq $script:CurrentManifest) { return }
+    $path = [string]$script:CurrentManifest.manifestPath
+    $tmp = "$path.tmp"
+    $script:CurrentManifest.updatedUtc = [DateTime]::UtcNow.ToString('o')
+    $script:CurrentManifest | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath $tmp -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $path -Force
+}
+function Stage([string]$name, [string]$state, [string]$label) {
+    Write-Host "@@CAVEY_STAGE|$name|$state|$label"
+    if ($null -ne $script:CurrentManifest) {
+        $script:CurrentStage = $name
+        $script:CurrentManifest.stages[$name] = @{
+            state = $state; label = $label; updatedUtc = [DateTime]::UtcNow.ToString('o')
+        }
+        Save-BuildState
+    }
+}
+function Build-Records {
+    $root = Join-Path $script:DataHome 'builds'
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return @() }
+    $records = @()
+    foreach ($file in @(Get-ChildItem -LiteralPath $root -Filter 'run.json' -Recurse -File -ErrorAction SilentlyContinue)) {
+        try {
+            $record = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($record -and $record.id -and $record.folder) { $records += $record }
+        } catch { Hint "Skipping corrupt build manifest: $($file.FullName)" }
+    }
+    return @($records | Sort-Object updatedUtc -Descending)
+}
+function Verify-Artifacts([object]$record) {
+    if ($null -eq $record -or -not $record.artifacts -or @($record.artifacts).Count -ne 2) {
+        Fail 'This run has no complete artifact manifest. Rebuild is required.'
+    }
+    $validated = @()
+    foreach ($artifact in @($record.artifacts)) {
+        $file = [string]$artifact.path
+        $expected = [string]$artifact.sha256
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or
+            $expected -notmatch '^[a-fA-F0-9]{64}$') {
+            Fail "Build artifact is missing or has no checksum: $file"
+        }
+        $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+        if ($actual -ine $expected) { Fail "Build artifact checksum mismatch: $file" }
+        $validated += $file
+    }
+    return $validated
+}
+function Cache-Location([string]$source) {
+    $sha = Git @('rev-parse',"refs/remotes/origin/$source")
+    if ($sha -notmatch '^[a-fA-F0-9]{40,64}$') { Fail 'Invalid remote commit SHA.' }
+    $versionText = Native 'flutter' @('--version')
+    $version = ($versionText -split "\r?\n")[0]
+    $hashBytes = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($version))
+    $fingerprint = ([BitConverter]::ToString($hashBytes)).Replace('-','').Substring(0,8).ToLowerInvariant()
+    return [pscustomobject]@{
+        sha=$sha; path=(Join-Path (Join-Path $script:DataHome 'source-cache') ($sha.Substring(0,12) + '-' + $fingerprint))
+    }
+}
+function Cached-Worktree([string]$source, [string]$folder, [bool]$fresh) {
+    if ($fresh) {
+        $tree = Create-BuildWorktree $source $folder
+        $tree | Add-Member -NotePropertyName cached -NotePropertyValue $false
+        return $tree
+    }
+    $cache = Cache-Location $source
+    $dest = $cache.path
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+    if (Test-Path -LiteralPath $dest -PathType Container) {
+        $actual = Git @('-C',$dest,'rev-parse','HEAD')
+        if ($actual -ne $cache.sha) {
+            Fail "Cached worktree does not match selected commit. Use /cache prune then retry: $dest"
+        }
+        Git @('-C',$dest,'reset','--hard',$cache.sha) | Out-Null
+        Hint "Reusing build cache: $dest"
+    } else {
+        Git @('worktree','add','--detach',$dest,$cache.sha) | Out-Null
+        Hint "Created build cache: $dest"
+    }
+    return [pscustomobject]@{path=$dest;sha=$cache.sha;cached=$true}
+}
+function Cache-Manager([string[]]$tokens) {
+    $root = Join-Path $script:DataHome 'source-cache'
+    $paths = @(if (Test-Path -LiteralPath $root) {
+        Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue
+    })
+    if ($tokens -contains 'prune') {
+        if (-not (Ask "Remove $($paths.Count) cached source worktrees?" (Flag $tokens '--yes'))) { return }
+        foreach ($item in $paths) {
+            Git @('worktree','remove','--force',$item.FullName) | Out-Null
+        }
+        Git @('worktree','prune') | Out-Null
+        Say '  Build cache cleared.' Green
+        return
+    }
+    Heading "Source build cache · $($paths.Count) worktree(s)"
+    foreach ($item in $paths) { Say "  $($item.Name) · $($item.LastWriteTime)" }
+    Hint 'Cache is keyed by source commit and Flutter version. Use /cache prune to reclaim space.'
+}
 function Project([string[]]$tokens) {
     if ($tokens.Count -lt 2) {
         Heading 'Current project'
@@ -217,11 +321,17 @@ function New-ReleaseChannel([string]$source, [object[]]$existing) {
     }
     Fail 'Could not allocate a unique test channel. Please retry.'
 }
-function Test-Releases {
+function All-TestReleases {
     if (-not (Has 'gh')) { Fail 'GitHub CLI is not installed. Install gh and run gh auth login.' }
-    $json = Gh @('release','list','--repo',$script:ReleaseRepo,'--limit','500','--json','tagName,name,isPrerelease,publishedAt')
+    $json = Gh @('release','list','--repo',$script:ReleaseRepo,
+        '--limit','500','--json','tagName,name,isPrerelease,isDraft,publishedAt')
     $releases = @($json | ConvertFrom-Json)
-    return @($releases | Where-Object { $_.isPrerelease -and $_.tagName -match '^test-[a-z0-9-]+-v\d+(\.\d+)+$' })
+    return @($releases | Where-Object {
+        $_.isPrerelease -and $_.tagName -match '^test-[a-z0-9-]+-v\d+(\.\d+)+$'
+    })
+}
+function Test-Releases {
+    return @(All-TestReleases | Where-Object { -not $_.isDraft })
 }
 function Release-Channel([object]$release) {
     if ($null -eq $release) { Fail 'Cannot determine release channel from a null release.' }
@@ -246,7 +356,7 @@ function Version-BaseFromReleases([object[]]$releases, [string]$mode, [string]$c
         }
     }
     $stable = @($releases | Where-Object {
-        $null -ne $_ -and $_.isPrerelease -ne $true -and
+        $null -ne $_ -and -not $_.isDraft -and $_.isPrerelease -ne $true -and
         [string]$_.tagName -match '^v\d+\.\d+\.\d+$'
     } | Sort-Object { [version](([string]$_.tagName).Substring(1)) } -Descending)
     if ($stable.Count -gt 0) {
@@ -313,27 +423,210 @@ function Clean([string[]]$tokens) {
     Say "  Removed $success of $($remove.Count)." Cyan
     if ($success -ne $remove.Count) { Fail 'Some test releases could not be removed.' }
 }
+function Next-BuildNumber([string]$base, [string]$channel, [object[]]$releases) {
+    $epoch = [DateTimeOffset]::new(2026,11,9,0,0,0,[TimeSpan]::Zero).ToUnixTimeSeconds()
+    $number = [int][Math]::Floor(([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $epoch) / 60)
+    if ($number -lt 1) { $number = 1 }
+    $prefix = 'test-' + (Slug $channel) + '-v'
+    $pattern = '^' + [regex]::Escape($prefix + $base + '.') + '(\d+)$'
+    foreach ($release in @($releases)) {
+        if ($null -eq $release) { continue }
+        $match = [regex]::Match([string]$release.tagName, $pattern)
+        if ($match.Success) {
+            $parsed = 0
+            if ([int]::TryParse($match.Groups[1].Value,[ref]$parsed) -and $parsed -ge $number) {
+                $number = $parsed + 1
+            }
+        }
+    }
+    return $number
+}
+function Trim-ChannelReleases([string]$channel, [int]$keep = 3) {
+    # Never remove stable releases. Keep three newest published test releases,
+    # so Release Manager has rollback targets after an update.
+    $prefix = 'test-' + (Slug $channel) + '-v'
+    $versions = @(Test-Releases | Where-Object {
+        ([string]$_.tagName).StartsWith($prefix,[StringComparison]::Ordinal)
+    } | Sort-Object publishedAt -Descending)
+    foreach ($old in @($versions | Select-Object -Skip $keep)) {
+        try {
+            Remove-TestRelease $old.tagName
+            Hint "Pruned old test release: $($old.tagName)"
+        } catch {
+            Say "  ! Could not prune $($old.tagName): $_" Yellow
+        }
+    }
+}
+function Publish-Manifest([object]$record) {
+    if ($record.local) { Fail 'Local-only builds cannot be published.' }
+    if ($record.status -eq 'published') {
+        Hint "Already published: $($record.tag)"
+        return
+    }
+    if ([string]$record.status -notin @('built','publish_failed')) {
+        Fail "Run status is $($record.status). Build artifacts are not ready for publishing."
+    }
+    $files = @(Verify-Artifacts $record)
+    $tag = [string]$record.tag
+    if ($tag -notmatch '^test-[a-z0-9-]+-v\d+\.\d+\.\d+\.\d+$') {
+        Fail "Invalid test-release tag in manifest: $tag"
+    }
+    $already = @(All-TestReleases | Where-Object { $_.tagName -ceq $tag })
+    if ($already.Count -gt 0) {
+        # The previous create may have succeeded before the network disconnected.
+        # Do not overwrite potentially different remote assets silently.
+        Fail "Tag $tag is already published. Check GitHub Releases before retrying."
+    }
+    Stage 'publish' 'running' 'Uploading release assets'
+    $notes = @(
+        'Cavey DevKit', "Source: $script:SourceRepo",
+        "Branch: $($record.source)", "Commit: $($record.sha)",
+        "Update channel: $($record.channel)", "Version: $($record.version)"
+    ) -join [Environment]::NewLine
+    $publishArgs = @('release','create',$tag) + $files + @(
+        '--repo',$script:ReleaseRepo,'--prerelease',
+        '--title',"Test: $($record.channel) · $($record.version)",
+        '--notes',$notes
+    )
+    Gh $publishArgs | Out-Null
+    $record.status = 'published'
+    $script:CurrentManifest = $record
+    Save-BuildState
+    Stage 'publish' 'done' 'Release uploaded'
+    Say "  ✓ https://github.com/$script:ReleaseRepo/releases/tag/$tag" Green
+    if ($record.mode -eq 'update') { Trim-ChannelReleases ([string]$record.channel) 3 }
+}
+function Recovery([string[]]$tokens) {
+    $records = @(Build-Records)
+    $target = Option $tokens '--id'
+    if (-not $target) {
+        Heading "Recovery · $($records.Count) saved run(s)"
+        foreach ($record in @($records | Select-Object -First 12)) {
+            Say "  $($record.id) · $($record.status) · $($record.source) · $($record.channel)"
+        }
+        Hint 'Use /resume --id <id> to republish verified artifacts without rebuilding.'
+        Hint 'Interrupted compiling runs require a new build (the source cache is retained).'
+        return
+    }
+    $record = @($records | Where-Object { $_.id -ceq $target } | Select-Object -First 1)
+    if ($record.Count -eq 0) { Fail "Unknown build run: $target" }
+    if (-not (Ask "Republish saved run $target?" (Flag $tokens '--yes'))) { return }
+    $script:CurrentManifest = $record[0]
+    $script:CurrentManifest.stages = @{}
+    try {
+        Publish-Manifest $record[0]
+    } catch {
+        if ($record[0].status -ne 'published') {
+            $record[0].status = 'publish_failed'
+            Save-BuildState
+        }
+        throw
+    } finally {
+        $script:CurrentManifest = $null
+    }
+}
+function Release-Manager([string[]]$tokens) {
+    $channel = Option $tokens '--channel'
+    $all = @(All-TestReleases | Sort-Object publishedAt -Descending)
+    if ($channel) {
+        $prefix = 'test-' + (Slug $channel) + '-v'
+        $all = @($all | Where-Object { ([string]$_.tagName).StartsWith($prefix,[StringComparison]::Ordinal) })
+        Heading "Channel: $channel · $($all.Count) published release(s)"
+        foreach ($release in $all) {
+            Say "  $($release.tagName) · $($release.publishedAt) $(if ($release.isDraft) { '[DRAFT]' } else { '[ACTIVE]' })"
+        }
+        Hint 'Use /rollback --channel <name> --to <tag> to restore a previous version.'
+        return
+    }
+    Heading 'Release Manager · test channels'
+    $seen = @{}
+    foreach ($release in $all) {
+        $name = Release-Channel $release
+        $id = Slug $name
+        if ($seen.ContainsKey($id)) { continue }
+        $seen[$id] = $true
+        $count = @($all | Where-Object {
+            ([string]$_.tagName).StartsWith(('test-' + $id + '-v'),[StringComparison]::Ordinal)
+        }).Count
+        Say "  $name · $count version(s) · latest: $($release.tagName)"
+    }
+    Hint 'Select a channel from /build → Update, or run /manager --channel <name>.'
+}
+function Rollback-Release([string[]]$tokens) {
+    $channel = Option $tokens '--channel'
+    $to = Option $tokens '--to'
+    if (-not $channel -or -not $to) {
+        Fail 'Usage: /rollback --channel <name> --to <test-release-tag> --yes'
+    }
+    $prefix = 'test-' + (Slug $channel) + '-v'
+    $existing = @(Test-Releases | Where-Object {
+        -not $_.isDraft -and
+        ([string]$_.tagName).StartsWith($prefix,[StringComparison]::Ordinal)
+    } | Sort-Object publishedAt -Descending)
+    $found = @($existing | Where-Object { $_.tagName -ceq $to })
+    if ($found.Count -ne 1) { Fail 'Rollback target must be an active prerelease in the selected channel.' }
+    $newer = @($existing | Where-Object { [string]$_.publishedAt -gt [string]$found[0].publishedAt })
+    if ($newer.Count -eq 0) { Fail 'The selected release is already the newest in its channel.' }
+    Heading 'Rollback preview'
+    Say "  Channel: $channel"
+    Say "  Restore: $to"
+    Say "  Newer releases to hide as drafts: $($newer.Count)"
+    foreach ($release in $newer) { Hint "  $($release.tagName)" }
+    if (-not (Ask 'Hide newer releases as drafts and restore selected version?' (Flag $tokens '--yes'))) { return }
+    # IMPORTANT: do NOT re-upload old binaries under a newer version tag:
+    # their embedded APP_VERSION would disagree with the release version,
+    # causing broken auto-updates. Drafting newer releases restores the
+    # old version without deleting assets or falsifying its version number.
+    Stage 'publish' 'running' 'Restoring previous release'
+    foreach ($release in $newer) {
+        Gh @('release','edit',$release.tagName,'--repo',$script:ReleaseRepo,'--draft') | Out-Null
+        Hint "  Hidden as draft: $($release.tagName)"
+    }
+    Stage 'publish' 'done' 'Previous release restored'
+    Say "  ✓ Active release restored: https://github.com/$script:ReleaseRepo/releases/tag/$to" Green
+}
+function DevKit-Update {
+    # Only fast-forward the DevKit's OWN checkout. Never update the app source.
+    $ownRepo = $script:RepoFallback
+    $current = Native 'git' @('-C',$ownRepo,'branch','--show-current')
+    if ($current -notin @('devkit-live','feat/keivi-devkit-20261117')) {
+        Fail "Self-update disabled on branch $current. Use a dedicated DevKit worktree."
+    }
+    $dirty = Native 'git' @('-C',$ownRepo,'status','--porcelain')
+    if ($dirty) { Fail 'DevKit has uncommitted changes. Self-update will not overwrite them.' }
+    $before = Native 'git' @('-C',$ownRepo,'rev-parse','HEAD')
+    Heading 'Checking for DevKit updates'
+    Native 'git' @('-C',$ownRepo,'fetch','origin','feat/keivi-devkit-20261117') | Out-Null
+    $upstream = Native 'git' @('-C',$ownRepo,'rev-parse','FETCH_HEAD')
+    if ($before -eq $upstream) { Say '  DevKit is already up to date.' Green; return }
+    $base = Native 'git' @('-C',$ownRepo,'merge-base',$before,$upstream)
+    if ($base -ne $before) { Fail 'DevKit branch has diverged. Update cancelled; local commits are preserved.' }
+    Native 'git' @('-C',$ownRepo,'merge','--ff-only',$upstream) | Out-Null
+    Say "  Updated DevKit: $before → $upstream" Green
+    Write-Host '@@CAVEY_RESTART|updated'
+}
 function Build([string[]]$tokens) {
     Check-Repo
     $source = Select-Source (Option $tokens '--branch')
     $mode = Option $tokens '--mode'
     $local = Flag $tokens '--local'
+    $fresh = Flag $tokens '--fresh'
     if (-not $mode) {
         if ($local -or -not $script:Interactive) { $mode = 'new' }
-        else { $mode = @('new','update')[(Pick 'Publication mode' @('New independent build', 'Update existing test channel'))] }
+        else { $mode = @('new','update')[(Pick 'Publication mode' @('New independent build','Update existing test channel'))] }
     }
     if (@('new','update') -notcontains $mode) { Fail 'Invalid mode; use new/update.' }
+    if ($mode -eq 'update' -and $local) { Fail 'Update mode requires publication. Do not use --local.' }
     if ($mode -eq 'update') {
         $releases = @(Test-Releases | Sort-Object publishedAt -Descending)
         if ($releases.Count -eq 0) { Fail 'No test releases available to update.' }
         $specified = Option $tokens '--channel'
         if ($specified) {
             $expected = Slug $specified
-            $match = @($releases | Where-Object { $_.tagName -match ('^test-' + [regex]::Escape($expected) + '-v\d') })
-            if ($match.Count -eq 0) { Fail "Channel $specified was not found." }
-            $selectedRelease = $match | Select-Object -First 1
-            if ($null -eq $selectedRelease) { Fail "Channel $specified was not found." }
-            $channel = Release-Channel $selectedRelease
+            $pattern = '^test-' + [regex]::Escape($expected) + '-v\d'
+            $matches = @($releases | Where-Object { $_.tagName -match $pattern })
+            if ($matches.Count -eq 0) { Fail "Channel $specified was not found." }
+            $channel = Release-Channel ($matches | Select-Object -First 1)
         } else {
             if (-not $script:Interactive) { Fail 'For --mode update, specify --channel.' }
             $slots = @(); $seen = @{}
@@ -341,115 +634,133 @@ function Build([string[]]$tokens) {
                 $name = Release-Channel $release; $id = Slug $name
                 if ($seen.ContainsKey($id)) { continue }
                 $seen[$id] = $true
-                $slots += [pscustomobject]@{ channel = $name; tag = $release.tagName }
+                $slots += [pscustomobject]@{channel=$name;tag=$release.tagName}
             }
             $labels = @($slots | ForEach-Object { "$($_.channel) · $($_.tag)" })
-            if ($slots.Count -eq 0) { Fail 'No selectable test channels were found.' }
-            $selection = Pick 'Select test channel to update' $labels
-            if ($null -eq $selection -or $selection -lt 0 -or $selection -ge $slots.Count) { Fail 'Invalid test channel choice.' }
-            $channel = $slots[$selection].channel
+            $index = Pick 'Select test channel to update' $labels
+            if ($null -eq $index -or $index -lt 0 -or $index -ge $slots.Count) { Fail 'Invalid channel choice.' }
+            $channel = $slots[$index].channel
         }
     } else {
         $channel = Option $tokens '--channel'
-        # For a new publication, allocate a unique channel. An explicitly
-        # requested channel must fail on collision (never silently overwrite).
-        if (-not $local) {
-            $published = @(Test-Releases)
+        if ($local) {
+            if (-not $channel) { $channel = New-ReleaseChannel $source @() }
+        } else {
+            $published = @(All-TestReleases)
             if (-not $channel) { $channel = New-ReleaseChannel $source $published }
             if (Test-ChannelExists $channel $published) {
-                Fail "Channel $channel already exists. Choose Update existing build or select a different new channel."
+                Fail "Channel $channel already exists. Choose Update existing build."
             }
-        } elseif (-not $channel) {
-            $channel = New-ReleaseChannel $source @()
         }
     }
-    Heading 'Local build plan'
+    Heading 'Build plan'
     Say "  Source: origin/$source"
     Say "  Channel: $channel"
     Say "  Mode: $mode · $(if ($local) { 'local only' } else { 'publish to GitHub Releases' })"
-    if (-not (Ask 'Create a temporary worktree and build?' (Flag $tokens '--yes'))) { return }
-    $base = if ($local) { '0.4.0' } else { Stable-Base $mode $channel $source }
-    # Keep the build number aligned with tools/local-test-build.ps1:
-    # number of minutes since 2026-11-09 00:00 UTC.
-    $epoch = [DateTimeOffset]::new(2026,11,9,0,0,0,[TimeSpan]::Zero).ToUnixTimeSeconds()
-    $buildNumber = [int][Math]::Floor(([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $epoch) / 60)
-    if ($buildNumber -lt 1) { $buildNumber = 1 }
-    $prefix = 'test-' + (Slug $channel) + '-v'
-    if (-not $local) {
-        $existing = @(Test-Releases | Where-Object { $_.tagName.StartsWith($prefix) })
-        $sameBase = '^' + [regex]::Escape($prefix + $base + '.') + '(\d+)$'
-        foreach ($release in $existing) {
-            $numberMatch = [regex]::Match([string]$release.tagName, $sameBase)
-            if ($numberMatch.Success) {
-                $publishedNumber = [int]$numberMatch.Groups[1].Value
-                if ($publishedNumber -ge $buildNumber) { $buildNumber = $publishedNumber + 1 }
-            }
-        }
-    }
-    $version = "$base.$buildNumber"
-    $id = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
+    Say "  Source cache: $(if ($fresh) { 'disabled (--fresh)' } else { 'enabled, keyed by commit and Flutter version' })"
+    if (-not (Ask 'Prepare source and build?' (Flag $tokens '--yes'))) { return }
+    $base = if ($local) { Source-BaseVersion $source } else { Stable-Base $mode $channel $source }
+    $existing = if ($local) { @() } else { @(All-TestReleases) }
+    $number = Next-BuildNumber $base $channel $existing
+    $version = "$base.$number"
+    $tag = 'test-' + (Slug $channel) + '-v' + $version
+    $id = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6)
     $folder = Join-Path (Join-Path $script:DataHome 'builds') $id
     New-Item -ItemType Directory -Force -Path $folder | Out-Null
-    $start = Get-Date; $status = 'failed'; $sha = ''
-    $worktree = $null
-    $buildLog = ''
-    $publishError = $null
+    $start = Get-Date
+    $status = 'building'; $sha = ''; $worktree = $null; $cached = $false
+    $script:CurrentManifest = @{
+        id=$id; manifestPath=(Join-Path $folder 'run.json')
+        folder=$folder; status='building'; stages=@{}
+        source=$source; sha=''; mode=$mode; channel=$channel
+        version=$version; tag=$tag; local=$local
+        artifacts=@(); startedUtc=[DateTime]::UtcNow.ToString('o')
+        updatedUtc=[DateTime]::UtcNow.ToString('o')
+    }
+    Save-BuildState
     try {
-        $tree = Create-BuildWorktree $source $folder
+        Stage 'source' 'running' 'Prepare source checkout'
+        $tree = Cached-Worktree $source $folder $fresh
         $worktree = $tree.path
         $sha = $tree.sha
-        $buildArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$script:BuildScript,'-ProjectRoot',$worktree,'-SourceBranch',$source,'-NoPublish','-BuildChannel',$channel,'-Version',$version)
+        $cached = [bool]$tree.cached
+        $script:CurrentManifest.sha = $sha
+        Stage 'source' 'done' 'Source checkout ready'
+        $buildArgs = @(
+            '-NoProfile','-ExecutionPolicy','Bypass','-File',$script:BuildScript,
+            '-ProjectRoot',$worktree,'-SourceBranch',$source,'-NoPublish',
+            '-BuildChannel',$channel,'-Version',$version
+        )
         if (Flag $tokens '--skip-checks') { $buildArgs += '-SkipChecks' }
         Heading "Windows build $version · $($sha.Substring(0,8))"
-        & powershell @buildArgs
-        if ($LASTEXITCODE -ne 0) { Fail "Build failed with exit code $LASTEXITCODE." }
+        $priorProgress = $env:CAVEY_DEVKIT_PROGRESS
+        try {
+            $env:CAVEY_DEVKIT_PROGRESS = '1'
+            & powershell.exe @buildArgs
+            $buildExitCode = $LASTEXITCODE
+        } finally {
+            $env:CAVEY_DEVKIT_PROGRESS = $priorProgress
+        }
+        if ($buildExitCode -ne 0) { Fail "Windows build failed with exit code $buildExitCode." }
         $artifacts = @()
-        foreach ($file in @('CavePlayer-Setup.exe','CavePlayer-portable.zip')) {
-            $srcFile = Join-Path (Join-Path $worktree 'dist') $file
-            if (-not (Test-Path $srcFile) -or (Get-Item $srcFile).Length -eq 0) { Fail "Missing $file." }
-            $target = Join-Path $folder $file
-            Copy-Item -LiteralPath $srcFile -Destination $target
-            $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLower()
-            $artifacts += [pscustomobject]@{ path = $target; name = $file; sha256 = $hash; size = (Get-Item $target).Length }
-            Hint "$file · SHA-256 $hash"
+        foreach ($name in @('CavePlayer-Setup.exe','CavePlayer-portable.zip')) {
+            $sourceFile = Join-Path (Join-Path $worktree 'dist') $name
+            if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf) -or
+                (Get-Item -LiteralPath $sourceFile).Length -le 0) {
+                Fail "Missing or empty build artifact: $name"
+            }
+            $dest = Join-Path $folder $name
+            Copy-Item -LiteralPath $sourceFile -Destination $dest -Force
+            $hash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant()
+            $artifacts += @{path=$dest;name=$name;sha256=$hash;size=(Get-Item $dest).Length}
+            Hint "$name · SHA-256 $hash"
         }
         $status = 'built'
+        $script:CurrentManifest.status = $status
+        $script:CurrentManifest.artifacts = $artifacts
+        Save-BuildState
         if (-not $local) {
-            $tag = "$prefix$version"
-            Heading 'Publication preview'
-            Say "  $script:ReleaseRepo / $tag"
-            Say "  Source branch: $source ($sha)"
-            $notes = @("Cavey DevKit", "Source: $script:SourceRepo", "Branch: $source", "Commit: $sha", "Update channel: $channel", "Version: $version") -join [Environment]::NewLine
-            if (Ask 'Publish built artifacts?' (Flag $tokens '--yes')) {
-                $publishArgs = @('release','create',$tag) + @($artifacts | ForEach-Object { $_.path }) + @('--repo',$script:ReleaseRepo,'--prerelease','--title',"Test: $channel · $version",'--notes',$notes)
-                Gh $publishArgs | Out-Null
+            Heading 'Release publication'
+            Say "  Repository: $script:ReleaseRepo"
+            Say "  Tag: $tag"
+            if (Ask 'Publish verified build artifacts?' (Flag $tokens '--yes')) {
+                Publish-Manifest $script:CurrentManifest
                 $status = 'published'
-                Say "  ✓ https://github.com/$script:ReleaseRepo/releases/tag/$tag" Green
-                if ($mode -eq 'update') {
-                    # Preserve previous working builds unless replacement is fully published.
-                    $old = @(Test-Releases | Where-Object { $_.tagName.StartsWith($prefix) -and $_.tagName -ne $tag })
-                    foreach ($release in $old) {
-                        try { Remove-TestRelease $release.tagName; Hint "Old release removed: $($release.tagName)" }
-                        catch { Say "  ! Could not delete $($release.tagName): $_" Yellow }
-                    }
-                }
+            } else {
+                Stage 'publish' 'skipped' 'Publication deferred; use /resume'
             }
+        } else {
+            Stage 'publish' 'skipped' 'Local-only build'
         }
+    } catch {
+        $record = $_
+        if ($status -eq 'built') { $status = 'publish_failed' } else { $status = 'failed' }
+        $script:CurrentManifest.status = $status
+        if ($script:CurrentStage) { Stage $script:CurrentStage 'failed' $record.Exception.Message }
+        Save-BuildState
+        throw
     } finally {
         if ($worktree) {
-            $buildLog = Join-Path $worktree 'build-log.txt'
-            if (Test-Path $buildLog) {
-                try { Copy-Item -LiteralPath $buildLog -Destination (Join-Path $folder 'build-log.txt') -Force } catch {}
+            $logPath = Join-Path $worktree 'build-log.txt'
+            if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+                try { Copy-Item -LiteralPath $logPath -Destination (Join-Path $folder 'build-log.txt') -Force } catch {}
             }
-            # Remove the temporary checkout but preserve packaged build artifacts.
-            try { Git @('worktree','remove','--force',$worktree) | Out-Null }
-            catch { Say "  ! Could not clean temporary worktree $worktree : $_" Yellow }
+            if (-not $cached) {
+                try { Git @('worktree','remove','--force',$worktree) | Out-Null }
+                catch { Say "  ! Could not clean temporary worktree: $_" Yellow }
+            }
         }
+        if ($null -ne $script:CurrentManifest) {
+            $script:CurrentManifest.status = $status
+            Save-BuildState
+            $script:CurrentManifest = $null
+        }
+        $script:CurrentStage = ''
         Add-History ([pscustomobject]@{
-            time = (Get-Date).ToUniversalTime().ToString('o')
-            mode = $mode; sourceBranch = $source; channel = $channel; sha = $sha
-            version = $version; status = $status; folder = $folder
-            seconds = [math]::Round(((Get-Date) - $start).TotalSeconds,1)
+            time=(Get-Date).ToUniversalTime().ToString('o')
+            mode=$mode; sourceBranch=$source; channel=$channel; sha=$sha
+            version=$version; status=$status; folder=$folder; id=$id
+            seconds=[math]::Round(((Get-Date)-$start).TotalSeconds,1)
         })
     }
     Say "  ✓ $status · $folder" Green
@@ -501,6 +812,15 @@ function Help {
         '/build --branch latest --mode new --yes'
         '/build --branch <branch> --mode update --channel <channel>'
         '/build --branch <branch> --local --yes'
+        '/build --branch <branch> --mode update --channel <name> --yes'
+        '/build --branch <branch> --fresh --yes (без кеша)'
+        '/manager [--channel <name>]    Управление каналами и историей релизов'
+        '/rollback --channel <name> --to <tag> --yes'
+        '/recover                      Прерванные сборки и публикации'
+        '/resume --id <id> --yes        Повторная публикация готовых файлов'
+        '/cache                        Состояние кеша сборок'
+        '/cache prune --yes            Очистка кеша'
+        '/update                       Обновить и перезапустить DevKit'
         '/releases                     Тестовые релизы'
         '/clean                        Очистка старых тестовых релизов'
         '/clean --dry-run               Просмотр без удаления'
@@ -611,6 +931,34 @@ function Dispatch([string[]]$tokens) {
                 Hint 'GitHub CLI is not installed; skipping optional gh check.'
             }
         }
+        'selftest-workflow' {
+            $fixtures = @(
+                [pscustomobject]@{tagName='test-dj-v0.4.0.90000';publishedAt='2026-11-15'},
+                [pscustomobject]@{tagName='test-dj-v0.4.0.90001';publishedAt='2026-11-16'}
+            )
+            $next = Next-BuildNumber '0.4.0' 'dj' $fixtures
+            if ($next -le 90001) { Fail 'Build number must exceed an existing channel version.' }
+            $temporary = Join-Path $env:TEMP ("cavey-workflow-test-" + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Force -Path $temporary | Out-Null
+            try {
+                $entries = @()
+                foreach ($name in @('CavePlayer-Setup.exe','CavePlayer-portable.zip')) {
+                    $p = Join-Path $temporary $name
+                    Set-Content -LiteralPath $p -Value $name -Encoding Ascii
+                    $entries += @{path=$p;sha256=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash}
+                }
+                $record = @{artifacts=$entries}
+                $found = @(Verify-Artifacts $record)
+                if ($found.Count -ne 2) { Fail 'Artifact verification count regression.' }
+                Set-Content -LiteralPath $entries[0].path -Value 'tampered' -Encoding Ascii
+                $checksumRejected = $false
+                try { Verify-Artifacts $record | Out-Null } catch { $checksumRejected = $true }
+                if (-not $checksumRejected) { Fail 'Corrupted build artifact passed SHA-256 verification.' }
+                Say 'PASS build numbering, artifact verification and corruption detection' Green
+            } finally {
+                Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
         'help' { Help }
         'status' { Status }
         'doctor' { Doctor }
@@ -627,6 +975,13 @@ function Dispatch([string[]]$tokens) {
         }
         'clean' { Clean $tokens }
         'build' { Build $tokens }
+        'cache' { Cache-Manager $tokens }
+        'manager' { Release-Manager $tokens }
+        'rollback' { Rollback-Release $tokens }
+        'recover' { Recovery $tokens }
+        'resume' { Recovery $tokens }
+        'retry-publish' { Recovery $tokens }
+        'update' { DevKit-Update }
         'history' {
             Heading 'Local builds'
             foreach ($record in @(History | Select-Object -Last 20)) {

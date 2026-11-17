@@ -7,7 +7,8 @@ $files = @(
     'cavey-devkit-engine.ps1',
     'resolve-devkit-node.ps1',
     'install-devkit-shortcuts.ps1',
-    'test-cavey-devkit.ps1'
+    'test-cavey-devkit.ps1',
+    'local-test-build.ps1'
 )
 foreach ($filename in $files) {
     $path = Join-Path $PSScriptRoot $filename
@@ -72,6 +73,13 @@ if ($LASTEXITCODE -ne 0 -or $newChannelOutput -notmatch 'PASS new build channel 
     throw "New release channel smoke test failed: $newChannelOutput"
 }
 Write-Host 'PASS new release channel collision guard' -ForegroundColor Green
+
+# Test build/run manifest and SHA-256 recovery guards without GitHub or Flutter.
+$workflowOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-workflow 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $workflowOutput -notmatch 'PASS build numbering, artifact verification and corruption detection') {
+    throw "Workflow smoke test failed: $workflowOutput"
+}
+Write-Host 'PASS build persistence and recovery guards' -ForegroundColor Green
 if (-not $SkipNpm) {
     Push-Location (Join-Path $PSScriptRoot 'devkit')
     try {

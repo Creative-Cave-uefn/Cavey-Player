@@ -11,7 +11,8 @@ const dataHome = join(process.env.LOCALAPPDATA || join(homedir(), ".cavey-devkit
 
 export const engineCommands = new Set([
   "status", "doctor", "branches", "releases", "build", "clean",
-  "history", "logs", "run", "project",
+  "history", "logs", "run", "project", "manager", "rollback",
+  "recover", "resume", "retry-publish", "cache", "update",
 ]);
 
 export function initialDirectory(): string {

@@ -55,26 +55,41 @@ if (-not (Test-Path -LiteralPath $npmCli)) {
 if (-not (Test-Path -LiteralPath $npmCli)) {
     throw 'npm not found. Reinstall Node.js with npm or remove the damaged local runtime.'
 }
-$packageHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash
-$installedHash = if (Test-Path -LiteralPath $stamp) { (Get-Content -LiteralPath $stamp -Raw).Trim() } else { '' }
 $previousPath = $env:PATH
 $env:PATH = "$nodeDirectory;$previousPath"
 try {
-    if (-not (Test-Path -LiteralPath $tsx) -or $installedHash -ne $packageHash) {
-        Write-Host 'Installing Cavey DevKit dependencies (first launch)...' -ForegroundColor Cyan
-        & $nodePath $npmCli install --prefix $appDir --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tsx)) {
-            throw 'Failed to install React DevKit. Check your internet connection and try again.'
-        }
-        Set-Content -LiteralPath $stamp -Value $packageHash -Encoding Ascii
-    }
     Push-Location $workspace
     try {
-        & $nodePath $tsx $entry
-        if ($LASTEXITCODE -ne 0) { throw "DevKit exited with code $LASTEXITCODE" }
+        $completed = $false
+        for ($attempt = 0; $attempt -lt 3; $attempt++) {
+            # Recalculate dependencies after self-update: package.json may change.
+            $packageHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash
+            $installedHash = if (Test-Path -LiteralPath $stamp) {
+                (Get-Content -LiteralPath $stamp -Raw).Trim()
+            } else { '' }
+            if (-not (Test-Path -LiteralPath $tsx) -or $installedHash -ne $packageHash) {
+                Write-Host 'Installing Cavey DevKit dependencies...' -ForegroundColor Cyan
+                & $nodePath $npmCli install --prefix $appDir --no-audit --no-fund
+                if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tsx)) {
+                    throw 'Failed to install React DevKit. Check your internet connection.'
+                }
+                Set-Content -LiteralPath $stamp -Value $packageHash -Encoding Ascii
+            }
+            & $nodePath $tsx $entry
+            $code = $LASTEXITCODE
+            if ($code -eq 42) {
+                Write-Host 'DevKit updated. Restarting terminal UI...' -ForegroundColor Cyan
+                continue
+            }
+            if ($code -ne 0) { throw "DevKit exited with code $code" }
+            $completed = $true
+            break
+        }
+        if (-not $completed) { throw 'DevKit restart limit reached. Relaunch from the desktop shortcut.' }
     } finally {
         Pop-Location
     }
+
 } finally {
     $env:PATH = $previousPath
 }

@@ -21,10 +21,10 @@ export function visibleChoices<T>(choices: readonly T[], selected: number, limit
 }
 
 export type ReleaseRecord = {
-  tagName: string; name?: string; isPrerelease: boolean; publishedAt?: string;
+  tagName: string; name?: string; isPrerelease: boolean; isDraft?: boolean; publishedAt?: string;
 };
 export function releaseChannels(records: readonly ReleaseRecord[]): Choice[] {
-  const matching = records.filter(r => r.isPrerelease &&
+  const matching = records.filter(r => r.isPrerelease && !r.isDraft &&
     /^test-[a-z0-9-]+-v\d+(\.\d+)+$/.test(r.tagName))
     .sort((a, b) => (b.publishedAt ?? "").localeCompare(a.publishedAt ?? ""));
   const seen = new Set<string>();
