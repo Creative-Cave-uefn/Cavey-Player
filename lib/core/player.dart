@@ -936,22 +936,38 @@ class PlayerController extends ChangeNotifier {
       _saveSession();
       _topUpFeed();
       final started = DateTime.now();
+      // Следующий трек входит на громкости уходящего и к концу перехода выходит на свою
+      double inCurve(double t) => fadeGains(t).$2 * (match + (1 - match) * t);
+      // Обе деки на аудиодвижке: кривые громкости уходят в движок целиком и идут по сэмплам, с равной мощностью
+      // по амплитуде. Иначе (хотя бы один трек на mpv) громкость, как раньше, пересчитывает таймер
+      final engineRamp = _rampOnEngine(old, incoming, lengthMs, inCurve);
       _fadeTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
         final t = DateTime.now().difference(started).inMilliseconds / lengthMs;
         if (t >= 1) {
           _endFade();
           return;
         }
-        final g = fadeGains(t);
-        _outGain = g.$1;
-        // Следующий трек входит на громкости уходящего и к концу перехода выходит на свою
-        _inGain = g.$2 * (match + (1 - match) * t);
-        _applyVolume();
+        _outGain = fadeGains(t).$1;
+        _inGain = inCurve(t);
+        if (!engineRamp) _applyVolume();
       });
     } catch (e) {
       AppLog.warn('Плавный переход не получился, трек доиграет как обычно', e);
       _endFade(stopIncoming: seq == _openSeq);
     }
+  }
+
+  /// Переход по часам аудиодвижка: обе кривые громкости заранее, с точностью до сэмпла. false — не на движке
+  bool _rampOnEngine(HybridDeck old, HybridDeck incoming, int lengthMs, double Function(double) inCurve) {
+    if (!old.onEngine || !incoming.onEngine) return false;
+    final s = incoming.engineState();
+    if (s == null || s.sampleRate <= 0) return false;
+    final from = s.clock + s.sampleRate ~/ 50; // +20 мс: команда успеет дойти до аудиопотока
+    final frames = (lengthMs * s.sampleRate / 1000).round();
+    final ok = old.rampVolume(baseVolume: volume * _normOut, fromClock: from, frames: frames, f: (t) => fadeGains(t).$1) &&
+        incoming.rampVolume(baseVolume: volume * _normIn, fromClock: from, frames: frames, f: inCurve);
+    if (ok) AppLog.info('Переход идёт по часам аудиодвижка: ${(lengthMs / 1000).toStringAsFixed(1)} с, по сэмплам');
+    return ok;
   }
 
   Timer? _tailTimer;

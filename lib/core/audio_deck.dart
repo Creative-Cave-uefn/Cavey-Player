@@ -320,6 +320,31 @@ class HybridDeck {
     await _mpv?.setVolume(v);
   }
 
+  /// Состояние движка (часы, частота) — для планирования, или null, если дека не на движке
+  MixState? engineState() => _onEngine ? SharedMix.engine?.state() : null;
+
+  /// Провести громкость деки по кривой точно по часам движка: с кадра [fromClock] в течение [frames] кадров
+  /// амплитуда равна амплитуде громкости [baseVolume] (0…100, кривая mpv), умноженной на [f](t), t = 0…1.
+  /// Кривая передаётся движку заранее [segments] отрезками, дальше громкость меняется по сэмплам.
+  /// false — дека не на движке (тогда громкость ведёт таймер, как раньше).
+  bool rampVolume({
+    required double baseVolume,
+    required int fromClock,
+    required int frames,
+    required double Function(double t) f,
+    int segments = 24,
+  }) {
+    final e = SharedMix.engine;
+    if (!_onEngine || e == null || frames <= 0) return false;
+    final a = math.pow((baseVolume / 100).clamp(0.0, 1.0), 3).toDouble();
+    for (var i = 0; i < segments; i++) {
+      final t0 = i / segments, t1 = (i + 1) / segments;
+      e.ramp(engineDeck, MixParam.gain, fromClock + (frames * t0).round(), fromClock + (frames * t1).round(),
+          a * f(t0), a * f(t1));
+    }
+    return true;
+  }
+
   void _applyEngineVolume() {
     final g = math.pow((_volume / 100).clamp(0.0, 1.0), 3).toDouble();
     SharedMix.engine?.set(engineDeck, MixParam.gain, g);
