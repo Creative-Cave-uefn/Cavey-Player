@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:cave_mix/cave_mix.dart' show DeckStatus, MixParam;
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart' show Media;
 
@@ -772,6 +774,11 @@ class PlayerController extends ChangeNotifier {
 
   /// Громкость обоих проигрывателей с учётом перехода и выравнивания
   void _applyVolume() {
+    // Идёт DJ-переход: громкости дек ведёт движок по расписанию, ползунок громкости — на мастере
+    if (_dj != null) {
+      SharedMix.engine?.masterVolume = (volume / 100).clamp(0.0, 1.0).toDouble();
+      return;
+    }
     unawaited(_p.setVolume(_scaled(volume * _inGain * _normIn)));
     final o = _outgoing;
     if (o != null) unawaited(o.setVolume(_scaled(volume * _outGain * _normOut)));
@@ -790,6 +797,13 @@ class PlayerController extends ChangeNotifier {
     _prevPos = d;
     if (_fading || _resumeAt != null || !playing || repeat == RepeatSetting.one) return;
     if (crossfadeSecNow <= 0 || _autoNextIndex() == null) return;
+    // DJ-режим: переход планирует движок (доли, фразы, техники); пока готовим — обычный переход не начинаем
+    if (_djPending || _dj != null) return;
+    if (duration - d < const Duration(seconds: _djLeadSec) && _djTriedFor != current?.id && _djEligible()) {
+      _djTriedFor = current?.id;
+      unawaited(_djPrepare());
+      return;
+    }
     // Профили смотрим только ближе к концу трека — не на каждом тике позиции
     final plan = duration - d < const Duration(seconds: 60) ? _smartPlan() : null;
     _maybePrepare(d, plan);
@@ -970,6 +984,225 @@ class PlayerController extends ChangeNotifier {
     return ok;
   }
 
+
+  // ---------- DJ-режим: автомикс движка ----------
+
+  /// За сколько секунд до конца трека планировать DJ-переход (самый длинный — 32 такта, около минуты)
+  static const _djLeadSec = 150;
+
+  _DjMix? _dj;
+  bool _djPending = false;
+  String? _djTriedFor;
+  int _djPrevTech = 0;
+  final math.Random _djRandom = math.Random();
+
+  /// Стиль автомикса: smooth / balanced / energetic
+  String get djStyle {
+    final v = settings.viewOf('dj.style', 'balanced');
+    return v == 'smooth' || v == 'energetic' ? v : 'balanced';
+  }
+
+  Map<String, dynamic>? _beatProfile(String id) => mixer?.beat?.profile(id);
+
+  /// Можно ли сделать переход движком: обе деки на нём, оба трека разобраны, не джем
+  bool _djEligible() {
+    final cur = current, ni = _autoNextIndex();
+    if (!useMixEngine || cur == null || ni == null || !_p.onEngine) return false;
+    if (jamActive?.call() ?? false) return false;
+    final nextId = queue[ni];
+    if (!cache.has(nextId) || !cache.fileFor(nextId).existsSync()) return false;
+    final a = _beatProfile(cur.id), b = _beatProfile(nextId);
+    if (a == null || b == null) return false;
+    // профиль от другого файла (трек заменили) — не доверяем
+    final ms = a['durationMs'];
+    if (ms is num && duration > Duration.zero && (ms - duration.inMilliseconds).abs() > 4000) return false;
+    return true;
+  }
+
+  /// Громкость деки при DJ-переходе: ползунок уходит на мастер, на деке — выравнивание громкости
+  double _djGain(double norm) {
+    final v = (volume / 100).clamp(0.0, 1.0).toDouble();
+    final both = math.pow((v * norm).clamp(0.0, 1.0), 3).toDouble();
+    if (v < 0.001) return math.pow(norm.clamp(0.0, 1.0), 3).toDouble();
+    return both / math.pow(v, 3);
+  }
+
+  /// Открывает следующий трек на второй деке и просит движок спланировать переход.
+  /// Не вышло — следующий трек остаётся открытым, и переход будет обычным
+  Future<void> _djPrepare() async {
+    final ni = _autoNextIndex();
+    final cur = current;
+    final e = SharedMix.engine;
+    if (ni == null || cur == null || e == null) return;
+    final t = lib.data.tracks[queue[ni]];
+    if (t == null) return;
+    final seq = _openSeq;
+    _djPending = true;
+    _preparing = true;
+    HybridDeck? q;
+    var keepPrepared = false;
+    try {
+      q = _q ??= _newDeck();
+      if (_preparedId != t.id) {
+        await q.setVolume(0);
+        await q.open(Media(cache.fileFor(t.id).path), play: false);
+      }
+      keepPrepared = true;
+      if (!q.onEngine) throw StateError('следующий трек не открылся в движке');
+      for (var i = 0; i < 200 && !q.engineReady(); i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        if (seq != _openSeq || !_djPending) return;
+      }
+      if (!q.engineReady()) throw StateError('следующий трек не загрузился вовремя');
+      if (seq != _openSeq || !_djPending || !playing) return;
+      final pa = _beatProfile(cur.id), pb = _beatProfile(t.id);
+      if (pa == null || pb == null) throw StateError('нет профиля трека');
+      final gA = _djGain(_normIn), gB = _djGain(_normFactorFor(t.id));
+      final options = jsonEncode({
+        'style': djStyle,
+        'maxBars': 32,
+        'gainA': gA,
+        'gainB': gB,
+        'seed': _djRandom.nextInt(1 << 30),
+        'prev': _djPrevTech,
+      });
+      final plan = jsonDecode(e.automix(_p.engineDeck, q.engineDeck, jsonEncode(pa), jsonEncode(pb), options)) as Map<String, dynamic>;
+      // Громкость: ползунок — на мастер, уходящей деке — её доля (в ту же команду, без скачка)
+      e.masterVolume = (volume / 100).clamp(0.0, 1.0).toDouble();
+      e.set(_p.engineDeck, MixParam.gain, gA);
+      q.armScheduledPlay();
+      final st = e.state();
+      final dj = _DjMix(
+        from: _p,
+        to: q,
+        nextIndex: ni,
+        track: t,
+        startClock: (plan['startClock'] as num).toInt(),
+        endClock: (plan['endClock'] as num).toInt(),
+        sampleRate: st.sampleRate,
+        technique: plan['technique'] as String? ?? '',
+      );
+      _dj = dj;
+      _fading = true;
+      _preparedId = null;
+      keepPrepared = false;
+      _djPrevTech = int.tryParse(dj.technique.replaceFirst('T', '')) ?? 0;
+      final inSec = ((dj.startClock - st.clock) / st.sampleRate).toStringAsFixed(1);
+      AppLog.info('DJ-переход на «${t.title}»: ${plan['name']}, ${plan['bars']} тактов, через $inSec с, '
+          'темп ×${(plan['tempoRatio'] as num).toStringAsFixed(3)}; ${plan['reason']}');
+      dj.timer = Timer.periodic(const Duration(milliseconds: 30), (_) => _djTick());
+    } catch (err) {
+      AppLog.warn('DJ-переход не получился, будет обычный', err);
+      if (keepPrepared && seq == _openSeq) _preparedId = t.id;
+    } finally {
+      _preparing = false;
+      _djPending = false;
+    }
+  }
+
+  void _djTick() {
+    final dj = _dj;
+    final e = SharedMix.engine;
+    if (dj == null || e == null) return;
+    final s = e.state();
+    final d = s.decks[dj.to.engineDeck];
+    if (d.status == DeckStatus.error) {
+      AppLog.warn('DJ-переход: следующий трек не играет', e.lastError);
+      _djCancel();
+      return;
+    }
+    if (!dj.swapped && s.clock >= dj.startClock) _djSwap(dj);
+    if (dj.swapped && s.clock >= dj.endClock + dj.sampleRate ~/ 10) _djFinish(dj);
+  }
+
+  /// Начало перехода: следующий трек становится текущим, прежний доигрывает по расписанию
+  void _djSwap(_DjMix dj) {
+    dj.swapped = true;
+    ++_openSeq;
+    final seq = _openSeq;
+    final lengthMs = math.max(300, ((dj.endClock - dj.startClock) * 1000 / dj.sampleRate).round());
+    final oldFraction =
+        duration > Duration.zero ? (_p.state.position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0).toDouble() : 1.0;
+    final oldDurationMs = duration.inMilliseconds;
+    final old = _p;
+    _p = dj.to;
+    _q = old;
+    _outgoing = old;
+    _bind(_p);
+    _reportHeard(skipped: false);
+    index = dj.nextIndex;
+    cache.touch(dj.track);
+    error = null;
+    _userPaused = false;
+    _prevPos = Duration.zero;
+    _openedAt = DateTime.now();
+    position.value = _p.state.position;
+    duration = _p.state.duration;
+    playing = true;
+    _normTimer?.cancel();
+    _normOut = _normIn;
+    _normIn = _normFactorFor(dj.track.id);
+    jamLeadTrack = null;
+    jamLead = Duration.zero;
+    _startTail(CrossfadeInfo(oldFraction, DateTime.now(), lengthMs, oldDurationMs: oldDurationMs));
+    notifyListeners();
+    unawaited(_whenReady(seq, dj.track));
+    _preloadNext();
+    _saveSession();
+    _topUpFeed();
+  }
+
+  /// Конец перехода: прежняя дека выгружается, громкость — снова обычная
+  void _djFinish(_DjMix dj) {
+    dj.timer?.cancel();
+    _dj = null;
+    _fading = false;
+    final old = _outgoing;
+    _outgoing = null;
+    if (old != null && old != _p) unawaited(old.stop());
+    _normOut = 1;
+    _inGain = 1;
+    _outGain = 1;
+    SharedMix.engine?.masterVolume = 1.0;
+    _applyVolume();
+  }
+
+  /// Отменить DJ-переход (пауза, перемотка, переключение): расписание снимается, играет то, что сейчас текущее.
+  /// [retry] — после перемотки переход можно спланировать заново
+  void _djCancel({bool retry = false}) {
+    final dj = _dj;
+    final wasPending = _djPending;
+    _djPending = false;
+    if (dj == null) {
+      // ещё готовили следующий трек: он не нужен (подготовка сама увидит отмену и выйдет)
+      if (wasPending) {
+        _preparedId = null;
+        unawaited(_q?.stop() ?? Future<void>.value());
+      }
+      if (retry) _djTriedFor = null;
+      return;
+    }
+    dj.timer?.cancel();
+    _dj = null;
+    _fading = false;
+    SharedMix.engine?.automixCancel(dj.from.engineDeck, dj.to.engineDeck, 0, 0);
+    if (dj.swapped) {
+      final old = _outgoing;
+      _outgoing = null;
+      if (old != null && old != _p) unawaited(old.stop());
+    } else {
+      unawaited(dj.to.stop());
+      if (retry) _djTriedFor = null;
+    }
+    _preparedId = null;
+    _normOut = 1;
+    _inGain = 1;
+    _outGain = 1;
+    SharedMix.engine?.masterVolume = 1.0;
+    _applyVolume();
+    AppLog.info('DJ-переход отменён');
+  }
+
   Timer? _tailTimer;
 
   /// До какой доли трека дошла полоса перед концом: в конце плеер может сбросить позицию, а полоса не должна прыгать
@@ -990,6 +1223,10 @@ class PlayerController extends ChangeNotifier {
 
   /// Завершает переход: уходящий трек останавливается, у нового обычная громкость
   void _endFade({bool stopIncoming = false}) {
+    if (_dj != null || _djPending) {
+      _djCancel();
+      return;
+    }
     _fadeTimer?.cancel();
     _fadeTimer = null;
     _preparedId = null;
@@ -1233,6 +1470,8 @@ class PlayerController extends ChangeNotifier {
       _saveSession();
       return;
     }
+    // Перемотка ломает расписание DJ-перехода (оно привязано к позиции трека): снимаем, после перемотки спланируем заново
+    if (_dj != null || _djPending) _djCancel(retry: true);
     await _p.seek(d);
     onUserAction?.call();
   }
@@ -1331,4 +1570,26 @@ class PlayerController extends ChangeNotifier {
     lyricsOpen.dispose();
     super.dispose();
   }
+}
+
+/// Запланированный движком DJ-переход
+class _DjMix {
+  _DjMix({
+    required this.from,
+    required this.to,
+    required this.nextIndex,
+    required this.track,
+    required this.startClock,
+    required this.endClock,
+    required this.sampleRate,
+    required this.technique,
+  });
+
+  final HybridDeck from, to;
+  final int nextIndex;
+  final Track track;
+  final int startClock, endClock, sampleRate;
+  final String technique;
+  bool swapped = false;
+  Timer? timer;
 }

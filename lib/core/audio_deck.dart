@@ -131,6 +131,8 @@ class HybridDeck {
   bool _wantPlay = false; // человек хочет, чтобы играло (движок подтверждает с задержкой в один опрос)
   Media? _media;
   double _volume = 100;
+  DeckStatus _eStatus = DeckStatus.empty;
+  int _eBufferedMs = 0;
 
   /// Играет ли сейчас через новый движок
   bool get onEngine => _onEngine;
@@ -189,6 +191,8 @@ class HybridDeck {
         _ePos = Duration.zero;
         _eDur = Duration.zero;
         _eCompleted = false;
+        _eStatus = DeckStatus.loading;
+        _eBufferedMs = 0;
         _setEPlaying(false);
         _setEBuffering(true);
         _position.add(Duration.zero);
@@ -229,6 +233,8 @@ class HybridDeck {
     if (!_onEngine) return;
     final d = s.decks[engineDeck];
     if (d.loadId != _loadId) return; // состояние ещё от прошлой загрузки
+    _eStatus = d.status;
+    _eBufferedMs = d.bufferedMs;
     switch (d.status) {
       case DeckStatus.loading:
       case DeckStatus.empty:
@@ -318,6 +324,19 @@ class HybridDeck {
       return;
     }
     await _mpv?.setVolume(v);
+  }
+
+  /// Трек загружен в движок, дека стоит и звука в буфере не меньше [bufferedMs]: можно планировать переход
+  bool engineReady({int bufferedMs = 1000}) =>
+      _onEngine && !_pendingPlay && _eStatus == DeckStatus.ready && _eBufferedMs >= bufferedMs;
+
+  /// Дека запустится сама по расписанию движка (автомикс): с этого момента она считается «играющей»,
+  /// а состояние «играет» появится, когда движок её действительно запустит
+  void armScheduledPlay() {
+    if (!_onEngine) return;
+    _pendingPlay = false;
+    _wantPlay = true;
+    _eCompleted = false;
   }
 
   /// Состояние движка (часы, частота) — для планирования, или null, если дека не на движке

@@ -132,6 +132,14 @@ typedef _StateN = Void Function(Pointer<Void>, Pointer<_CmState>);
 typedef _StateD = void Function(Pointer<Void>, Pointer<_CmState>);
 typedef _StrN = Void Function(Pointer<Void>, Pointer<Utf8>);
 typedef _StrD = void Function(Pointer<Void>, Pointer<Utf8>);
+typedef _AutomixN = Pointer<Utf8> Function(
+    Pointer<Void>, Int32, Int32, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Pointer<Utf8>>);
+typedef _AutomixD = Pointer<Utf8> Function(
+    Pointer<Void>, int, int, Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Pointer<Utf8>>);
+typedef _AutomixCancelN = Void Function(Pointer<Void>, Int32, Int32, Double, Double);
+typedef _AutomixCancelD = void Function(Pointer<Void>, int, int, double, double);
+typedef _FreeN = Void Function(Pointer<Void>);
+typedef _FreeD = void Function(Pointer<Void>);
 typedef _RenderN = Int32 Function(Pointer<Void>, Pointer<Float>, Int32);
 typedef _RenderD = int Function(Pointer<Void>, Pointer<Float>, int);
 
@@ -153,7 +161,10 @@ class _Lib {
         masterVolume = l.lookupFunction<_DoubleN, _DoubleD>('cm_set_master_volume'),
         setPaused = l.lookupFunction<_IntN, _IntD>('cm_set_paused'),
         getState = l.lookupFunction<_StateN, _StateD>('cm_get_state'),
-        render = l.lookupFunction<_RenderN, _RenderD>('cm_render');
+        render = l.lookupFunction<_RenderN, _RenderD>('cm_render'),
+        automix = l.lookupFunction<_AutomixN, _AutomixD>('cm_automix'),
+        automixCancel = l.lookupFunction<_AutomixCancelN, _AutomixCancelD>('cm_automix_cancel'),
+        free = l.lookupFunction<_FreeN, _FreeD>('cm_free');
 
   final _CreateD create;
   final _VoidPD destroy;
@@ -172,6 +183,9 @@ class _Lib {
   final _IntD setPaused;
   final _StateD getState;
   final _RenderD render;
+  final _AutomixD automix;
+  final _AutomixCancelD automixCancel;
+  final _FreeD free;
 }
 
 DynamicLibrary _open() {
@@ -283,6 +297,35 @@ class MixEngine {
     ]);
   }
 
+  /// Автомикс: спланировать и поставить в расписание переход с деки [from] (играет) на деку [to] (трек загружен,
+  /// дека готова). [profileFrom], [profileTo] — профили v2 (JSON от [TrackAnalyzer]), [options] — JSON настроек
+  /// (style, maxBars, gainA, gainB, seed, prev, …). Возвращает план в JSON; ошибка — исключение с текстом.
+  String automix(int from, int to, String profileFrom, String profileTo, String options) {
+    final a = profileFrom.toNativeUtf8(allocator: malloc), b = profileTo.toNativeUtf8(allocator: malloc);
+    final o = options.toNativeUtf8(allocator: malloc);
+    final err = malloc<Pointer<Utf8>>()..value = nullptr;
+    try {
+      final r = _l.automix(_e, from, to, a, b, o, err);
+      if (r == nullptr) {
+        final msg = err.value == nullptr ? 'автомикс не удался' : err.value.toDartString();
+        if (err.value != nullptr) _l.free(err.value.cast());
+        throw StateError(msg);
+      }
+      final s = r.toDartString();
+      _l.free(r.cast());
+      return s;
+    } finally {
+      malloc.free(a);
+      malloc.free(b);
+      malloc.free(o);
+      malloc.free(err);
+    }
+  }
+
+  /// Снять запланированный переход: расписание и автоматизации обеих дек, EQ/фильтр/эхо/темп — к исходным,
+  /// громкости — [gainFrom] и [gainTo]
+  void automixCancel(int from, int to, double gainFrom, double gainTo) => _l.automixCancel(_e, from, to, gainFrom, gainTo);
+
   /// Только для offline-движка: вывести [frames] кадров стерео в [out] (длиной ≥ frames·2)
   int render(Pointer<Float> out, int frames) => _l.render(_e, out, frames);
 }
@@ -292,9 +335,6 @@ class MixEngine {
 typedef _AnCreateN = Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Int32, Pointer<Pointer<Utf8>>);
 typedef _AnCreateD = Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, int, Pointer<Pointer<Utf8>>);
 typedef _AnFileN = Pointer<Utf8> Function(Pointer<Void>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Pointer<Utf8>>);
-typedef _FreeN = Void Function(Pointer<Void>);
-typedef _FreeD = void Function(Pointer<Void>);
-
 /// Анализатор треков (нативный): доли и даунбиты нейросетью Beat This!, сетка темпа, громкость EBU R128,
 /// тональность, энергия по тактам, фразы, точки микса. Результат — JSON профиля v2 (ТЗ, раздел 3.3).
 /// Вызовы блокирующие и долгие (секунды на трек): держите анализатор в отдельном изоляте.

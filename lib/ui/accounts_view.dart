@@ -1139,6 +1139,28 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
             'читает через FFmpeg — его плеер скачает сам, если ещё не скачал. Треки, которые ещё идут потоком с Диска, '
             'по-прежнему играют через mpv. Включается со следующего трека.',
       ),
+      if (app.player.useMixEngine) ...[
+        const SizedBox(height: 4),
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Стиль DJ-переходов:', style: TextStyle(color: C.muted)),
+          const SizedBox(width: 10),
+          DropdownButton<String>(
+            value: app.player.djStyle,
+            dropdownColor: C.raised,
+            underline: const SizedBox.shrink(),
+            items: const [
+              DropdownMenuItem(value: 'smooth', child: Text('Плавный')),
+              DropdownMenuItem(value: 'balanced', child: Text('Сбалансированный')),
+              DropdownMenuItem(value: 'energetic', child: Text('Энергичный')),
+            ],
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() => app.settings.view['dj.style'] = v);
+              app.lib.saveSettings();
+            },
+          ),
+        ]),
+      ],
       const SizedBox(height: 8),
       HintSwitch(
         contentPadding: EdgeInsets.zero,
