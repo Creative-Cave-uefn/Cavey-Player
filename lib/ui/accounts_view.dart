@@ -15,6 +15,7 @@ import '../core/notices.dart';
 import '../core/notify_prefs.dart';
 import '../core/store.dart' show Settings;
 import '../core/updater.dart';
+import '../core/test_build_admin.dart';
 import 'sources_view.dart';
 import 'ambient.dart';
 import 'player_bar.dart' show SeekEdgeSample, seekEdgeWave, seekWaveLength, seekWaveMin, seekWaveMax;
@@ -755,6 +756,56 @@ class _TestBuildsSection extends StatefulWidget {
 
 class _TestBuildsSectionState extends State<_TestBuildsSection> {
   bool _loaded = false;
+  bool _managing = false;
+
+  Future<void> _deleteBuilds(List<BuildInfo> builds) async {
+    if (builds.isEmpty || _managing) return;
+    final count = builds.length;
+    final ok = await confirm(
+      context,
+      title: count == 1 ? 'Удалить тестовую сборку?' : 'Очистить старые тестовые сборки?',
+      text: count == 1
+          ? 'Релиз ${TestBuildAdmin.tagOf(builds.first)} и его файлы будут удалены с GitHub. Это не удаляет установленную программу.'
+          : 'Будут удалены $count устаревших тестовых релизов с GitHub. Последняя сборка каждой ветки и установленная сейчас версия сохранятся. Стабильные, бета-, Android- и iOS-релизы не затрагиваются.',
+      action: 'Удалить',
+    );
+    if (!ok || !mounted) return;
+    setState(() => _managing = true);
+    var completed = 0;
+    String? error;
+    try {
+      for (final build in builds) {
+        await TestBuildAdmin.delete(build);
+        completed++;
+      }
+    } catch (e) {
+      error = '$e';
+    }
+    if (!mounted) return;
+    await Services.of(context).updater.loadTestBuilds();
+    if (!mounted) return;
+    setState(() => _managing = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(error == null
+          ? 'Удалено тестовых сборок: $completed'
+          : 'Удалено $completed из $count. Ошибка: $error'),
+    ));
+  }
+
+  void _cleanOld() {
+    final up = Services.of(context).updater;
+    final protectedTag = up.isTestBuild
+        ? 'test-${Updater.slugOf(up.channel)}-v$kAppVersion'
+        : null;
+    final stale = TestBuildAdmin.staleBuilds(up.testBuilds, protectedTag: protectedTag);
+    if (stale.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Устаревших тестовых сборок нет.')),
+      );
+      return;
+    }
+    _deleteBuilds(stale);
+  }
 
   @override
   void didChangeDependencies() {
@@ -797,15 +848,23 @@ class _TestBuildsSectionState extends State<_TestBuildsSection> {
             IconButton(
               tooltip: 'Обновить список',
               visualDensity: VisualDensity.compact,
-              onPressed: up.loadingBuilds || !up.enabled ? null : up.loadTestBuilds,
-              icon: up.loadingBuilds
+              onPressed: up.loadingBuilds || !up.enabled || _managing ? null : up.loadTestBuilds,
+              icon: up.loadingBuilds || _managing
                   ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.refresh_rounded, size: 18),
             ),
+            if (Platform.isWindows && up.enabled) ...[
+              const SizedBox(width: 10),
+              OutlinedButton.icon(
+                onPressed: up.loadingBuilds || _managing || busy ? null : _cleanOld,
+                icon: const Icon(Icons.delete_sweep_outlined, size: 17),
+                label: const Text('Очистить старые'),
+              ),
+            ],
           ]),
           const SizedBox(height: 4),
           const Text(
-            'Сборки из веток, которые ещё не попали в основную версию. Можно поставить, чтобы проверить новое до выхода для всех.',
+            'Сборки из веток для тестирования. Очистка удаляет старые релизы с GitHub только после подтверждения и при авторизации в GitHub CLI (gh auth login).',
             style: TextStyle(color: C.faint, fontSize: 13, height: 1.45),
           ),
           const SizedBox(height: 10),
@@ -820,9 +879,12 @@ class _TestBuildsSectionState extends State<_TestBuildsSection> {
               _BuildRow(
                 info: b,
                 current: up.isTestBuild && b.version == kAppVersion,
-                busy: busy,
+                busy: busy || _managing,
                 installing: up.installing == b,
                 onInstall: () => _install(b),
+                onDelete: up.isTestBuild && b.version == kAppVersion && b.slug == Updater.slugOf(up.channel)
+                    ? null
+                    : () => _deleteBuilds([b]),
               ),
         ]);
       },
@@ -836,7 +898,15 @@ class _BuildRow extends StatelessWidget {
   final bool busy;
   final bool installing;
   final VoidCallback onInstall;
-  const _BuildRow({required this.info, required this.current, required this.busy, required this.installing, required this.onInstall});
+  final VoidCallback? onDelete;
+  const _BuildRow({
+    required this.info,
+    required this.current,
+    required this.busy,
+    required this.installing,
+    required this.onInstall,
+    this.onDelete,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -873,6 +943,14 @@ class _BuildRow extends StatelessWidget {
           const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
         else
           OutlinedButton(onPressed: busy ? null : onInstall, child: const Text('Поставить')),
+        if (onDelete != null && Platform.isWindows) ...[
+          const SizedBox(width: 4),
+          IconButton(
+            tooltip: 'Удалить тестовый релиз с GitHub',
+            onPressed: busy ? null : onDelete,
+            icon: const Icon(Icons.delete_outline_rounded, size: 19, color: C.danger),
+          ),
+        ],
       ]),
     );
   }
