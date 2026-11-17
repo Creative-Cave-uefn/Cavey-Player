@@ -12,6 +12,10 @@ $files = @(
 foreach ($filename in $files) {
     $path = Join-Path $PSScriptRoot $filename
     if (-not (Test-Path -LiteralPath $path)) { throw "Missing: $filename" }
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    if ($bytes.Length -lt 3 -or $bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191) {
+        throw "Missing UTF-8 BOM in $filename. Windows PowerShell 5.1 will misread Unicode source text."
+    }
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)

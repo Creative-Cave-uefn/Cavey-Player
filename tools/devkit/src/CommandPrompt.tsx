@@ -205,20 +205,20 @@ export function CommandPrompt({
   return (
     <Box flexDirection="column" paddingX={2}>
       {(showPalette || menuActive) && (
-        <Box flexDirection="column" borderStyle="round" borderColor="#48454A" paddingX={1} flexShrink={0}>
+        <Box flexDirection="column" borderStyle="single" borderColor="#39383D" paddingX={1} flexShrink={0}>
           <Box justifyContent="space-between">
-            <Text color="#E2A083" bold>{menuActive ? menu!.title : "КОМАНДЫ"}</Text>
-            <Text dimColor>{menuActive ? String(menuMatches.length) + "/" + String(menu!.choices.length) : String(suggestions.length) + " доступно"}</Text>
+            <Text color="#E2A083" bold>{menuActive ? menu!.title : "COMMANDS"}</Text>
+            <Text dimColor>{menuActive ? String(menuMatches.length) + "/" + String(menu!.choices.length) : String(suggestions.length) + " available"}</Text>
           </Box>
           {menuActive && menu!.subtitle && <Text dimColor wrap="truncate-end">{menu!.subtitle}</Text>}
-          {menuActive && menuMatches.length === 0 && <Text dimColor>Нет совпадений · Esc — назад</Text>}
+          {menuActive && menuMatches.length === 0 && <Text dimColor>No matches · Esc to go back</Text>}
           {menuActive
             ? page!.rows.map((option, row) => {
                 const index = page!.start + row;
                 const active = index === focused;
                 return (
                   <Box key={option.value} flexDirection="row" width="100%" paddingX={1} flexShrink={0}
-                    backgroundColor={active ? "#444049" : undefined}
+                    backgroundColor={active ? "#373338" : undefined}
                     onMouseEnter={() => { setHovered(index); setSelected(index); }}
                     onMouseLeave={() => setHovered(null)}
                     onClick={event => { event.stopImmediatePropagation(); pickMenu(option.value); }}
@@ -251,29 +251,32 @@ export function CommandPrompt({
               })}
           {menuActive && page!.count > page!.rows.length && (
             <Box justifyContent="space-between">
-              <Text dimColor>{page!.start > 0 ? "↑ выше" : ""}</Text>
-              <Text dimColor>↑↓ · PgUp/PgDn · колесо</Text>
-              <Text dimColor>{page!.start + page!.rows.length < page!.count ? "ниже ↓" : ""}</Text>
+              <Text dimColor>{page!.start > 0 ? "↑ above" : ""}</Text>
+              <Text dimColor>↑↓ · PgUp/PgDn · Wheel</Text>
+              <Text dimColor>{page!.start + page!.rows.length < page!.count ? "below ↓" : ""}</Text>
             </Box>
           )}
         </Box>
       )}
-      <Box marginTop={showPalette || menuActive ? 0 : 1} borderStyle="round" borderColor={disabled ? "#535259" : "#D57B5F"}
+      <Box marginTop={showPalette || menuActive ? 0 : 1} borderStyle="single" borderColor={disabled ? "#444048" : "#6B6268"}
         paddingX={1} flexDirection="column">
         <Box gap={1}>
           <Text color="#E8A080" bold>❯</Text>
           {disabled ? (
-            <Text dimColor>Команда выполняется… Ctrl+C — остановить</Text>
+            <Text dimColor>Running… Ctrl+C to stop</Text>
           ) : value ? (
             <Text>{value.slice(0, cursor)}<Text inverse>{value[cursor] || " "}</Text>{value.slice(cursor + 1)}</Text>
           ) : (
-            <Text><Text inverse> </Text><Text dimColor>{menuActive ? "Поиск варианта или выбор стрелками…" : "Команда, / для действий…"}</Text></Text>
+            <Text><Text inverse> </Text><Text dimColor>{menuActive ? "Search options or use arrow keys…" : "Type a command or / for actions…"}</Text></Text>
           )}
         </Box>
       </Box>
-      <Box justifyContent="space-between" paddingX={1}>
-        <Text dimColor>{menuActive ? "Наведение / клик · ↑↓ · Enter · Esc" : showPalette ? "Наведи мышь для выделения, нажми для запуска" : "Enter выполнить · / команды · Ctrl+J терминал"}</Text>
-        <Text dimColor>PgUp/PgDn история · Ctrl+F поиск</Text>
+      <Box paddingX={1}>
+        <Text dimColor>
+          {menuActive ? "↑↓ navigate · Enter select · Esc back · Click to choose" :
+            showPalette ? "↑↓ navigate · Enter run · Tab complete · Click to choose" :
+            "Enter run · / commands · Ctrl+J terminal · Ctrl+F search"}
+        </Text>
       </Box>
     </Box>
   );

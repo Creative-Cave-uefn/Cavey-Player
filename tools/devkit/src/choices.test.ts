@@ -22,7 +22,7 @@ test("publication channels are unique and stable releases are excluded", () => {
     {tagName:"v1.0.0",name:"Stable",isPrerelease:false,publishedAt:"2026-11-17"},
     {tagName:"test-dj-v0.4.0.3",name:"Тест: DJ · 0.4.0.3",isPrerelease:true,publishedAt:"2026-11-17"},
     {tagName:"test-dj-v0.4.0.2",name:"Тест: DJ · 0.4.0.2",isPrerelease:true,publishedAt:"2026-11-16"},
-    {tagName:"test-wave-v0.4.0.1",name:"Тест: wave · 0.4.0.1",isPrerelease:true,publishedAt:"2026-11-15"},
+    {tagName:"test-wave-v0.4.0.1",name:"Test: wave · 0.4.0.1",isPrerelease:true,publishedAt:"2026-11-15"},
   ]);
   assert.deepEqual(channels.map(x => x.value),["DJ","wave"]);
 });

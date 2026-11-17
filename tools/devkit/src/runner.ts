@@ -46,7 +46,7 @@ export function changeDirectory(current: string, line: string): string | null {
   }
   const candidate = isAbsolute(target) ? resolve(target) : resolve(current, target);
   if (!existsSync(candidate) || !statSync(candidate).isDirectory()) {
-    throw new Error("Папка не найдена: " + candidate);
+    throw new Error("Directory not found: " + candidate);
   }
   return candidate;
 }
@@ -63,8 +63,8 @@ function cleanOutput(value: string): string {
 }
 
 export function commandRequest(command: string, args: string[], cwd: string): RunRequest {
-  if (!engineCommands.has(command)) throw new Error("Неизвестная команда DevKit: " + command);
-  if (!existsSync(enginePath)) throw new Error("Не найден сборочный движок: " + enginePath);
+  if (!engineCommands.has(command)) throw new Error("Unknown DevKit command: " + command);
+  if (!existsSync(enginePath)) throw new Error("Build engine not found: " + enginePath);
   return {
     program: "powershell.exe",
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -101,7 +101,7 @@ export function runCommand(
   onChunk?: (chunk: string) => void,
 ): Promise<RunResult> {
   return new Promise((resolvePromise, reject) => {
-    if (signal?.aborted) { reject(new Error("Отменено")); return; }
+    if (signal?.aborted) { reject(new Error("Cancelled")); return; }
     const start = Date.now();
     let cancelled = false;
     let output = "";
@@ -151,7 +151,7 @@ export function runCommand(
 }
 
 export async function launchTerminal(cwd: string, agent = false): Promise<string> {
-  if (process.platform !== "win32") throw new Error("Встроенный ярлык предназначен для Windows.");
+  if (process.platform !== "win32") throw new Error("This terminal action is available on Windows only.");
   const executable = "powershell.exe";
   const command = agent
     ? [executable, "-NoLogo", "-NoProfile", "-NoExit", "-Command", "claude"]
@@ -168,15 +168,15 @@ export async function launchTerminal(cwd: string, agent = false): Promise<string
     });
   try {
     await spawnDetached("wt.exe", wtArgs, cwd);
-    return agent ? "Claude Code открыт во вкладке Windows Terminal."
-      : "Терминал открыт во вкладке Windows Terminal.";
+    return agent ? "Claude Code opened in a Windows Terminal tab."
+      : "PowerShell opened in a Windows Terminal tab.";
   } catch {
     // Windows Terminal may be unavailable on older Windows installations.
     await spawnDetached(executable,
       agent ? ["-NoLogo", "-NoProfile", "-NoExit", "-Command", "claude"]
         : ["-NoLogo", "-NoProfile", "-NoExit"], cwd);
-    return agent ? "Claude Code открыт в отдельном окне PowerShell."
-      : "Интерактивный PowerShell открыт в отдельном окне.";
+    return agent ? "Claude Code opened in a PowerShell window."
+      : "Interactive PowerShell opened in a separate window.";
   }
 }
 

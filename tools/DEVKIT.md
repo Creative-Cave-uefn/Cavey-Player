@@ -1,6 +1,6 @@
 # Cavey DevKit · React terminal
 
-DevKit now uses [claude-code-kit](https://github.com/Minnzen/claude-code-kit) 0.4.0 and React 19.2.4. The old PowerShell TUI is deleted. The existing build/release command engine is kept as a **noninteractive backend**, not as another UI.
+DevKit uses [claude-code-kit](https://github.com/Minnzen/claude-code-kit) 0.4.0 and React 19.2.4. The old PowerShell TUI is deleted. The existing build/release command engine is kept as a **noninteractive backend**, not as another UI.
 
 ## Requirements
 
@@ -39,7 +39,7 @@ The command palette appears **above** the input. Moving the mouse highlights an 
 
 ## Interactive menus
 
-The DevKit command palette and all build/publish wizard choices use the same keyboard-and-mouse component. Slash-command suggestions, branch selection, build mode (local / new test release / update an existing channel), release-channel selection and publish confirmations appear **above** the pinned input. Hover highlights a choice and clicking selects it; `↑↓` navigates, `Enter` selects, `Esc` cancels, and typing filters long lists. `PgUp/PgDn` and the mouse wheel page through a long menu.
+The minimal Cavey DevKit layout uses a compact unboxed header, subdued status bar and a pinned input inspired by the Claude Code console. English is used for interface labels, statuses and instructions; only descriptions of command and selection options remain Russian. The command palette and all build/publish wizard choices use the same keyboard-and-mouse component. Slash-command suggestions, branch selection, build mode (local / new test release / update an existing channel), release-channel selection and publish confirmations appear **above** the pinned input. Hover highlights a choice and clicking selects it; `↑↓` navigates, `Enter` selects, `Esc` cancels, and typing filters long lists. `PgUp/PgDn` and the mouse wheel page through a long menu.
 
 The `/build` wizard refreshes remote refs from `origin` before displaying branches, and can choose a previously published prerelease channel when updating. A confirmation is still mandatory before running destructive or publishing operations.
 
@@ -62,6 +62,6 @@ cd ..\..
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-cavey-devkit.ps1
 ```
 
-The launcher preserves noninteractive usage: `powershell -File .\tools\cavey-devkit.ps1 status` calls the headless engine. The UI always uses the new React frontend without arguments.
+Windows PowerShell 5.1 source files include a UTF-8 BOM. Run the parser/smoke-test script before shipping a revision to catch encoding regressions. The launcher preserves noninteractive usage: `powershell -File .\tools\cavey-devkit.ps1 status` calls the headless engine. The UI always uses the new React frontend without arguments.
 
 Dependencies: `@claude-code-kit/ui` 0.4.0 and `@claude-code-kit/ink-renderer` 0.4.0, MIT license. Initial dependency installation needs internet.

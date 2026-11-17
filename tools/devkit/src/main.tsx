@@ -49,17 +49,17 @@ const helpText = [
   "CAVEY DEVKIT  ·  Commands",
   "",
   "/build                           Интерактивный мастер сборки",
-  "/build --branch latest --local    Локальная сборка (затем подтвердить)",
-  "/build --branch <name>            Тестовый релиз (затем подтвердить)",
+  "/build --branch latest --local    Локальная сборка (с подтверждением)",
+  "/build --branch <name>            Тестовый релиз (с подтверждением)",
   "/branches   /status   /releases   /history   /logs",
-  "/clean --dry-run                  Посмотреть план очистки",
+  "/clean --dry-run                  Просмотр без удаления",
   "/run        /doctor   /project [path]   /terminal",
   "/agent      /clear    /quit",
   "",
-  "Команды без / исполняются в PowerShell. cd работает между командами.",
-  "Команды, запрашивающие ввод, выполняйте через /terminal.",
-  "Tab: дополнить  ·  ↑↓: история  ·  PgUp/PgDn: вывод",
-  "Ctrl+F: поиск  ·  Ctrl+C: отмена  ·  Ctrl+J: терминал",
+  "Commands without / run in PowerShell. cd persists between commands.",
+  "For interactive processes, use /terminal.",
+  "Tab: autocomplete · ↑↓: history · PgUp/PgDn: scroll",
+  "Ctrl+F: search · Ctrl+C: cancel · Ctrl+J: terminal",
 ].join("\n");
 
 type Wizard =
@@ -72,38 +72,35 @@ function formatMessage(m: Message): React.ReactNode {
   const body = typeof m.content === "string" ? m.content :
     m.content.map(part => "text" in part ? part.text : JSON.stringify(part)).join("\n");
   return (
-    <Box flexDirection="column" marginBottom={1} paddingX={1}>
-      <Text color={m.role === "user" ? "#B8BED0" : ACCENT} bold>
-        {m.role === "user" ? "❯" : "◆ CAVEY"}
+    <Box flexDirection="row" gap={2} paddingX={1} marginBottom={1}>
+      <Text color={m.role === "user" ? "#A6A4AD" : ACCENT} bold>
+        {m.role === "user" ? "›" : "✳"}
       </Text>
-      <Box marginLeft={2}>
-        <Text color={m.role === "user" ? "white" : undefined} wrap="wrap">{body}</Text>
+      <Box flexGrow={1}>
+        <Text color={m.role === "user" ? "#E0DCE1" : "#D5D1D7"} wrap="wrap">{body}</Text>
       </Box>
     </Box>
   );
 }
 
+
 function Header({ directory, branch, activity, loading, compact }: {
   directory: string; branch: string; activity: string; loading: boolean; compact: boolean;
 }) {
-  const color = loading ? "#E6BE69" : activity === "error" ? "#E98579" : "#8AC7A4";
+  const stateColor = loading ? "#DBAC72" : activity === "error" ? "#DB817C" : "#A4B8A5";
   return (
-    <Box flexDirection="column" paddingX={2} paddingTop={compact ? 0 : 1}>
-      <Box borderStyle="round" borderColor="#525058" paddingX={2} flexDirection="column">
-        <Box justifyContent="space-between">
-          <Text bold color="#E89A78">◆ CAVEY <Text color="#E4E1E6">DEVKIT</Text> <Text dimColor>v1.2</Text></Text>
-          <Text color={color}>{loading ? "● " + activity : "● READY"}</Text>
-        </Box>
-        {!compact && (
-          <Text dimColor>  DEVELOPMENT WORKSPACE     ·     LOCAL BUILDS     ·     GITHUB</Text>
-        )}
+    <Box flexDirection="column" paddingX={3} paddingTop={1} flexShrink={0}>
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
         <Box gap={1}>
-          <Text color="#9A95A1">⌁</Text>
-          <Text color="#D8D4DA">{prettyDirectory(directory)}</Text>
+          <Text color="#DF9472" bold>✳</Text>
+          <Text bold color="#E9E3E5">Cavey DevKit</Text>
+          <Text color="#77737C">v1.3</Text>
         </Box>
-        {!compact && (
-          <Text dimColor>  /build  сборка    /branches  ветки    /terminal  PowerShell    /help  команды</Text>
-        )}
+        <Text color={stateColor}>{loading ? "● " + activity : activity === "error" ? "● error" : "● ready"}</Text>
+      </Box>
+      <Box flexDirection="row" gap={1}>
+        <Text color="#817D87" wrap="truncate-end">{prettyDirectory(directory)}</Text>
+        {!compact && <Text color="#6E6B74" wrap="truncate-end">·  {branch}</Text>}
       </Box>
     </Box>
   );
@@ -155,7 +152,7 @@ function App() {
   }, [directory, refreshBranch]);
 
   const execute = useCallback(async (label: string, req: RunRequest, echo = true) => {
-    if (active.current) { append("system", "Уже выполняется команда. Ctrl+C для отмены."); return; }
+    if (active.current) { append("system", "A command is already running. Press Ctrl+C to cancel."); return; }
     if (echo) { append("user", label); remember(label); }
     const controller = new AbortController();
     active.current = controller;
@@ -176,8 +173,8 @@ function App() {
       if (pendingFlush) clearTimeout(pendingFlush);
       setStreaming(null);
       const text = result.output.slice(-25000);
-      append("assistant", (result.cancelled ? "Остановлено пользователем.\n" : "") +
-        (text || (result.cancelled ? "" : "Команда выполнена без вывода.")) +
+      append("assistant", (result.cancelled ? "Cancelled by user.\n" : "") +
+        (text || (result.cancelled ? "" : "Command finished without output.")) +
         "\n\n" + (result.cancelled ? "cancelled" : result.code === 0 ? "✓ success" : "✗ exit " + result.code) +
         "  ·  " + (result.durationMs / 1000).toFixed(1) + "s");
       setActivity(result.cancelled ? "cancelled" : result.code === 0 ? "ready" : "error");
@@ -214,19 +211,19 @@ function App() {
         cwd: directory, label: "git fetch origin",
       });
       if (fetched.code !== 0) {
-        append("assistant", "Не удалось обновить ветки: " + fetched.output);
+        append("assistant", "Could not refresh branches: " + fetched.output);
       }
       const result = await runCommand(gitBranchesRequest(directory));
       const branches = result.output.split(/\r?\n/).map(x => x.trim())
         .filter(x => x.startsWith("origin/") && x !== "origin/HEAD")
         .map(x => x.slice(7)).slice(0, 60);
       if (result.code !== 0 || branches.length === 0) {
-        append("assistant", "Ветки не найдены. Проверьте git fetch origin и /doctor.");
+        append("assistant", "No branches found. Check git fetch origin and /doctor.");
         return;
       }
       setWizard({ kind: "branch", branches });
-      append("assistant", "Выберите ветку для сборки в интерактивном меню над строкой ввода.");
-    } catch (error) { append("assistant", "Ошибка чтения веток: " + String(error)); }
+      append("assistant", "Select a source branch from the menu above the prompt.");
+    } catch (error) { append("assistant", "Could not read branches: " + String(error)); }
     finally { setLoading(false); setActivity("ready"); }
   }, [append, directory, loading]);
 
@@ -240,17 +237,17 @@ function App() {
       const chosen = Number.isInteger(index) && index >= 0 && index < wizard.branches.length
         ? wizard.branches[index] : wizard.branches.find(x => x === answer);
       if (!chosen) {
-        append("assistant", "Выберите ветку мышью, стрелками или введите её имя.");
+        append("assistant", "Choose a branch with your mouse or arrow keys, or enter its name.");
         return;
       }
       setWizard({ kind: "mode", branch: chosen });
-      append("assistant", "Источник: " + chosen + "\nВыберите действие: локальная сборка, новый тестовый релиз или обновление канала.");
+      append("assistant", "Source: " + chosen + "\nChoose local build, new test release, or update a channel.");
       return;
     }
     if (wizard.kind === "mode") {
       const value = answer === "1" ? "local" : answer === "2" ? "new" : answer === "3" ? "update" : answer;
       if (!["local", "new", "update"].includes(value)) {
-        append("assistant", "Выберите вариант из меню.");
+        append("assistant", "Select an option from the menu.");
         return;
       }
       if (value === "update") {
@@ -264,19 +261,19 @@ function App() {
             cwd: directory, label: "gh release list",
           });
           if (result.code !== 0) {
-            append("assistant", "Не удалось загрузить каналы: " + result.output +
-              "\nПроверьте gh auth status.");
+            append("assistant", "Could not load release channels: " + result.output +
+              "\nCheck gh auth status.");
             return;
           }
           const channels = releaseChannels(JSON.parse(result.output) as ReleaseRecord[]);
           if (!channels.length) {
-            append("assistant", "Пока нет тестовых каналов для обновления.");
+            append("assistant", "No existing test-release channels were found.");
             return;
           }
           setWizard({ kind: "channel", branch: wizard.branch, channels });
-          append("assistant", "Выберите существующий тестовый канал. Предыдущая версия удалится только после успешной публикации новой.");
+          append("assistant", "Select an existing test channel. Older releases are removed only after the new release is published.");
         } catch (error) {
-          append("assistant", "Ошибка загрузки каналов: " + String(error));
+          append("assistant", "Could not load release channels: " + String(error));
         } finally {
           setLoading(false);
           setActivity("ready");
@@ -285,9 +282,9 @@ function App() {
       }
       const local = value === "local";
       const args = ["--branch", wizard.branch, "--mode", "new", ...(local ? ["--local"] : [])];
-      const summary = (local ? "Локальная сборка" : "Новый тестовый релиз") + "\nВетка: " + wizard.branch;
+      const summary = (local ? "Local build" : "New test release") + "\nBranch: " + wizard.branch;
       setWizard({ kind: "confirm", command: "build", args, summary });
-      append("assistant", summary + "\nПодтвердите запуск.");
+      append("assistant", summary + "\nConfirm to start.");
       return;
     }
     if (wizard.kind === "channel") {
@@ -295,13 +292,13 @@ function App() {
       const channel = Number.isInteger(index) && index >= 0 && index < wizard.channels.length
         ? wizard.channels[index]?.value : wizard.channels.find(c => c.value === answer)?.value;
       if (!channel) {
-        append("assistant", "Выберите канал из меню.");
+        append("assistant", "Select a channel from the menu.");
         return;
       }
       const args = ["--branch", wizard.branch, "--mode", "update", "--channel", channel];
-      const summary = "Обновить тестовый релиз\nВетка: " + wizard.branch + "\nКанал: " + channel;
+      const summary = "Update test release\nBranch: " + wizard.branch + "\nChannel: " + channel;
       setWizard({ kind: "confirm", command: "build", args, summary });
-      append("assistant", summary + "\nПодтвердите запуск.");
+      append("assistant", summary + "\nConfirm to start.");
       return;
     }
     if (/^(да|yes|y|confirm)$/i.test(answer)) {
@@ -310,39 +307,39 @@ function App() {
       await runEngine(command, [...args, "--yes"], false);
     } else if (/^(нет|no|n|cancel)$/i.test(answer)) {
       setWizard(null);
-      append("assistant", "Действие отменено.");
+      append("assistant", "Action cancelled.");
     } else {
-      append("assistant", "Выберите «Подтвердить» или «Отмена».");
+      append("assistant", "Select Confirm or Cancel.");
     }
   }, [append, remember, runEngine, wizard, directory]);
 
   const menu: ChoiceMenu | undefined = useMemo(() => {
     if (!wizard) return undefined;
     if (wizard.kind === "branch") return {
-      id: "branches", title: "ВЫБОР ВЕТКИ", subtitle: "Поиск · ↑↓ · PgUp/PgDn · наведение мыши · клик",
+      id: "branches", title: "SELECT BRANCH", subtitle: "Search · ↑↓ · PgUp/PgDn · Hover · Click",
       choices: wizard.branches.map((name, i) => ({
         value: name, label: name, detail: String(i + 1),
       })),
     };
     if (wizard.kind === "mode") return {
-      id: "mode:" + wizard.branch, title: "ТИП СБОРКИ", subtitle: "Источник: " + wizard.branch,
+      id: "mode:" + wizard.branch, title: "BUILD TYPE", subtitle: "Source: " + wizard.branch,
       choices: [
-        { value: "local", label: "Локальная сборка", detail: "Без публикации" },
-        { value: "new", label: "Новый тестовый релиз", detail: "Создать отдельный канал" },
-        { value: "update", label: "Обновить канал", detail: "Выбрать существующий тестовый релиз" },
+        { value: "local", label: "Local build", detail: "Без публикации" },
+        { value: "new", label: "New test release", detail: "Создать отдельный канал" },
+        { value: "update", label: "Update channel", detail: "Выбрать существующий тестовый релиз" },
       ],
     };
     if (wizard.kind === "channel") return {
-      id: "channel:" + wizard.branch, title: "КАНАЛ ПУБЛИКАЦИИ",
-      subtitle: "Обновление существующего тестового релиза",
+      id: "channel:" + wizard.branch, title: "RELEASE CHANNEL",
+      subtitle: "Update an existing test release",
       choices: wizard.channels,
     };
     return {
-      id: "confirm:" + wizard.summary, title: "ПОДТВЕРЖДЕНИЕ",
+      id: "confirm:" + wizard.summary, title: "CONFIRM ACTION",
       subtitle: wizard.summary.replace(/\n/g, "  ·  "),
       choices: [
-        { value: "yes", label: "Подтвердить", detail: "Запустить действие" },
-        { value: "no", label: "Отмена", detail: "Вернуться в DevKit" },
+        { value: "yes", label: "Confirm", detail: "Run action" },
+        { value: "no", label: "Cancel", detail: "Return to DevKit" },
       ],
     };
   }, [wizard]);
@@ -366,31 +363,31 @@ function App() {
       if (args.length === 0) { await buildWizard(); return; }
       if (!args.includes("--yes")) {
         setWizard({ kind: "confirm", command: "build", args,
-          summary: "Сборка с параметрами: " + args.join(" ") });
-        append("assistant", "Сборка: " + args.join(" ") +
-          "\nДля подтверждения введите ДА, для отмены — нет.");
+          summary: "Build with options: " + args.join(" ") });
+        append("assistant", "Build: " + args.join(" ") +
+          "\nType yes to confirm or no to cancel.");
         return;
       }
     }
     if (name === "clean" && !args.includes("--dry-run") && !args.includes("--yes")) {
       append("user", label); remember(label);
       setWizard({ kind: "confirm", command: "clean", args,
-        summary: "Очистка тестовых релизов" });
-      append("assistant", "Очистить старые тестовые релизы? Ответьте ДА или нет.");
+        summary: "Clean test releases" });
+      append("assistant", "Remove outdated test releases? Select Confirm or Cancel.");
       return;
     }
     if (engineCommands.has(name)) {
       await runEngine(name, args, name !== "build");
       return;
     }
-    append("assistant", "Неизвестная команда: /" + name + ". Введите /help.");
+    append("assistant", "Unknown command: /" + name + ". Use /help.");
   }, [append, buildWizard, directory, exit, remember, runEngine]);
 
   const handleSubmit = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (wizard && /^\/(?:cancel|назад)$/i.test(trimmed)) {
-      setWizard(null); append("assistant", "Мастер отменён."); return;
+      setWizard(null); append("assistant", "Wizard cancelled."); return;
     }
     if (wizard && !/^\/(?:help|quit|clear|build|terminal)$/i.test(trimmed)) {
       await wizardInput(trimmed); return;
@@ -405,7 +402,7 @@ function App() {
       const next = changeDirectory(directory, trimmed);
       if (next) {
         append("user", trimmed); remember(trimmed); setDirectory(next);
-        append("assistant", "Рабочая папка: " + next);
+        append("assistant", "Working directory: " + next);
         return;
       }
     } catch (error) { append("assistant", "✗ " + String(error)); return; }
@@ -414,16 +411,15 @@ function App() {
 
   const cancel = useCallback(() => {
     if (active.current) active.current.abort();
-    else if (wizard) { setWizard(null); setInputValue(""); append("assistant", "Мастер отменён."); }
+    else if (wizard) { setWizard(null); setInputValue(""); append("assistant", "Wizard cancelled."); }
   }, [append, wizard]);
 
   const statusSegments: StatusLineSegment[] = useMemo(() => [
-    { content: "◆ CAVEY DEVKIT", color: ACCENT },
-    { content: "git:" + (branch.length > 28 ? "…" + branch.slice(-27) : branch), color: "#8EC9A3" },
-    { content: projectLabel(directory), color: "#DCD9DE" },
-    { content: loading ? "● " + activity : activity, color: loading ? "yellow" : activity === "error" ? "red" : "gray" },
-    { content: "PowerShell", color: "gray" },
-  ], [activity, branch, directory, loading]);
+    { content: "LOCAL", color: "#8C8991" },
+    { content: compact ? "git:" + (branch.length > 26 ? "…" + branch.slice(-25) : branch) : "PowerShell", color: "#A6A0A9" },
+    { content: compact ? "PowerShell" : "/help", color: "#8C8991" },
+    { content: loading ? "● " + activity : activity, color: loading ? "#D8B17B" : "#8A868E" },
+  ], [activity, loading, compact, branch]);
 
   const searchMatches = useCallback((query: string) => {
     if (!query.trim()) return [];
@@ -437,8 +433,8 @@ function App() {
   }, [messages]);
 
   const matched = menu ? [] : matchCommands(inputValue, catalog);
-  const compact = terminal.rows < 29 || terminal.columns < 70;
-  const headerRows = compact ? 4 : 7;
+  const compact = terminal.rows < 29 || terminal.columns < 110;
+  const headerRows = 3;
   const maxMenuRows = Math.max(2, Math.min(7, terminal.rows - 20));
   const menuCount = menu && !loading && !searchOpen ? Math.min(maxMenuRows, menu.choices.length) + (menu.subtitle ? 5 : 4) : 0;
   const paletteRows = menuCount || (matched.length > 0 && !loading && !searchOpen ? matched.length + 3 : 0);
@@ -454,9 +450,9 @@ function App() {
         <Header directory={directory} branch={branch} activity={activity} loading={loading} compact={compact} />
         <Box flexDirection="column" flexGrow={1} paddingX={2} paddingTop={compact ? 0 : 1}>
           {messages.length === 0 && !streaming && (
-            <Box flexDirection="column" marginLeft={2}>
-              <Text dimColor>Начните с <Text color="#E69C7D">/build</Text> или введите команду PowerShell.</Text>
-              {!compact && <Text dimColor>Наведение мыши выделяет команду · клик запускает выбранную команду</Text>}
+            <Box flexDirection="column" marginLeft={1}>
+              <Text dimColor>Start with <Text color="#E69C7D">/build</Text> or enter a PowerShell command.</Text>
+
             </Box>
           )}
           <MessageList
@@ -486,7 +482,7 @@ function App() {
           menu={menu}
           maxMenuRows={maxMenuRows}
           onMenuPick={wizardInput}
-          onMenuCancel={() => { setWizard(null); setInputValue(""); append("assistant", "Мастер отменён."); }}
+          onMenuCancel={() => { setWizard(null); setInputValue(""); append("assistant", "Wizard cancelled."); }}
           disabled={loading}
           searchOpen={searchOpen}
           onCancel={cancel}

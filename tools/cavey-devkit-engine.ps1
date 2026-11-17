@@ -1,4 +1,4 @@
-# Cavey DevKit - noninteractive build and GitHub command engine.
+﻿# Cavey DevKit - noninteractive build and GitHub command engine.
 # PowerShell 5.1; invoked by tools/devkit/src/runner.ts.
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8 } catch {}
@@ -47,18 +47,18 @@ function Option([string[]]$arguments, [string]$key) {
 function Flag([string[]]$arguments, [string]$key) { return ($arguments -contains $key) }
 function Ask([string]$prompt, [bool]$approved = $false) {
     if ($approved) { return $true }
-    if (-not $script:Interactive) { Fail "$prompt : добавьте --yes для подтверждения." }
+    if (-not $script:Interactive) { Fail "$prompt : add --yes to confirm." }
     return ((Read-Host "$prompt [y/N]") -match '^(y|yes|д|да)$')
 }
 function Pick([string]$prompt, [array]$values) {
-    if ($values.Count -eq 0) { Fail 'Нет вариантов для выбора.' }
+    if ($values.Count -eq 0) { Fail 'No options available.' }
     Heading $prompt
     for ($i = 0; $i -lt $values.Count; $i++) { Say ("  {0,2}. {1}" -f ($i+1),$values[$i]) }
-    $choice = Read-Host '  Номер [1]'
+    $choice = Read-Host '  Number [1]'
     if (-not $choice) { return 0 }
     $index = 0
     if (-not [int]::TryParse($choice,[ref]$index) -or $index -lt 1 -or $index -gt $values.Count) {
-        Fail 'Неверный номер.'
+        Fail 'Invalid option number.'
     }
     return ($index - 1)
 }
@@ -72,36 +72,36 @@ function History {
 }
 function Project([string[]]$tokens) {
     if ($tokens.Count -lt 2) {
-        Heading 'Текущий проект'
+        Heading 'Current project'
         Say "  $script:Root"
-        Hint 'Чтобы изменить: /project C:\путь\к\cavey'
+        Hint 'To change: /project C:\path\to\cavey'
         return
     }
     $newPath = ($tokens[1..($tokens.Count - 1)] -join ' ').Trim('"').Trim("'")
-    if (-not (Test-Path -LiteralPath $newPath -PathType Container)) { Fail "Папка не найдена: $newPath" }
+    if (-not (Test-Path -LiteralPath $newPath -PathType Container)) { Fail "Directory not found: $newPath" }
     $resolved = (Resolve-Path -LiteralPath $newPath).Path
     if (-not (Test-Path -LiteralPath (Join-Path $resolved 'tools\local-test-build.ps1'))) {
-        Fail 'В выбранной папке не найден исходный проект Cavey Player.'
+        Fail 'The selected directory is not a Cavey Player source checkout.'
     }
     $origin = Native 'git' @('-C',$resolved,'remote','get-url','origin')
     if ($origin -notmatch '(?i)Creative-Cave-uefn/Cavey-Player(\.git)?$') {
-        Fail "Это не репозиторий Cavey Player: $origin"
+        Fail "This is not the Cavey Player repository: $origin"
     }
     New-Item -ItemType Directory -Force -Path $script:DataHome | Out-Null
     @{ projectRoot = $resolved } | ConvertTo-Json | Set-Content -LiteralPath $script:ConfigFile -Encoding UTF8
     $script:Root = $resolved
     Set-Location $script:Root
-    Say "  Проект сохранён: $script:Root" Green
+    Say "  Project saved: $script:Root" Green
 }
 function Check-Repo {
     $origin = Git @('remote','get-url','origin')
     if ($origin -notmatch '(?i)Creative-Cave-uefn/Cavey-Player(\.git)?$') {
-        Fail "Неверный origin: $origin"
+        Fail "Incorrect Git origin: $origin"
     }
 }
 function Check-Clean {
     $changes = Git @('status','--porcelain','--untracked-files=no')
-    if ($changes) { Fail ('Сохраните изменения перед переключением ветки: ' + [Environment]::NewLine + $changes) }
+    if ($changes) { Fail ('Commit or stash changes before switching branches: ' + [Environment]::NewLine + $changes) }
 }
 function Get-Branches([bool]$refresh = $true) {
     Check-Repo
@@ -118,67 +118,67 @@ function Get-Branches([bool]$refresh = $true) {
 function Select-Source([string]$requested) {
     if ($requested -eq 'current') {
         $current = Git @('branch','--show-current')
-        if (-not $current) { Fail 'Detached HEAD; выберите ветку.' }
+        if (-not $current) { Fail 'Detached HEAD; select a branch.' }
         return $current
     }
     $branches = @(Get-Branches)
     if ($requested -eq 'latest' -or (-not $requested -and -not $script:Interactive)) {
         $latest = @($branches | Where-Object { $_.branch -ne 'main' -and $_.branch -ne 'beta' -and $_.branch -notlike 'feat/keivi-devkit-*' })
-        if ($latest.Count -eq 0) { Fail 'Нет экспериментальных веток.' }
-        Hint "Последняя по дате коммита: $($latest[0].branch), $($latest[0].sha)"
+        if ($latest.Count -eq 0) { Fail 'No experimental branches found.' }
+        Hint "Latest by commit date: $($latest[0].branch), $($latest[0].sha)"
         return $latest[0].branch
     }
     if ($requested) {
-        if (@($branches | Where-Object { $_.branch -ceq $requested }).Count -eq 0) { Fail "Ветка $requested не найдена." }
+        if (@($branches | Where-Object { $_.branch -ceq $requested }).Count -eq 0) { Fail "Branch $requested was not found." }
         return $requested
     }
     $choices = @($branches | Select-Object -First 50)
     $labels = @($choices | ForEach-Object { "$($_.branch) · $($_.sha) · $($_.date.Substring(0,10))" })
-    return $choices[(Pick 'Выберите актуальную ветку GitHub' $labels)].branch
+    return $choices[(Pick 'Select a GitHub branch' $labels)].branch
 }
 function Create-BuildWorktree([string]$source, [string]$folder) {
     $remoteSha = Git @('rev-parse',"refs/remotes/origin/$source")
     $worktree = Join-Path $folder 'source'
     Git @('worktree','add','--detach',$worktree,$remoteSha) | Out-Null
     $head = Git @('-C',$worktree,'rev-parse','HEAD')
-    if ($head -ne $remoteSha) { Fail "Выбранная ревизия не совпала с GitHub: $head != $remoteSha" }
+    if ($head -ne $remoteSha) { Fail "Selected commit does not match GitHub: $head != $remoteSha" }
     return [pscustomobject]@{ path = $worktree; sha = $head }
 }
 function Slug([string]$channel) {
     $slug = ($channel.ToLower() -replace '[^a-z0-9]+','-').Trim('-')
-    if (-not $slug) { Fail 'Пустое имя канала.' }
+    if (-not $slug) { Fail 'Empty release channel.' }
     return $slug
 }
 function Test-Releases {
-    if (-not (Has 'gh')) { Fail 'GitHub CLI не установлен. Установите gh и выполните gh auth login.' }
+    if (-not (Has 'gh')) { Fail 'GitHub CLI is not installed. Install gh and run gh auth login.' }
     $json = Gh @('release','list','--repo',$script:ReleaseRepo,'--limit','500','--json','tagName,name,isPrerelease,publishedAt')
     $releases = @($json | ConvertFrom-Json)
     return @($releases | Where-Object { $_.isPrerelease -and $_.tagName -match '^test-[a-z0-9-]+-v\d+(\.\d+)+$' })
 }
 function Release-Channel([object]$release) {
-    if ($release.name -match '^Тест:\s*(.+?)\s*·') { return $Matches[1] }
+    if ($release.name -match '^(?:Тест|Test):\s*(.+?)\s*·') { return $Matches[1] }
     if ($release.tagName -match '^test-(.+)-v\d') { return $Matches[1] }
-    Fail "Нельзя определить канал: $($release.tagName)"
+    Fail "Cannot determine release channel: $($release.tagName)"
 }
 function Stable-Base {
     $json = Gh @('release','list','--repo',$script:ReleaseRepo,'--limit','250','--json','tagName,isPrerelease')
     $all = @($json | ConvertFrom-Json)
     $stable = @($all | Where-Object { -not $_.isPrerelease -and $_.tagName -match '^v\d+\.\d+\.\d+$' } |
         Sort-Object { [version]($_.tagName.Substring(1)) } -Descending)
-    if ($stable.Count -eq 0) { Fail 'Стабильных релизов нет. Невозможно определить версию.' }
+    if ($stable.Count -eq 0) { Fail 'No stable releases found. Cannot determine a base version.' }
     return $stable[0].tagName.Substring(1)
 }
 function Remove-TestRelease([string]$tag) {
-    if ($tag -notmatch '^test-[a-z0-9-]+-v\d+(\.\d+)+$') { Fail "Удаление запрещено: $tag" }
+    if ($tag -notmatch '^test-[a-z0-9-]+-v\d+(\.\d+)+$') { Fail "Deletion prohibited: $tag" }
     $check = Gh @('release','view',$tag,'--repo',$script:ReleaseRepo,'--json','tagName,isPrerelease') | ConvertFrom-Json
-    if ($check.tagName -cne $tag -or -not $check.isPrerelease) { Fail "Неверный релиз: $tag" }
+    if ($check.tagName -cne $tag -or -not $check.isPrerelease) { Fail "Invalid release: $tag" }
     Gh @('release','delete',$tag,'--repo',$script:ReleaseRepo,'--cleanup-tag','--yes') | Out-Null
 }
 function Clean([string[]]$tokens) {
     $keep = 1
     $keepText = Option $tokens '--keep'
     if ($keepText -and (-not [int]::TryParse($keepText,[ref]$keep) -or $keep -lt 1)) {
-        Fail '--keep должен быть числом от 1.'
+        Fail '--keep must be an integer of at least 1.'
     }
     $items = @(Test-Releases)
     $channel = Option $tokens '--channel'
@@ -191,19 +191,19 @@ function Clean([string[]]$tokens) {
         $sorted = @($group.Group | Sort-Object publishedAt -Descending)
         if ($sorted.Count -gt $keep) { $remove += @($sorted | Select-Object -Skip $keep) }
     }
-    if ($remove.Count -eq 0) { Say '  Нет устаревших сборок.' Green; return }
-    Heading "Кандидаты на удаление: $($remove.Count)"
+    if ($remove.Count -eq 0) { Say '  No outdated test releases.' Green; return }
+    Heading "Releases eligible for deletion: $($remove.Count)"
     $remove | ForEach-Object { Hint "$($_.tagName) · $($_.publishedAt)" }
-    Hint "Стабильные, beta, Android и iOS релизы защищены. Остаётся $keep на канал."
+    Hint "Stable, beta, Android and iOS releases are protected. Keep $keep per channel."
     if (Flag $tokens '--dry-run') { return }
-    if (-not (Ask 'Удалить перечисленные релизы?' (Flag $tokens '--yes'))) { return }
+    if (-not (Ask 'Delete the listed test releases?' (Flag $tokens '--yes'))) { return }
     $success = 0
     foreach ($release in $remove) {
         try { Remove-TestRelease $release.tagName; $success++; Say "  ✓ $($release.tagName)" Green }
         catch { Say "  ✗ $($release.tagName): $_" Red }
     }
-    Say "  Удалено $success из $($remove.Count)." Cyan
-    if ($success -ne $remove.Count) { Fail 'Некоторые релизы не удалены.' }
+    Say "  Removed $success of $($remove.Count)." Cyan
+    if ($success -ne $remove.Count) { Fail 'Some test releases could not be removed.' }
 }
 function Build([string[]]$tokens) {
     Check-Repo
@@ -212,20 +212,20 @@ function Build([string[]]$tokens) {
     $local = Flag $tokens '--local'
     if (-not $mode) {
         if ($local -or -not $script:Interactive) { $mode = 'new' }
-        else { $mode = @('new','update')[(Pick 'Режим публикации' @('Новая отдельная сборка', 'Обновить существующий тестовый канал'))] }
+        else { $mode = @('new','update')[(Pick 'Publication mode' @('New independent build', 'Update existing test channel'))] }
     }
-    if (@('new','update') -notcontains $mode) { Fail 'Неверный режим, доступно new/update.' }
+    if (@('new','update') -notcontains $mode) { Fail 'Invalid mode; use new/update.' }
     if ($mode -eq 'update') {
         $releases = @(Test-Releases | Sort-Object publishedAt -Descending)
-        if ($releases.Count -eq 0) { Fail 'Нет тестовых релизов для обновления.' }
+        if ($releases.Count -eq 0) { Fail 'No test releases available to update.' }
         $specified = Option $tokens '--channel'
         if ($specified) {
             $expected = Slug $specified
             $match = @($releases | Where-Object { $_.tagName -match ('^test-' + [regex]::Escape($expected) + '-v\d') })
-            if ($match.Count -eq 0) { Fail "Канал $specified не найден." }
+            if ($match.Count -eq 0) { Fail "Channel $specified was not found." }
             $channel = Release-Channel $match[0]
         } else {
-            if (-not $script:Interactive) { Fail 'Для --mode update укажите --channel.' }
+            if (-not $script:Interactive) { Fail 'For --mode update, specify --channel.' }
             $slots = @(); $seen = @{}
             foreach ($release in $releases) {
                 $name = Release-Channel $release; $id = Slug $name
@@ -234,7 +234,7 @@ function Build([string[]]$tokens) {
                 $slots += [pscustomobject]@{ channel = $name; tag = $release.tagName }
             }
             $labels = @($slots | ForEach-Object { "$($_.channel) · $($_.tag)" })
-            $channel = $slots[(Pick 'Какой тестовый канал обновить?' $labels)].channel
+            $channel = $slots[(Pick 'Select test channel to update' $labels)].channel
         }
     } else {
         $channel = Option $tokens '--channel'
@@ -242,15 +242,15 @@ function Build([string[]]$tokens) {
         if (-not $local) {
             $prefix = 'test-' + (Slug $channel) + '-v'
             if (@(Test-Releases | Where-Object { $_.tagName.StartsWith($prefix) }).Count -gt 0) {
-                Fail "Канал $channel существует. Используйте --mode update."
+                Fail "Channel $channel already exists. Use --mode update."
             }
         }
     }
-    Heading 'План локальной сборки'
-    Say "  Источник: origin/$source"
-    Say "  Канал: $channel"
-    Say "  Режим: $mode · $(if ($local) { 'только на ПК' } else { 'публикация в GitHub Releases' })"
-    if (-not (Ask 'Создать отдельное рабочее дерево и собрать?' (Flag $tokens '--yes'))) { return }
+    Heading 'Local build plan'
+    Say "  Source: origin/$source"
+    Say "  Channel: $channel"
+    Say "  Mode: $mode · $(if ($local) { 'local only' } else { 'publish to GitHub Releases' })"
+    if (-not (Ask 'Create a temporary worktree and build?' (Flag $tokens '--yes'))) { return }
     $base = if ($local) { '0.4.0' } else { Stable-Base }
     $seconds = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 1794182400)
     if ($seconds -lt 1) { $seconds = 1 }
@@ -277,11 +277,11 @@ function Build([string[]]$tokens) {
         if (Flag $tokens '--skip-checks') { $buildArgs += '-SkipChecks' }
         Heading "Windows build $version · $($sha.Substring(0,8))"
         & powershell @buildArgs
-        if ($LASTEXITCODE -ne 0) { Fail "Сборка завершилась кодом $LASTEXITCODE." }
+        if ($LASTEXITCODE -ne 0) { Fail "Build failed with exit code $LASTEXITCODE." }
         $artifacts = @()
         foreach ($file in @('CavePlayer-Setup.exe','CavePlayer-portable.zip')) {
             $srcFile = Join-Path (Join-Path $worktree 'dist') $file
-            if (-not (Test-Path $srcFile) -or (Get-Item $srcFile).Length -eq 0) { Fail "Не найден $file." }
+            if (-not (Test-Path $srcFile) -or (Get-Item $srcFile).Length -eq 0) { Fail "Missing $file." }
             $target = Join-Path $folder $file
             Copy-Item -LiteralPath $srcFile -Destination $target
             $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLower()
@@ -291,12 +291,12 @@ function Build([string[]]$tokens) {
         $status = 'built'
         if (-not $local) {
             $tag = "$prefix$version"
-            Heading 'Предпросмотр публикации'
+            Heading 'Publication preview'
             Say "  $script:ReleaseRepo / $tag"
-            Say "  Исходники: $source ($sha)"
+            Say "  Source branch: $source ($sha)"
             $notes = @("Cavey DevKit", "Source: $script:SourceRepo", "Branch: $source", "Commit: $sha", "Update channel: $channel", "Version: $version") -join [Environment]::NewLine
-            if (Ask 'Опубликовать собранные файлы?' (Flag $tokens '--yes')) {
-                $publishArgs = @('release','create',$tag) + @($artifacts | ForEach-Object { $_.path }) + @('--repo',$script:ReleaseRepo,'--prerelease','--title',"Тест: $channel · $version",'--notes',$notes)
+            if (Ask 'Publish built artifacts?' (Flag $tokens '--yes')) {
+                $publishArgs = @('release','create',$tag) + @($artifacts | ForEach-Object { $_.path }) + @('--repo',$script:ReleaseRepo,'--prerelease','--title',"Test: $channel · $version",'--notes',$notes)
                 Gh $publishArgs | Out-Null
                 $status = 'published'
                 Say "  ✓ https://github.com/$script:ReleaseRepo/releases/tag/$tag" Green
@@ -304,8 +304,8 @@ function Build([string[]]$tokens) {
                     # Preserve previous working builds unless replacement is fully published.
                     $old = @(Test-Releases | Where-Object { $_.tagName.StartsWith($prefix) -and $_.tagName -ne $tag })
                     foreach ($release in $old) {
-                        try { Remove-TestRelease $release.tagName; Hint "Старый релиз удалён: $($release.tagName)" }
-                        catch { Say "  ! Не смог удалить $($release.tagName): $_" Yellow }
+                        try { Remove-TestRelease $release.tagName; Hint "Old release removed: $($release.tagName)" }
+                        catch { Say "  ! Could not delete $($release.tagName): $_" Yellow }
                     }
                 }
             }
@@ -318,7 +318,7 @@ function Build([string[]]$tokens) {
             }
             # Remove the temporary checkout but preserve packaged build artifacts.
             try { Git @('worktree','remove','--force',$worktree) | Out-Null }
-            catch { Say "  ! Не удалось очистить временное дерево $worktree : $_" Yellow }
+            catch { Say "  ! Could not clean temporary worktree $worktree : $_" Yellow }
         }
         Add-History ([pscustomobject]@{
             time = (Get-Date).ToUniversalTime().ToString('o')
@@ -332,20 +332,20 @@ function Build([string[]]$tokens) {
 function Status {
     Check-Repo
     Heading 'Cavey DevKit / Cavey Player'
-    Say "  Репозиторий: $script:SourceRepo"
-    Say "  Ветка: $(Git @('branch','--show-current'))"
-    Say "  Коммит: $(Git @('rev-parse','--short','HEAD'))"
+    Say "  Repository: $script:SourceRepo"
+    Say "  Branch: $(Git @('branch','--show-current'))"
+    Say "  Commit: $(Git @('rev-parse','--short','HEAD'))"
     $dirty = Git @('status','--porcelain','--untracked-files=no')
-    Say "  Код: $(if ($dirty) { 'изменён' } else { 'чистый' })"
+    Say "  Working tree: $(if ($dirty) { 'modified' } else { 'clean' })"
     $records = @(History)
-    if ($records.Count) { Say "  Последняя сборка: $($records[-1].version) / $($records[-1].status)" }
+    if ($records.Count) { Say "  Last build: $($records[-1].version) / $($records[-1].status)" }
     if (Has 'gh') {
-        try { Gh @('auth','status') | Out-Null; Say '  GitHub: авторизован' Green }
-        catch { Say '  GitHub: требуется gh auth login' Yellow }
+        try { Gh @('auth','status') | Out-Null; Say '  GitHub: authenticated' Green }
+        catch { Say '  GitHub: run gh auth login' Yellow }
     }
 }
 function Doctor {
-    Heading 'Проверка окружения'
+    Heading 'Environment check'
     foreach ($name in @('git','gh','flutter','powershell')) {
         if (Has $name) { Say "  ✓ $name" Green } else { Say "  ✗ $name" Red }
     }
@@ -362,20 +362,20 @@ function Doctor {
     }
     try { Check-Repo; Say '  ✓ Git origin' Green } catch { Say "  ✗ $_" Red }
     if (Has 'gh') {
-        try { Gh @('auth','status') | Out-Null; Say '  ✓ Авторизация GitHub' Green }
-        catch { Say '  ✗ Выполните gh auth login' Yellow }
+        try { Gh @('auth','status') | Out-Null; Say '  ✓ GitHub authentication' Green }
+        catch { Say '  ✗ Run gh auth login' Yellow }
     }
-    Hint 'Windows-сборка требует Flutter 3.27.4 и Visual Studio 2022 C++ Build Tools.'
+    Hint 'Windows build requires Flutter 3.27.4 and Visual Studio 2022 C++ Build Tools.'
 }
 function Help {
-    Heading 'Cavey DevKit · команды'
+    Heading 'Cavey DevKit · Commands'
     @(
         '/status                       Статус проекта'
         '/branches                     Ветки по дате последнего коммита'
         '/build                        Интерактивный выбор ветки/публикации'
         '/build --branch latest --mode new --yes'
-        '/build --branch <ветка> --mode update --channel <канал>'
-        '/build --branch <ветка> --local --yes'
+        '/build --branch <branch> --mode update --channel <channel>'
+        '/build --branch <branch> --local --yes'
         '/releases                     Тестовые релизы'
         '/clean                        Очистка старых тестовых релизов'
         '/clean --dry-run               Просмотр без удаления'
@@ -383,7 +383,7 @@ function Help {
         '/logs                         Последний лог сборки'
         '/run --latest                 Последняя успешная локальная сборка'
         '/doctor                       Диагностика'
-        '/project [папка]               Папка проекта; сохраняется между запусками'
+        '/project [folder]               Папка проекта; сохраняется между запусками'
         '/quit                         Выход'
     ) | ForEach-Object { Say "  $_" }
 }
@@ -397,18 +397,18 @@ function Dispatch([string[]]$tokens) {
         'project' { Project $tokens }
         'branches' {
             $branches = @(Get-Branches)
-            Heading "Ветки GitHub · $($branches.Count)"
+            Heading "GitHub branches · $($branches.Count)"
             foreach ($b in $branches) { Say ("  {0,-52} {1}  {2}" -f $b.branch,$b.date.Substring(0,10),$b.sha) }
         }
         'releases' {
             $releases = @(Test-Releases | Sort-Object publishedAt -Descending)
-            Heading "Тестовые сборки · $($releases.Count)"
+            Heading "Test releases · $($releases.Count)"
             foreach ($r in $releases) { Say "  $($r.tagName) · $($r.publishedAt)" }
         }
         'clean' { Clean $tokens }
         'build' { Build $tokens }
         'history' {
-            Heading 'Локальные сборки'
+            Heading 'Local builds'
             foreach ($record in @(History | Select-Object -Last 20)) {
                 Say "  $($record.time) · $($record.status) · $($record.version) · $($record.sourceBranch)"
             }
@@ -420,27 +420,27 @@ function Dispatch([string[]]$tokens) {
                 $last = Join-Path $records[-1].folder 'build-log.txt'
                 if (Test-Path $last) { $path = $last }
             }
-            if (-not (Test-Path $path)) { Fail 'Пока нет логов.' }
+            if (-not (Test-Path $path)) { Fail 'No logs available.' }
             if (Flag $tokens '--follow') { Get-Content $path -Wait -Tail 80 } else { Get-Content $path -Tail 100 }
         }
         'run' {
             $available = @(History | Where-Object { $_.status -eq 'built' -or $_.status -eq 'published' })
-            if ($available.Count -eq 0) { Fail 'Нет успешных локальных сборок. Выполните /build.' }
+            if ($available.Count -eq 0) { Fail 'No successful local builds. Run /build.' }
             $record = $available[-1]
             $zip = Join-Path $record.folder 'CavePlayer-portable.zip'
-            if (-not (Test-Path $zip)) { Fail "Файл последней сборки отсутствует: $zip" }
+            if (-not (Test-Path $zip)) { Fail "Latest build file is missing: $zip" }
             $target = Join-Path $record.folder 'run'
             $exe = Join-Path $target 'cave_player.exe'
             if (-not (Test-Path $exe)) {
                 New-Item -ItemType Directory -Force -Path $target | Out-Null
-                Heading 'Распаковка последнего успешного билда'
+                Heading 'Extracting latest successful build'
                 Expand-Archive -LiteralPath $zip -DestinationPath $target -Force
             }
-            if (-not (Test-Path $exe)) { Fail "В portable-архиве нет cave_player.exe: $zip" }
+            if (-not (Test-Path $exe)) { Fail "Portable archive is missing cave_player.exe: $zip" }
             Start-Process -FilePath $exe -WorkingDirectory $target
             Say "  ✓ Cavey $($record.version) · $($record.sourceBranch) · $($record.sha.Substring(0,8))" Green
         }
-        default { Fail "Неизвестная команда: $command. Введите /help." }
+        default { Fail "Unknown command: $command. Use /help." }
     }
 }
 try { Dispatch @($args) }

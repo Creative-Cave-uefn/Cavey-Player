@@ -36,7 +36,7 @@ if (Test-Node $localExe) {
     return
 }
 
-Write-Host "Node.js 22+ не найден. Устанавливаю локальный Node.js $version ($arch)..." -ForegroundColor Cyan
+Write-Host "Node.js 22+ not found. Installing a local Node.js $version ($arch)..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 
 # Ensure HTTPS downloads work on Windows PowerShell 5.1.
@@ -53,27 +53,27 @@ try {
     $checksumLines = @(Get-Content -LiteralPath $checksumPath | Where-Object {
         $_ -match "^[a-fA-F0-9]{64}\s+\*?$([regex]::Escape($filename))\s*$"
     })
-    if ($checksumLines.Count -ne 1) { throw "Контрольная сумма для $filename отсутствует или неоднозначна." }
+    if ($checksumLines.Count -ne 1) { throw "Checksum for $filename is missing or ambiguous." }
     $expected = ($checksumLines[0].Trim() -split '\s+')[0]
     $actual = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
-    if ($actual -ine $expected) { throw "SHA-256 не совпадает: скачанный архив Node.js повреждён." }
+    if ($actual -ine $expected) { throw "SHA-256 mismatch: the Node.js archive is corrupted." }
 
-    Write-Host 'Проверка SHA-256 пройдена. Распаковка...' -ForegroundColor DarkCyan
+    Write-Host 'SHA-256 verified. Extracting...' -ForegroundColor DarkCyan
     $extractPath = Join-Path $tempDir 'unpacked'
     Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
     $unpacked = Join-Path $extractPath $folder
     $executable = Join-Path $unpacked 'node.exe'
-    if (-not (Test-Node $executable)) { throw 'Распакованный Node.js не прошёл проверку версии.' }
+    if (-not (Test-Node $executable)) { throw 'Extracted Node.js did not pass version validation.' }
     if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'node_modules\npm\bin\npm-cli.js') -PathType Leaf)) {
-        throw 'Архив Node.js не содержит npm.'
+        throw 'The Node.js archive is missing npm.'
     }
 
     if (Test-Path -LiteralPath $runtimeDir) {
         Remove-Item -LiteralPath $runtimeDir -Recurse -Force
     }
     Move-Item -LiteralPath $unpacked -Destination $runtimeDir
-    if (-not (Test-Node $localExe)) { throw 'Node.js установлен, но не запускается.' }
-    Write-Host "Локальный Node.js $version готов. Системная версия не менялась." -ForegroundColor Green
+    if (-not (Test-Node $localExe)) { throw 'Node.js was installed but cannot be started.' }
+    Write-Host "Local Node.js $version is ready. Your system version was not changed." -ForegroundColor Green
     Write-Output $localExe
 } finally {
     if (Test-Path -LiteralPath $tempDir) {

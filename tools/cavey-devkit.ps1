@@ -29,19 +29,19 @@ if ($args.Count -gt 0) {
         & powershell.exe -NoLogo -NoProfile -NoExit
         exit $LASTEXITCODE
     }
-    if (-not (Test-Path -LiteralPath $engine)) { throw "Не найден движок DevKit: $engine" }
+    if (-not (Test-Path -LiteralPath $engine)) { throw "DevKit engine not found: $engine" }
     & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $engine @args
     exit $LASTEXITCODE
 }
 if (-not (Test-Path -LiteralPath $package) -or -not (Test-Path -LiteralPath $entry)) {
-    throw "Отсутствует React DevKit: $appDir"
+    throw "React DevKit is missing: $appDir"
 }
 $resolver = Join-Path $PSScriptRoot 'resolve-devkit-node.ps1'
-if (-not (Test-Path -LiteralPath $resolver)) { throw "Не найден установщик Node.js: $resolver" }
+if (-not (Test-Path -LiteralPath $resolver)) { throw "Node.js resolver not found: $resolver" }
 $nodePaths = @(& $resolver)
 $nodePath = if ($nodePaths.Count -gt 0) { [string]$nodePaths[-1] } else { '' }
 if (-not $nodePath -or -not (Test-Path -LiteralPath $nodePath -PathType Leaf)) {
-    throw 'Node.js 22+ недоступен: установка не завершилась.'
+    throw 'Node.js 22+ is unavailable: installation did not complete.'
 }
 $nodeDirectory = Split-Path -Parent $nodePath
 $npmCli = Join-Path $nodeDirectory 'node_modules\npm\bin\npm-cli.js'
@@ -53,7 +53,7 @@ if (-not (Test-Path -LiteralPath $npmCli)) {
     }
 }
 if (-not (Test-Path -LiteralPath $npmCli)) {
-    throw 'Не найден npm. Переустановите Node.js с npm или удалите повреждённую локальную копию Node.'
+    throw 'npm not found. Reinstall Node.js with npm or remove the damaged local runtime.'
 }
 $packageHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash
 $installedHash = if (Test-Path -LiteralPath $stamp) { (Get-Content -LiteralPath $stamp -Raw).Trim() } else { '' }
@@ -61,17 +61,17 @@ $previousPath = $env:PATH
 $env:PATH = "$nodeDirectory;$previousPath"
 try {
     if (-not (Test-Path -LiteralPath $tsx) -or $installedHash -ne $packageHash) {
-        Write-Host 'Установка зависимостей нового Cavey DevKit (первый запуск)...' -ForegroundColor Cyan
+        Write-Host 'Installing Cavey DevKit dependencies (first launch)...' -ForegroundColor Cyan
         & $nodePath $npmCli install --prefix $appDir --no-audit --no-fund
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tsx)) {
-            throw 'Не удалось установить React DevKit. Проверьте сеть и повторите запуск.'
+            throw 'Failed to install React DevKit. Check your internet connection and try again.'
         }
         Set-Content -LiteralPath $stamp -Value $packageHash -Encoding Ascii
     }
     Push-Location $workspace
     try {
         & $nodePath $tsx $entry
-        if ($LASTEXITCODE -ne 0) { throw "DevKit завершился с кодом $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) { throw "DevKit exited with code $LASTEXITCODE" }
     } finally {
         Pop-Location
     }

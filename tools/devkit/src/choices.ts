@@ -30,7 +30,7 @@ export function releaseChannels(records: readonly ReleaseRecord[]): Choice[] {
   const seen = new Set<string>();
   const result: Choice[] = [];
   for (const release of matching) {
-    const fromTitle = /^Тест:\s*(.+?)\s*·/.exec(release.name ?? "")?.[1];
+    const fromTitle = /^(?:Тест|Test):\s*(.+?)\s*·/.exec(release.name ?? "")?.[1];
     const fromTag = /^test-(.+)-v\d+(\.\d+)+$/.exec(release.tagName)?.[1];
     const channel = fromTitle || fromTag;
     if (!channel) continue;
