@@ -235,12 +235,20 @@ class Updater extends ChangeNotifier {
 
   /// Пререлизы публичного репозитория: тестовые сборки веток и бета-версии
   Future<List<Map>> _fetchPrereleases() async {
-    final res = await http
-        .get(Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=60'), headers: _headers)
-        .timeout(const Duration(seconds: 20));
-    if (res.statusCode == 404) return const [];
-    if (res.statusCode != 200) throw HttpException('GitHub ответил ${res.statusCode}');
-    return [for (final r in (jsonDecode(res.body) as List).whereType<Map>()) if (r['prerelease'] == true) r];
+    // More than 60 releases may exist; otherwise old test builds remain
+    // invisible and cannot be cleaned up from Settings.
+    final results = <Map>[];
+    for (var page = 1; page <= 10; page++) {
+      final res = await http
+          .get(Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=100&page=$page'), headers: _headers)
+          .timeout(const Duration(seconds: 20));
+      if (res.statusCode == 404 && page == 1) return const [];
+      if (res.statusCode != 200) throw HttpException('GitHub ответил ${res.statusCode}');
+      final batch = (jsonDecode(res.body) as List).whereType<Map>().toList();
+      results.addAll(batch.where((r) => r['prerelease'] == true));
+      if (batch.length < 100) break;
+    }
+    return results;
   }
 
   /// Тестовые сборки (test-*), новые сверху

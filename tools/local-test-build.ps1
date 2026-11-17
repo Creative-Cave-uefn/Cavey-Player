@@ -22,7 +22,10 @@ param(
     [string]$Downloader = '',
     [string]$GoogleClientId = $env:GOOGLE_CLIENT_ID,
     [string]$GoogleClientSecret = $env:GOOGLE_CLIENT_SECRET,
-    [string]$Version = ''
+    [string]$Version = '',
+    [string]$BuildChannel = '',
+    [string]$ProjectRoot = '',
+    [string]$SourceBranch = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,7 +41,7 @@ function Say([string]$text) { Write-Host ""; Write-Host "== $text" -ForegroundCo
 function Warn([string]$text) { Write-Host "! $text" -ForegroundColor Yellow }
 function Fail([string]$text) { Write-Host ""; Write-Host "ОШИБКА: $text" -ForegroundColor Red; exit 1 }
 
-$root = Split-Path -Parent $PSScriptRoot
+$root = if ($ProjectRoot) { (Resolve-Path -LiteralPath $ProjectRoot).Path } else { Split-Path -Parent $PSScriptRoot }
 Set-Location $root
 $logFile = Join-Path $root 'build-log.txt'
 Set-Content -Path $logFile -Value ("Сборка " + (Get-Date)) -Encoding UTF8
@@ -110,8 +113,9 @@ if ($LASTEXITCODE -ne 0) {
 # ---------- 2. Ветка и версия ----------
 Say 'Определяю ветку и версию'
 $branch = Capture 'git' @('rev-parse', '--abbrev-ref', 'HEAD')
-if (-not $branch -or $branch -eq 'HEAD') { Fail 'Не удалось определить ветку. Перейдите на нужную: git checkout feature/beta-9' }
-if (($branch -eq 'main' -or $branch -eq 'beta') -and -not $Stable) {
+if ($branch -eq 'HEAD' -and $SourceBranch) { $branch = $SourceBranch }
+if (-not $branch -or $branch -eq 'HEAD') { Fail 'Не удалось определить ветку. Укажите -SourceBranch для detached worktree.' }
+if (($branch -eq 'main' -or $branch -eq 'beta') -and -not $Stable -and -not $BuildChannel) {
     Fail "Ветка $branch — это обычные релизы для всех. Тестовые сборки делаются только с других веток."
 }
 $dirty = Capture 'git' @('status', '--porcelain', '--untracked-files=no')
@@ -120,6 +124,7 @@ $sha = Capture 'git' @('rev-parse', '--short', 'HEAD')
 $subject = Capture 'git' @('log', '-1', '--format=%s')
 
 $slug = ($branch.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+if ($BuildChannel) { $slug = ($BuildChannel.ToLower() -replace '[^a-z0-9]+', '-').Trim('-') }
 if (-not $slug) { $slug = 'branch' }
 
 if (-not $Version) {
@@ -189,7 +194,7 @@ if (-not $SkipChecks) {
 Say 'Собираю приложение (первый раз это долго, 5–15 минут)'
 $defines = @(
     "--dart-define=APP_VERSION=$Version",
-    "--dart-define=BUILD_CHANNEL=$(if ($Stable) { '' } else { $branch })",
+    "--dart-define=BUILD_CHANNEL=$(if ($BuildChannel) { $BuildChannel } elseif ($Stable) { '' } else { $branch })",
     '--dart-define=BUILD_BETA=false',
     "--dart-define=CAVE_LIBRARY_ID=$($vars['CAVE_LIBRARY_ID'])",
     "--dart-define=DISCORD_CLIENT_ID=$($vars['DISCORD_CLIENT_ID'])",
@@ -258,10 +263,11 @@ Write-Host "Будет создан пререлиз $tag в $ReleasesRepo; пр
 $answer = Read-Host 'Продолжить? (y/n)'
 if ($answer -notmatch '^[yYдД]') { Write-Host 'Отменено. Файлы остались в dist.'; exit 0 }
 
-$old = & gh release list --repo $ReleasesRepo --limit 200 --json tagName --jq '.[].tagName' 2>$null
-foreach ($t in @($old)) {
-    if ($t -and $t.StartsWith($prefix)) { & gh release delete $t --repo $ReleasesRepo --cleanup-tag --yes | Out-Null }
-}
+$old = & gh release list --repo $ReleasesRepo --limit 500 --json tagName,isPrerelease 2>$null
+if ($LASTEXITCODE -ne 0) { Fail 'Не получилось проверить существующие тестовые релизы: ничего не удалено.' }
+$oldTags = @($old | ConvertFrom-Json | Where-Object {
+    $_.isPrerelease -and $_.tagName.StartsWith($prefix) -and $_.tagName -ne $tag
+} | ForEach-Object { $_.tagName })
 $notesFile = Join-Path $env:TEMP 'cavey-notes.txt'
 [IO.File]::WriteAllText($notesFile, "Локальная тестовая сборка ветки $branch ($sha)`n$subject", (New-Object Text.UTF8Encoding($false)))
 $title = "Тест: $branch · $Version"
@@ -272,4 +278,9 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-Host "Выложено: $tag" -ForegroundColor Green
+# Delete previous builds only AFTER GitHub confirms successful publication.
+foreach ($t in $oldTags) {
+    & gh release delete $t --repo $ReleasesRepo --cleanup-tag --yes | Out-Null
+    if ($LASTEXITCODE -ne 0) { Warn "Не получилось удалить устаревший $t. Новый релиз уже опубликован." }
+}
 Write-Host 'В Cavey: Настройки → Обновления → Тестовые сборки.'
