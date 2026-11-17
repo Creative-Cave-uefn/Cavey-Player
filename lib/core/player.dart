@@ -807,10 +807,18 @@ class PlayerController extends ChangeNotifier {
     if (_djPending || _dj != null) return;
     // чуть раньше плана — порядок: какой из следующих треков лучше всего ляжет после этого
     if (useMixEngine && duration - d < const Duration(seconds: _djLeadSec + 30) && _orderedFor != current?.id) _djReorder();
-    if (duration - d < const Duration(seconds: _djLeadSec) && _djTriedFor != current?.id && _djEligible()) {
-      _djTriedFor = current?.id;
-      unawaited(_djPrepare());
-      return;
+    if (duration - d < const Duration(seconds: _djLeadSec) && _djTriedFor != current?.id) {
+      final why = _djWhyNot();
+      if (why == null) {
+        _djTriedFor = current?.id;
+        unawaited(_djPrepare());
+        return;
+      }
+      // за 20 с до конца — последний момент, когда движок ещё успел бы; если нет, в журнал — почему
+      if (useMixEngine && duration - d < const Duration(seconds: 20) && _djWhyLogged != current?.id) {
+        _djWhyLogged = current?.id;
+        AppLog.info('DJ-переход не будет (обычный кроссфейд, доли не сводятся): $why');
+      }
     }
     // Профили смотрим только ближе к концу трека — не на каждом тике позиции
     final plan = duration - d < const Duration(seconds: 60) ? _smartPlan() : null;
@@ -1082,19 +1090,26 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// Можно ли сделать переход движком: обе деки на нём, оба трека разобраны, не джем
-  bool _djEligible() {
+  /// Почему переход сделает не движок (null — сделает он). Пишется в журнал раз на трек: без этого непонятно,
+  /// почему доли не сведены — переход мог быть обычным кроссфейдом
+  String? _djWhyNot() {
     final cur = current, ni = _autoNextIndex();
-    if (!useMixEngine || cur == null || ni == null || !_p.onEngine) return false;
-    if (jamActive?.call() ?? false) return false;
+    if (!useMixEngine) return 'новый аудиодвижок выключен';
+    if (cur == null || ni == null) return 'нет следующего трека';
+    if (!_p.onEngine) return 'текущий трек играет не через движок (не сохранён на компьютере)';
+    if (jamActive?.call() ?? false) return 'идёт совместное прослушивание';
     final nextId = queue[ni];
-    if (!cache.has(nextId) || !cache.fileFor(nextId).existsSync()) return false;
+    if (!cache.has(nextId) || !cache.fileFor(nextId).existsSync()) return 'следующий трек не сохранён на компьютере';
     final a = _beatProfile(cur.id), b = _beatProfile(nextId);
-    if (a == null || b == null) return false;
+    if (a == null) return 'текущий трек ещё не разобран';
+    if (b == null) return 'следующий трек ещё не разобран';
     // профиль от другого файла (трек заменили) — не доверяем
     final ms = a['durationMs'];
-    if (ms is num && duration > Duration.zero && (ms - duration.inMilliseconds).abs() > 4000) return false;
-    return true;
+    if (ms is num && duration > Duration.zero && (ms - duration.inMilliseconds).abs() > 4000) return 'разбор от другого файла';
+    return null;
   }
+
+  String? _djWhyLogged;
 
   /// Громкость деки при DJ-переходе: ползунок уходит на мастер, на деке — выравнивание громкости
   double _djGain(double norm) {
