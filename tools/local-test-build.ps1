@@ -22,7 +22,8 @@ param(
     [string]$Downloader = '',
     [string]$GoogleClientId = $env:GOOGLE_CLIENT_ID,
     [string]$GoogleClientSecret = $env:GOOGLE_CLIENT_SECRET,
-    [string]$Version = ''
+    [string]$Version = '',
+    [string]$BuildChannel = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -111,7 +112,7 @@ if ($LASTEXITCODE -ne 0) {
 Say 'Определяю ветку и версию'
 $branch = Capture 'git' @('rev-parse', '--abbrev-ref', 'HEAD')
 if (-not $branch -or $branch -eq 'HEAD') { Fail 'Не удалось определить ветку. Перейдите на нужную: git checkout feature/beta-9' }
-if (($branch -eq 'main' -or $branch -eq 'beta') -and -not $Stable) {
+if (($branch -eq 'main' -or $branch -eq 'beta') -and -not $Stable -and -not $BuildChannel) {
     Fail "Ветка $branch — это обычные релизы для всех. Тестовые сборки делаются только с других веток."
 }
 $dirty = Capture 'git' @('status', '--porcelain', '--untracked-files=no')
@@ -120,6 +121,7 @@ $sha = Capture 'git' @('rev-parse', '--short', 'HEAD')
 $subject = Capture 'git' @('log', '-1', '--format=%s')
 
 $slug = ($branch.ToLower() -replace '[^a-z0-9]+', '-').Trim('-')
+if ($BuildChannel) { $slug = ($BuildChannel.ToLower() -replace '[^a-z0-9]+', '-').Trim('-') }
 if (-not $slug) { $slug = 'branch' }
 
 if (-not $Version) {
@@ -189,7 +191,7 @@ if (-not $SkipChecks) {
 Say 'Собираю приложение (первый раз это долго, 5–15 минут)'
 $defines = @(
     "--dart-define=APP_VERSION=$Version",
-    "--dart-define=BUILD_CHANNEL=$(if ($Stable) { '' } else { $branch })",
+    "--dart-define=BUILD_CHANNEL=$(if ($BuildChannel) { $BuildChannel } elseif ($Stable) { '' } else { $branch })",
     '--dart-define=BUILD_BETA=false',
     "--dart-define=CAVE_LIBRARY_ID=$($vars['CAVE_LIBRARY_ID'])",
     "--dart-define=DISCORD_CLIENT_ID=$($vars['DISCORD_CLIENT_ID'])",
