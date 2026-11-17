@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlternateScreen, Box, Text, render, useApp, useInput } from "@claude-code-kit/ink-renderer";
-import { REPL, type Message, type StatusLineSegment } from "@claude-code-kit/ui";
+import { AlternateScreen, Box, Text, render, useApp } from "@claude-code-kit/ink-renderer";
+import { MessageList, SearchOverlay, StatusLine, Spinner, useTerminalSize, type Message, type StatusLineSegment, type VirtualListHandle } from "@claude-code-kit/ui";
+import { CommandPrompt, matchCommands } from "./CommandPrompt.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -80,23 +81,28 @@ function formatMessage(m: Message): React.ReactNode {
   );
 }
 
-function Welcome({ directory }: { directory: string }) {
+function Header({ directory, branch, activity, loading, compact }: {
+  directory: string; branch: string; activity: string; loading: boolean; compact: boolean;
+}) {
+  const color = loading ? "#E6BE69" : activity === "error" ? "#E98579" : "#8AC7A4";
   return (
-    <Box flexDirection="column" marginTop={2} marginLeft={2} gap={1}>
-      <Box flexDirection="row" gap={3}>
-        <Box flexDirection="column">
-          <Text color={ACCENT} bold>{"  ▟██▙ "}</Text>
-          <Text color={ACCENT} bold>{"  █◉◉█ "}</Text>
-          <Text color={ACCENT} bold>{"  ▀██▀ "}</Text>
+    <Box flexDirection="column" paddingX={2} paddingTop={compact ? 0 : 1}>
+      <Box borderStyle="round" borderColor="#525058" paddingX={2} flexDirection="column">
+        <Box justifyContent="space-between">
+          <Text bold color="#E89A78">◆ CAVEY <Text color="#E4E1E6">DEVKIT</Text> <Text dimColor>v1.1</Text></Text>
+          <Text color={color}>{loading ? "● " + activity : "● READY"}</Text>
         </Box>
-        <Box flexDirection="column">
-          <Text bold>Cavey DevKit <Text dimColor>v1.0</Text></Text>
-          <Text color={ACCENT}>Reactive terminal workspace</Text>
-          <Text dimColor>{prettyDirectory(directory)}</Text>
+        {!compact && (
+          <Text dimColor>  DEVELOPMENT WORKSPACE     ·     LOCAL BUILDS     ·     GITHUB</Text>
+        )}
+        <Box gap={1}>
+          <Text color="#9A95A1">⌁</Text>
+          <Text color="#D8D4DA">{prettyDirectory(directory)}</Text>
         </Box>
+        {!compact && (
+          <Text dimColor>  /build  сборка    /branches  ветки    /terminal  PowerShell    /help  команды</Text>
+        )}
       </Box>
-      <Text dimColor>  / для команд     /build для сборки     /terminal для PowerShell</Text>
-      <Text dimColor>  Исполнение локальное · Shell PowerShell · GitHub branches</Text>
     </Box>
   );
 }
@@ -111,6 +117,10 @@ function App() {
   const [streaming, setStreaming] = useState<string | null>(null);
   const [activity, setActivity] = useState("ready");
   const [wizard, setWizard] = useState<Wizard | null>(null);
+  const [inputValue, setInputValue] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const terminal = useTerminalSize();
+  const historyRef = useRef<VirtualListHandle>(null);
   const nextId = useRef(0);
   const active = useRef<AbortController | null>(null);
 
@@ -312,45 +322,81 @@ function App() {
     else if (wizard) { setWizard(null); append("assistant", "Мастер отменён."); }
   }, [append, wizard]);
 
-  useInput((input, key, event) => {
-    if (key.ctrl && input === "j" && !loading) {
-      event.stopImmediatePropagation();
-      void handleCommand("terminal");
-    }
-  });
-
   const statusSegments: StatusLineSegment[] = useMemo(() => [
     { content: "◆ CAVEY DEVKIT", color: ACCENT },
-    { content: "git:" + branch, color: "#7BC89C" },
-    { content: projectLabel(directory), color: "white" },
+    { content: "git:" + (branch.length > 28 ? "…" + branch.slice(-27) : branch), color: "#8EC9A3" },
+    { content: projectLabel(directory), color: "#DCD9DE" },
     { content: loading ? "● " + activity : activity, color: loading ? "yellow" : activity === "error" ? "red" : "gray" },
     { content: "PowerShell", color: "gray" },
   ], [activity, branch, directory, loading]);
 
-  const commands = useMemo(() =>
-    catalog.map(item => ({ ...item, onExecute: (arg: string) => handleCommand(item.name, arg) })),
-    [handleCommand],
-  );
+  const searchMatches = useCallback((query: string) => {
+    if (!query.trim()) return [];
+    const found: { index: number; offset: number; length: number }[] = [];
+    messages.forEach((message, index) => {
+      const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+      const offset = content.toLowerCase().indexOf(query.toLowerCase());
+      if (offset >= 0) found.push({ index, offset, length: query.length });
+    });
+    return found;
+  }, [messages]);
+
+  const matched = matchCommands(inputValue, catalog);
+  const compact = terminal.rows < 29 || terminal.columns < 70;
+  const headerRows = compact ? 4 : 7;
+  const paletteRows = matched.length > 0 && !loading && !searchOpen ? matched.length + 3 : 0;
+  const promptRows = paletteRows + 4;
+  const historyHeight = Math.max(3, terminal.rows - headerRows - promptRows - (searchOpen ? 2 : 0) - 2);
+  const displayedMessages: Message[] = streaming && loading
+    ? [...messages, { id: "__cavey_stream", role: "assistant", content: streaming }]
+    : messages;
 
   return (
-    <AlternateScreen>
-      <Box flexDirection="column" flexGrow={1}>
-        <REPL
-          messages={messages}
+    <AlternateScreen mouseTracking>
+      <Box flexDirection="column" width="100%" flexGrow={1}>
+        <Header directory={directory} branch={branch} activity={activity} loading={loading} compact={compact} />
+        <Box flexDirection="column" flexGrow={1} paddingX={2} paddingTop={compact ? 0 : 1}>
+          {messages.length === 0 && !streaming && (
+            <Box flexDirection="column" marginLeft={2}>
+              <Text dimColor>Начните с <Text color="#E69C7D">/build</Text> или введите команду PowerShell.</Text>
+              {!compact && <Text dimColor>Наведение мыши выделяет команду · клик запускает выбранную команду</Text>}
+            </Box>
+          )}
+          <MessageList
+            ref={historyRef}
+            viewportHeight={historyHeight}
+            messages={displayedMessages}
+            renderMessage={formatMessage}
+          />
+          {loading && !streaming && (
+            <Box marginLeft={2}><Spinner label={activity} /></Box>
+          )}
+        </Box>
+        {searchOpen && (
+          <SearchOverlay
+            isOpen={searchOpen}
+            onClose={() => setSearchOpen(false)}
+            onSearch={searchMatches}
+            onNavigate={match => historyRef.current?.scrollTo(match.index)}
+          />
+        )}
+        <CommandPrompt
+          value={inputValue}
+          onChange={setInputValue}
           onSubmit={handleSubmit}
-          onExit={exit}
-          onCancel={cancel}
-          onError={error => append("assistant", "✗ " + error.message)}
-          commands={commands}
           history={history}
-          isLoading={loading}
-          streamingContent={streaming}
-          welcome={<Welcome directory={directory} />}
-          placeholder="Введите команду или / для действий..."
-          prefix="❯"
-          statusSegments={statusSegments}
-          renderMessage={formatMessage}
+          commands={catalog}
+          disabled={loading}
+          searchOpen={searchOpen}
+          onCancel={cancel}
+          onTerminal={() => { void handleCommand("terminal"); }}
+          onSearch={() => setSearchOpen(true)}
+          onClear={() => { void handleCommand("clear"); setInputValue(""); }}
+          onScroll={delta => historyRef.current?.scrollBy(delta)}
         />
+        <Box paddingX={2} paddingBottom={0}>
+          <StatusLine segments={statusSegments} paddingX={1} />
+        </Box>
       </Box>
     </AlternateScreen>
   );

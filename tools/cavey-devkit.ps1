@@ -36,29 +36,45 @@ if ($args.Count -gt 0) {
 if (-not (Test-Path -LiteralPath $package) -or -not (Test-Path -LiteralPath $entry)) {
     throw "Отсутствует React DevKit: $appDir"
 }
-$node = Get-Command 'node.exe' -ErrorAction SilentlyContinue
-if (-not $node) {
-    throw 'Нужен Node.js 22+. Установите его с https://nodejs.org/ и перезапустите терминал.'
+$resolver = Join-Path $PSScriptRoot 'resolve-devkit-node.ps1'
+if (-not (Test-Path -LiteralPath $resolver)) { throw "Не найден установщик Node.js: $resolver" }
+$nodePaths = @(& $resolver)
+$nodePath = if ($nodePaths.Count -gt 0) { [string]$nodePaths[-1] } else { '' }
+if (-not $nodePath -or -not (Test-Path -LiteralPath $nodePath -PathType Leaf)) {
+    throw 'Node.js 22+ недоступен: установка не завершилась.'
 }
-$versionText = (& $node.Source --version).TrimStart('v')
-$nodeVersion = [version]$versionText
-if ($nodeVersion.Major -lt 22) { throw "Нужен Node.js 22+, обнаружен Node.js $versionText" }
+$nodeDirectory = Split-Path -Parent $nodePath
+$npmCli = Join-Path $nodeDirectory 'node_modules\npm\bin\npm-cli.js'
+# A globally installed Node can be placed next to npm.cmd, or npm can be elsewhere.
+if (-not (Test-Path -LiteralPath $npmCli)) {
+    $npmCmd = Get-Command 'npm.cmd' -ErrorAction SilentlyContinue
+    if ($npmCmd) {
+        $npmCli = Join-Path (Split-Path -Parent $npmCmd.Source) 'node_modules\npm\bin\npm-cli.js'
+    }
+}
+if (-not (Test-Path -LiteralPath $npmCli)) {
+    throw 'Не найден npm. Переустановите Node.js с npm или удалите повреждённую локальную копию Node.'
+}
 $packageHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash
 $installedHash = if (Test-Path -LiteralPath $stamp) { (Get-Content -LiteralPath $stamp -Raw).Trim() } else { '' }
-if (-not (Test-Path -LiteralPath $tsx) -or $installedHash -ne $packageHash) {
-    $npm = Get-Command 'npm.cmd' -ErrorAction SilentlyContinue
-    if (-not $npm) { throw 'Не найден npm.cmd (устанавливается вместе с Node.js).' }
-    Write-Host 'Установка зависимостей нового Cavey DevKit (первый запуск)...' -ForegroundColor Cyan
-    & $npm.Source install --prefix $appDir --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tsx)) {
-        throw 'Не удалось установить React DevKit. Проверьте сеть и повторите запуск.'
-    }
-    Set-Content -LiteralPath $stamp -Value $packageHash -Encoding Ascii
-}
-Push-Location $workspace
+$previousPath = $env:PATH
+$env:PATH = "$nodeDirectory;$previousPath"
 try {
-    & $node.Source $tsx $entry
-    if ($LASTEXITCODE -ne 0) { throw "DevKit завершился с кодом $LASTEXITCODE" }
+    if (-not (Test-Path -LiteralPath $tsx) -or $installedHash -ne $packageHash) {
+        Write-Host 'Установка зависимостей нового Cavey DevKit (первый запуск)...' -ForegroundColor Cyan
+        & $nodePath $npmCli install --prefix $appDir --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tsx)) {
+            throw 'Не удалось установить React DevKit. Проверьте сеть и повторите запуск.'
+        }
+        Set-Content -LiteralPath $stamp -Value $packageHash -Encoding Ascii
+    }
+    Push-Location $workspace
+    try {
+        & $nodePath $tsx $entry
+        if ($LASTEXITCODE -ne 0) { throw "DevKit завершился с кодом $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
 } finally {
-    Pop-Location
+    $env:PATH = $previousPath
 }

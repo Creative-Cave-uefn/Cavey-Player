@@ -5,7 +5,7 @@
 
 ## Запуск
 
-Требования: **Node.js 22+ и npm** для интерфейса; Git, GitHub CLI (`gh`), PowerShell 5.1, Flutter 3.27.4, Visual Studio 2022 с C++ Build Tools и Inno Setup 6 для сборок. При первом запуске зависимости интерфейса установятся автоматически. Проверьте среду по [LOCAL_BUILD.md](LOCAL_BUILD.md).
+Требования: Node.js 22+ и npm для интерфейса (если текущая версия ниже 22, DevKit автоматически скачает portable Node.js 22.23.5 с проверкой SHA-256 в `%LOCALAPPDATA%\CaveyDevKit\runtime`; системный Node не меняется); Git, GitHub CLI (`gh`), PowerShell 5.1, Flutter 3.27.4, Visual Studio 2022 с C++ Build Tools и Inno Setup 6 для сборок. При первом запуске зависимости интерфейса установятся автоматически. Проверьте среду по [LOCAL_BUILD.md](LOCAL_BUILD.md).
 
 Однократная авторизация в GitHub:
 
@@ -19,7 +19,7 @@ gh auth login
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\cavey-devkit.ps1
 ```
 
-Откроется полноэкранный **Cavey DevKit** с приглашением `❯` внизу. `/build` запускает мастер выбора ветки, типа сборки и подтверждения. `Ctrl+C` останавливает активную задачу, `Ctrl+F` ищет вывод, `Tab` дополняет команду, `PgUp/PgDn` прокручивают историю. `/terminal` или `Ctrl+J` открывает полноценный PowerShell во вкладке Windows Terminal или отдельном окне. Команда `/agent` открывает установленный Claude Code CLI отдельно, если он есть; DevKit не требует собственного AI-ключа. Ярлыки устанавливаются командой `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install-devkit-shortcuts.ps1`.
+Откроется полноэкранный **Cavey DevKit** с закреплённой строкой ввода `❯` внизу и компактной новой шапкой. Предложения slash-команд находятся **над** строкой ввода: наведение мыши выделяет пункт, клик запускает команду, Tab дополняет текст. `/build` запускает мастер выбора ветки, типа сборки и подтверждения. `Ctrl+C` останавливает активную задачу, `Ctrl+F` ищет вывод, `Tab` дополняет команду, `PgUp/PgDn` прокручивают историю. `/terminal` или `Ctrl+J` открывает полноценный PowerShell во вкладке Windows Terminal или отдельном окне. Команда `/agent` открывает установленный Claude Code CLI отдельно, если он есть; DevKit не требует собственного AI-ключа. Ярлыки устанавливаются командой `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install-devkit-shortcuts.ps1`.
 
 ## Ветки и сборки
 

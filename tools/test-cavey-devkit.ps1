@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 $files = @(
     'cavey-devkit.ps1',
     'cavey-devkit-engine.ps1',
+    'resolve-devkit-node.ps1',
     'install-devkit-shortcuts.ps1',
     'test-cavey-devkit.ps1'
 )

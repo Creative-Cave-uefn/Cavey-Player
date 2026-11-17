@@ -5,7 +5,7 @@ DevKit now uses [claude-code-kit](https://github.com/Minnzen/claude-code-kit) 0.
 ## Requirements
 
 - Windows 10/11 with Windows Terminal recommended.
-- **Node.js 22 or newer** with npm (first launch installs UI dependencies into `tools/devkit/node_modules`).
+- Node.js 22+ and npm are provisioned automatically. If system Node is older, DevKit downloads **portable Node.js 22.23.5** from the official nodejs.org archive, checks SHA-256 from `SHASUMS256.txt`, and stores it in `%LOCALAPPDATA%\CaveyDevKit\runtime`. System Node remains unchanged.
 - PowerShell 5.1 for build commands; Git and GitHub CLI for repository/release operations; Flutter/Inno Setup for Windows packaging.
 
 ## Update
@@ -19,6 +19,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\cavey-devkit.ps1
 ```
 
 Existing **Cavey DevKit** shortcuts continue to use `tools/cavey-devkit.ps1`; on first launch it installs React dependencies. The **Cavey DevKit Terminal** shortcut opens a real PowerShell, not the old TUI.
+
+## UI design
+
+The command palette appears **above** the input. Moving the mouse highlights an entry and clicking it executes the command. Arrow keys also change the highlighted entry, Tab completes the command and Enter executes it. The revised header keeps title, workspace path and live state aligned in a compact border. Build output remains scrollable with a fixed bottom input and status bar.
 
 ## Keyboard
 
