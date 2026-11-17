@@ -5,7 +5,7 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text
 $script:Root = Split-Path -Parent $PSScriptRoot
 $script:SourceRepo = 'Creative-Cave-uefn/Cavey-Player'
 $script:ReleaseRepo = 'Creative-Cave-uefn/cave-player-releases'
-$script:DataHome = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'CaveyDevKit' } else { Join-Path $HOME '.keivi' }
+$script:DataHome = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'CaveyDevKit' } else { Join-Path $HOME '.cavey-devkit' }
 $script:HistoryFile = Join-Path $script:DataHome 'history.jsonl'
 $script:Interactive = ($args.Count -eq 0)
 Set-Location $script:Root
@@ -345,7 +345,7 @@ function Help {
         '/clean --dry-run               Просмотр без удаления'
         '/history                      История локальных сборок'
         '/logs                         Последний лог сборки'
-        '/run                          Запуск локального EXE'
+        '/run --latest                 Последняя успешная локальная сборка'
         '/doctor                       Диагностика'
         '/agent                        Настоящий Claude Code, если установлен'
         '/quit                         Выход'
@@ -387,14 +387,21 @@ function Dispatch([string[]]$tokens) {
             if (Flag $tokens '--follow') { Get-Content $path -Wait -Tail 80 } else { Get-Content $path -Tail 100 }
         }
         'run' {
-            $exe = Join-Path $script:Root 'build\windows\x64\runner\Release\cave_player.exe'
-            if (-not (Test-Path $exe)) { Fail 'Нет локального EXE, запустите /build.' }
-            $records = @(History)
-            if ($records.Count -and $records[-1].sha -ne (Git @('rev-parse','HEAD'))) {
-                Say '  ! Исходники изменились после сборки; EXE может быть устаревшим.' Yellow
+            $available = @(History | Where-Object { $_.status -eq 'built' -or $_.status -eq 'published' })
+            if ($available.Count -eq 0) { Fail 'Нет успешных локальных сборок. Выполните /build.' }
+            $record = $available[-1]
+            $zip = Join-Path $record.folder 'CavePlayer-portable.zip'
+            if (-not (Test-Path $zip)) { Fail "Файл последней сборки отсутствует: $zip" }
+            $target = Join-Path $record.folder 'run'
+            $exe = Join-Path $target 'cave_player.exe'
+            if (-not (Test-Path $exe)) {
+                New-Item -ItemType Directory -Force -Path $target | Out-Null
+                Heading 'Распаковка последнего успешного билда'
+                Expand-Archive -LiteralPath $zip -DestinationPath $target -Force
             }
-            Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe)
-            Say "  ✓ Запущен $exe" Green
+            if (-not (Test-Path $exe)) { Fail "В portable-архиве нет cave_player.exe: $zip" }
+            Start-Process -FilePath $exe -WorkingDirectory $target
+            Say "  ✓ Cavey $($record.version) · $($record.sourceBranch) · $($record.sha.Substring(0,8))" Green
         }
         'agent' {
             if (-not (Has 'claude')) { Fail 'Claude Code CLI не установлен; установите его и войдите в свой аккаунт.' }
@@ -407,7 +414,7 @@ function Dispatch([string[]]$tokens) {
 }
 if ($script:Interactive) {
     Clear-Host
-    Say '  KEIVI' Cyan
+    Say '  CAVEY DEVKIT' Cyan
     Hint 'DevKit for Cavey Player · GitHub branches · Local builds'
     Hint 'Команды: /help · /build · /agent · /quit'
     try { Status } catch { Say "  ! $_" Yellow }
