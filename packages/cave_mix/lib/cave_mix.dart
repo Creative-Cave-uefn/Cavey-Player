@@ -22,6 +22,7 @@ enum MixParam {
   echoSend, // 0…1: сколько звука деки уходит в эхо (до фейдера)
   echoTime, // задержка эха, секунды
   echoFeedback, // обратная связь эха 0…0,95
+  reverbSend, // посыл в реверберацию 0…1 (до фейдера, хвост звучит и после остановки деки)
 }
 
 /// Форма кривой автоматизации
@@ -140,6 +141,11 @@ typedef _AutomixCancelN = Void Function(Pointer<Void>, Int32, Int32, Double, Dou
 typedef _AutomixCancelD = void Function(Pointer<Void>, int, int, double, double);
 typedef _FreeN = Void Function(Pointer<Void>);
 typedef _FreeD = void Function(Pointer<Void>);
+typedef _LoopN = Void Function(Pointer<Void>, Int32, Double, Double);
+typedef _LoopD = void Function(Pointer<Void>, int, double, double);
+typedef _BrakeN = Void Function(Pointer<Void>, Int32, Int64, Double);
+typedef _BrakeD = void Function(Pointer<Void>, int, int, double);
+typedef _RankN = Pointer<Utf8> Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Pointer<Pointer<Utf8>>);
 typedef _RenderN = Int32 Function(Pointer<Void>, Pointer<Float>, Int32);
 typedef _RenderD = int Function(Pointer<Void>, Pointer<Float>, int);
 
@@ -164,7 +170,10 @@ class _Lib {
         render = l.lookupFunction<_RenderN, _RenderD>('cm_render'),
         automix = l.lookupFunction<_AutomixN, _AutomixD>('cm_automix'),
         automixCancel = l.lookupFunction<_AutomixCancelN, _AutomixCancelD>('cm_automix_cancel'),
-        free = l.lookupFunction<_FreeN, _FreeD>('cm_free');
+        free = l.lookupFunction<_FreeN, _FreeD>('cm_free'),
+        loop = l.lookupFunction<_LoopN, _LoopD>('cm_loop'),
+        brakeAt = l.lookupFunction<_BrakeN, _BrakeD>('cm_brake_at'),
+        rankNext = l.lookupFunction<_RankN, _RankN>('cm_rank_next');
 
   final _CreateD create;
   final _VoidPD destroy;
@@ -186,6 +195,35 @@ class _Lib {
   final _AutomixD automix;
   final _AutomixCancelD automixCancel;
   final _FreeD free;
+  final _LoopD loop;
+  final _BrakeD brakeAt;
+  final _RankN rankNext;
+}
+
+/// Какой из следующих треков поставить дальше (движок не нужен). [current] — профиль v2 играющего трека,
+/// [candidates] — JSON-массив [{"id","artist","profile"}], [options] — {"intent","maxTempoPct","horizon","history"}.
+/// Возвращает JSON {"best","path","candidates":[…]}; ошибка — исключение с текстом.
+String rankNextTracks(String current, String candidates, String options) {
+  final l = _Lib(_open());
+  final a = current.toNativeUtf8(allocator: malloc), b = candidates.toNativeUtf8(allocator: malloc);
+  final o = options.toNativeUtf8(allocator: malloc);
+  final err = malloc<Pointer<Utf8>>()..value = nullptr;
+  try {
+    final r = l.rankNext(a, b, o, err);
+    if (r == nullptr) {
+      final msg = err.value == nullptr ? 'порядок треков не посчитан' : err.value.toDartString();
+      if (err.value != nullptr) l.free(err.value.cast());
+      throw StateError(msg);
+    }
+    final s = r.toDartString();
+    l.free(r.cast());
+    return s;
+  } finally {
+    malloc.free(a);
+    malloc.free(b);
+    malloc.free(o);
+    malloc.free(err);
+  }
 }
 
 DynamicLibrary _open() {
@@ -264,6 +302,12 @@ class MixEngine {
   void stopAt(int deck, int atClock) => _l.stopAt(_e, deck, atClock);
 
   void set(int deck, MixParam p, double value) => _l.set(_e, deck, p.index, value);
+
+  /// Петля [startSec, endSec) трека (участок должен быть впереди позиции); endSec <= startSec — снять
+  void loop(int deck, double startSec, double endSec) => _l.loop(_e, deck, startSec, endSec);
+
+  /// Торможение пластинки с кадра часов [atClock] за [durationSec], затем дека встаёт
+  void brakeAt(int deck, int atClock, double durationSec) => _l.brakeAt(_e, deck, atClock, durationSec);
 
   /// Автоматизация параметра на отрезке часов [fromClock, toClock)
   void ramp(int deck, MixParam p, int fromClock, int toClock, double from, double to,

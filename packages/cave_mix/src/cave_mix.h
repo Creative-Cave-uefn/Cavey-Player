@@ -41,7 +41,8 @@ enum cm_param {
   CM_ECHO_SEND = 8,     // сколько звука деки (после EQ и фильтра, до фейдера) уходит в эхо, 0…1
   CM_ECHO_TIME = 9,     // задержка эха, секунды (0,02…2)
   CM_ECHO_FEEDBACK = 10, // обратная связь эха 0…0,95; хвост звучит и после остановки деки
-  CM_PARAM_COUNT = 11
+  CM_REVERB_SEND = 11,  // посыл в реверберацию 0…1 (до фейдера, хвост звучит и после остановки деки)
+  CM_PARAM_COUNT = 12
 };
 
 // Форма кривой автоматизации
@@ -121,6 +122,13 @@ CM_API void cm_clear_automation(cm_engine *e, int32_t deck);
 // Снять запланированные старт (cm_play_at) и остановку (cm_stop_at) деки.
 CM_API void cm_cancel_schedule(cm_engine *e, int32_t deck);
 
+// Петля: дека повторяет участок [start_sec, end_sec) трека, пока петлю не снимут. Участок должен быть ещё впереди
+// позиции (движок запоминает его, пока проигрывает) — так петля бесшовная и не зависит от формата файла.
+// end_sec <= start_sec — снять петлю (дека доиграет текущий проход и пойдёт дальше по треку).
+CM_API void cm_loop(cm_engine *e, int32_t deck, double start_sec, double end_sec);
+// Торможение пластинки с кадра часов at_clock: скорость и высота падают до нуля за duration_sec, затем дека встаёт.
+CM_API void cm_brake_at(cm_engine *e, int32_t deck, int64_t at_clock, double duration_sec);
+
 CM_API void cm_set_master_volume(cm_engine *e, double volume); // 0…1, кубическая кривая как у mpv
 CM_API void cm_set_paused(cm_engine *e, int32_t paused);      // пауза всего движка (часы стоят)
 
@@ -145,6 +153,15 @@ CM_API char *cm_automix(cm_engine *e, int32_t from, int32_t to, const char *prof
 // Отменить запланированный (или идущий) переход: снять автоматизации и расписание обеих дек, вернуть EQ, фильтр,
 // эхо и темп к исходным, громкости — gain_from и gain_to.
 CM_API void cm_automix_cancel(cm_engine *e, int32_t from, int32_t to, double gain_from, double gain_to);
+
+// Какой из следующих треков поставить дальше. current_profile — профиль играющего (v2), candidates — JSON-массив
+// [{"id":"…","artist":"…","profile":{…}}] (до 8; без профиля пропускаются), options —
+// {"intent":"balanced|rise|relax","maxTempoPct":8,"horizon":3,"history":[{"id","artist","energy"}]}.
+// Оценка пары: темп (с учётом ×2/½), тональность (Camelot), энергия конца и начала, точки сведения, громкость;
+// плюс характер сета (повторы исполнителя, ход энергии). Лучший путь ищется на horizon треков вперёд.
+// Возвращает {"best":"id","path":[…],"candidates":[{"id","score","set","tempo","key","energy","mix","loud","why"}]}
+// (освободить cm_free) или NULL с текстом в *error_out. Движок не нужен.
+CM_API char *cm_rank_next(const char *current_profile, const char *candidates, const char *options, char **error_out);
 
 // ---------------------------------------------------------------- анализ треков
 

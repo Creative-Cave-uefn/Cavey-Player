@@ -166,6 +166,7 @@ struct Profile {
   int camelotNum = 0;   // 1…12, 0 — неизвестно
   char camelotLetter = 0;
   double keyConf = 0;
+  double lufs = -14;
   std::vector<int> energy;
   std::vector<Point> mixIn, mixOut;
   std::vector<Section> sections;
@@ -178,9 +179,15 @@ struct Profile {
   }
 };
 
+static bool parseProfileJ(const J &j, Profile &p, std::string &err);
 static bool parseProfile(const char *json, Profile &p, std::string &err) {
   J j;
   if (!json || !Parser(json).parse(j) || j.t != J::OBJ) { err = "профиль трека не разобрался"; return false; }
+  return parseProfileJ(j, p, err);
+}
+static bool parseProfileJ(const J &j, Profile &p, std::string &err) {
+  if (j.t != J::OBJ) { err = "профиль трека не разобрался"; return false; }
+  p.lufs = j.num("lufs", -14);
   p.duration = j.num("durationMs", 0) / 1000;
   p.endSec = j.num("endMs", p.duration * 1000) / 1000;
   p.introSec = j.num("introMs", 0) / 1000;
@@ -221,7 +228,7 @@ static bool parseProfile(const char *json, Profile &p, std::string &err) {
 
 // ================================================================ планирование
 
-enum Tech { T1 = 1, T2 = 2, T3 = 3, T4 = 4, T11 = 11 };
+enum Tech { T1 = 1, T2 = 2, T3 = 3, T4 = 4, T5 = 5, T7 = 7, T8 = 8, T11 = 11 };
 
 static const char *techName(int t) {
   switch (t) {
@@ -229,6 +236,9 @@ static const char *techName(int t) {
     case T2: return "Фильтр";
     case T3: return "Эхо-аут";
     case T4: return "Склейка";
+    case T5: return "Петля";
+    case T7: return "Торможение";
+    case T8: return "Реверб-аут";
     default: return "Плавный переход";
   }
 }
@@ -295,6 +305,8 @@ struct Plan {
   double aOut = 0, bIn = 0;   // секунды трека: где A начинает уходить (или обрывается), с какого места входит B
   double ratio = 1;           // темп B на время перехода
   int64_t c0 = 0, cEnd = 0;   // часы движка: начало и конец
+  double loopA = 0, loopB = 0;  // T5: участок A, который крутится петлёй (секунды трека)
+  double brakeSec = 0;          // T7: длина торможения
   std::string reason;
 };
 
@@ -331,9 +343,17 @@ class Automix {
     std::vector<std::pair<int, double>> cand;
     if (o.force) cand.push_back({o.force, 1});
     else if (!a.grid || !b.grid) cand = {{T11, 0.7}, {T3, o.allowEcho ? 0.3 : 0}};
-    else if (!canMatch) cand = {{T3, o.allowEcho ? 0.6 : 0}, {T11, 0.4}, {T4, o.allowCut && o.style == 2 ? 0.2 : 0}};
-    else if (key >= 0) cand = {{T1, o.style == 2 ? 0.45 : 0.6}, {T2, 0.25}, {T4, o.allowCut && o.style > 0 ? 0.15 : 0}, {T3, o.allowEcho && o.style == 2 ? 0.15 : 0}};
-    else cand = {{T2, 0.5}, {T1, 0.3}, {T3, o.allowEcho ? 0.2 : 0}};
+    else if (!canMatch)
+      // темпы не свести: обрывы с хвостом (эхо, реверберация), торможение или короткий плавный
+      cand = {{T3, o.allowEcho ? 0.45 : 0}, {T8, o.allowEcho ? 0.35 : 0}, {T11, 0.3},
+              {T7, o.allowCut && o.style > 0 ? 0.25 : 0}, {T4, o.allowCut && o.style == 2 ? 0.2 : 0}};
+    else if (key >= 0)
+      cand = {{T1, o.style == 2 ? 0.45 : 0.6}, {T2, 0.25}, {T5, 0.08}, {T4, o.allowCut && o.style > 0 ? 0.15 : 0},
+              {T3, o.allowEcho && o.style == 2 ? 0.15 : 0}, {T7, o.allowCut && o.style == 2 ? 0.1 : 0},
+              {T8, o.allowEcho ? (o.style == 0 ? 0.1 : 0.05) : 0}};
+    else
+      cand = {{T2, 0.5}, {T1, 0.3}, {T3, o.allowEcho ? 0.2 : 0}, {T8, o.allowEcho ? 0.15 : 0},
+              {T7, o.allowCut && o.style > 0 ? 0.1 : 0}};
     if (!o.force) {
       // энергичная концовка и энергичный вход — повод для склейки
       const double eA = a.avgEnergy(a.nBars - 16, 16), eB = b.avgEnergy(0, 32);
@@ -356,16 +376,18 @@ class Automix {
     std::vector<std::pair<int, double>> rest = cand;
     std::sort(rest.begin(), rest.end(), [](auto &x, auto &y) { return x.second > y.second; });
     for (auto &c : rest) if (c.second > 0 && std::find(order.begin(), order.end(), c.first) == order.end()) order.push_back(c.first);
+    // короткое аутро не даёт места длинному сведению — тогда петля: A крутит последние такты, пока входит B
+    if (canMatch && a.grid && b.grid && std::find(order.begin(), order.end(), (int)T5) == order.end()) order.push_back(T5);
     if (std::find(order.begin(), order.end(), (int)T11) == order.end()) order.push_back(T11);  // запасной — всегда
 
     for (int t : order) {
       Plan p;
       p.tech = t;
       // плавный переход тоже подгоняет темп, если может: иначе в наложении доли разъезжаются («галоп»)
-      p.matched = canMatch && a.grid && b.grid && (t == T1 || t == T2 || t == T4 || t == T11);
+      p.matched = canMatch && a.grid && b.grid && (t == T1 || t == T2 || t == T4 || t == T5 || t == T7 || t == T11);
       p.ratio = p.matched ? ratio : 1.0;
-      if ((t == T1 || t == T2 || t == T4) && !canMatch && !o.force) continue;
-      if ((t == T1 || t == T2 || t == T3 || t == T4) && (!a.grid || !b.grid)) continue;
+      if ((t == T1 || t == T2 || t == T4 || t == T5) && !canMatch && !o.force) continue;
+      if (t != T11 && (!a.grid || !b.grid)) continue;
       if (!fit(a, b, o, p)) continue;
       char why[256];
       std::snprintf(why, sizeof(why), "темп %.2f→%.2f BPM (×%.3f), тональности %s, техника из %zu кандидатов",
@@ -418,13 +440,15 @@ class Automix {
       return true;
     }
 
+    if (p.tech == T5) return fitLoop(a, b, o, p, lead, end);
+
     // точки выхода A: из анализа (по убыванию оценки) и запасные — границы фраз от первой сильной доли
     std::vector<Point> outs = a.mixOut;
     std::sort(outs.begin(), outs.end(), [](auto &x, auto &y) { return x.score > y.score; });
     for (int bar = a.firstDownbeatBar; bar < a.nBars; bar += 8) outs.push_back({bar, 0.1});
     // точка входа B
     int inBar = b.mixIn.empty() ? b.firstDownbeatBar : b.mixIn[0].bar;
-    if (p.tech == T4) {  // склейка — лучше сразу на дроп или энергичную часть
+    if (p.tech == T4 || p.tech == T7) {  // склейка и торможение — лучше сразу на дроп или энергичную часть
       for (auto &s : b.sections)
         if ((s.type == "drop" || s.type == "section") && s.bar > 0 && s.bar <= 48 && b.avgEnergy(s.bar, 4) >= 6) { inBar = s.bar; break; }
     }
@@ -442,18 +466,48 @@ class Automix {
     for (int L : lengths) {
       for (const Point &m : outs) {
         int bar = m.bar;
-        if (p.tech == T3) bar += 8;  // эхо-аут — в конце фразы аутро: A доигрывает её до конца
+        if (p.tech == T3 || p.tech == T8) bar += 8;  // эхо- и реверб-аут — в конце фразы аутро: A доигрывает её
         const double t = a.barStart(bar);
-        if (t < lead || t + L * a.barLen > end) continue;
-        if (p.tech == T3 && t > end) continue;
+        // торможение занимает две доли перед сильной долей, на которой входит B
+        const double brake = std::clamp(2 * a.barLen / a.bpb / tempoA_, 0.6, 1.6);
+        if (t - (p.tech == T7 ? brake * tempoA_ : 0) < lead || t + L * a.barLen > end) continue;
+        if ((p.tech == T3 || p.tech == T8) && t > end) continue;
+        p.brakeSec = p.tech == T7 ? brake : 0;
         p.outBar = bar;
         p.aOut = t;
         p.bars = L;
         p.c0 = clockAtA(t);
         const double barOut = a.barLen / tempoA_;
-        p.cEnd = p.c0 + (int64_t)std::llround((p.tech == T3 ? 2 * barOut : p.tech == T4 ? 0.05 : L * barOut) * sr_);
+        const double len = p.tech == T3 ? 2 * barOut : p.tech == T8 ? 4 * barOut : (p.tech == T4 || p.tech == T7) ? 0.05 : L * barOut;
+        p.cEnd = p.c0 + (int64_t)std::llround(len * sr_);
         return true;
       }
+    }
+    return false;
+  }
+
+  // T5: последние 4 такта A (живые, не затухание) крутятся петлёй; B входит, когда A входит в этот участок,
+  // и сводится бас-свапом на 16 тактов (энергичный стиль — 8)
+  bool fitLoop(const Profile &a, const Profile &b, const Options &o, Plan &p, double lead, double end) {
+    const int L = (o.style == 2 || o.maxBars < 16) ? 8 : 16;
+    const double body = a.avgEnergy(a.firstDownbeatBar, std::max(1, a.nBars - a.firstDownbeatBar));
+    int last = (int)std::floor((end - a.firstBar) / a.barLen);
+    for (int lb = last; lb >= a.firstDownbeatBar + 8; --lb) {
+      if ((lb - a.firstDownbeatBar) % 4 != 0) continue;           // петля кончается на границе фразы
+      const double t0 = a.barStart(lb - 4), t1 = a.barStart(lb);
+      if (t1 > end - 0.05) continue;
+      if (t0 < lead + 0.5) return false;                            // участок должен быть впереди
+      if (a.avgEnergy(lb - 4, 4) < std::max(3.0, 0.6 * body)) continue;  // не затухание и не тишина
+      p.outBar = lb - 4;
+      p.aOut = t0;
+      p.loopA = t0;
+      p.loopB = t1;
+      p.inBar = b.mixIn.empty() ? b.firstDownbeatBar : b.mixIn[0].bar;
+      p.bIn = std::max(0.0, b.barStart(p.inBar));
+      p.bars = L;
+      p.c0 = clockAtA(t0);
+      p.cEnd = p.c0 + (int64_t)std::llround(L * a.barLen / tempoA_ * sr_);
+      return true;
     }
     return false;
   }
@@ -472,14 +526,17 @@ class Automix {
 
     // B: всё к исходному, позиция — точка входа, темп — подогнанный
     cm_clear_automation(e_, B_);
-    for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_FILTER_RES, CM_ECHO_SEND}) cm_set(e_, B_, prm, 0.0);
+    for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_FILTER_RES, CM_ECHO_SEND, CM_REVERB_SEND}) cm_set(e_, B_, prm, 0.0);
     cm_seek(e_, B_, p.bIn);
     cm_set(e_, B_, CM_TEMPO, p.ratio);
     // A: на всякий случай нейтральные EQ и фильтр (громкость не трогаем — она «как сейчас»)
-    for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_ECHO_SEND}) cm_set(e_, A_, prm, 0.0);
+    for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_ECHO_SEND, CM_REVERB_SEND}) cm_set(e_, A_, prm, 0.0);
 
     const double L = p.bars * bar;
     switch (p.tech) {
+      case T5:
+        cm_loop(e_, A_, p.loopA, p.loopB);
+        [[fallthrough]];
       case T1: {
         // B входит без низа, середина и верх поднимаются к свапу; на сильной доле середины перехода
         // низ за одну долю переходит от A к B; затем A уходит
@@ -532,6 +589,23 @@ class Automix {
         cm_set(e_, B_, CM_GAIN, gB);
         break;
       }
+      case T7: {
+        // торможение: за две доли до сильной доли A «останавливается пластинкой», B входит точно на неё
+        cm_brake_at(e_, A_, at(p, -p.brakeSec), p.brakeSec);
+        cm_set(e_, B_, CM_GAIN, gB);
+        break;
+      }
+      case T8: {
+        // реверб-аут: последний такт A уходит в реверберацию (и чуть в фильтр высоких), сухой A обрывается на сильной
+        // доле, хвост реверберации тянется поверх входа B; B поднимается за один такт
+        ramp(A_, CM_REVERB_SEND, p, -bar, 0, 0, 1, CM_SMOOTH);
+        ramp(A_, CM_FILTER, p, -bar, 0, 0, 0.35, CM_SMOOTH);
+        ramp(A_, CM_REVERB_SEND, p, 0, 0.005, 1, 0, CM_LINEAR);
+        ramp(A_, CM_GAIN, p, -0.005, 0, gA, 0, CM_LINEAR);
+        cm_set(e_, B_, CM_GAIN, 0.0);
+        ramp(B_, CM_GAIN, p, 0, bar, 0, gB, CM_EQUAL_POWER_IN);
+        break;
+      }
       default: {  // T11: кривые равной мощности, без сетки
         const double F = (double)(p.cEnd - p.c0) / sr_;
         cm_set(e_, B_, CM_GAIN, 0.0);
@@ -543,7 +617,7 @@ class Automix {
     // старт B и остановка A — точно по часам
     cm_play_at(e_, B_, p.c0);
     // A: после обрыва (эхо-аут, склейка) — сразу, иначе — в конце перехода
-    const bool cut = p.tech == T3 || p.tech == T4;
+    const bool cut = p.tech == T3 || p.tech == T4 || p.tech == T7 || p.tech == T8;
     cm_stop_at(e_, A_, (cut ? p.c0 : p.cEnd) + (int64_t)(0.03 * sr_));
     // после перехода темп B плавно возвращается к родному (за 8 тактов)
     if (std::abs(p.ratio - 1.0) > 1e-6) {
@@ -593,9 +667,10 @@ CM_API char *cm_automix(cm_engine *e, int32_t from, int32_t to, const char *prof
   for (char c : p.reason) { if (c == '"' || c == '\\') reason += '\\'; reason += c; }
   std::snprintf(buf, sizeof(buf),
                 "{\"technique\":\"T%d\",\"name\":\"%s\",\"bars\":%d,\"outBar\":%d,\"inBar\":%d,\"aOutSec\":%.3f,\"bInSec\":%.3f,"
-                "\"tempoRatio\":%.5f,\"startClock\":%lld,\"endClock\":%lld,\"reason\":\"%s\"}",
+                "\"tempoRatio\":%.5f,\"startClock\":%lld,\"endClock\":%lld,\"loopSec\":[%.3f,%.3f],\"brakeSec\":%.3f,"
+                "\"reason\":\"%s\"}",
                 p.tech, techName(p.tech), p.bars, p.outBar, p.inBar, p.aOut, p.bIn, p.ratio, (long long)p.c0,
-                (long long)p.cEnd, reason.c_str());
+                (long long)p.cEnd, p.loopA, p.loopB, p.brakeSec, reason.c_str());
   return dupStr(buf);
 }
 
@@ -605,11 +680,168 @@ CM_API void cm_automix_cancel(cm_engine *e, int32_t from, int32_t to, double gai
     if (d < 0 || d >= CM_DECKS) continue;
     cm_clear_automation(e, d);
     cm_cancel_schedule(e, d);
-    for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_FILTER_RES, CM_ECHO_SEND}) cm_set(e, d, prm, 0.0);
+    for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_FILTER_RES, CM_ECHO_SEND, CM_REVERB_SEND}) cm_set(e, d, prm, 0.0);
     cm_set(e, d, CM_TEMPO, 1.0);
   }
   if (from >= 0 && from < CM_DECKS) cm_set(e, from, CM_GAIN, gain_from);
   if (to >= 0 && to < CM_DECKS) cm_set(e, to, CM_GAIN, gain_to);
+}
+
+}  // extern "C"
+
+// ================================================================ порядок треков
+//
+// Какой из следующих в очереди треков поставить дальше. Идея — из «Adaptive AutoDJ» (ветка dj-v2-review-fixes):
+// оценка каждой пары «текущий → кандидат» и характер сета (повторы исполнителей, ход энергии), поиск лучшего
+// пути на несколько треков вперёд. Оценки — по нашему же анализу (темп, сетка, тональность, энергия, громкость).
+
+namespace cm {
+namespace mix {
+
+struct Cand { std::string id, artist; Profile p; };
+struct Hist { std::string id, artist; double energy = 5; };
+
+enum Intent { BALANCED, RISE, RELAX };
+
+struct PairScore { double total = 0, tempo = 0, key = 0, energy = 0, mix = 0, loud = 0; std::string why; };
+
+static double bodyEnergy(const Profile &p) { return p.avgEnergy(p.firstDownbeatBar, std::max(1, p.nBars - p.firstDownbeatBar)); }
+
+static PairScore pairScore(const Profile &a, const Profile &b, double maxTempoPct) {
+  PairScore s;
+  std::string why;
+  if (a.grid && b.grid) {
+    double best = 1e9;
+    for (double k : {0.5, 1.0, 2.0}) best = std::min(best, std::abs(std::log(a.bpm / (b.bpm * k))));
+    const double pct = (std::exp(best) - 1) * 100;
+    s.tempo = pct <= maxTempoPct ? std::exp(-pct / 4) : 0.1;
+    char buf[64]; std::snprintf(buf, sizeof buf, "темп %.0f→%.0f (%.1f%%)", a.bpm, b.bpm, pct); why += buf;
+  } else {
+    s.tempo = 0.4;
+    why += "темп не сводится по долям";
+  }
+  const int kr = keyRelation(a, b);
+  s.key = kr > 0 ? 1.0 : kr == 0 ? 0.5 : 0.15;
+  why += kr > 0 ? ", тональности совместимы" : kr < 0 ? ", тональности спорят" : "";
+  // энергия: конец A против начала B
+  const double eA = a.avgEnergy(a.nBars - 16, 16), eB = b.avgEnergy(0, 32);
+  s.energy = std::exp(-std::abs(eA - eB) / 3.0);
+  s.loud = std::exp(-std::abs(a.lufs - b.lufs) / 6.0);
+  double mo = 0, mi = 0;
+  for (auto &m : a.mixOut) mo = std::max(mo, m.score);
+  for (auto &m : b.mixIn) mi = std::max(mi, m.score);
+  s.mix = (a.mixOut.empty() ? 0.3 : mo) * 0.5 + (b.mixIn.empty() ? 0.3 : mi) * 0.5;
+  s.total = 0.35 * s.tempo + 0.25 * s.key + 0.2 * s.energy + 0.1 * s.mix + 0.1 * s.loud;
+  s.why = why;
+  return s;
+}
+
+// характер сета: не повторять трек и исполнителя, энергия — по замыслу (ровно, вверх, вниз)
+static double setScore(const std::vector<Hist> &h, const Cand &c, Intent intent) {
+  double sc = 0;
+  const int n = (int)h.size();
+  for (int i = 0; i < std::min(n, 8); ++i) {
+    const Hist &x = h[(size_t)(n - 1 - i)];
+    const double w = 1.0 / (i + 1);
+    if (x.id == c.id) sc -= 0.3 * w;
+    if (!c.artist.empty() && x.artist == c.artist) sc -= 0.1 * w;
+  }
+  if (n == 0) return sc;
+  const double last = h.back().energy, e = bodyEnergy(c.p);
+  const double target = intent == RISE ? std::min(10.0, last + 0.7) : intent == RELAX ? std::max(1.0, last - 0.7) : last;
+  sc += 0.12 * std::exp(-std::abs(e - target) / 2.0);
+  return sc;
+}
+
+struct Path { std::vector<int> ids; double score = 0; };
+
+}  // namespace mix
+}  // namespace cm
+
+extern "C" {
+
+CM_API char *cm_rank_next(const char *current_profile, const char *candidates, const char *options, char **error_out) {
+  using namespace cm::mix;
+  std::string err;
+  Profile cur;
+  std::vector<Cand> cands;
+  std::vector<Hist> hist;
+  Intent intent = BALANCED;
+  double maxTempoPct = 8;
+  int horizon = 3;
+  if (!parseProfile(current_profile, cur, err)) err = "профиль текущего трека: " + err;
+  J cj, oj;
+  if (err.empty() && (!candidates || !Parser(candidates).parse(cj) || cj.t != J::ARR)) err = "список кандидатов не разобрался";
+  if (err.empty()) {
+    for (auto &x : cj.a) {
+      Cand c;
+      c.id = x.str("id");
+      c.artist = x.str("artist");
+      const J *pj = x.get("profile");
+      std::string e2;
+      if (c.id.empty() || !pj || !parseProfileJ(*pj, c.p, e2)) continue;  // без профиля — не участвует
+      cands.push_back(std::move(c));
+      if (cands.size() >= 8) break;
+    }
+    if (cands.empty()) err = "нет кандидатов с разбором";
+  }
+  if (err.empty() && options && Parser(options).parse(oj) && oj.t == J::OBJ) {
+    const std::string in = oj.str("intent", "balanced");
+    intent = in == "rise" ? RISE : in == "relax" ? RELAX : BALANCED;
+    maxTempoPct = std::clamp(oj.num("maxTempoPct", 8), 0.0, 16.0);
+    horizon = std::clamp((int)oj.num("horizon", 3), 1, 4);
+    if (const J *h = oj.get("history"); h && h->t == J::ARR)
+      for (auto &x : h->a) hist.push_back({x.str("id"), x.str("artist"), x.num("energy", 5)});
+  }
+  if (!err.empty()) {
+    if (error_out) *error_out = dupStr(err);
+    return nullptr;
+  }
+  if (hist.empty() || hist.back().id.empty()) hist.push_back({"", "", bodyEnergy(cur)});
+  // поиск лучшего пути (лучом) на horizon треков вперёд; дальние шаги весят меньше
+  const int N = (int)cands.size();
+  std::vector<std::vector<PairScore>> pair((size_t)N, std::vector<PairScore>((size_t)N));
+  std::vector<PairScore> first((size_t)N);
+  for (int i = 0; i < N; ++i) {
+    first[(size_t)i] = pairScore(cur, cands[(size_t)i].p, maxTempoPct);
+    for (int j = 0; j < N; ++j) if (i != j) pair[(size_t)i][(size_t)j] = pairScore(cands[(size_t)i].p, cands[(size_t)j].p, maxTempoPct);
+  }
+  std::vector<Path> beam{Path{}};
+  for (int depth = 0; depth < std::min(horizon, N); ++depth) {
+    std::vector<Path> next;
+    for (auto &path : beam) {
+      std::vector<Hist> h = hist;
+      for (int id : path.ids) h.push_back({cands[(size_t)id].id, cands[(size_t)id].artist, bodyEnergy(cands[(size_t)id].p)});
+      for (int j = 0; j < N; ++j) {
+        if (std::find(path.ids.begin(), path.ids.end(), j) != path.ids.end()) continue;
+        const double ps = path.ids.empty() ? first[(size_t)j].total : pair[(size_t)path.ids.back()][(size_t)j].total;
+        Path q = path;
+        q.ids.push_back(j);
+        q.score += std::pow(0.7, depth) * (ps + setScore(h, cands[(size_t)j], intent));
+        next.push_back(std::move(q));
+      }
+    }
+    std::sort(next.begin(), next.end(), [](const Path &x, const Path &y) { return x.score > y.score; });
+    if (next.size() > 6) next.resize(6);
+    beam = std::move(next);
+  }
+  std::string out = "{\"best\":\"";
+  auto esc = [](const std::string &v) { std::string r; for (char c : v) { if (c == '"' || c == '\\') r += '\\'; r += c; } return r; };
+  out += esc(cands[(size_t)beam[0].ids[0]].id) + "\",\"path\":[";
+  for (size_t i = 0; i < beam[0].ids.size(); ++i) out += (i ? ",\"" : "\"") + esc(cands[(size_t)beam[0].ids[i]].id) + "\"";
+  out += "],\"candidates\":[";
+  for (int i = 0; i < N; ++i) {
+    const PairScore &p = first[(size_t)i];
+    char buf[512];
+    std::snprintf(buf, sizeof buf,
+                  "%s{\"id\":\"%s\",\"score\":%.3f,\"set\":%.3f,\"tempo\":%.2f,\"key\":%.2f,\"energy\":%.2f,\"mix\":%.2f,\"loud\":%.2f,"
+                  "\"why\":\"%s\"}",
+                  i ? "," : "", esc(cands[(size_t)i].id).c_str(), p.total, setScore(hist, cands[(size_t)i], intent), p.tempo, p.key,
+                  p.energy, p.mix, p.loud, esc(p.why).c_str());
+    out += buf;
+  }
+  out += "]}";
+  return dupStr(out);
 }
 
 }  // extern "C"

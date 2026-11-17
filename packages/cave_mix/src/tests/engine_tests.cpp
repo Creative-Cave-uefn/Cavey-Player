@@ -495,6 +495,130 @@ static void testEcho() {
   CHECK(r.state().deck[0].status != CM_PLAYING, "deck still playing");
 }
 
+// Петля: звук бит-в-бит повторяет участок, стык без щелчка; после снятия — дальше по треку
+static void testLoop() {
+  const int sr = 48000;
+  auto src = noise(sr * 4, 0.3f, 11);
+  writeWav(path("loopsrc.wav"), src, sr);
+  Rig r;
+  cm_load(r.e, 0, path("loopsrc.wav").c_str(), 0.0);
+  CHECK(r.waitReady(0), "deck not ready");
+  cm_loop(r.e, 0, 1.0, 1.5);
+  r.render(256);
+  const int64_t S = r.clock() + 100;
+  cm_play_at(r.e, 0, S);
+  r.render(sr * 3);  // 1 с до петли и 4 прохода
+  const size_t base = (size_t)(S + kLim);
+  double maxErr = 0;
+  for (size_t i = 64; i < (size_t)sr * 3 - 1000; ++i) {
+    const size_t want = i < (size_t)sr ? i : (size_t)sr + (i - (size_t)sr) % (size_t)(sr / 2);
+    const double e = std::abs(r.out[(base + i) * 2] - src[want * 2]);
+    if (e > 1e-6 && maxErr <= 1e-6) std::printf("    first mismatch at %.4f s\n", (double)i / sr);
+    maxErr = std::max(maxErr, e);
+  }
+  const double posLoop = r.state().deck[0].position_sec;
+  std::printf("    looped 4 passes: max error %.2e, position %.3f s\n", maxErr, posLoop);
+  CHECK(maxErr < 1e-6, "loop not exact: %g", maxErr);
+  CHECK(posLoop >= 1.0 && posLoop < 1.5, "position outside loop: %.3f", posLoop);
+  // снять: доигрывает проход и идёт дальше
+  cm_loop(r.e, 0, 0, 0);
+  const size_t from = r.out.size() / 2;
+  r.render(sr);
+  const double pos2 = r.state().deck[0].position_sec;
+  // найти, где звук снова совпадает с треком за петлёй (1.5 с и дальше)
+  bool cont = false;
+  for (size_t i = from; i + 2000 < r.out.size() / 2 && !cont; ++i) {
+    if (std::abs(r.out[i * 2] - src[(size_t)(sr * 1.5) * 2]) > 1e-7) continue;
+    bool same = true;
+    for (int k = 0; k < 2000 && same; ++k) same = std::abs(r.out[(i + k) * 2] - src[((size_t)(sr * 1.5) + k) * 2]) < 1e-6;
+    cont = same;
+  }
+  std::printf("    after loop off: position %.3f s, continues past loop end: %s\n", pos2, cont ? "yes" : "no");
+  CHECK(cont, "did not continue after the loop");
+  CHECK(pos2 > 1.5, "position did not move past the loop");
+  CHECK(r.state().underruns == 0, "underruns: %lld", (long long)r.state().underruns);
+}
+
+// Петля под тайм-стретчем: щелчки идут ровно с шагом (период / темп), в том числе через стык петли
+static void testLoopStretched() {
+  const int sr = 48000;
+  // щелчки каждые 0,125 с, первый на 0,0625: в петле [1,0; 1,5) их 4, стык — посередине между щелчками
+  writeWav(path("loopclicks.wav"), clicks(sr * 4, sr, 0.0625, 480, 2), sr);
+  Rig r;
+  cm_load(r.e, 0, path("loopclicks.wav").c_str(), 0.0);
+  CHECK(r.waitReady(0), "deck not ready");
+  cm_set(r.e, 0, CM_TEMPO, 0.96);
+  cm_loop(r.e, 0, 1.0, 1.5);
+  r.render(256);
+  const int64_t S = r.clock() + 100;
+  cm_play_at(r.e, 0, S);
+  r.render(sr * 4);
+  auto on = onsets(r.out, 0, sr, 0.2);
+  const double step = 0.125 / 0.96;
+  double worst = 0;
+  int n = 0;
+  for (size_t i = 1; i < on.size(); ++i) {
+    if (on[i] < (S + kLim) / (double)sr + 0.3) continue;  // после разгона
+    worst = std::max(worst, std::abs(on[i] - on[i - 1] - step));
+    ++n;
+  }
+  std::printf("    stretched loop: %d intervals, worst deviation %.2f ms (step %.1f ms)\n", n, worst * 1000, step * 1000);
+  CHECK(n >= 20, "too few clicks: %d", n);
+  CHECK(worst < 0.003, "loop timing off by %.2f ms", worst * 1000);
+}
+
+// Торможение: частота падает, затем тишина и дека стоит
+static void testBrake() {
+  const int sr = 48000;
+  writeWav(path("tone1k.wav"), sine(sr * 4, sr, 1000.0, 0.5f), sr);
+  Rig r;
+  cm_load(r.e, 0, path("tone1k.wav").c_str(), 0.0);
+  CHECK(r.waitReady(0), "deck not ready");
+  const int64_t S = r.clock() + 100;
+  cm_play_at(r.e, 0, S);
+  const int64_t B = S + sr;
+  cm_brake_at(r.e, 0, B, 1.0);
+  r.render(sr * 3);
+  auto freq = [&](double t0, double t1) {  // по переходам через ноль
+    int z = 0;
+    const size_t a = (size_t)(B + kLim + (int64_t)(t0 * sr)), b = (size_t)(B + kLim + (int64_t)(t1 * sr));
+    for (size_t i = a + 1; i < b; ++i) if ((r.out[(i - 1) * 2] < 0) != (r.out[i * 2] < 0)) ++z;
+    return z / 2.0 / (t1 - t0);
+  };
+  const double f0 = freq(-0.2, -0.05), f1 = freq(0.05, 0.15), f2 = freq(0.4, 0.5), f3 = freq(0.7, 0.8);
+  double after = 0;
+  for (size_t i = (size_t)(B + kLim + sr * 1.02); i < (size_t)(B + kLim + sr * 1.5); ++i) after = std::max(after, (double)std::abs(r.out[i * 2]));
+  std::printf("    frequency before %.0f Hz, during brake %.0f / %.0f / %.0f Hz, after %.1e\n", f0, f1, f2, f3, after);
+  CHECK(std::abs(f0 - 1000) < 15, "tone before brake %.0f", f0);
+  CHECK(f1 < 990 && f2 < f1 && f3 < f2, "speed not falling");
+  CHECK(f3 < 400, "brake too slow");
+  CHECK(after < 1e-4, "sound after brake");
+  CHECK(r.state().deck[0].status != CM_PLAYING, "deck still playing after brake");
+}
+
+// Реверберация: хвост звучит после остановки деки и затухает
+static void testReverb() {
+  const int sr = 48000;
+  std::vector<float> src((size_t)sr * 3 * 2, 0.0f);
+  for (int i = 0; i < 4800; ++i) src[(size_t)(sr / 2 + i) * 2] = src[(size_t)(sr / 2 + i) * 2 + 1] = (float)(0.6 * std::sin(2 * M_PI * 800.0 * i / sr));
+  writeWav(path("burst.wav"), src, sr);
+  Rig r;
+  cm_load(r.e, 0, path("burst.wav").c_str(), 0.0);
+  CHECK(r.waitReady(0), "deck not ready");
+  cm_set(r.e, 0, CM_REVERB_SEND, 1.0);
+  r.render(sr / 10);
+  const int64_t S = r.clock() + 100;
+  cm_play_at(r.e, 0, S);
+  cm_stop_at(r.e, 0, S + (int64_t)(sr * 0.65));
+  r.render(sr * 6);
+  auto lvl = [&](double t) { const size_t c = (size_t)(S + kLim + (int64_t)(t * sr)); return 20 * std::log10(rms(r.out, c, c + sr / 10) + 1e-12); };
+  const double l1 = lvl(0.8), l2 = lvl(1.5), l3 = lvl(3.0), l4 = lvl(5.5);
+  std::printf("    reverb tail after stop: %.1f / %.1f / %.1f / %.1f dB (0.8, 1.5, 3, 5.5 s)\n", l1, l2, l3, l4);
+  CHECK(l1 > -40, "no reverb tail");
+  CHECK(l2 < l1 && l3 < l2, "tail not decaying");
+  CHECK(l4 < -70, "tail too long");
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) g_dir = argv[1];
   struct T { const char *name; void (*fn)(); } tests[] = {
@@ -508,6 +632,10 @@ int main(int argc, char **argv) {
       {"pause, seek, end, errors", testControlFlow},
       {"M4A / Opus / Ogg via ffmpeg", testFfmpegFormats},
       {"echo with tail after deck stops", testEcho},
+      {"seamless loop and loop off", testLoop},
+      {"loop under time-stretch", testLoopStretched},
+      {"vinyl brake", testBrake},
+      {"reverb tail after deck stops", testReverb},
   };
   for (auto &t : tests) {
     const int before = g_failed;

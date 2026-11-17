@@ -59,7 +59,7 @@ struct Block {
 
 enum CmdType : int32_t {
   C_SET, C_RAMP, C_CLEAR_AUTO, C_PLAY_AT, C_PAUSE, C_STOP_AT, C_SEEK, C_LOAD, C_UNLOAD, C_MASTER_VOL, C_PAUSED,
-  C_CANCEL_SCHEDULE
+  C_CANCEL_SCHEDULE, C_LOOP, C_BRAKE
 };
 
 struct Cmd {
@@ -415,6 +415,7 @@ class Deck {
     lane_[CM_ECHO_TIME].base = 0.375;
     lane_[CM_ECHO_FEEDBACK].base = 0.5;
     for (int p = 0; p < CM_PARAM_COUNT; ++p) sm_[p].jump(lane_[p].base);
+    tape_.setup(sr_);
     source.start(sr_);
   }
 
@@ -430,6 +431,9 @@ class Deck {
     }
     flt_.setup(sr_);
     isoMix_.jump(0.0);
+    loopOff();
+    tape_.stop();
+    brakeClock_ = -1;
   }
 
   void cmdLoad(uint32_t gen, int32_t loadId, double startSec) {
@@ -496,6 +500,34 @@ class Deck {
   void cmdCancelSchedule() {
     startClock_ = -1;
     stopClock_ = -1;
+    brakeClock_ = -1;
+    tape_.stop();
+    loopOff();
+  }
+
+  // Петля [a, b) в секундах трека. Звук участка запоминается, пока дека его проигрывает (и пока он
+  // приходит от декодера), поэтому участок должен быть впереди: то, что уже ушло из кольца, не вернуть.
+  void cmdLoop(double aSec, double bSec) {
+    if (bSec <= aSec) { loopArmed_ = false; return; }  // доиграет проход и пойдёт дальше (кольцо держит звук за петлёй)
+    const int64_t a = (int64_t)std::llround(aSec * sr_), b = (int64_t)std::llround(bSec * sr_);
+    if (b - a < sr_ / 20 || b - a > kLoopMax) return;
+    if (a < ringStart_ || (int64_t)ph_ > a) return;  // начало уже позади — честную петлю не собрать
+    loopA_ = a; loopB_ = b;
+    loopBuf_.assign((size_t)(b - a) * 2, 0.0f);
+    loopHave_ = 0;
+    // что из участка уже лежит в кольце — сразу в петлю
+    for (int64_t f = a; f < std::min(b, ringEnd_); ++f) {
+      float l, r;
+      frameAt(f, l, r);
+      loopBuf_[(size_t)(f - a) * 2] = l; loopBuf_[(size_t)(f - a) * 2 + 1] = r;
+    }
+    loopHave_ = std::max<int64_t>(0, std::min(b, ringEnd_) - a);
+    loopArmed_ = true;
+  }
+
+  void cmdBrake(int64_t clock, double durSec) {
+    brakeClock_ = clock < 0 ? 0 : clock;
+    brakeDur_ = std::clamp(durSec, 0.1, 6.0);
   }
 
   void cmdClearAuto() {
@@ -517,7 +549,7 @@ class Deck {
   double param(int p) const { return sm_[p].cur; }
 
   // Вывести n кадров деки (уже после EQ/фильтра/громкости) с добавлением в mix; посыл в эхо — в send.
-  void render(float *mix, float *send, int n, int64_t clock, int64_t &underruns) {
+  void render(float *mix, float *send, float *rsend, int n, int64_t clock, int64_t &underruns) {
     pullBlocks();
 
     // старт и остановка по часам
@@ -535,8 +567,12 @@ class Deck {
     while (done < n) {
       const int len = std::min(kSub, n - done);
       const int64_t c = clock + done;
-      renderSub(mix + (size_t)done * 2, send + (size_t)done * 2, len, c, underruns);
-      done += len;
+      // торможение начинается точно на своём кадре: кусок до него и после — отдельно
+      int len2 = len;
+      if (brakeClock_ >= 0 && brakeClock_ > c && brakeClock_ < c + len) len2 = (int)(brakeClock_ - c);
+      if (brakeClock_ >= 0 && c >= brakeClock_) { tape_.start(brakeDur_); brakeClock_ = -1; }
+      renderSub(mix + (size_t)done * 2, send + (size_t)done * 2, rsend + (size_t)done * 2, len2, c, underruns);
+      done += len2;
       if (!playing_) break;
     }
   }
@@ -572,6 +608,7 @@ class Deck {
   double playhead() const { return ph_; }
 
   void resetPosition(uint32_t gen, int64_t frame) {
+    loopOff();
     gen_ = gen;
     ringStart_ = ringEnd_ = frame;
     eofFrame_ = -1;
@@ -608,6 +645,12 @@ class Deck {
         const size_t k = (size_t)((ringEnd_ + i) & (kRing - 1)) * 2;
         ring_[k] = b->data[i * 2];
         ring_[k + 1] = b->data[i * 2 + 1];
+        const int64_t f = ringEnd_ + i;
+        if (loopArmed_ && f >= loopA_ && f < loopB_) {
+          loopBuf_[(size_t)(f - loopA_) * 2] = b->data[i * 2];
+          loopBuf_[(size_t)(f - loopA_) * 2 + 1] = b->data[i * 2 + 1];
+          loopHave_ = std::max(loopHave_, f - loopA_ + 1);
+        }
       }
       ringEnd_ += b->n;
       if (b->eof) eofFrame_ = ringEnd_;
@@ -616,6 +659,40 @@ class Deck {
   }
 
   inline bool has(int64_t f) const { return f >= ringStart_ && f < ringEnd_; }
+
+  // --- петля
+  static constexpr int64_t kLoopMax = 48000LL * 40;  // не длиннее ~40 с
+  bool loopArmed_ = false;
+  int64_t loopA_ = 0, loopB_ = 0, loopHave_ = 0;
+  std::vector<float> loopBuf_;
+  void loopOff() { loopArmed_ = false; loopBuf_.clear(); loopHave_ = 0; }
+  // петля целиком запомнена и кусок [f, f+n) в ней — значит, звук есть, ждать декодер не нужно
+  bool looping(int64_t f, int n) const {
+    return loopArmed_ && loopHave_ >= loopB_ - loopA_ && f >= loopA_ && f + n <= loopB_ + (loopB_ - loopA_);
+  }
+  int64_t wrap(int64_t f) const {
+    if (!loopArmed_ || loopHave_ < loopB_ - loopA_) return f;
+    while (f >= loopB_) f -= loopB_ - loopA_;
+    return f;
+  }
+  // кадр трека с учётом петли: внутри и за концом петли — из её запомненного звука
+  inline void srcFrame(int64_t f, float &l, float &r) const {
+    if (loopArmed_ && f >= loopA_) {
+      const int64_t len = loopB_ - loopA_;
+      if (loopHave_ >= len) {
+        if (f >= loopB_) f = loopA_ + (f - loopA_) % len;
+        const size_t k = (size_t)(f - loopA_) * 2;
+        l = loopBuf_[k]; r = loopBuf_[k + 1];
+        return;
+      }
+      if (f < loopA_ + loopHave_) {
+        const size_t k = (size_t)(f - loopA_) * 2;
+        l = loopBuf_[k]; r = loopBuf_[k + 1];
+        return;
+      }
+    }
+    frameAt(f, l, r);
+  }
   inline void frameAt(int64_t f, float &l, float &r) const {
     if (!has(f)) { l = r = 0; return; }
     const size_t k = (size_t)(f & (kRing - 1)) * 2;
@@ -652,7 +729,7 @@ class Deck {
       const int chunk = std::min(left, kStretchMax);
       for (int i = 0; i < chunk; ++i) {
         float l, r;
-        frameAt(from + i, l, r);
+        srcFrame(from + i, l, r);
         inL_[i] = l; inR_[i] = r;
       }
       const float *in[2] = {inL_.data(), inR_.data()};
@@ -691,21 +768,21 @@ class Deck {
       size_t need = rb_->getSamplesRequired();
       if (need == 0) need = 256;
       const int chunk = (int)std::min<size_t>(need, kStretchMax);
-      if (eofFrame_ < 0 && feedPos_ + chunk > ringEnd_) return false;  // ждём декодер
+      if (!looping(feedPos_, chunk) && eofFrame_ < 0 && feedPos_ + chunk > ringEnd_) return false;  // ждём декодер
       for (int i = 0; i < chunk; ++i) {
         float l, r;
-        frameAt(feedPos_ + i, l, r);  // за концом трека — тишина
+        srcFrame(feedPos_ + i, l, r);  // за концом трека — тишина, в петле — её начало
         inL_[i] = l; inR_[i] = r;
       }
       const float *in[2] = {inL_.data(), inR_.data()};
       rb_->process(in, (size_t)chunk, false);
-      feedPos_ += chunk;
+      feedPos_ = wrap(feedPos_ + chunk);
       if (++guard > 64) return false;
     }
     return true;
   }
 
-  void renderSub(float *mix, float *send, int n, int64_t clock, int64_t &underruns) {
+  void renderSub(float *mix, float *send, float *rsend, int n, int64_t clock, int64_t &underruns) {
     // темп на этот кусок
     advanceTempoOnly(clock);
     const double tempo = sm_[CM_TEMPO].cur;
@@ -719,17 +796,17 @@ class Deck {
 
     if (mode_ == M_DIRECT) {
       const int64_t P = (int64_t)ph_;
-      if (!ended(P) && P + n > ringEnd_ && eofFrame_ < 0) ok = false;
-      for (int i = 0; i < n; ++i) frameAt(P + i, bufL[i], bufR[i]);
-      if (ok) ph_ = (double)(P + n);
+      if (!looping(P, n) && !ended(P) && P + n > ringEnd_ && eofFrame_ < 0) ok = false;
+      for (int i = 0; i < n; ++i) srcFrame(P + i, bufL[i], bufR[i]);
+      if (ok) ph_ = (double)wrap(P + n);
     } else {
       float wl[kSub], wr[kSub];
       ok = pullStretched(n, wl, wr);
       if (ok) {
         for (int i = 0; i < n; ++i) {
           float dl = 0, dr = 0;
-          if (mode_ == M_TO_STRETCH) frameAt((int64_t)std::llround(ph_ + i * tempo), dl, dr);
-          if (mode_ == M_TO_DIRECT) frameAt(directFrom_ + xf_ + i, dl, dr);
+          if (mode_ == M_TO_STRETCH) srcFrame((int64_t)std::llround(ph_ + i * tempo), dl, dr);
+          if (mode_ == M_TO_DIRECT) srcFrame(directFrom_ + xf_ + i, dl, dr);
           double w = 1.0;
           if (mode_ == M_TO_STRETCH) w = std::min(1.0, (xf_ + i) / (double)kXfade);
           if (mode_ == M_TO_DIRECT) w = 1.0 - std::min(1.0, (xf_ + i) / (double)kXfade);
@@ -741,13 +818,14 @@ class Deck {
           xf_ += n;
           if (xf_ >= kXfade) {
             mode_ = M_DIRECT;
-            ph_ = (double)(directFrom_ + xf_);
+            ph_ = (double)wrap(directFrom_ + xf_);
             xf_ = 0;
           } else {
             ph_ = (double)(directFrom_ + xf_);
           }
         } else {
           ph_ += n * tempo;
+          if (loopArmed_ && ph_ >= (double)loopB_) ph_ -= (double)(loopB_ - loopA_);
           if (mode_ == M_TO_STRETCH) { xf_ += n; if (xf_ >= kXfade) { mode_ = M_STRETCH; xf_ = 0; } }
         }
       } else {
@@ -759,6 +837,7 @@ class Deck {
       if (ringEnd_ > ringStart_) ++underruns;  // пустое кольцо — это ожидание после перемотки, а не сбой
       for (int i = 0; i < n; ++i) bufL[i] = bufR[i] = 0;
     }
+    if (tape_.active()) tape_.process(bufL, bufR, n);
 
     // цепочка деки
     double peak = peak_;
@@ -781,11 +860,15 @@ class Deck {
       if (w > 0) { l += (pl - l) * w; r += (pr - r) * w; }
       l = flt_.tick(0, l);
       r = flt_.tick(1, r);
-      const double es = sm_[CM_ECHO_SEND].cur;
+      const double es = sm_[CM_ECHO_SEND].cur, rs = sm_[CM_REVERB_SEND].cur;
+      const double declick = fadeOut_ > 0 ? fadeOut_ / (double)kDeclick : 1.0;
       if (es > 0) {
-        const double sg = es * (fadeOut_ > 0 ? fadeOut_ / (double)kDeclick : 1.0);
-        send[i * 2] += (float)(l * sg);
-        send[i * 2 + 1] += (float)(r * sg);
+        send[i * 2] += (float)(l * es * declick);
+        send[i * 2 + 1] += (float)(r * es * declick);
+      }
+      if (rs > 0) {
+        rsend[i * 2] += (float)(l * rs * declick);
+        rsend[i * 2 + 1] += (float)(r * rs * declick);
       }
       l *= g; r *= g;
       mix[i * 2] += (float)l;
@@ -795,6 +878,13 @@ class Deck {
     }
     peak_ = peak;
 
+    // торможение кончилось — дека встаёт (звук уже затих, без микрозатухания)
+    if (tape_.done()) {
+      tape_.stop();
+      playing_ = false;
+      if (mode_ != M_DIRECT) { ph_ = std::round(ph_); mode_ = M_DIRECT; }
+      return;
+    }
     // конец трека
     const int64_t P = (int64_t)ph_;
     if (ended(P)) {
@@ -855,6 +945,9 @@ class Deck {
   int64_t feedPos_ = 0;
   int discard_ = 0;
   std::vector<float> inL_, inR_, outL_, outR_;
+  TapeStop tape_;
+  int64_t brakeClock_ = -1;
+  double brakeDur_ = 1.0;
 };
 
 // ---------------------------------------------------------------- Движок
@@ -891,7 +984,9 @@ class Engine {
     }
     for (auto &d : decks_) d.setup(sr_);
     for (auto &x : echo_) x.setup(sr_);
+    for (auto &x : reverb_) x.setup(sr_);
     for (auto &b : sendBuf_) b.assign(4096 * 2, 0.0f);
+    for (auto &b : revBuf_) b.assign(4096 * 2, 0.0f);
     limiter_.setup(sr_, -1.0, 5.0, 80.0);
     masterVol_.jump(1.0);
     pauseGain_.jump(1.0);
@@ -1011,6 +1106,8 @@ class Engine {
       case C_SEEK: d.cmdSeek(c.gen, c.x); break;
       case C_LOAD: d.cmdLoad(c.gen, c.loadId, c.x); break;
       case C_UNLOAD: d.cmdUnload(c.gen); break;
+      case C_LOOP: d.cmdLoop(c.x, c.y); break;
+      case C_BRAKE: d.cmdBrake(c.a, c.x); break;
       default: break;
     }
   }
@@ -1023,10 +1120,12 @@ class Engine {
     float *mix = mixBuf_.data();
     std::memset(mix, 0, sizeof(float) * (size_t)n * 2);
     for (int k = 0; k < CM_DECKS; ++k) {
-      float *send = sendBuf_[k].data();
+      float *send = sendBuf_[k].data(), *rsend = revBuf_[k].data();
       std::memset(send, 0, sizeof(float) * (size_t)n * 2);
-      decks_[k].render(mix, send, n, clock_, underruns_);
+      std::memset(rsend, 0, sizeof(float) * (size_t)n * 2);
+      decks_[k].render(mix, send, rsend, n, clock_, underruns_);
       echo_[k].process(send, mix, n, decks_[k].param(CM_ECHO_TIME), decks_[k].param(CM_ECHO_FEEDBACK));
+      reverb_[k].process(rsend, mix, n);
     }
     double mp = masterPeak_;
     for (int i = 0; i < n; ++i) {
@@ -1061,7 +1160,8 @@ class Engine {
   bool deviceStarted_ = false;
   Deck decks_[CM_DECKS];
   Echo echo_[CM_DECKS];
-  std::vector<float> sendBuf_[CM_DECKS];
+  Reverb reverb_[CM_DECKS];
+  std::vector<float> sendBuf_[CM_DECKS], revBuf_[CM_DECKS];
   Limiter limiter_;
   Smoothed masterVol_, pauseGain_;
   bool paused_ = false;
@@ -1186,6 +1286,20 @@ CM_API void cm_set_master_volume(cm_engine *e, double volume) {
 CM_API void cm_set_paused(cm_engine *e, int32_t paused) {
   if (!e) return;
   cm::Cmd c{cm::C_PAUSED}; c.a = paused;
+  e->engine.push(c);
+}
+
+CM_API void cm_loop(cm_engine *e, int32_t deck, double start_sec, double end_sec) {
+  if (!e || !validDeck(deck)) return;
+  cm::Cmd c{cm::C_LOOP};
+  c.deck = deck; c.x = start_sec; c.y = end_sec;
+  e->engine.push(c);
+}
+
+CM_API void cm_brake_at(cm_engine *e, int32_t deck, int64_t at_clock, double duration_sec) {
+  if (!e || !validDeck(deck)) return;
+  cm::Cmd c{cm::C_BRAKE};
+  c.deck = deck; c.a = at_clock; c.x = duration_sec;
   e->engine.push(c);
 }
 

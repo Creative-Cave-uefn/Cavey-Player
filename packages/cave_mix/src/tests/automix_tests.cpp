@@ -269,14 +269,17 @@ static void runTechnique(int tech, int mode) {
     CHECK(!ob.empty(), "B did not start");
     // B может входить с нуля громкости, поэтому первые щелчки бывают не слышны: берём ближайшую долю B от c0
     const double beatEff = 60.0 / (kB.bpm * ratio);
-    const double startErr = ob[0] - (cT + beatEff * std::round((ob[0] - cT) / beatEff));
+    // реверб-аут: хвост реверберации A звучит и в правом канале, поэтому долю B берём через такт, когда B уже в полную силу
+    double first = ob[0];
+    if (tech == 8) for (double t : ob) if (t > cT + 4 * beatEff) { first = t; break; }
+    const double startErr = first - (cT + beatEff * std::round((first - cT) / beatEff));
     // 2. В перекрытии доли A (левый) и B (правый) совпадают
     double worst = 0;
     int pairs = 0;
     const auto oa = clickOnsets(r.out, 0, (size_t)(c0 - 20 * beatA * kSr), (size_t)cEnd + kSr);
     const auto obb = clickOnsets(r.out, 1, (size_t)c0, (size_t)cEnd);
     double sum = 0;
-    if (tech == 1 || tech == 2 || tech == 11) {
+    if (tech == 1 || tech == 2 || tech == 5 || tech == 11) {
       for (double t : oa) {
         if (t < cT) continue;
         double best = 1e9;
@@ -316,14 +319,16 @@ static void runTechnique(int tech, int mode) {
         p = (N * skt - sk * st) / (N * skk - sk * sk); t0 = (st - p * sk) / N;
       }
       if (getenv("CM_DEBUG2")) { for (double t : pre) std::printf("      pre %.4f (k %.3f)\n", t - cT, (t - t0) / p); for (size_t q = 0; q < ob.size() && q < 4; ++q) std::printf("      ob %.4f\n", ob[q] - cT); std::printf("      p %.5f\n", p); }
-      gridErr = std::abs(ob[0] - (t0 + p * std::round((ob[0] - t0) / p)));
+      // первая доля B, отнесённая к началу перехода (у T3/T8 темп не подогнан — дальше доли расходятся по замыслу)
+      const double b0 = first - beatEff * std::round((first - cT) / beatEff);
+      gridErr = std::abs(b0 - (t0 + p * std::round((b0 - t0) / p)));
     }
     const double mean = pairs ? sum / pairs : 0;
     std::printf("    timing: B starts %+.2f ms; %d beat pairs, mean %+.2f ms, worst %.2f ms; B on A's grid %.2f ms\n", startErr * 1000,
                 pairs, mean * 1000, worst * 1000, gridErr * 1000);
     CHECK(std::abs(startErr) < 0.010, "B start off");  // абсолютная точность анализа (сетка по нейросети)
     CHECK(gridErr < 0.005, "B off A's grid %.2f ms", gridErr * 1000);
-    if (tech == 1 || tech == 2 || tech == 11) {
+    if (tech == 1 || tech == 2 || tech == 5 || tech == 11) {
       CHECK(pairs >= std::max(4.0, bars * 4.0) * 0.9, "too few overlapping beats (%d)", pairs);
       CHECK(std::abs(mean) < 0.002, "beats offset %+.2f ms", mean * 1000);
       CHECK(worst < 0.008, "beats drift %.2f ms", worst * 1000);
@@ -344,12 +349,63 @@ static void runTechnique(int tech, int mode) {
   std::printf("    levels: %+.1f…%+.1f dB; peak %.3f\n", minRel, maxRel, peak);
   std::printf("    after: A status %d, B tempo %.4f, stretching %d, underruns %lld\n", s.deck[0].status, s.deck[1].tempo,
               s.deck[1].stretching, (long long)s.underruns);
-  if (tech != 3) CHECK(minRel > -6.0, "level dips %.1f dB", minRel);
+  const bool cutType = tech == 3 || tech == 7 || tech == 8;
+  if (!cutType) CHECK(minRel > -6.0, "level dips %.1f dB", minRel);
+  if (tech == 7) {
+    // после торможения уходящий (левый канал) молчит
+    double l = 0;
+    for (int64_t i = c0 + kLim + kSr / 20; i < c0 + kSr; ++i) l = std::max(l, (double)std::abs(r.out[(size_t)i * 2]));
+    std::printf("    after brake: A peak %.1e\n", l);
+    if (getenv("CM_DEBUG3")) for (int64_t w = c0 - kSr; w < c0 + kSr / 2; w += kSr / 20) { double m = 0; for (int64_t i = w; i < w + kSr / 20; ++i) m = std::max(m, (double)std::abs(r.out[(size_t)(i + kLim) * 2])); std::printf("      %+.2f s: %.1e\n", (double)(w - c0) / kSr, m); }
+    CHECK(l < 1e-2, "A not silent after brake");  // −40 дБ: дальше — лишь просачивание B из стерео-тайм-стретча
+  }
+  if (tech == 8) {
+    // хвост реверберации A (левый канал до B — только хвост) после обрыва
+    const double tail = 20 * std::log10(std::sqrt([&] { double q = 0; for (int64_t i = c0 + kLim + kSr / 10; i < c0 + kSr / 2; ++i) q += r.out[(size_t)i * 2] * (double)r.out[(size_t)i * 2]; return q / (kSr * 0.4); }()) + 1e-12);
+    std::printf("    reverb tail of A after cut: %.1f dBFS\n", tail);
+    CHECK(tail > -45, "no reverb tail");
+  }
   CHECK(maxRel < 4.0, "level bumps %+.1f dB", maxRel);
   CHECK(peak <= std::pow(10.0, -1.0 / 20) + 1e-6, "peak over ceiling");
   CHECK(s.deck[0].status != CM_PLAYING, "A still playing");
   CHECK(std::abs(s.deck[1].tempo - 1.0) < 1e-9 && s.deck[1].stretching == 0, "B tempo did not return to 1.0");
   CHECK(s.underruns == 0, "underruns");
+}
+
+// Порядок треков: подходящий по темпу и тональности впереди; тот же исполнитель, что только что играл, — ниже
+static std::string withField(std::string js, const char *key, const std::string &value) {
+  const std::string k = std::string("\"") + key + "\":";
+  const size_t at = js.find(k);
+  if (at == std::string::npos) return js;
+  size_t end = at + k.size();
+  if (js[end] == '"') end = js.find('"', end + 1) + 1;
+  else while (end < js.size() && js[end] != ',' && js[end] != '}') ++end;
+  return js.substr(0, at + k.size()) + value + js.substr(end);
+}
+
+static void testRank() {
+  const std::string good = g_profB;                                                 // 128 BPM, 8B
+  const std::string slow = withField(withField(g_profB, "bpm", "92"), "key", "\"3A\"");  // не сводится, тональность спорит
+  const std::string clash = withField(g_profB, "key", "\"2A\"");                     // темп тот же, тональность спорит
+  auto run = [&](const std::string &cands, const char *opts) {
+    char *err = nullptr;
+    char *r = cm_rank_next(g_profA.c_str(), cands.c_str(), opts, &err);
+    std::string out = r ? r : (err ? err : "?");
+    cm_free(r); cm_free(err);
+    return out;
+  };
+  const std::string c1 = "[{\"id\":\"slow\",\"artist\":\"x\",\"profile\":" + slow + "},{\"id\":\"clash\",\"artist\":\"y\",\"profile\":" +
+                         clash + "},{\"id\":\"good\",\"artist\":\"z\",\"profile\":" + good + "}]";
+  const std::string r1 = run(c1, "{\"intent\":\"balanced\"}");
+  std::printf("    %s\n", r1.substr(0, 160).c_str());
+  CHECK(r1.find("\"best\":\"good\"") != std::string::npos, "best is not the matching track");
+  CHECK(r1.find("\"path\":[\"good\"") != std::string::npos, "path does not start with it");
+  // два одинаковых по звуку; у одного исполнитель тот же, что только что играл
+  const std::string c2 = "[{\"id\":\"same\",\"artist\":\"band\",\"profile\":" + good + "},{\"id\":\"other\",\"artist\":\"else\",\"profile\":" +
+                         good + "}]";
+  const std::string r2 = run(c2, "{\"history\":[{\"id\":\"prev\",\"artist\":\"band\",\"energy\":6}]}");
+  std::printf("    %s\n", r2.substr(0, 120).c_str());
+  CHECK(r2.find("\"best\":\"other\"") != std::string::npos, "artist repeat not penalised");
 }
 
 int main(int argc, char **argv) {
@@ -382,12 +438,19 @@ int main(int argc, char **argv) {
   cm_analyzer_destroy(an);
 
   struct T { int tech; const char *name; } techs[] = {
-      {1, "T1 bass swap"}, {2, "T2 filter sweep"}, {3, "T3 echo out"}, {4, "T4 cut"}, {11, "T11 smooth fade"}};
+      {1, "T1 bass swap"}, {2, "T2 filter sweep"}, {3, "T3 echo out"}, {4, "T4 cut"},
+      {5, "T5 loop out"}, {7, "T7 brake"}, {8, "T8 reverb out"}, {11, "T11 smooth fade"}};
   for (auto &t : techs) {
     const int before = g_failed;
     std::printf("• %s\n", t.name);
     runTechnique(t.tech, 0);
     if (g_failed == before) runTechnique(t.tech, 1);
+    std::printf("  %s\n", g_failed == before ? "ok" : "FAILED");
+  }
+  {
+    const int before = g_failed;
+    std::printf("• next-track ranking\n");
+    testRank();
     std::printf("  %s\n", g_failed == before ? "ok" : "FAILED");
   }
   std::printf("• demos\n");

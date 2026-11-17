@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
-import 'package:cave_mix/cave_mix.dart' show DeckStatus, MixParam;
+import 'package:cave_mix/cave_mix.dart' show DeckStatus, MixParam, rankNextTracks;
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart' show Media;
 
@@ -676,6 +676,12 @@ class PlayerController extends ChangeNotifier {
     }
     final ni = _autoNextIndex();
     if (ni != null) m.prepare(queue[ni]);
+    // DJ-порядок выбирает из нескольких следующих: разбираем и их (только уже сохранённые — ради этого не качаем)
+    if (useMixEngine && djOrder && (shuffle || feeder != null) && index >= 0) {
+      for (final id in queue.skip(index + 2).take(4)) {
+        if (cache.has(id)) m.prepare(id);
+      }
+    }
   }
 
   /// Пока идёт переход, не null; по нему рисуется конец полосы осветления
@@ -799,6 +805,8 @@ class PlayerController extends ChangeNotifier {
     if (crossfadeSecNow <= 0 || _autoNextIndex() == null) return;
     // DJ-режим: переход планирует движок (доли, фразы, техники); пока готовим — обычный переход не начинаем
     if (_djPending || _dj != null) return;
+    // чуть раньше плана — порядок: какой из следующих треков лучше всего ляжет после этого
+    if (useMixEngine && duration - d < const Duration(seconds: _djLeadSec + 30) && _orderedFor != current?.id) _djReorder();
     if (duration - d < const Duration(seconds: _djLeadSec) && _djTriedFor != current?.id && _djEligible()) {
       _djTriedFor = current?.id;
       unawaited(_djPrepare());
@@ -1003,6 +1011,75 @@ class PlayerController extends ChangeNotifier {
   }
 
   Map<String, dynamic>? _beatProfile(String id) => mixer?.beat?.profile(id);
+
+  /// Порядок треков подбирается (только при «Вперемешку» или волне: порядок альбома и плейлиста не трогаем)
+  bool get djOrder => settings.viewOf('dj.order', '1') == '1';
+
+  /// Характер сета: balanced — энергия ровная, rise — нарастает, relax — спадает
+  String get djIntent {
+    final v = settings.viewOf('dj.intent', 'balanced');
+    return v == 'rise' || v == 'relax' ? v : 'balanced';
+  }
+
+  String? _orderedFor;
+  final List<String> _djPlayed = [];
+
+  double _energyOf(Map<String, dynamic>? p) {
+    final e = p?['energy'];
+    if (e is! List || e.isEmpty) return 5;
+    var sum = 0.0;
+    for (final x in e) {
+      sum += x is num ? x.toDouble() : 0;
+    }
+    return sum / e.length;
+  }
+
+  /// Ставит следующим тот из ближайших треков очереди, что лучше всего сводится с играющим (темп, тональность,
+  /// энергия, точки сведения) и подходит характеру сета. Только разобранные и сохранённые треки; что человек
+  /// поставил сам («Играть следующим», «В очередь»), не трогаем
+  void _djReorder() {
+    final cur = current;
+    if (cur == null) return;
+    _orderedFor = cur.id;
+    if (_djPlayed.isEmpty || _djPlayed.last != cur.id) {
+      _djPlayed.add(cur.id);
+      if (_djPlayed.length > 16) _djPlayed.removeAt(0);
+    }
+    if (!djOrder || !(shuffle || feeder != null) || userAhead > 0 || repeat == RepeatSetting.one) return;
+    if (jamActive?.call() ?? false) return;
+    final pa = _beatProfile(cur.id);
+    if (pa == null) return;
+    final cands = <Map<String, Object?>>[];
+    for (final id in queue.skip(index + 1).take(5)) {
+      final p = _beatProfile(id);
+      if (p == null || !cache.has(id)) continue;
+      cands.add({'id': id, 'artist': lib.data.tracks[id]?.artist.toLowerCase() ?? '', 'profile': p});
+    }
+    if (cands.length < 2) return;
+    try {
+      final history = [
+        for (final id in _djPlayed.skip(math.max(0, _djPlayed.length - 8)))
+          {'id': id, 'artist': lib.data.tracks[id]?.artist.toLowerCase() ?? '', 'energy': _energyOf(_beatProfile(id))},
+      ];
+      final r = jsonDecode(rankNextTracks(jsonEncode(pa), jsonEncode(cands), jsonEncode({'intent': djIntent, 'history': history})))
+          as Map<String, dynamic>;
+      final best = r['best'] as String?;
+      if (best == null) return;
+      final at = queue.indexOf(best, index + 1);
+      if (at <= index + 1) return; // и так следующий
+      queue.removeAt(at);
+      queue.insert(index + 1, best);
+      if (!shuffle) _origin = List.of(queue);
+      _queueChanged();
+      String why = '';
+      for (final c in (r['candidates'] as List? ?? const [])) {
+        if (c is Map && c['id'] == best) why = '${c['why'] ?? ''}';
+      }
+      AppLog.info('DJ: следующим ставлю «${lib.data.tracks[best]?.title ?? best}» — $why');
+    } catch (e) {
+      AppLog.warn('DJ: порядок треков не посчитан', e);
+    }
+  }
 
   /// Можно ли сделать переход движком: обе деки на нём, оба трека разобраны, не джем
   bool _djEligible() {

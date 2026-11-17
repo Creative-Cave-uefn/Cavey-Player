@@ -1160,6 +1160,38 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
             },
           ),
         ]),
+        const SizedBox(height: 4),
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Характер сета:', style: TextStyle(color: C.muted)),
+          const SizedBox(width: 10),
+          DropdownButton<String>(
+            value: app.player.djIntent,
+            dropdownColor: C.raised,
+            underline: const SizedBox.shrink(),
+            items: const [
+              DropdownMenuItem(value: 'balanced', child: Text('Ровный')),
+              DropdownMenuItem(value: 'rise', child: Text('Нарастающий')),
+              DropdownMenuItem(value: 'relax', child: Text('Спокойнее к концу')),
+            ],
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() => app.settings.view['dj.intent'] = v);
+              app.lib.saveSettings();
+            },
+          ),
+        ]),
+        HintSwitch(
+          contentPadding: EdgeInsets.zero,
+          value: app.player.djOrder,
+          onChanged: (v) {
+            setState(() => app.settings.view['dj.order'] = v ? '1' : '0');
+            app.lib.saveSettings();
+          },
+          title: 'Подбирать порядок треков',
+          hint: 'При «Вперемешку» и в волне следующим ставится тот из ближайших сохранённых треков, что лучше сводится '
+              'с играющим: темп, тональность, энергия, места для сведения — и подходит характеру сета. '
+              'Порядок альбома и плейлиста и то, что вы поставили сами, не меняется.',
+        ),
       ],
       const SizedBox(height: 8),
       HintSwitch(

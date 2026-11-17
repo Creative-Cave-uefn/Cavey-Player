@@ -258,4 +258,116 @@ class Echo {
   long long sinceLoud_ = 1LL << 40;  // сколько сэмплов подряд выход эха тише −100 дБ
 };
 
+// Реверберация Freeverb (Jezar, общественное достояние): 8 гребенчатых фильтров с демпфированием и 4 всепропускающих
+// на канал, правый канал разнесён на 23 сэмпла. Посыл до фейдера, как у эха: хвост звучит и после остановки деки.
+// На входе срез ниже 250 Гц — бас в ревербе превращается в гул.
+class Reverb {
+ public:
+  void setup(double fs) {
+    fs_ = fs;
+    static const int combT[8] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
+    static const int apT[4] = {556, 441, 341, 225};
+    const double k = fs / 44100.0;
+    for (int ch = 0; ch < 2; ++ch) {
+      const int spread = ch ? 23 : 0;
+      for (int i = 0; i < 8; ++i) { comb_[ch][i].buf.assign((size_t)std::max(1.0, (combT[i] + spread) * k), 0.0f); comb_[ch][i].i = 0; comb_[ch][i].store = 0; }
+      for (int i = 0; i < 4; ++i) { ap_[ch][i].buf.assign((size_t)std::max(1.0, (apT[i] + spread) * k), 0.0f); ap_[ch][i].i = 0; }
+    }
+    hp_.highpass(fs, 250.0, 0.707);
+    sinceLoud_ = quiet_ = 1LL << 40;
+  }
+  // room 0…1 — длина хвоста, damp 0…1 — глушение верхов
+  void process(const float *send, float *out, int n, double room = 0.88, double damp = 0.35) {
+    bool silentIn = true;
+    for (int i = 0; i < n * 2; ++i) if (send[i] != 0.0f) { silentIn = false; break; }
+    if (!silentIn) quiet_ = 0;
+    const long long tail = (long long)(fs_ * 12);  // хвост не дольше ~12 с
+    if (silentIn && quiet_ > tail && sinceLoud_ > (long long)fs_) return;
+    const double fb = 0.7 + 0.28 * std::clamp(room, 0.0, 1.0);
+    const double d1 = 0.4 * std::clamp(damp, 0.0, 1.0), d2 = 1 - d1;
+    for (int i = 0; i < n; ++i) {
+      const double in = (hp_.tick(0, send[i * 2]) + hp_.tick(1, send[i * 2 + 1])) * 0.015;
+      double y[2];
+      for (int ch = 0; ch < 2; ++ch) {
+        double acc = 0;
+        for (auto &c : comb_[ch]) {
+          const double o = c.buf[c.i];
+          c.store = o * d2 + c.store * d1;
+          c.buf[c.i] = (float)(in + c.store * fb);
+          if (++c.i >= c.buf.size()) c.i = 0;
+          acc += o;
+        }
+        for (auto &a : ap_[ch]) {
+          const double b = a.buf[a.i];
+          a.buf[a.i] = (float)(acc + b * 0.5);
+          acc = b - acc;
+          if (++a.i >= a.buf.size()) a.i = 0;
+        }
+        y[ch] = acc;
+      }
+      out[i * 2] += (float)(y[0] * kWet);
+      out[i * 2 + 1] += (float)(y[1] * kWet);
+      if (std::abs(y[0]) > 1e-5 || std::abs(y[1]) > 1e-5) sinceLoud_ = 0; else ++sinceLoud_;
+    }
+    if (silentIn) quiet_ += n;
+  }
+
+ private:
+  static constexpr double kWet = 3.0;
+  struct Comb { std::vector<float> buf; size_t i = 0; double store = 0; };
+  struct Ap { std::vector<float> buf; size_t i = 0; };
+  double fs_ = 48000;
+  Comb comb_[2][8];
+  Ap ap_[2][4];
+  Biquad hp_;
+  long long quiet_ = 1LL << 40, sinceLoud_ = 1LL << 40;
+};
+
+// «Торможение пластинки»: звук деки замедляется до остановки, высота падает вместе со скоростью.
+// Вход идёт с обычной скоростью и копится в буфере, выход читает его всё медленнее (кубическая интерполяция).
+class TapeStop {
+ public:
+  void setup(double fs) { fs_ = fs; buf_.assign((size_t)(fs * 8) * 2, 0.0f); active_ = false; }
+  void start(double durSec) {
+    active_ = true; done_ = false;
+    len_ = std::max(0.05, durSec) * fs_;
+    t_ = 0; w_ = 0; rp_ = 0;
+  }
+  void stop() { active_ = false; done_ = false; }
+  bool active() const { return active_; }
+  bool done() const { return done_; }
+  // в L/R — n кадров деки; на выходе — замедленный звук
+  void process(float *L, float *R, int n) {
+    if (!active_) return;
+    const size_t cap = buf_.size() / 2;
+    for (int i = 0; i < n; ++i) {
+      if (w_ < cap) { buf_[w_ * 2] = L[i]; buf_[w_ * 2 + 1] = R[i]; ++w_; }
+      if (done_) { L[i] = R[i] = 0; continue; }
+      const double x = t_ / len_;
+      if (x >= 1) { done_ = true; L[i] = R[i] = 0; continue; }
+      // скорость падает быстрее к концу, как у остановленного диска; громкость гаснет в последней четверти
+      const double speed = std::pow(1 - x, 1.4);
+      const double amp = x < 0.75 ? 1.0 : std::cos((x - 0.75) / 0.25 * 1.5707963267948966);
+      const size_t i1 = (size_t)rp_;
+      const double fr = rp_ - (double)i1;
+      for (int ch = 0; ch < 2; ++ch) {
+        auto at = [&](size_t k) { return k < w_ ? (double)buf_[k * 2 + ch] : 0.0; };
+        const double y0 = at(i1 > 0 ? i1 - 1 : 0), y1 = at(i1), y2 = at(i1 + 1), y3 = at(i1 + 2);
+        // Катмулл — Ром
+        const double v = y1 + 0.5 * fr * (y2 - y0 + fr * (2 * y0 - 5 * y1 + 4 * y2 - y3 + fr * (3 * (y1 - y2) + y3 - y0)));
+        (ch ? R : L)[i] = (float)(v * amp);
+      }
+      rp_ += speed;
+      t_ += 1;
+    }
+  }
+
+ private:
+  double fs_ = 48000;
+  std::vector<float> buf_;
+  bool active_ = false, done_ = false;
+  double len_ = 1, t_ = 0, rp_ = 0;
+  size_t w_ = 0;
+};
+
 }  // namespace cm
