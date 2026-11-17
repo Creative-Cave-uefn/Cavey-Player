@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:cave_mix/cave_mix.dart';
-import 'package:media_kit/media_kit.dart' show Media, Player;
+import 'package:media_kit/media_kit.dart' show Media, Player, PlayerLog;
 
 import 'log.dart';
 
@@ -82,21 +82,25 @@ class SharedMix {
 
 /// Потоки событий деки — как Player.stream
 class DeckStreams {
-  DeckStreams(this.position, this.duration, this.playing, this.buffering, this.completed, this.error);
+  DeckStreams(this.position, this.duration, this.playing, this.buffering, this.completed, this.error, this.log);
   final Stream<Duration> position;
   final Stream<Duration> duration;
   final Stream<bool> playing;
   final Stream<bool> buffering;
   final Stream<bool> completed;
   final Stream<String> error;
+
+  /// Журнал mpv (ошибки фильтров DJ-эффектов); у движка своего журнала нет
+  final Stream<PlayerLog> log;
 }
 
 /// Текущее состояние деки — как Player.state
 class DeckSnapshot {
-  DeckSnapshot(this.position, this.duration, this.playing, this.rate);
+  DeckSnapshot(this.position, this.duration, this.playing, this.rate, {this.buffering = false});
   final Duration position;
   final Duration duration;
   final bool playing;
+  final bool buffering;
   final double rate;
 }
 
@@ -119,9 +123,10 @@ class HybridDeck {
   final _buffering = StreamController<bool>.broadcast();
   final _completed = StreamController<bool>.broadcast();
   final _error = StreamController<String>.broadcast();
+  final _log = StreamController<PlayerLog>.broadcast();
 
-  late final DeckStreams stream = DeckStreams(
-      _position.stream, _duration.stream, _playing.stream, _buffering.stream, _completed.stream, _error.stream);
+  late final DeckStreams stream = DeckStreams(_position.stream, _duration.stream, _playing.stream, _buffering.stream,
+      _completed.stream, _error.stream, _log.stream);
 
   // состояние, когда играет движок
   Duration _ePos = Duration.zero, _eDur = Duration.zero;
@@ -138,10 +143,10 @@ class HybridDeck {
   bool get onEngine => _onEngine;
 
   DeckSnapshot get state {
-    if (_onEngine) return DeckSnapshot(_ePos, _eDur, _ePlaying, 1.0);
+    if (_onEngine) return DeckSnapshot(_ePos, _eDur, _ePlaying, _eRate, buffering: _eBuffering);
     final p = _mpv;
     if (p == null) return DeckSnapshot(Duration.zero, Duration.zero, false, 1.0);
-    return DeckSnapshot(p.state.position, p.state.duration, p.state.playing, p.state.rate);
+    return DeckSnapshot(p.state.position, p.state.duration, p.state.playing, p.state.rate, buffering: p.state.buffering);
   }
 
   Player _mpvPlayer() {
@@ -157,6 +162,7 @@ class HybridDeck {
       p.stream.buffering.listen((v) { if (!_onEngine) _buffering.add(v); }),
       p.stream.completed.listen((v) { if (!_onEngine) _completed.add(v); }),
       p.stream.error.listen((v) { if (!_onEngine) _error.add(v); }),
+      p.stream.log.listen(_log.add),
     ]);
     unawaited(p.setVolume(_volume));
     return p;
@@ -193,6 +199,7 @@ class HybridDeck {
         _eCompleted = false;
         _eStatus = DeckStatus.loading;
         _eBufferedMs = 0;
+        _eRate = 1.0;
         _setEPlaying(false);
         _setEBuffering(true);
         _position.add(Duration.zero);
@@ -235,6 +242,7 @@ class HybridDeck {
     if (d.loadId != _loadId) return; // состояние ещё от прошлой загрузки
     _eStatus = d.status;
     _eBufferedMs = d.bufferedMs;
+    _eRate = d.tempo;
     switch (d.status) {
       case DeckStatus.loading:
       case DeckStatus.empty:
@@ -326,6 +334,21 @@ class HybridDeck {
     await _mpv?.setVolume(v);
   }
 
+  double _eRate = 1.0;
+
+  /// Нативный проигрыватель mpv (для команд фильтров DJ-эффектов). На движке он молчит, команды ему не мешают
+  dynamic get platform => _mpvPlayer().platform;
+
+  /// Скорость воспроизведения. На движке — темп Rubber Band (высота сохраняется), на mpv — speed
+  Future<void> setRate(double r) async {
+    if (_onEngine) {
+      _eRate = r;
+      SharedMix.engine?.set(engineDeck, MixParam.tempo, r);
+      return;
+    }
+    await _mpvPlayer().setRate(r);
+  }
+
   /// Трек загружен в движок, дека стоит и звука в буфере не меньше [bufferedMs]: можно планировать переход
   bool engineReady({int bufferedMs = 1000}) =>
       _onEngine && !_pendingPlay && _eStatus == DeckStatus.ready && _eBufferedMs >= bufferedMs;
@@ -388,7 +411,7 @@ class HybridDeck {
       await s.cancel();
     }
     await _mpv?.dispose();
-    for (final c in [_position, _duration, _playing, _buffering, _completed, _error]) {
+    for (final c in [_position, _duration, _playing, _buffering, _completed, _error, _log]) {
       await c.close();
     }
   }

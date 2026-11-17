@@ -15,6 +15,8 @@ import 'core/app_icon.dart';
 import 'core/audio_cache.dart';
 import 'core/automix.dart';
 import 'core/beat_analysis.dart';
+import 'core/intel/service.dart';
+import 'core/intel/dj_journal.dart';
 import 'core/auth.dart';
 import 'core/covers.dart';
 import 'core/discord.dart';
@@ -25,11 +27,14 @@ import 'core/dl/tools.dart';
 import 'core/drive.dart';
 import 'core/jam.dart';
 import 'core/library.dart';
+import 'core/listenbrainz.dart';
+import 'core/mixbook.dart';
 import 'core/lyric_sources.dart';
 import 'core/perf.dart';
 import 'core/log.dart';
 import 'core/lyrics.dart';
 import 'core/player.dart';
+import 'core/radio.dart';
 import 'core/social.dart';
 import 'core/store.dart';
 import 'core/single_instance.dart';
@@ -72,6 +77,15 @@ class AppServices {
   late final WebInfoService web;
   late final PreviewPlayer preview;
   late final WaveService wave;
+
+  /// Похожесть треков по локальным данным (для радио и АвтоDJ) и скробблинг в ListenBrainz
+  late final SimIndex sim;
+
+  /// Audio Intelligence: локальный разбор звука, общий индекс признаков и подбор похожих по звуку
+  late final IntelService intel;
+  late final DjJournal djJournal;
+  late final ListenBrainz listenBrainz;
+  late final MixBook mixBook;
   late final KaraokeService karaoke;
 
   /// «Скачать на устройство»: треки, альбомы и плейлисты обычными файлами в выбранную папку
@@ -209,13 +223,51 @@ class AppServices {
     app.preview = PreviewPlayer(player);
     app.karaoke = KaraokeService(store.sub('karaoke'), lib, drive, cache, Tools(store.sub('tools')));
     // Умный переход: профили звука треков и темп из Deezer (если уже узнали)
-    player.mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))
+    final mixer = MixAnalyzer(store.sub('mix'), cache, Tools(store.sub('tools')))
       ..onProfile = (id) {
         if (id == player.current?.id) player.refreshNormalize();
       }
-      // DJ-режим: анализ долей, тональности и фраз — пока включён новый аудиодвижок (тест), только на Windows
+      // Аудиодвижок Cavey Mix: анализ долей, тональности и фраз (Beat This!) — пока движок включён, только на Windows.
+      // По нему движок сводит переходы с точностью до сэмпла
       ..beat = BeatAnalysis(store.sub('mix'), store.sub('tools'))
       ..beatEnabled = () => Platform.isWindows && player.useMixEngine;
+    player.mixer = mixer;
+    app.mixBook = MixBook(File('${store.sub('mixbook').path}${Platform.pathSeparator}transitions.json'));
+    player.mixBook = app.mixBook;
+    unawaited(mixer.preload()); // сохранённые разборы звука — в память, в фоне
+    app.djJournal = DjJournal(store.sub('dj'), onError: (e) => AppLog.warn('DJ journal', e));
+    player.djTrace = app.djJournal.append;
+    app.sim = SimIndex(lib, () => player.mixer);
+    app.intel = IntelService(dir: store.sub('intel'), lib: lib, drive: drive, cache: cache, tools: Tools(store.sub('tools')));
+    player.verifyTransition = app.intel.verifyTransition;
+    // Во время сведения новый разбор звука не начинается: процессор нужен двум проигрывателям
+    app.intel.holdOff = () => player.transitionActive;
+    // Переменная CAVEY_NO_INTEL=1 полностью отключает анализ звука (для проверки, не он ли виноват в сбое)
+    final intelOff = Platform.environment['CAVEY_NO_INTEL'] == '1';
+    if (!intelOff) {
+      unawaited(app.intel.open()); // индекс читается и разбор идёт в фоне: запуск приложения не ждёт
+      player.refinePlan = app.intel.refinePlan;
+      player.adaptiveFeatures = (id) {
+        final t = lib.data.tracks[id], f = app.intel.features(id);
+        return app.intel.enabled && t != null && f != null && f.isCompatibleFor(revisionOf(t)) ? f : null;
+      };
+    }
+    // Играющий и следующий трек разбираются в первую очередь: для DJ-перехода нужны данные именно по ним
+    String? intelSeen;
+    player.addListener(() {
+      if (intelOff) return;
+      final cur = player.current?.id;
+      final upcoming = player.queue.skip(player.index + 1).take(player.adaptiveStyle ? 5 : 1).toList();
+      final key = '$cur:${upcoming.join(",")}';
+      if (cur == null || key == intelSeen) return;
+      intelSeen = key;
+      for (final id in upcoming) {
+        app.intel.prioritize(id);
+        if (player.adaptiveStyle) { cache.enqueue(id); mixer.prepare(id); }
+      }
+      app.intel.prioritize(cur);
+    });
+    app.listenBrainz = ListenBrainz(settings, player)..start();
     final tempo = <String, double?>{};
     player.tempoOf = (t) {
       // темп из собственного анализа точнее Deezer: он посчитан по этой самой записи
@@ -227,6 +279,7 @@ class AppServices {
       return null;
     };
     app.wave = await WaveService.open(store, lib, player, social, app.web, downloads);
+    app.wave.intel = app.intel;
     Updater.beforeExit = tray.dispose;
     app.mediaKeys = MediaKeys(player, settings)..start();
     unawaited(tray.start());
@@ -335,6 +388,10 @@ class AppServices {
       await player.flushSession();
       await wave.flush();
       await lib.flushNow();
+    } catch (_) {}
+    try {
+      await djJournal.flush();
+      await intel.store.flush(); // готовые результаты разбора звука не теряются при выходе
     } catch (_) {}
     await AppLog.flush();
     try {

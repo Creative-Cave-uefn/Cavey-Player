@@ -4,12 +4,15 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
 
+import 'dj.dart';
 import 'dl/service.dart';
+import 'intel/service.dart' show IntelService;
 import 'lastfm.dart';
 import 'library.dart';
 import 'log.dart';
 import 'models.dart';
 import 'player.dart';
+import 'radio.dart';
 import 'social.dart';
 import 'store.dart';
 import 'web_info.dart';
@@ -38,16 +41,42 @@ class WaveMood {
   final String id;
   final String title;
   final List<String> tags;
-  const WaveMood(this.id, this.title, this.tags);
+
+  /// «Антитеги»: если они есть у исполнителя или песни, под это настроение она не подходит
+  /// (саундтрек к игре на романтику, тяжёлый метал на спокойное и т. п.)
+  final List<String> anti;
+  const WaveMood(this.id, this.title, this.tags, [this.anti = const []]);
+
+  /// Оценка по тегам (тег → вес 0..1): плюс за теги настроения, минус за антитеги.
+  /// Теги слабее 0,1 — шум (у любого исполнителя найдётся «love» с парой голосов), их не считаем.
+  /// Больше 0 — подходит, 0 — теги есть, но про другое, меньше 0 — явно не то
+  double raw(Map<String, double> have) {
+    double sum(List<String> list) {
+      var v = 0.0;
+      for (final t in list) {
+        final w = have[t] ?? 0;
+        if (w >= 0.1) v += w;
+      }
+      return v;
+    }
+
+    return (sum(tags) - sum(anti)) * 1.5;
+  }
 }
 
 const waveMoods = [
-  WaveMood('energy', 'Бодрое', ['energetic', 'upbeat', 'workout', 'party', 'dance', 'hype', 'gym', 'driving', 'drum and bass']),
-  WaveMood('calm', 'Спокойное', ['chill', 'chillout', 'calm', 'relax', 'relaxing', 'mellow', 'ambient', 'downtempo', 'lo-fi', 'lofi']),
-  WaveMood('sad', 'Грустное', ['sad', 'melancholic', 'melancholy', 'depressive', 'emotional', 'heartbreak', 'sadcore', 'depressing']),
-  WaveMood('love', 'Романтичное', ['romantic', 'love', 'sensual', 'sexy', 'love songs', 'r&b', 'rnb']),
-  WaveMood('dark', 'Мрачное', ['dark', 'gloomy', 'atmospheric', 'darkwave', 'phonk', 'witch house', 'post-punk']),
-  WaveMood('focus', 'Для фокуса', ['instrumental', 'focus', 'study', 'concentration', 'beats', 'instrumental hip-hop', 'post-rock']),
+  WaveMood('energy', 'Бодрое', ['energetic', 'upbeat', 'workout', 'party', 'dance', 'hype', 'gym', 'driving', 'drum and bass'],
+      ['sleep', 'lullaby', 'slowcore', 'sad', 'sadcore', 'ambient']),
+  WaveMood('calm', 'Спокойное', ['chill', 'chillout', 'calm', 'relax', 'relaxing', 'mellow', 'ambient', 'downtempo', 'lo-fi', 'lofi'],
+      ['metal', 'death metal', 'hardcore', 'screamo', 'hardstyle', 'noise', 'drum and bass', 'punk']),
+  WaveMood('sad', 'Грустное', ['sad', 'melancholic', 'melancholy', 'depressive', 'emotional', 'heartbreak', 'sadcore', 'depressing'],
+      ['party', 'dance', 'happy', 'upbeat', 'funny', 'comedy']),
+  WaveMood('love', 'Романтичное', ['romantic', 'love', 'sensual', 'sexy', 'love songs', 'r&b', 'rnb'],
+      ['soundtrack', 'ost', 'video game music', 'game', 'anime', 'chiptune', 'metal', 'death metal', 'hardcore', 'punk', 'noise', 'screamo']),
+  WaveMood('dark', 'Мрачное', ['dark', 'gloomy', 'atmospheric', 'darkwave', 'phonk', 'witch house', 'post-punk'],
+      ['happy', 'cute', 'kawaii', 'children', 'party', 'upbeat']),
+  WaveMood('focus', 'Для фокуса', ['instrumental', 'focus', 'study', 'concentration', 'beats', 'instrumental hip-hop', 'post-rock'],
+      ['party', 'metal', 'screamo', 'hardcore', 'noise']),
 ];
 
 WaveMood? moodById(String? id) => waveMoods.where((m) => m.id == id).firstOrNull;
@@ -57,11 +86,65 @@ class WaveTaste {
   /// Ключ исполнителя (в нижнем регистре) → симпатия: растёт от дослушиваний, падает от пропусков
   final Map<String, double> artists = {};
 
-  /// «Не нравится»: эти треки волна больше не ставит
+  // Минусы привязаны к «контексту» волны: '' — обычная, 'custom' — своя подборка, иначе id настроения.
+  // Так «не люблю эмо-рэп» из обычной волны не мешает в «мрачном» настроении, где он как раз к месту.
+  // И всё забывается: человек меняется, а один пропуск в плохой день не должен хоронить трек навсегда.
+
+  /// «Не нравится»: эти треки волна не ставит — в том контексте, где их отметили, и [dislikeTtl]
   final Set<String> disliked = {};
 
-  /// Сколько раз трек пропустили в первые 30 секунд
+  /// Где и когда отметили «не нравится»; нет записи — считаем, что в обычной волне и без срока
+  final Map<String, (String, DateTime)> dislikedMeta = {};
+
+  static const dislikeTtl = Duration(days: 30);
+  static const skipTtl = Duration(days: 21);
+
+  bool isDisliked(String id, String ctx) => disliked.contains(id) && (dislikedMeta[id]?.$1 ?? '') == ctx;
+
+  void dislike(String id, String ctx, [DateTime? now]) {
+    disliked.add(id);
+    dislikedMeta[id] = (ctx, now ?? DateTime.now());
+  }
+
+  bool undislike(String id) {
+    dislikedMeta.remove(id);
+    return disliked.remove(id);
+  }
+
+  /// Сколько раз трек пропустили в первые 30 секунд — в обычной волне (контекст '')
   final Map<String, int> skips = {};
+
+  /// То же в волнах с настроением или своей подборкой: контекст → трек → пропуски
+  final Map<String, Map<String, int>> ctxSkips = {};
+
+  /// Когда трек пропускали в последний раз: ключ «контекст|трек». По сроку [skipTtl] пропуски забываются
+  final Map<String, DateTime> skipAt = {};
+
+  Map<String, int> skipsIn(String ctx) => ctx.isEmpty ? skips : (ctxSkips[ctx] ?? const {});
+  int skipsOf(String id, String ctx) => skipsIn(ctx)[id] ?? 0;
+
+  void addSkip(String id, String ctx, [DateTime? now]) {
+    final m = ctx.isEmpty ? skips : ctxSkips.putIfAbsent(ctx, () => {});
+    m[id] = (m[id] ?? 0) + 1;
+    skipAt['$ctx|$id'] = now ?? DateTime.now();
+  }
+
+  /// Дослушали — один пропуск прощается
+  void forgiveSkip(String id, String ctx) {
+    final m = ctx.isEmpty ? skips : ctxSkips[ctx];
+    final s = m?[id];
+    if (m == null || s == null) return;
+    if (s <= 1) {
+      m.remove(id);
+      skipAt.remove('$ctx|$id');
+    } else {
+      m[id] = s - 1;
+    }
+  }
+
+  /// Минусы исполнителям по контекстам (всегда ≤ 0). Остывают быстрее плюсов
+  final Map<String, Map<String, double>> neg = {};
+  Map<String, double> negFor(String ctx) => neg[ctx] ?? const {};
 
   /// Д8: треки, которые когда-либо слушали дольше 30 секунд (длинная память для «Незнакомого»)
   final Set<String> heard = {};
@@ -92,6 +175,7 @@ class WaveTaste {
   /// Д2: симпатии без новых сигналов остывают — ×0,98 за каждый прошедший день
   void decay([DateTime? now]) {
     now ??= DateTime.now();
+    _expire(now);
     final last = decayedAt;
     if (last == null) {
       decayedAt = now;
@@ -102,10 +186,46 @@ class WaveTaste {
     final k = pow(0.98, days).toDouble();
     artists.updateAll((_, v) => v * k);
     artists.removeWhere((_, v) => v.abs() < 0.05);
+    // Минусы остывают заметно быстрее плюсов: ×0,92 в день, то есть вдвое примерно за неделю
+    final kn = pow(0.92, days).toDouble();
+    for (final m in neg.values) {
+      m.updateAll((_, v) => v * kn);
+      m.removeWhere((_, v) => v.abs() < 0.05);
+    }
+    neg.removeWhere((_, m) => m.isEmpty);
     decayedAt = last.add(Duration(days: days));
   }
 
-  void bump(String artist, double by) {
+  /// Забываем старые «не нравится» и пропуски
+  void _expire(DateTime now) {
+    dislikedMeta.removeWhere((id, m) {
+      if (now.difference(m.$2) <= dislikeTtl) return false;
+      disliked.remove(id);
+      return true;
+    });
+    skipAt.removeWhere((key, at) {
+      if (now.difference(at) <= skipTtl) return false;
+      final i = key.indexOf('|');
+      final ctx = i < 0 ? '' : key.substring(0, i);
+      final m = ctx.isEmpty ? skips : ctxSkips[ctx];
+      m?.remove(key.substring(i + 1));
+      return true;
+    });
+    ctxSkips.removeWhere((_, m) => m.isEmpty);
+  }
+
+  /// Плюс идёт в общую симпатию к исполнителю, минус — только в симпатию в контексте [ctx]
+  void bump(String artist, double by, {String ctx = ''}) {
+    if (by < 0) {
+      final m = neg.putIfAbsent(ctx, () => {});
+      final v = ((m[artist] ?? 0) + by).clamp(-10.0, 0.0).toDouble();
+      if (v.abs() < 0.05) {
+        m.remove(artist);
+      } else {
+        m[artist] = v;
+      }
+      return;
+    }
     final v = ((artists[artist] ?? 0) + by).clamp(-10.0, 20.0).toDouble();
     if (v.abs() < 0.05) {
       artists.remove(artist);
@@ -116,8 +236,15 @@ class WaveTaste {
 
   Map<String, dynamic> toJson() => {
         'artists': artists.map((k, v) => MapEntry(k, double.parse(v.toStringAsFixed(2)))),
+        'neg': {
+          for (final e in neg.entries)
+            if (e.value.isNotEmpty) e.key: e.value.map((k, v) => MapEntry(k, double.parse(v.toStringAsFixed(2)))),
+        },
         'disliked': disliked.toList(),
+        'dislikedMeta': {for (final e in dislikedMeta.entries) e.key: [e.value.$1, e.value.$2.toUtc().toIso8601String()]},
         'skips': skips,
+        'ctxSkips': ctxSkips,
+        'skipAt': {for (final e in skipAt.entries) e.key: e.value.toUtc().toIso8601String()},
         'upvoted': upvoted.toList(),
         'seeds': [for (final x in seeds) [x.$1, x.$2]],
         'heard': heard.toList(),
@@ -144,6 +271,49 @@ class WaveTaste {
       t.heard.add('$x');
     }
     t.decayedAt = DateTime.tryParse('${j['decayedAt'] ?? ''}');
+    final n = j['neg'];
+    if (n is Map) {
+      n.forEach((c, m) {
+        if (m is Map) t.neg['$c'] = {for (final e in m.entries) '${e.key}': (e.value as num?)?.toDouble() ?? 0};
+      });
+    }
+    final cs = j['ctxSkips'];
+    if (cs is Map) {
+      cs.forEach((c, m) {
+        if (m is Map) t.ctxSkips['$c'] = {for (final e in m.entries) '${e.key}': (e.value as num?)?.toInt() ?? 0};
+      });
+    }
+    final sa = j['skipAt'];
+    if (sa is Map) {
+      sa.forEach((k, v) {
+        final at = DateTime.tryParse('$v');
+        if (at != null) t.skipAt['$k'] = at;
+      });
+    }
+    final dm = j['dislikedMeta'];
+    if (dm is Map) {
+      dm.forEach((k, v) {
+        final at = v is List && v.length >= 2 ? DateTime.tryParse('${v[1]}') : null;
+        if (at != null) t.dislikedMeta['$k'] = ('${(v as List)[0]}', at);
+      });
+    }
+    // Данные старого формата: у «не нравится» и пропусков не было ни контекста, ни срока.
+    // Считаем их данными обычной волны и даём обычный срок жизни от сегодняшнего дня
+    final now = DateTime.now();
+    for (final id in t.disliked) {
+      t.dislikedMeta.putIfAbsent(id, () => ('', now));
+    }
+    t.skips.forEach((id, _) => t.skipAt.putIfAbsent('|$id', () => now));
+    t.ctxSkips.forEach((c, m) => m.forEach((id, _) => t.skipAt.putIfAbsent('$c|$id', () => now)));
+    // Раньше минусы исполнителям лежали вместе с плюсами и действовали во всех волнах.
+    // Переносим их в обычную волну, где они остынут быстро
+    for (final k in t.artists.keys.toList()) {
+      final v = t.artists[k]!;
+      if (v >= 0) continue;
+      t.artists.remove(k);
+      final m = t.neg.putIfAbsent('', () => {});
+      m[k] = min(m[k] ?? 0, v.clamp(-10.0, 0.0).toDouble());
+    }
     t.decay();
     return t;
   }
@@ -159,13 +329,25 @@ class WaveInputs {
   final Map<String, List<String>> related; // исполнитель → похожие (ключи)
   final WaveTaste taste;
   final Map<String, double> session; // поправки за эту волну: пропустил — меньше, дослушал — больше
-  final Map<String, double> boost; // трек → насколько он похож на недавно дослушанные (0..1, по Last.fm)
+  final Map<String, double> boost; // трек → насколько он похож на недавно дослушанные (0..1, по Last.fm и по звуку)
+  final Map<String, double> audioNeg; // трек → насколько он по звуку похож на недавно пропущенные (0..1)
   final Set<String> focus; // своя подборка: только эти исполнители и похожие на них (пусто — все)
   final Map<String, double>? mood; // выбрано настроение: трек → насколько подходит (0..1)
   final Map<String, double> bpm; // известный темп треков (Д6)
   final double? curBpm; // темп играющего сейчас трека
+  final Map<String, Camelot> keys; // тональность треков по разбору звука (АвтоDJ)
+  final Camelot? curKey; // тональность играющего сейчас трека
+
+  /// Контекст волны: '' — обычная, 'custom' — своя подборка, иначе id настроения.
+  /// Бан, пропуски и минусы исполнителям действуют только в том контексте, где их поставили
+  final String ctx;
+
+  /// Во сколько раз лайки весят больше обычного. 1 — как всегда; в режиме настройки — больше
+  final double likeBoost;
 
   WaveInputs({
+    this.ctx = '',
+    this.likeBoost = 1.0,
     required this.tracks,
     this.liked = const {},
     this.myPlays = const {},
@@ -175,10 +357,13 @@ class WaveInputs {
     WaveTaste? taste,
     this.session = const {},
     this.boost = const {},
+    this.audioNeg = const {},
     this.focus = const {},
     this.mood,
     this.bpm = const {},
     this.curBpm,
+    this.keys = const {},
+    this.curKey,
   }) : taste = taste ?? WaveTaste();
 }
 
@@ -201,7 +386,7 @@ class WaveEngine {
     final a = <String, double>{};
     void add(String k, double v) => a[k] = (a[k] ?? 0) + v;
     for (final t in x.tracks) {
-      final w = (x.liked.contains(t.id) ? 3.0 : 0.0) + min(x.myPlays[t.id] ?? 0, 6) * 0.7;
+      final w = (x.liked.contains(t.id) ? 3.0 * x.likeBoost : 0.0) + min(x.myPlays[t.id] ?? 0, 6) * 0.7;
       if (w == 0) continue;
       final names = t.artists;
       for (var i = 0; i < names.length; i++) {
@@ -212,6 +397,7 @@ class WaveEngine {
       add(k, 6);
     }
     x.taste.artists.forEach(add);
+    x.taste.negFor(x.ctx).forEach(add);
     x.session.forEach(add);
     // Похожим исполнителям достаётся часть симпатии — так волна находит новое, но близкое
     final spill = <String, double>{};
@@ -240,13 +426,16 @@ class WaveEngine {
     final pop = (x.crowd[t.id] ?? 0) / maxCrowd;
     final fresh = fam == 0 && !liked && !x.taste.heard.contains(t.id); // Д8: слышал когда-то — уже не новое
     var w = switch (mode) {
-      WaveMode.mix => 0.4 + 2.0 * aN + (liked ? 1.0 : 0) + 0.6 * pop + (fresh ? 0.4 : 0),
-      WaveMode.favorite => 0.1 + 1.6 * aN + (liked ? 2.5 : 0) + 0.15 * min(fam, 6),
+      WaveMode.mix => 0.4 + 2.0 * aN + (liked ? 1.0 * x.likeBoost : 0) + 0.6 * pop + (fresh ? 0.4 : 0),
+      WaveMode.favorite => 0.1 + 1.6 * aN + (liked ? 2.5 * x.likeBoost : 0) + 0.15 * min(fam, 6),
       WaveMode.unfamiliar => fresh ? 0.4 + 2.2 * aN + 0.6 * pop : 0.003,
-      WaveMode.popular => 0.1 + 3.0 * pop + 0.8 * aN + (liked ? 0.3 : 0),
+      WaveMode.popular => 0.1 + 3.0 * pop + 0.8 * aN + (liked ? 0.3 * x.likeBoost : 0),
     };
     // Похож на то, что вы только что дослушали, — держим настроение
     w *= 1 + 2.5 * (x.boost[t.id] ?? 0);
+    // Звучит как то, что только что пропустили, — слегка отодвигаем (не больше чем вдвое)
+    final an = x.audioNeg[t.id];
+    if (an != null) w *= 1 - 0.5 * min(0.6, an) / 0.6;
     // Своя подборка исполнителей: остальные почти не звучат
     if (x.focus.isNotEmpty && !t.artists.any((a) => x.focus.contains(a.toLowerCase()))) w *= 0.04;
     // Настроение: неподходящие треки отходят далеко на второй план
@@ -259,8 +448,11 @@ class WaveEngine {
       r = (r - r.roundToDouble()).abs() < r.abs() ? r - r.roundToDouble() : r;
       w *= 1 - min(0.35, r.abs() * 0.5);
     }
+    // Тональность по кругу Camelot: рядом — слегка поощряем, далеко — слегка штрафуем (как в АвтоDJ)
+    final ck = x.curKey, tk = x.keys[t.id];
+    if (ck != null && tk != null) w *= 0.8 + 0.4 * Camelot.compat(ck, tk);
     if (x.taste.upvoted.contains(t.id)) w *= 1.6;
-    w *= pow(0.45, x.taste.skips[t.id] ?? 0);
+    w *= pow(0.45, x.taste.skipsOf(t.id, x.ctx));
     return max(w, 0.002);
   }
 
@@ -269,7 +461,7 @@ class WaveEngine {
   static List<String> pick(WaveInputs x, WaveMode mode, int n,
       {List<String> recent = const [], Random? rnd, int sinceWide = 0}) {
     rnd ??= Random();
-    final pool = [for (final t in x.tracks) if (!x.taste.disliked.contains(t.id)) t];
+    final pool = [for (final t in x.tracks) if (!x.taste.isDisliked(t.id, x.ctx)) t];
     if (pool.isEmpty || n <= 0) return const [];
     // Не повторяем последние треки; в маленькой библиотеке — только самые свежие
     final int window = min(recent.length, max(0, pool.length - n) ~/ 2 + min<int>(pool.length ~/ 2, 60));
@@ -395,6 +587,11 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   final List<String> _recent = [];
   final Map<String, List<String>> _related = {}; // исполнитель → похожие исполнители
   final Map<String, double> _boost = {}; // трек библиотеки → похожесть на недавно дослушанные
+  final Map<String, double> _audioNeg = {}; // трек библиотеки → похожесть по звуку на недавно пропущенные
+
+  /// Признаки звука (если подключены): по ним волна находит треки, звучащие как дослушанные, и обходит звучащие как пропущенные.
+  /// Без них или без разбора у части треков волна работает как раньше
+  IntelService? intel;
   final List<String> _good = []; // недавно дослушанные треки: от них ищем похожие
   Timer? _saveTimer;
   Timer? _sweepTimer;
@@ -422,6 +619,26 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   int tagsKnown = 0, tagsTotal = 0;
 
   // ---------- новинки ----------
+
+  // ---------- режим настройки ----------
+
+  /// Отдельный режим для быстрой настройки волны (включается в Настройках → «Не лезь — убьёт»).
+  /// Пропуск ничего не штрафует: ни трек, ни исполнителя, ни пробный файл. Лайки, «нравится» и дослушивания
+  /// весят в [tuningBoost] раза больше, поэтому вкус схватывается за несколько треков.
+  /// Явное «не нравится» работает как всегда: это осознанное нажатие
+  bool tuning = false;
+  static const tuningBoost = 1.5;
+
+  double get _tuneK => tuning ? tuningBoost : 1.0;
+
+  void setTuning(bool on) {
+    if (tuning == on) return;
+    tuning = on;
+    AppLog.info('Моя волна: режим настройки ${on ? 'включён' : 'выключен'}');
+    _save();
+    notifyListeners();
+    if (active) player.refillFeed(keep: (id) => trials.containsKey(id));
+  }
 
   /// Качать новые треки в волну
   bool discover = true;
@@ -461,6 +678,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         final rel = j['similarArtists'];
         if (rel is Map) rel.forEach((k, v) => w._related['$k'] = [for (final x in (v as List? ?? const [])) '$x']);
         w.discover = j['discover'] != false;
+        w.tuning = j['tuning'] == true;
         final dl = (j['dailyLimit'] as num?)?.toInt();
         if (dl != null && WaveService.dailyLimits.contains(dl)) w.dailyLimit = dl;
         for (final x in (j['trials'] as List? ?? const [])) {
@@ -476,8 +694,12 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         }
         final tg = j['artistTags'];
         if (tg is Map) {
+          // До версии 2 любой сбой Last.fm (таймаут, 5xx) записывался как «тегов нет». Отличить такие записи
+          // от настоящих нельзя, поэтому один раз выбрасываем все пустые — спросим заново
+          final fixed = j['tagsV'] == 2;
           tg.forEach((k, v) {
-            if (v is Map) w._tags['$k'] = v.map((t, x) => MapEntry('$t', (x as num?)?.toDouble() ?? 0));
+            if (v is! Map || (!fixed && v.isEmpty)) return;
+            w._tags['$k'] = v.map((t, x) => MapEntry('$t', (x as num?)?.toDouble() ?? 0));
           });
         }
         w._day = '${j['day'] ?? ''}';
@@ -526,7 +748,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     if (mood != null) unawaited(_loadTags());
     final found = await _learnFrom(t);
     if (!active || player.current?.id != t.id) return;
-    if (found > 0) player.refillFeed(keep: (id) => trials.containsKey(id));
+    // То же без интернета: по тегам, плейлистам, жанру, темпу и тональности. Работает, даже когда Last.fm недоступен
+    final local = _learnLocal(t);
+    if (found + local > 0) player.refillFeed(keep: (id) => trials.containsKey(id));
     // В библиотеке почти нет похожих — значит, их надо скачать, не дожидаясь очереди
     if (found < 3) _maybeDiscover(force: true);
     notifyListeners();
@@ -539,6 +763,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     if (m != null) mode = m;
     _session.clear();
     _boost.clear();
+    _audioNeg.clear();
     _applyCustom();
     // Понравившееся в волне раньше — сразу ориентир для похожих
     final seeds = List.of(taste.seeds)..shuffle();
@@ -564,6 +789,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     }
     _remember([t.id]);
     _boost.clear();
+    _audioNeg.clear();
     custom.clear();
     await _learnFrom(t, wait: const Duration(seconds: 3)); // похожие на него — сразу в первую очередь
     _lastTrack = t.id;
@@ -631,8 +857,13 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
 
   // ---------- настроение ----------
 
+  /// В каком «контексте» идёт волна: от него зависит, какие минусы и баны действуют
+  String get _ctx => mood ?? (custom.isNotEmpty ? 'custom' : '');
+
   void setMood(String? id) {
     mood = moodById(id)?.id;
+    // Минусы, набранные в этой сессии (пропуски, «не нравится»), — про прежнее настроение, в новом их не тянем
+    _session.removeWhere((_, v) => v < 0);
     _save();
     notifyListeners();
     if (mood != null) unawaited(_loadTags());
@@ -644,32 +875,44 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     final m = moodById(mood);
     if (m == null) return null;
     final byArtist = <String, double>{};
+    // Теги ещё не загрузились (или Last.fm их не знает) — ни поощряем, ни наказываем. Раньше здесь был 0,
+    // и пока теги приходили, волна крутила только тех нескольких исполнителей, у кого они уже были
+    // Неизвестный — заметно хуже подходящего, но лучше «теги есть, и они про другое». Раньше здесь было 0,3,
+    // и исполнители без тегов (саундтреки, игровая музыка) обгоняли известных, но не подходящих под настроение
+    const unknown = 0.12;
     double fit(String key) => byArtist.putIfAbsent(key, () {
           final tags = _tags[key];
-          if (tags == null) return 0;
-          var v = 0.0;
-          for (final t in m.tags) {
-            v += tags[t] ?? 0;
-          }
-          return min(1.0, v * 1.5);
+          if (tags == null || tags.isEmpty) return unknown;
+          return m.raw(tags).clamp(0.0, 1.0).toDouble();
         });
     double fitTrack(Track t) {
-      // Д5: теги самой песни точнее; если их нет — теги исполнителя
+      // Д5: теги самой песни точнее; если по ним нет ни плюса, ни минуса — теги исполнителя
       final own = _trackTags[t.id];
       if (own != null && own.isNotEmpty) {
-        var v = 0.0;
-        for (final tag in m.tags) {
-          v += own[tag] ?? 0;
-        }
-        return min(1.0, v * 1.5);
+        final r = m.raw(own);
+        if (r > 0) return min(1.0, r);
+        if (r < 0) return 0; // сама песня помечена как «не то»
       }
-      return t.artists.map((a) => fit(a.toLowerCase())).fold<double>(0, (a, b) => a > b ? a : b);
+      final art = t.artists.map((a) => fit(a.toLowerCase())).fold<double>(0, (a, b) => a > b ? a : b);
+      // Тегов Last.fm нет (недоступен или не знает исполнителя): смотрим на звук и жанр самого трека
+      if (art <= unknown + 1e-9) {
+        final loc = _localMood(t, m);
+        if (loc != null) return loc;
+      }
+      return art;
     }
 
     return {
       for (final t in tracks)
         if (fitTrack(t) case final v when v > 0) t.id: v
     };
+  }
+
+  /// Подходит ли трек под настроение по темпу, громкости, тональности и жанру из разбора звука; null — трек не разобран
+  double? _localMood(Track t, WaveMood m) {
+    final p = player.mixer?.profileCached(t.id);
+    if (p == null) return null;
+    return moodFitLocal(m.id, m.tags, m.anti, bpm: p.bpm, key: Camelot.parse(p.key), loudDb: p.loudDb, genre: p.genre);
   }
 
   /// Теги исполнителей библиотеки: сначала тех, у кого больше треков. Хранятся, повторно не спрашиваем
@@ -691,31 +934,57 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       // Д5: теги ближайших песен очереди (не больше 12 за раз)
       var asked = 0;
       for (final t in [if (player.current != null) player.current!, ...player.upcoming.take(11)]) {
-        if (mood == null || asked >= 12) break;
+        if (mood == null || asked >= 12 || lastfm.paused || !lastfm.available) break;
         if (!_trackTagsAsked.add(t.id)) continue;
         asked++;
         final tags = await lastfm.trackTags(t.artists.first, t.title);
+        if (tags == null) {
+          _trackTagsAsked.remove(t.id); // Last.fm не ответил — спросим в следующий раз
+          continue;
+        }
         if (tags.isNotEmpty) _trackTags[t.id] = {for (final x in tags) x.artist: x.match};
       }
       var n = 0;
       for (final a in todo) {
-        if (mood == null) break;
+        if (mood == null || !lastfm.available) break;
         final tags = await lastfm.artistTags(a.name);
+        if (tags == null) {
+          // Last.fm не ответил. «Тегов нет» не записываем: это отравило бы кеш насовсем.
+          // Если он ушёл на паузу — выходим и вернёмся, когда пауза кончится
+          if (lastfm.paused) break;
+          continue;
+        }
         _tags[a.key] = {for (final t in tags) t.artist: t.match};
         tagsKnown++;
-        if (++n % 10 == 0) {
-          notifyListeners();
+        if (++n % 3 == 0) notifyListeners(); // счётчик на странице волны двигается, а не «висит»
+        if (n % 10 == 0) {
           _save();
           if (active) player.refillFeed(keep: (id) => trials.containsKey(id));
         }
       }
-    } catch (_) {
+    } catch (e) {
+      AppLog.warn('Моя волна: теги настроения', e);
     } finally {
       _tagging = false;
       _save();
       notifyListeners();
+      _retryTagsLater();
     }
   }
+
+  Timer? _tagRetry;
+
+  /// Last.fm ушёл на паузу посреди загрузки тегов — продолжаем, когда пауза закончится
+  void _retryTagsLater() {
+    _tagRetry?.cancel();
+    if (mood == null || !lastfm.available || !lastfm.paused) return;
+    _tagRetry = Timer(lastfm.pauseLeft + const Duration(seconds: 2), () {
+      if (mood != null) unawaited(_loadTags());
+    });
+  }
+
+  /// Что не так с Last.fm, если не так (для страницы волны); пусто — всё в порядке
+  String get lastfmStatus => lastfm.status;
 
   // ---------- почему этот трек ----------
 
@@ -755,8 +1024,8 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     taste.addSeed(t.artists.first, t.title);
     for (final a in t.artists) {
       final k = a.toLowerCase();
-      taste.bump(k, 2);
-      _session[k] = (_session[k] ?? 0) + 4;
+      taste.bump(k, 2 * _tuneK);
+      _session[k] = (_session[k] ?? 0) + 4 * _tuneK;
     }
     _good.remove(t.id);
     _good.add(t.id);
@@ -786,10 +1055,10 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   Future<void> dislike() async {
     final t = player.current;
     if (t == null) return;
-    taste.disliked.add(t.id);
+    taste.dislike(t.id, _ctx);
     for (final a in t.artists) {
       final k = a.toLowerCase();
-      taste.bump(k, -1.5);
+      taste.bump(k, -1.5, ctx: _ctx);
       _session[k] = (_session[k] ?? 0) - 4;
     }
     final trial = trials[t.id];
@@ -805,7 +1074,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   }
 
   void undislike(String id) {
-    if (taste.disliked.remove(id)) {
+    if (taste.undislike(id)) {
       _save();
       notifyListeners();
     }
@@ -847,7 +1116,10 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     if (_inputsDirty && (stale || _inputsTrials != trials.length) || _inputsTrials != trials.length) {
       _rebuildInputs();
     }
+    _refreshTempo();
     return WaveInputs(
+      ctx: _ctx,
+      likeBoost: _tuneK,
       tracks: _cTracks,
       liked: _cLiked,
       myPlays: _cMyPlays,
@@ -857,11 +1129,46 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       taste: taste,
       session: _session,
       boost: _boost,
+      audioNeg: _audioNeg,
       focus: _focus,
       mood: _moodMap(_cTracks),
-      bpm: _bpms,
-      curBpm: player.current == null ? null : _bpms[player.current!.id],
+      bpm: _tempoMap,
+      curBpm: player.current == null ? null : (_tempoMap[player.current!.id] ?? _bpms[player.current!.id]),
+      keys: _keyMap,
+      curKey: player.current == null ? null : _keyMap[player.current!.id],
     );
+  }
+
+  // ---------- темп и тональность из разбора звука ----------
+
+  Map<String, double> _tempoMap = const {};
+  Map<String, Camelot> _keyMap = const {};
+  DateTime _tempoAt = DateTime.fromMillisecondsSinceEpoch(0);
+  int _tempoCount = -1;
+
+  /// Темп и тональность всех разобранных треков библиотеки. Пересобираем, когда появились новые разборы
+  void _refreshTempo() {
+    final m = player.mixer;
+    final count = m?.profileCount ?? 0;
+    if (count == _tempoCount && DateTime.now().difference(_tempoAt) < const Duration(minutes: 2)) return;
+    _tempoCount = count;
+    _tempoAt = DateTime.now();
+    final bpm = <String, double>{};
+    final keys = <String, Camelot>{};
+    if (m != null) {
+      for (final t in _cTracks) {
+        final p = m.profileCached(t.id);
+        if (p == null) continue;
+        final b = p.bpm;
+        if (b != null) bpm[t.id] = b;
+        final k = Camelot.parse(p.key);
+        if (k != null) keys[t.id] = k;
+      }
+    }
+    // Темп из Deezer — для тех, кого ещё не разобрали
+    _bpms.forEach((id, b) => bpm.putIfAbsent(id, () => b));
+    _tempoMap = bpm;
+    _keyMap = keys;
   }
 
   void _rebuildInputs() {
@@ -915,6 +1222,9 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   // ---------- QueueFeeder ----------
 
   @override
+  String get label => 'Далее в волне';
+
+  @override
   List<String> more(int n) {
     final x = _inputs();
     final ahead = player.feeder == this ? player.queue.skip(player.index) : const <String>[];
@@ -948,7 +1258,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   /// Сколько разных песен исполнителя [key] пропущено в начале
   int _skippedSongsOf(String key) {
     var n = 0;
-    for (final id in taste.skips.keys) {
+    for (final id in taste.skipsIn(_ctx).keys) {
       final u = lib.data.tracks[id];
       if (u != null && u.artists.any((a) => a.toLowerCase() == key)) n++;
     }
@@ -958,9 +1268,14 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   @override
   void heard(Track t, Duration listened, {required bool skipped}) {
     taste.decay();
+    _audioNeg.updateAll((_, v) => v * 0.97);
+    _audioNeg.removeWhere((_, v) => v < 0.05);
     final keys = [for (final a in t.artists) a.toLowerCase()];
     final total = Duration(milliseconds: t.durationMs ?? 0);
     final early = skipped && listened < const Duration(seconds: 30);
+    // Режим настройки: ранний пропуск ничего не значит — ни штрафа треку и исполнителю,
+    // ни удаления пробного файла. Человек листает, чтобы найти, что нравится
+    if (early && tuning) return;
     if (listened >= const Duration(seconds: 30)) taste.markHeard(t.id);
     final finished = !skipped || (total > Duration.zero && listened.inMilliseconds > total.inMilliseconds * 0.7);
     final trial = trials[t.id];
@@ -977,16 +1292,18 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
           if (cur != null && player.current?.id != t.id && !_kept(t.id)) _drop(cur);
         });
       }
-      taste.skips[t.id] = (taste.skips[t.id] ?? 0) + 1;
+      taste.addSkip(t.id, _ctx);
+      _learnAudioNeg(t);
       // Д1: основной штраф получает сам трек (skips). Исполнителя заметно наказываем,
-      // только когда пропущены минимум две его разные песни
+      // только когда пропущены минимум две его разные песни. Всё это — только для текущего контекста
+      // (настроения), и со временем забывается
       for (final k in keys) {
         final songs = _skippedSongsOf(k);
         if (songs >= 2) {
-          taste.bump(k, -0.6);
+          taste.bump(k, -0.6, ctx: _ctx);
           _session[k] = (_session[k] ?? 0) - 2.5;
         } else {
-          taste.bump(k, -0.1);
+          taste.bump(k, -0.1, ctx: _ctx);
           _session[k] = (_session[k] ?? 0) - 0.5;
         }
       }
@@ -998,23 +1315,67 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         }, keepVisible: true);
       }
     } else if (finished) {
-      final s = taste.skips[t.id];
-      if (s != null && s <= 1) {
-        taste.skips.remove(t.id);
-      } else if (s != null) {
-        taste.skips[t.id] = s - 1;
-      }
+      taste.forgiveSkip(t.id, _ctx);
       // Д3: если окно скрыто, человек ничего не нажимал — дослушивание весит вдвое меньше
       final bg = _inBackground ? 0.5 : 1.0;
       for (final k in keys) {
-        taste.bump(k, 0.4 * bg);
-        _session[k] = (_session[k] ?? 0) + 1.5 * bg;
+        taste.bump(k, 0.4 * bg * _tuneK);
+        _session[k] = (_session[k] ?? 0) + 1.5 * bg * _tuneK;
       }
       _good.remove(t.id);
       _good.add(t.id);
       if (_good.length > 10) _good.removeAt(0);
     }
     _save();
+  }
+
+  late final SimIndex _sim = SimIndex(lib, () => player.mixer);
+
+  /// Пропустили трек в самом начале: треки, звучащие очень похоже, получают небольшой штраф (пока не забудется)
+  void _learnAudioNeg(Track t) {
+    try {
+      final sims = intel?.similarMap([t.id], floor: 0.7, limit: 80) ?? const <String, double>{};
+      sims.forEach((id, v) {
+        if (id == t.id) return;
+        final x = min(0.6, (v - 0.6) * 1.5);
+        if (x < 0.1) return;
+        if ((_audioNeg[id] ?? 0) < x) _audioNeg[id] = x;
+      });
+    } catch (e) {
+      AppLog.warn('Моя волна: штраф за похожее на пропущенное', e);
+    }
+  }
+
+  /// Похожие на трек (и на два последних дослушанных) по тому, что известно локально: один альбом и исполнитель,
+  /// общие плейлисты, жанр из тегов, эпоха, темп и тональность. Прибавка слабее, чем от Last.fm, и не выше 0,6:
+  /// иначе волна ходила бы только по альбому. Возвращает, сколько похожих нашлось
+  int _learnLocal(Track t) {
+    try {
+      final sims = _sim.similarTo([t.id, ..._good.reversed.take(2)]);
+      var n = 0;
+      sims.forEach((id, v) {
+        if (id == t.id) return;
+        final x = min(0.6, v * 0.7);
+        if (x < 0.1) return;
+        if ((_boost[id] ?? 0) < x) _boost[id] = x;
+        n++;
+      });
+      // Похожие по звуку (тембр, гармония, ритм, энергия из разбора аудио): прибавка мягкая, как и у локальных данных
+      final audio = intel?.similarMap([t.id, ..._good.reversed.take(2)], floor: 0.45) ?? const <String, double>{};
+      audio.forEach((id, v) {
+        if (id == t.id) return;
+        final x = min(0.6, (v - 0.35) * 1.2);
+        if (x < 0.1) return;
+        if ((_boost[id] ?? 0) < x) _boost[id] = x;
+        n++;
+      });
+      if (n > similarInLibrary) similarInLibrary = n;
+      AppLog.info('Моя волна: похожие на «${t.title}» по локальным данным: $n');
+      return n;
+    } catch (e) {
+      AppLog.warn('Моя волна: локальный подбор похожих', e);
+      return 0;
+    }
   }
 
   /// Похожие на трек по Last.fm: те, что есть в библиотеке, получают прибавку к весу.
@@ -1165,20 +1526,42 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     final every = _every;
     // Д15: держим 1–2 новинки про запас и качаем до двух треков параллельно
     if (!discover || !active || every == null || _pending >= 2) return;
+    // После пустого поиска или серии неудачных загрузок не долбим Last.fm и загрузчик на каждом треке
+    if (DateTime.now().isBefore(_discoverPausedUntil)) return;
     if (!force && _stockIds.length + _pending >= _stockTarget) return;
     if (downloadedToday >= dailyLimit || _targetSource == null || !lib.hasHub) return;
     unawaited(_discoverOne());
   }
 
+  /// До какого времени новинки не ищем (после пустого поиска или нескольких неудач подряд)
+  DateTime _discoverPausedUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Сколько загрузок новинок подряд не принесли трек
+  int _failStreak = 0;
+
+  /// Дольше этого задание загрузчика не ждём: слот освобождается, даже если оно «зависло»
+  static const _jobPatience = Duration(minutes: 10);
+
   Future<void> _discoverOne() async {
     _pending++;
+    // Слот возвращаем ровно один раз, что бы ни случилось. Раньше состояние «отменено» его не возвращало,
+    // и после двух отменённых заданий новинки не качались до перезапуска плеера
+    var released = false;
+    void release() {
+      if (released) return;
+      released = true;
+      _pending--;
+    }
+
     _status('Ищу новое для волны…');
     try {
-      final pick = await _findFresh();
+      final pick = await _findFresh().timeout(const Duration(seconds: 60), onTimeout: () => null);
       if (pick == null) {
-        AppLog.info('Моя волна: нового для скачивания не нашлось');
+        AppLog.info('Моя волна: нового для скачивания не нашлось. Причины: ${_why.isEmpty ? 'поиск не уложился в 60 с' : _why.join('; ')}'
+            '${lastfm.status.isEmpty ? '' : ' (${lastfm.status})'}');
+        _discoverPausedUntil = DateTime.now().add(const Duration(minutes: 2));
         _status('');
-        _pending--;
+        release();
         return;
       }
       final src = _targetSource!;
@@ -1190,25 +1573,50 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         _onDownloaded(t, pick);
       });
       if (job == null) {
-        _pending--;
+        _status('');
+        release();
         return;
       }
       // Ждём конца задания, чтобы не ставить в очередь загрузчика десяток треков разом
-      void check() {
-        if (job.state == JobState.done || job.state == JobState.failed) {
-          downloads.removeListener(check);
-          _pending--;
-          if (!got) {
-            _rejected.add(pick.key); // не скачался или уже был — в следующий раз ищем другой
+      Timer? patience;
+      // finish и check ссылаются друг на друга; в Dart локальная функция до своего объявления не видна,
+      // поэтому check объявлена переменной заранее
+      late final void Function() check;
+      void finish() {
+        downloads.removeListener(check);
+        patience?.cancel();
+        release();
+        if (got) {
+          _failStreak = 0;
+        } else {
+          _rejected.add(pick.key); // не скачался или уже был — в следующий раз ищем другой
+          final why = job.log.isEmpty ? '' : ' — ${job.log.last}';
+          AppLog.warn('Моя волна: не удалось скачать «${pick.title}» (${pick.artist}), задание: ${job.state.name}$why');
+          if (++_failStreak >= 3) {
+            // Загрузчик, похоже, не работает: не крутим бесконечный цикл поиск → неудача
+            _failStreak = 0;
+            _discoverPausedUntil = DateTime.now().add(const Duration(minutes: 10));
+            _status('Новое не скачивается: загрузчик не справляется (подробности в журнале). Повторю через 10 минут');
+          } else {
             _status('');
           }
-          _save();
         }
+        _save();
       }
 
+      check = () {
+        if (job.state == JobState.done || job.state == JobState.failed || job.state == JobState.cancelled) finish();
+      };
+
       downloads.addListener(check);
+      patience = Timer(_jobPatience, () {
+        if (released) return;
+        AppLog.warn('Моя волна: загрузка «${pick.title}» не закончилась за ${_jobPatience.inMinutes} минут, перестаю ждать');
+        finish();
+      });
+      check(); // вдруг задание уже закончилось
     } catch (e) {
-      _pending--;
+      release();
       _status('');
       AppLog.warn('Моя волна: новинка', e);
     }
@@ -1224,11 +1632,19 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
   bool _skippedArtist(String artist, Map<String, double> aff) =>
       splitArtists(artist).any((a) => (aff[a.toLowerCase()] ?? 0) <= -3);
 
+  /// Почему поиск новинки ничего не нашёл — попадает в журнал, чтобы было видно, где обрывается цепочка
+  final List<String> _why = [];
+
   Future<_Fresh?> _findFresh() async {
+    _why.clear();
     if (lastfm.available) {
       final f = await _findFreshLastFm();
       if (f != null) return f;
+    } else {
+      _why.add('Last.fm недоступен${lastfm.status.isEmpty ? '' : ' (${lastfm.status})'}');
     }
+    // Deezer про настроение ничего не знает: под настроение его «радио» только портит подбор
+    if (mood != null) return null;
     return _findFreshDeezer();
   }
 
@@ -1269,18 +1685,39 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     }
     final m = moodById(mood);
     if (m != null) {
-      final tag = m.tags[Random().nextInt(min(4, m.tags.length))];
-      vote(await lastfm.tagTracks(tag), 0.9);
+      // Под настроение: песни с его тегами весят заметно больше «похожих на играющее»
+      final pool = List.of(m.tags)..shuffle();
+      for (final tag in pool.take(2)) {
+        vote(await lastfm.tagTracks(tag), 1.4);
+      }
     }
-    if (score.isEmpty) return null;
+    if (score.isEmpty) {
+      _why.add('Last.fm: похожих треков не вернул (последний ответ: ${lastfm.status.isEmpty ? 'без ошибок' : lastfm.status})');
+      return null;
+    }
     final aff = _affinity();
     final trialKeys = _trialKeys;
     final cands = <(LfmItem, double)>[];
     final focus = _focus;
+    var nRejected = 0, nTrial = 0, nHave = 0, nSkipped = 0;
     score.forEach((k, v) {
       final i = item[k]!;
-      if (_rejected.contains(k) || trialKeys.contains(k)) return;
-      if (lib.existing(i.artist, i.title) != null || _skippedArtist(i.artist, aff)) return;
+      if (_rejected.contains(k)) {
+        nRejected++;
+        return;
+      }
+      if (trialKeys.contains(k)) {
+        nTrial++;
+        return;
+      }
+      if (lib.existing(i.artist, i.title) != null) {
+        nHave++;
+        return;
+      }
+      if (_skippedArtist(i.artist, aff)) {
+        nSkipped++;
+        return;
+      }
       final ak = i.artist.toLowerCase();
       var w = v;
       // Новый для библиотеки исполнитель интереснее, но новая песня знакомого — тоже хорошо
@@ -1290,20 +1727,76 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       if (focus.isNotEmpty && !focus.contains(ak)) w *= 0.2;
       cands.add((i, w));
     });
-    if (cands.isEmpty) return null;
+    if (cands.isEmpty) {
+      _why.add('Last.fm: кандидатов ${score.length}, отсеяно: уже в «отклонённых» $nRejected, уже на пробе $nTrial, '
+          'уже в библиотеке $nHave, исполнитель в минусе $nSkipped');
+      return null;
+    }
     cands.sort((a, b) => b.$2.compareTo(a.$2));
-    final pick = _weighted(cands.take(8).toList());
-    // Ссылку берём из Deezer: так загрузчик возьмёт точные теги и обложку
-    try {
-      final r = await web.search('${pick.artist} ${pick.title}');
-      final want = LibraryController.dupKey(pick.artist, pick.title);
-      for (final t in r.tracks) {
-        if (LibraryController.dupKey(t.artist, t.title) != want) continue;
-        if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) return null; // интро, скиты, миксы
-        if (t.link.isNotEmpty) return _Fresh(pick.artist, pick.title, t.link);
+    var top = cands.take(8).toList();
+    if (m != null) {
+      // Новинку проверяем по тегам исполнителя: не подходящих под настроение не качаем,
+      // иначе один саундтрек тянет за собой «похожие» и настроение теряется
+      final shortlist = cands.take(14).toList();
+      final fitted = <(LfmItem, double)>[];
+      var offMood = 0;
+      for (final (i, w) in shortlist) {
+        List<LfmItem>? got;
+        if (!lastfm.paused) got = await lastfm.artistTags(i.artist, urgent: true);
+        if (got == null || got.isEmpty) {
+          fitted.add((i, w * 0.4)); // теги неизвестны — не поощряем и не отсекаем
+          continue;
+        }
+        final r = m.raw({for (final x in got) x.artist: x.match});
+        if (r <= 0) {
+          offMood++;
+          continue;
+        }
+        fitted.add((i, w * (0.5 + 2 * min(1.0, r))));
       }
-    } catch (_) {}
-    return _Fresh(pick.artist, pick.title, null);
+      if (fitted.isEmpty) {
+        _why.add('под настроение «${m.title}» не подошёл никто из ${shortlist.length} кандидатов (отсеяно по тегам: $offMood)');
+        return null;
+      }
+      fitted.sort((a, b) => b.$2.compareTo(a.$2));
+      top = fitted.take(8).toList();
+    }
+    // До трёх попыток: раньше первый же интро/скит/часовой микс обрывал поиск целиком,
+    // а тот же кандидат мог выпасть снова на следующем заходе
+    for (var attempt = 0; attempt < 3 && top.isNotEmpty; attempt++) {
+      final pick = _weighted(top);
+      top.removeWhere((c) => identical(c.$1, pick));
+      final want = LibraryController.dupKey(pick.artist, pick.title);
+      String? link;
+      var odd = false;
+      // Ссылку берём из Deezer: так загрузчик возьмёт точные теги и обложку
+      try {
+        final r = await web.search('${pick.artist} ${pick.title}');
+        for (final t in r.tracks) {
+          if (LibraryController.dupKey(t.artist, t.title) != want) continue;
+          if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) {
+            odd = true; // интро, скиты, миксы
+            break;
+          }
+          if (t.link.isNotEmpty) {
+            link = t.link;
+            break;
+          }
+        }
+      } catch (e) {
+        AppLog.warn('Моя волна: поиск в Deezer «${pick.artist} — ${pick.title}»', e);
+        _why.add('поиск в Deezer упал: ${e.runtimeType}');
+      }
+      if (odd) {
+        _rejected.add(want);
+        _why.add('«${pick.title}» отпал по длительности (интро/микс)');
+        continue;
+      }
+      if (link == null) _why.add('в Deezer не нашлась ссылка на «${pick.artist} — ${pick.title}», качаю по названию');
+      return _Fresh(pick.artist, pick.title, link);
+    }
+    _why.add('три попытки подряд отпали по длительности');
+    return null;
   }
 
   static T _weighted<T>(List<(T, double)> list) {
@@ -1340,7 +1833,10 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       List<WebTrack>? list;
       try {
         list = await _radioOf(seeds[i]);
-      } catch (_) {}
+      } catch (e) {
+        AppLog.warn('Моя волна: радио Deezer «${seeds[i]}»', e);
+        _why.add('радио Deezer «${seeds[i]}» упало: ${e.runtimeType}');
+      }
       if (list == null) continue;
       for (final t in list) {
         byId[t.id] = t;
@@ -1355,18 +1851,35 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       artistVotes[k] = (artistVotes[k] ?? 0) + v;
     });
     final cands = <(WebTrack, double)>[];
+    var dRej = 0, dHave = 0, dSkip = 0, dOdd = 0;
     for (final t in byId.values) {
       final key = LibraryController.dupKey(t.artist, t.title);
-      if (t.link.isEmpty || key.isEmpty || _rejected.contains(key) || trialKeys.contains(key)) continue;
-      if (lib.existing(t.artist, t.title) != null) continue;
-      if (_skippedArtist(t.artist, aff)) continue; // исполнителя постоянно пропускают
-      if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) continue; // интро, скиты и часовые миксы
+      if (t.link.isEmpty || key.isEmpty || trialKeys.contains(key)) continue;
+      if (_rejected.contains(key)) {
+        dRej++;
+        continue;
+      }
+      if (lib.existing(t.artist, t.title) != null) {
+        dHave++;
+        continue;
+      }
+      if (_skippedArtist(t.artist, aff)) {
+        dSkip++; // исполнителя постоянно пропускают
+        continue;
+      }
+      if (t.seconds > 0 && (t.seconds < 90 || t.seconds > 600)) {
+        dOdd++; // интро, скиты и часовые миксы
+        continue;
+      }
       var w = votes[t.id]! + (artistVotes[t.artist.toLowerCase()] ?? 0) * 0.5;
       // Новые для библиотеки исполнители интереснее, но и новая песня знакомого — тоже хорошо
       if (lib.artist(t.artist.toLowerCase()) == null) w *= 1.3;
       cands.add((t, w));
     }
-    if (cands.isEmpty) return null;
+    if (cands.isEmpty) {
+      _why.add('Deezer: треков ${byId.length}, отсеяно: отклонённых $dRej, уже есть $dHave, исполнитель в минусе $dSkip, по длительности $dOdd');
+      return null;
+    }
     cands.sort((a, b) => b.$2.compareTo(a.$2));
     final t = _weighted(cands.take(5).toList());
     return _Fresh(t.artist, t.title, t.link);
@@ -1439,7 +1952,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
       final id = lib.data.resolve(t.id);
       final track = lib.data.tracks[id];
       if (track == null || _kept(id) || player.current?.id == id) continue;
-      final skipped = (taste.skips[t.id] ?? 0) > 0;
+      final skipped = taste.skipsOf(t.id, _ctx) > 0;
       if (skipped || _skippedArtist(track.artist, aff)) {
         _drop(t);
         removed++;
@@ -1497,9 +2010,11 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
         'recent': _recent,
         'similarArtists': _related,
         'discover': discover,
+        'tuning': tuning,
         'mood': mood,
         'dailyLimit': dailyLimit,
         'custom': custom,
+        'tagsV': 2,
         'artistTags': _tags.map((k, v) => MapEntry(k, v.map((t, x) => MapEntry(t, double.parse(x.toStringAsFixed(2)))))),
         'trials': [for (final t in trials.values) t.toJson()],
         'rejected': _rejected.toList(),
@@ -1517,6 +2032,7 @@ class WaveService extends ChangeNotifier implements QueueFeeder {
     social.removeListener(_markInputsDirty);
     _sweepTimer?.cancel();
     _saveTimer?.cancel();
+    _tagRetry?.cancel();
     super.dispose();
   }
 }
