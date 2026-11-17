@@ -42,6 +42,14 @@ if ($LASTEXITCODE -ne 0 -or $nativeOutput -notmatch 'PASS native Git executable:
     throw "Native CLI smoke test failed (check Git/Gh recursion): $nativeOutput"
 }
 Write-Host 'PASS native Git/Gh command resolution' -ForegroundColor Green
+
+# Verify both adversarial ref-name fixtures and actual local Git refs without fetching.
+$branchOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-branches 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $branchOutput -notmatch 'PASS malformed branch refs are skipped' -or
+    $branchOutput -notmatch 'PASS local Git refs parsed') {
+    throw "Branch parser smoke test failed: $branchOutput"
+}
+Write-Host 'PASS branch parser and real local Git refs' -ForegroundColor Green
 if (-not $SkipNpm) {
     Push-Location (Join-Path $PSScriptRoot 'devkit')
     try {

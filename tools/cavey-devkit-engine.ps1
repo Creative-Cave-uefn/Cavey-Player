@@ -122,17 +122,33 @@ function Check-Clean {
     $changes = Git @('status','--porcelain','--untracked-files=no')
     if ($changes) { Fail ('Commit or stash changes before switching branches: ' + [Environment]::NewLine + $changes) }
 }
+function Parse-RemoteBranchRefs([string]$text) {
+    # The full ref name is unambiguous; short refs can be unexpected or empty.
+    # Ignore malformed lines rather than calling Substring on a short value.
+    $prefix = 'refs/remotes/origin/'
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($row in ($text -split "\r?\n")) {
+        $columns = $row.Trim().Split('|')
+        if ($columns.Count -ne 3) { continue }
+        $fullRef = $columns[0].Trim()
+        if (-not $fullRef.StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
+        if ($fullRef.Length -le $prefix.Length) { continue }
+        $branch = $fullRef.Substring($prefix.Length)
+        if ($branch -eq 'HEAD') { continue }
+        $date = $columns[1].Trim()
+        $sha = $columns[2].Trim()
+        if ($sha -notmatch '^[0-9a-fA-F]{4,64}$') { continue }
+        if ($date -notmatch '^\d{4}-\d{2}-\d{2}$') { $date = 'unknown' }
+        [void]$list.Add([pscustomobject]@{ branch = $branch; date = $date; sha = $sha })
+    }
+    return $list.ToArray()
+}
 function Get-Branches([bool]$refresh = $true) {
     Check-Repo
     if ($refresh) { Git @('fetch','origin','--prune') | Out-Null }
-    $rows = @((Git @('for-each-ref','--sort=-committerdate','--format=%(refname:short)|%(committerdate:iso8601-strict)|%(objectname:short)','refs/remotes/origin')) -split [char]10)
-    $list = @()
-    foreach ($row in $rows) {
-        $columns = $row.Trim().Split('|')
-        if ($columns.Count -lt 3 -or $columns[0] -eq 'origin/HEAD') { continue }
-        $list += [pscustomobject]@{ branch = $columns[0].Substring(7); date = $columns[1]; sha = $columns[2] }
-    }
-    return $list
+    $format = '%(refname)|%(committerdate:short)|%(objectname:short)'
+    $refs = Git @('for-each-ref','--sort=-committerdate',"--format=$format",'refs/remotes/origin/')
+    return @(Parse-RemoteBranchRefs $refs)
 }
 function Select-Source([string]$requested) {
     if ($requested -eq 'current') {
@@ -152,7 +168,7 @@ function Select-Source([string]$requested) {
         return $requested
     }
     $choices = @($branches | Select-Object -First 50)
-    $labels = @($choices | ForEach-Object { "$($_.branch) · $($_.sha) · $($_.date.Substring(0,10))" })
+    $labels = @($choices | ForEach-Object { "$($_.branch) · $($_.sha) · $($_.date)" })
     return $choices[(Pick 'Select a GitHub branch' $labels)].branch
 }
 function Create-BuildWorktree([string]$source, [string]$folder) {
@@ -410,6 +426,28 @@ function Dispatch([string[]]$tokens) {
     if ($tokens.Count -eq 0) { Help; return }
     $command = $tokens[0].TrimStart('/').ToLower()
     switch ($command) {
+        'selftest-branches' {
+            # Fixture-based, offline regression check for a malformed/non-origin ref.
+            $sample = @(
+                'refs/remotes/origin/main|2026-11-17|abcdef123456',
+                'refs/remotes/origin/feat/deep/path|2026-11-16|123abc456789',
+                'origin|2026-11-17|abcdef123456',
+                'refs/remotes/upstream/other|2026-11-17|abcdef123456',
+                'refs/remotes/origin/HEAD|2026-11-17|abcdef123456',
+                'refs/remotes/origin/|2026-11-17|abcdef123456',
+                'refs/remotes/origin/broken|bad-date|bad-sha',
+                ''
+            ) -join [Environment]::NewLine
+            $parsed = @(Parse-RemoteBranchRefs $sample)
+            if ($parsed.Count -ne 2 -or $parsed[0].branch -cne 'main' -or
+                $parsed[1].branch -cne 'feat/deep/path') {
+                Fail "Branch parser regression: expected 2 valid branches, found $($parsed.Count)."
+            }
+            Say 'PASS malformed branch refs are skipped' Green
+            # Reproduce the real for-each-ref path without network access.
+            $actual = @(Get-Branches $false)
+            Say "PASS local Git refs parsed: $($actual.Count) branch(es)" Green
+        }
         'selftest-native' {
             # Offline smoke test: both wrappers must resolve an executable, not recurse.
             $gitVersion = Git @('--version')
@@ -430,7 +468,7 @@ function Dispatch([string[]]$tokens) {
         'branches' {
             $branches = @(Get-Branches)
             Heading "GitHub branches · $($branches.Count)"
-            foreach ($b in $branches) { Say ("  {0,-52} {1}  {2}" -f $b.branch,$b.date.Substring(0,10),$b.sha) }
+            foreach ($b in $branches) { Say ("  {0,-52} {1}  {2}" -f $b.branch,$b.date,$b.sha) }
         }
         'releases' {
             $releases = @(Test-Releases | Sort-Object publishedAt -Descending)
