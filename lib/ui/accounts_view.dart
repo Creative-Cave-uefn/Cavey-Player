@@ -1129,6 +1129,19 @@ class _PlaybackSectionState extends State<_PlaybackSection> {
       const SizedBox(height: 8),
       HintSwitch(
         contentPadding: EdgeInsets.zero,
+        value: app.player.useMixEngine,
+        onChanged: (v) {
+          setState(() => app.settings.view['dj.engine'] = v ? '1' : '0');
+          app.lib.saveSettings();
+        },
+        title: 'Новый аудиодвижок (тест DJ-режима)',
+        hint: 'Сохранённые на компьютере треки играют через новый движок Cavey Mix вместо mpv. Треки, которые ещё идут '
+            'потоком с Диска, и форматы, которые движок пока не читает (Ogg, Opus, M4A), по-прежнему играют через mpv. '
+            'Включается со следующего трека.',
+      ),
+      const SizedBox(height: 8),
+      HintSwitch(
+        contentPadding: EdgeInsets.zero,
         value: app.player.normalize,
         onChanged: (v) async {
           await app.player.setNormalize(v);

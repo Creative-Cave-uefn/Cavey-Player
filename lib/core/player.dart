@@ -2,9 +2,10 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:media_kit/media_kit.dart' show Media, Player;
+import 'package:media_kit/media_kit.dart' show Media;
 
 import 'audio_cache.dart';
+import 'audio_deck.dart';
 import 'automix.dart';
 import 'auth.dart';
 import 'crossfade.dart';
@@ -89,10 +90,18 @@ class PlayerController extends ChangeNotifier {
   final AccountManager accounts;
   final Settings settings;
   final AudioCache cache;
-  Player _p = Player();
+  late HybridDeck _p = _newDeck();
 
   /// Второй проигрыватель для плавного перехода: на нём включается следующий трек, пока затихает текущий
-  Player? _q;
+  HybridDeck? _q;
+
+  /// Деки проигрывателя: треки с диска играют через аудиодвижок Cavey Mix (если он включён в настройках),
+  /// остальное — через mpv. Первая созданная дека — 0-я дека движка, вторая — 1-я
+  int _decksMade = 0;
+  HybridDeck _newDeck() => HybridDeck(_decksMade++ % 2, () => useMixEngine);
+
+  /// Играть сохранённые треки через новый аудиодвижок (тестовая настройка DJ-режима)
+  bool get useMixEngine => settings.viewOf('dj.engine', '0') == '1';
 
   /// Панель с текстом песни открыта
   final ValueNotifier<bool> lyricsOpen = ValueNotifier(false);
@@ -205,7 +214,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// Подписывается на события проигрывателя [p] (и отписывается от прежнего)
-  void _bind(Player p) {
+  void _bind(HybridDeck p) {
     for (final s in _subs) {
       s.cancel();
     }
@@ -666,7 +675,7 @@ class PlayerController extends ChangeNotifier {
   Timer? _fadeTimer;
   double _inGain = 1;
   double _outGain = 1;
-  Player? _outgoing;
+  HybridDeck? _outgoing;
 
   // ---------- ровная громкость ----------
 
@@ -792,7 +801,7 @@ class PlayerController extends ChangeNotifier {
       try {
         final media = await _mediaFor(t);
         if (seq != _openSeq || _fading) return;
-        final q = _q ??= Player();
+        final q = _q ??= _newDeck();
         await q.setVolume(0);
         await q.open(media, play: false);
         if (seq != _openSeq) {
@@ -836,7 +845,7 @@ class PlayerController extends ChangeNotifier {
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
       if (seq != _openSeq || !_fading) return;
-      final incoming = _q ??= Player();
+      final incoming = _q ??= _newDeck();
       final prepared = _preparedId == nextTrack.id;
       _preparedId = null;
       await incoming.setVolume(0);
@@ -1283,8 +1292,8 @@ class PlayerController extends ChangeNotifier {
     _hoverTimer?.cancel();
     _fadeTimer?.cancel();
     _tailTimer?.cancel();
-    _p.dispose();
-    _q?.dispose();
+    unawaited(_p.dispose());
+    unawaited(_q?.dispose() ?? Future<void>.value());
     unawaited(_proxy.close());
     position.dispose();
     lyricsOpen.dispose();

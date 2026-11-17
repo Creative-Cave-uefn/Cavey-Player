@@ -1,0 +1,21 @@
+name: cave_mix
+description: Аудиодвижок DJ-режима Cavey — две деки в одном аудиопотоке, тайм-стретч Rubber Band R3, EQ, фильтр, автоматизации.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+  flutter: ">=3.3.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffi: ^2.1.0
+
+flutter:
+  plugin:
+    platforms:
+      windows:
+        ffiPlugin: true
+      linux:
+        ffiPlugin: true

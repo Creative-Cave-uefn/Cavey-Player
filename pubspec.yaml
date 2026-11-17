@@ -29,6 +29,9 @@ dependencies:
   # Своя копия плагина: возвращает кнопки миниатюры после того, как окно спрятали и показали
   windows_taskbar:
     path: packages/windows_taskbar
+  # Аудиодвижок DJ-режима: две деки в одном потоке, тайм-стретч, EQ, автоматизации (C++ через dart:ffi)
+  cave_mix:
+    path: packages/cave_mix
 
 dev_dependencies:
   flutter_test:
