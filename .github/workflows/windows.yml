@@ -5,7 +5,8 @@ on:
   # «Получать бета-версии»; остальные ветки — тестовые сборки, которые можно выбрать
   # в плеере: Настройки → Обновления → Тестовые сборки
   push:
-    branches: ['**']
+    # Keivi DevKit source updates must not trigger remote compilation.
+    branches: ['**', '!feat/keivi-devkit-*']
   workflow_dispatch:
   # Ветку удалили — убираем её тестовую сборку
   delete:
