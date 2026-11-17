@@ -1,4 +1,4 @@
-# Cavey DevKit - local Windows command console for Cavey Player.
+﻿# Cavey DevKit - local Windows command console for Cavey Player.
 # PowerShell 5.1; launch without arguments for an interactive Claude-style TUI.
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8 } catch {}
