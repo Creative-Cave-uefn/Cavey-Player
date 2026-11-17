@@ -344,16 +344,24 @@ function Build([string[]]$tokens) {
     Say "  Mode: $mode · $(if ($local) { 'local only' } else { 'publish to GitHub Releases' })"
     if (-not (Ask 'Create a temporary worktree and build?' (Flag $tokens '--yes'))) { return }
     $base = if ($local) { '0.4.0' } else { Stable-Base $mode $channel $source }
-    $seconds = [int]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 1794182400)
-    if ($seconds -lt 1) { $seconds = 1 }
-    $version = "$base.$seconds"
+    # Keep the build number aligned with tools/local-test-build.ps1:
+    # number of minutes since 2026-11-09 00:00 UTC.
+    $epoch = [DateTimeOffset]::new(2026,11,9,0,0,0,[TimeSpan]::Zero).ToUnixTimeSeconds()
+    $buildNumber = [int][Math]::Floor(([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $epoch) / 60)
+    if ($buildNumber -lt 1) { $buildNumber = 1 }
     $prefix = 'test-' + (Slug $channel) + '-v'
     if (-not $local) {
         $existing = @(Test-Releases | Where-Object { $_.tagName.StartsWith($prefix) })
-        while (@($existing | Where-Object { $_.tagName -eq "$prefix$version" }).Count -gt 0) {
-            $seconds++; $version = "$base.$seconds"
+        $sameBase = '^' + [regex]::Escape($prefix + $base + '.') + '(\d+)$'
+        foreach ($release in $existing) {
+            $numberMatch = [regex]::Match([string]$release.tagName, $sameBase)
+            if ($numberMatch.Success) {
+                $publishedNumber = [int]$numberMatch.Groups[1].Value
+                if ($publishedNumber -ge $buildNumber) { $buildNumber = $publishedNumber + 1 }
+            }
         }
     }
+    $version = "$base.$buildNumber"
     $id = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
     $folder = Join-Path (Join-Path $script:DataHome 'builds') $id
     New-Item -ItemType Directory -Force -Path $folder | Out-Null
