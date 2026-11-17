@@ -181,6 +181,8 @@ class _Worker {
 
 /// Профили v2: анализ, хранение, чтение
 class BeatAnalysis {
+  static const _algo = 2;
+
   BeatAnalysis(this.mixDir, Directory toolsDir) : assets = BeatAssets(Directory('${toolsDir.path}${Platform.pathSeparator}beat'));
 
   final Directory mixDir;
@@ -202,7 +204,8 @@ class BeatAnalysis {
     if (!f.existsSync()) return null;
     try {
       final p = jsonDecode(f.readAsStringSync());
-      if (p is Map<String, dynamic> && p['v'] == 2) {
+      // algo — версия алгоритма сетки долей; профили старее пересчитываются (в них могла быть сетка на слабых долях)
+      if (p is Map<String, dynamic> && p['v'] == 2 && (p['algo'] is int ? p['algo'] as int : 1) >= _algo) {
         _mem[id] = p;
         return p;
       }

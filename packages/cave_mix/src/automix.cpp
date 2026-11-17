@@ -289,6 +289,7 @@ static uint64_t splitmix(uint64_t &x) {
 
 struct Plan {
   int tech = T11;
+  bool matched = false;  // темп B подогнан, доли совпадают
   int bars = 0;               // длина в тактах уходящего трека (0 — склейка)
   int outBar = -1, inBar = -1;
   double aOut = 0, bIn = 0;   // секунды трека: где A начинает уходить (или обрывается), с какого места входит B
@@ -360,7 +361,9 @@ class Automix {
     for (int t : order) {
       Plan p;
       p.tech = t;
-      p.ratio = (t == T1 || t == T2 || t == T4) ? ratio : 1.0;
+      // плавный переход тоже подгоняет темп, если может: иначе в наложении доли разъезжаются («галоп»)
+      p.matched = canMatch && a.grid && b.grid && (t == T1 || t == T2 || t == T4 || t == T11);
+      p.ratio = p.matched ? ratio : 1.0;
       if ((t == T1 || t == T2 || t == T4) && !canMatch && !o.force) continue;
       if ((t == T1 || t == T2 || t == T3 || t == T4) && (!a.grid || !b.grid)) continue;
       if (!fit(a, b, o, p)) continue;
@@ -386,7 +389,12 @@ class Automix {
     const double lead = posA_ + o.minLead * tempoA_;
     const double end = std::min(a.endSec, a.duration) + 0.05;
     if (p.tech == T11) {
-      const double F = o.fadeSec;
+      const bool beats = a.grid && b.grid;
+      double F = o.fadeSec;
+      // обе дорожки ровные, но темп не подогнать — наложение короткое, иначе бочки идут вразнобой
+      if (beats && !p.matched) F = std::min(F, 4 * a.barLen / a.bpb);
+      // с подгонкой — целое число тактов
+      if (p.matched) F = std::max(1.0, std::round(F / a.barLen)) * a.barLen;
       double start = end - F;
       // лучше начать с точки выхода, если она в конце трека и до неё не слишком далеко
       for (auto &m : a.mixOut) {
@@ -395,11 +403,16 @@ class Automix {
         if (t >= lead && t + F <= end && t >= end - 60) { start = t; break; }
       }
       if (start < lead) start = lead;
+      // начало — на сильную долю A (если сетка есть): тогда и вход B с его сильной доли совпадёт по фазе
+      if (a.grid) {
+        const double k = std::ceil((start - a.barStart(0)) / a.barLen - 1e-6);
+        const double snapped = a.barStart((int)k);
+        if (snapped + 1.0 <= end) start = snapped;
+      }
       if (start + 1.0 > end) return false;
       p.aOut = start;
-      // без подгонки темпа доли всё равно разъедутся, но вход с сильной доли звучит аккуратнее
       p.bIn = b.grid ? std::max(0.0, b.barStart(b.firstDownbeatBar)) : std::min(b.introSec, 8.0);
-      p.bars = 0;
+      p.bars = p.matched ? (int)std::lround(std::min(F, end - start) / a.barLen) : 0;
       p.c0 = clockAtA(start);
       p.cEnd = p.c0 + (int64_t)std::llround(std::min(F, end - start) / tempoA_ * sr_);
       return true;

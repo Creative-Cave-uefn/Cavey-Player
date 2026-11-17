@@ -366,6 +366,7 @@ struct Grid {
   double firstBeat = 0;  // время первой доли сетки (≥ 0)
   double residualMs = 0; // СКО отклонения долей от сетки
   bool variable = false;
+  double maxLocalDevPct = 0;  // самое сильное отклонение местного темпа от общего, %
 };
 
 // Ровная сетка по долям, устойчивая к лишним ударам (нейросеть иногда отмечает восьмые) и пропускам:
@@ -418,20 +419,42 @@ static Grid fitGrid(const std::vector<double> &b) {
   }
   // 3. по всему треку: номер доли от t0, МНК по ударам у сетки, допуск сужается
   std::vector<char> use(B, 0);
-  for (int iter = 0; iter < 8; ++iter) {
-    const double tol = iter < 3 ? 0.25 * p : (iter < 5 ? std::min(0.07, 0.2 * p) : std::min(0.04, 0.15 * p));
-    double N = 0, sk = 0, st = 0, skk = 0, skt = 0;
-    for (size_t i = 0; i < B; ++i) {
-      const double k = std::round((b[i] - t0) / p);
-      use[i] = std::abs(b[i] - (t0 + p * k)) < tol;
-      if (!use[i]) continue;
-      N += 1; sk += k; st += b[i]; skk += k * k; skt += k * b[i];
+  auto refine = [&](int from) -> bool {
+    for (int iter = from; iter < 8; ++iter) {
+      const double tol = iter < 3 ? 0.25 * p : (iter < 5 ? std::min(0.07, 0.2 * p) : std::min(0.04, 0.15 * p));
+      double N = 0, sk = 0, st = 0, skk = 0, skt = 0;
+      for (size_t i = 0; i < B; ++i) {
+        const double k = std::round((b[i] - t0) / p);
+        use[i] = std::abs(b[i] - (t0 + p * k)) < tol;
+        if (!use[i]) continue;
+        N += 1; sk += k; st += b[i]; skk += k * k; skt += k * b[i];
+      }
+      const double den = N * skk - sk * sk;
+      if (N < 8 || std::abs(den) < 1e-9) return false;
+      const double np = (N * skt - sk * st) / den;
+      if (np <= 0.2 || np > 1.6) return false;
+      t0 = (st - np * sk) / N; p = np;
     }
-    const double den = N * skk - sk * sk;
-    if (N < 8 || std::abs(den) < 1e-9) return g;
-    const double np = (N * skt - sk * st) / den;
-    if (np <= 0.2 || np > 1.6) return g;
-    t0 = (st - np * sk) / N; p = np;
+    return true;
+  };
+  if (!refine(0)) return g;
+  // 4. На долях или на слабых долях? Где хэт стоит между бочками, нейросеть кусками отмечает и восьмые, и цепочка
+  //    могла пройти по ним. Настоящие доли отмечены по всему треку, восьмые — местами: побеждает сетка, на которую
+  //    ложится больше ударов. Сдвиг на полдоли — и подгонка заново.
+  {
+    auto onGridAt = [&](double off) {
+      int c = 0;
+      for (double t : b) {
+        const double r = t - (t0 + off) - p * std::round((t - t0 - off) / p);
+        if (std::abs(r) < 0.12 * p) ++c;
+      }
+      return c;
+    };
+    const int on = onGridAt(0), half = onGridAt(0.5 * p);
+    if (half > on * 1.15) {
+      t0 += 0.5 * p;
+      if (!refine(3)) return g;
+    }
   }
   // итог
   double ss = 0, cnt = 0, onGrid = 0;
@@ -446,6 +469,26 @@ static Grid fitGrid(const std::vector<double> &b) {
   g.firstBeat = t0 - std::floor(t0 / p) * p;
   // плавающий темп: доли заметно расходятся с ровной сеткой или многие удары у сетки в неё не легли
   g.variable = g.residualMs > 20.0 || cnt < 0.8 * onGrid;
+  // Смена темпа по ходу трека (живой барабанщик, запись сета, замедление в конце): сетка одна на весь трек,
+  // и там, где темп другой, удары просто «выпадают» из подгонки — по остаткам этого не видно. Поэтому
+  // смотрим местный темп окнами по 16 долей: шаг цепочки соседних ударов, каждый интервал округлён до целых долей.
+  g.maxLocalDevPct = 0;
+  for (size_t i = 0; i + 1 < b.size(); i += 8) {
+    double K = 0;
+    size_t last = i;
+    int kept = 0, skipped = 0;
+    for (size_t j = i + 1; j < b.size() && K < 16; ++j) {
+      const double r = (b[j] - b[last]) / p;
+      const double k = std::round(r);
+      if (k > 2.5) break;                                            // пропуск — окно кончилось
+      if (k < 1 || std::abs(r - k) > 0.2) { ++skipped; continue; }  // восьмая или сбой — мимо
+      K += k; last = j; ++kept;
+    }
+    if (K < 12 || skipped > kept) continue;
+    const double local = (b[last] - b[i]) / K;
+    g.maxLocalDevPct = std::max(g.maxLocalDevPct, std::abs(local / p - 1) * 100);
+  }
+  if (g.maxLocalDevPct > 1.5) g.variable = true;
   g.ok = true;
   return g;
 }
@@ -1001,6 +1044,7 @@ class Analyzer {
     Json j;
     j.open('{');
     j.key("v"); j.integer(2);
+    j.key("algo"); j.integer(2);  // версия алгоритма сетки: старые профили пересчитываются
     j.key("level"); j.str("quick");
     j.key("analyzer"); j.str("cave_mix/beat_this");
     j.key("durationMs"); j.integer(std::llround(duration * 1000));
@@ -1008,6 +1052,7 @@ class Analyzer {
     j.key("bpmSource"); j.str("analysis");
     j.key("variableTempo"); j.boolean(g.ok ? g.variable : true);
     j.key("gridResidualMs"); j.num(g.residualMs, 1);
+    j.key("tempoDriftPct"); j.num(g.maxLocalDevPct, 2);
     j.key("phaseShiftMs"); j.num(phaseShift * 1000, 1);
     j.key("firstBeatMs"); if (g.ok) j.integer(std::llround(g.firstBeat * 1000)); else j.raw("null");
     j.key("beatsPerBar"); j.integer(beatsPerBar);

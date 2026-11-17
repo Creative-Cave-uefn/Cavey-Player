@@ -966,6 +966,8 @@ class Engine {
       std::atomic_thread_fence(std::memory_order_acquire);
       b = seq_.load(std::memory_order_relaxed);
     } while ((a & 1) || a != b);
+    // до первого блока звука состояние ещё не опубликовано — частота всё равно известна
+    if (s->sample_rate == 0) s->sample_rate = sr_;
   }
 
   void setError(const std::string &e) {

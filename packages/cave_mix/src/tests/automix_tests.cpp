@@ -276,7 +276,7 @@ static void runTechnique(int tech, int mode) {
     const auto oa = clickOnsets(r.out, 0, (size_t)(c0 - 20 * beatA * kSr), (size_t)cEnd + kSr);
     const auto obb = clickOnsets(r.out, 1, (size_t)c0, (size_t)cEnd);
     double sum = 0;
-    if (tech == 1 || tech == 2) {
+    if (tech == 1 || tech == 2 || tech == 11) {
       for (double t : oa) {
         if (t < cT) continue;
         double best = 1e9;
@@ -322,9 +322,9 @@ static void runTechnique(int tech, int mode) {
     std::printf("    timing: B starts %+.2f ms; %d beat pairs, mean %+.2f ms, worst %.2f ms; B on A's grid %.2f ms\n", startErr * 1000,
                 pairs, mean * 1000, worst * 1000, gridErr * 1000);
     CHECK(std::abs(startErr) < 0.010, "B start off");  // абсолютная точность анализа (сетка по нейросети)
-    if (tech != 11) CHECK(gridErr < 0.005, "B off A's grid %.2f ms", gridErr * 1000);
-    if (tech == 1 || tech == 2) {
-      CHECK(pairs >= bars * 4 * 0.9, "too few overlapping beats (%d)", pairs);
+    CHECK(gridErr < 0.005, "B off A's grid %.2f ms", gridErr * 1000);
+    if (tech == 1 || tech == 2 || tech == 11) {
+      CHECK(pairs >= std::max(4.0, bars * 4.0) * 0.9, "too few overlapping beats (%d)", pairs);
       CHECK(std::abs(mean) < 0.002, "beats offset %+.2f ms", mean * 1000);
       CHECK(worst < 0.008, "beats drift %.2f ms", worst * 1000);
     }
