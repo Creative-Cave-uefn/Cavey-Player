@@ -121,6 +121,7 @@ function App() {
   const terminal = useTerminalSize();
   const compact = terminal.rows < 29 || terminal.columns < 110;
   const historyRef = useRef<VirtualListHandle>(null);
+  const historyPointerRef = useRef(false);
   const nextId = useRef(0);
   const active = useRef<AbortController | null>(null);
 
@@ -435,7 +436,8 @@ function App() {
 
   const matched = menu ? [] : matchCommands(inputValue, catalog);
   const headerRows = 3;
-  const maxMenuRows = Math.max(2, Math.min(7, terminal.rows - 20));
+  // Let long branch/release menus show more items without hiding the input.
+  const maxMenuRows = Math.max(2, Math.min(12, terminal.rows - 18));
   const menuCount = menu && !loading && !searchOpen ? Math.min(maxMenuRows, menu.choices.length) + (menu.subtitle ? 5 : 4) : 0;
   const paletteRows = menuCount || (matched.length > 0 && !loading && !searchOpen ? matched.length + 3 : 0);
   const promptRows = paletteRows + (paletteRows ? 4 : 5);
@@ -448,7 +450,9 @@ function App() {
     <AlternateScreen mouseTracking>
       <Box flexDirection="column" width="100%" flexGrow={1}>
         <Header directory={directory} branch={branch} activity={activity} loading={loading} compact={compact} />
-        <Box flexDirection="column" flexGrow={1} paddingX={2} paddingTop={compact ? 0 : 1}>
+        <Box flexDirection="column" flexGrow={1} paddingX={2} paddingTop={compact ? 0 : 1}
+          onMouseEnter={() => { historyPointerRef.current = true; }}
+          onMouseLeave={() => { historyPointerRef.current = false; }}>
           {messages.length === 0 && !streaming && (
             <Box flexDirection="column" marginLeft={1}>
               <Text dimColor>Start with <Text color="#E69C7D">/build</Text> or enter a PowerShell command.</Text>
@@ -490,6 +494,7 @@ function App() {
           onSearch={() => setSearchOpen(true)}
           onClear={() => { void handleCommand("clear"); setInputValue(""); }}
           onScroll={delta => historyRef.current?.scrollBy(delta)}
+          onWheel={delta => { if (historyPointerRef.current) historyRef.current?.scrollBy(delta); }}
         />
         <Box paddingX={2} paddingBottom={0}>
           <StatusLine segments={statusSegments} paddingX={1} />

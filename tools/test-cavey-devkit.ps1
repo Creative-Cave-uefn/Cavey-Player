@@ -65,6 +65,13 @@ if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch 'PASS stable and test chann
     throw "Release version selection smoke test failed: $versionOutput"
 }
 Write-Host 'PASS release base version selection' -ForegroundColor Green
+
+# New releases must get a fresh channel; an existing channel is for --mode update.
+$newChannelOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-new-channel 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $newChannelOutput -notmatch 'PASS new build channel is distinct from existing channels') {
+    throw "New release channel smoke test failed: $newChannelOutput"
+}
+Write-Host 'PASS new release channel collision guard' -ForegroundColor Green
 if (-not $SkipNpm) {
     Push-Location (Join-Path $PSScriptRoot 'devkit')
     try {

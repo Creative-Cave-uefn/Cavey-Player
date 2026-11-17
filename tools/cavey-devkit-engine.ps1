@@ -196,6 +196,27 @@ function Slug([string]$channel) {
     if (-not $slug) { Fail 'Empty release channel.' }
     return $slug
 }
+function Test-ChannelExists([string]$channel, [object[]]$releases) {
+    $prefix = 'test-' + (Slug $channel) + '-v'
+    foreach ($release in @($releases)) {
+        if ($null -ne $release -and $null -ne $release.tagName -and
+            ([string]$release.tagName).StartsWith($prefix, [StringComparison]::Ordinal)) {
+            return $true
+        }
+    }
+    return $false
+}
+function New-ReleaseChannel([string]$source, [object[]]$existing) {
+    # A new build must not silently replace an earlier test channel.
+    # Millisecond timestamp + GUID suffix also distinguishes rapid retries.
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        $token = [guid]::NewGuid().ToString('N').Substring(0, 10)
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
+        $channel = "devkit/$source/$stamp-$token"
+        if (-not (Test-ChannelExists $channel $existing)) { return $channel }
+    }
+    Fail 'Could not allocate a unique test channel. Please retry.'
+}
 function Test-Releases {
     if (-not (Has 'gh')) { Fail 'GitHub CLI is not installed. Install gh and run gh auth login.' }
     $json = Gh @('release','list','--repo',$script:ReleaseRepo,'--limit','500','--json','tagName,name,isPrerelease,publishedAt')
@@ -330,12 +351,16 @@ function Build([string[]]$tokens) {
         }
     } else {
         $channel = Option $tokens '--channel'
-        if (-not $channel) { $channel = 'devkit/' + $source + '/' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') }
+        # For a new publication, allocate a unique channel. An explicitly
+        # requested channel must fail on collision (never silently overwrite).
         if (-not $local) {
-            $prefix = 'test-' + (Slug $channel) + '-v'
-            if (@(Test-Releases | Where-Object { $_.tagName.StartsWith($prefix) }).Count -gt 0) {
-                Fail "Channel $channel already exists. Use --mode update."
+            $published = @(Test-Releases)
+            if (-not $channel) { $channel = New-ReleaseChannel $source $published }
+            if (Test-ChannelExists $channel $published) {
+                Fail "Channel $channel already exists. Choose Update existing build or select a different new channel."
             }
+        } elseif (-not $channel) {
+            $channel = New-ReleaseChannel $source @()
         }
     }
     Heading 'Local build plan'
@@ -513,6 +538,22 @@ function Dispatch([string[]]$tokens) {
                 Fail 'No releases should produce no base version.'
             }
             Say 'PASS stable and test channel version selection' Green
+        }
+        'selftest-new-channel' {
+            $existing = @([pscustomobject]@{
+                tagName = 'test-devkit-dj-engine-20261117-172954-v0.4.0.11800'
+            })
+            $newChannel = New-ReleaseChannel 'dj-engine' $existing
+            if ($newChannel -notmatch '^devkit/dj-engine/\d{8}-\d{6}-\d{3}-[0-9a-f]{10}$') {
+                Fail "Generated new channel has unexpected format: $newChannel"
+            }
+            if (-not (Test-ChannelExists 'devkit/dj-engine/20261117-172954' $existing)) {
+                Fail 'Existing test channel was not detected.'
+            }
+            if (Test-ChannelExists $newChannel $existing) {
+                Fail 'Generated new channel collides with an existing release.'
+            }
+            Say 'PASS new build channel is distinct from existing channels' Green
         }
         'selftest-selection' {
             $empty = @()

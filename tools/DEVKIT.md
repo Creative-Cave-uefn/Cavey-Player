@@ -41,7 +41,14 @@ The command palette appears **above** the input. Moving the mouse highlights an 
 
 The minimal Cavey DevKit layout uses a compact unboxed header, subdued status bar and a pinned input inspired by the Claude Code console. English is used for interface labels, statuses and instructions; only descriptions of command and selection options remain Russian. The command palette and all build/publish wizard choices use the same keyboard-and-mouse component. Slash-command suggestions, branch selection, build mode (local / new test release / update an existing channel), release-channel selection and publish confirmations appear **above** the pinned input. Hover highlights a choice and clicking selects it; `↑↓` navigates, `Enter` selects, `Esc` cancels, and typing filters long lists. `PgUp/PgDn` and the mouse wheel page through a long menu.
 
-The `/build` wizard refreshes remote refs from `origin` before displaying branches, and can choose a previously published prerelease channel when updating. A confirmation is still mandatory before running destructive or publishing operations.
+The `/build` wizard has **two separate publication actions**:
+- **New test release** allocates a unique channel (`devkit/<source>/<timestamp>-<random>`). It never changes an existing channel. If `--mode new --channel <name>` is supplied and the channel exists, the command refuses to overwrite it and directs the user to Update.
+- **Update channel** lists previously published test-release channels, accepts the selected channel and publishes a new numbered prerelease into that same channel. Older builds are removed only **after** the replacement is published successfully.
+- **Local build** packages the selected source without publishing.
+
+The branch/release selector shows up to 12 rows on sufficiently tall terminals. Wheel scrolling is active only while the mouse is over selectable rows, not the bottom hints/input or status area. The transcript scrolls under the pointer only while the mouse is over its output area; PgUp/PgDn still work anywhere.
+
+The `/build` wizard refreshes remote refs from `origin` before displaying branches. Confirmation is mandatory before build or publication.
 
 ## Commands
 

@@ -9,12 +9,14 @@ test("menu contains all branches and filters by query", () => {
   assert.deepEqual(filterChoices(branches, "MAIN").map(x => x.value), ["main"]);
   assert.deepEqual(filterChoices(branches, "2").map(x => x.value), ["main"]);
 });
-test("long menus keep the selected row visible within the viewport", () => {
+test("long menus keep the selected row visible within the larger viewport", () => {
   const list = Array.from({length:60},(_,i)=>({value:String(i),label:String(i)}));
-  for (const pos of [0,1,13,30,59]) {
-    const page = visibleChoices(list,pos,7);
-    assert.ok(page.rows.length<=7);
-    assert.ok(pos>=page.start && pos<page.start+page.rows.length);
+  for (const limit of [3, 7, 12]) {
+    for (const pos of [0,1,13,30,59]) {
+      const page = visibleChoices(list,pos,limit);
+      assert.ok(page.rows.length<=limit);
+      assert.ok(pos>=page.start && pos<page.start+page.rows.length);
+    }
   }
 });
 test("publication channels are unique and stable releases are excluded", () => {

@@ -13,7 +13,7 @@ export function matchCommands(value: string, options: CommandOption[]): CommandO
 export function CommandPrompt({
   value, onChange, onSubmit, history, commands, menu, onMenuPick, onMenuCancel, maxMenuRows = 7,
   disabled = false, searchOpen = false,
-  onCancel, onTerminal, onSearch, onClear, onScroll,
+  onCancel, onTerminal, onSearch, onClear, onScroll, onWheel,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -31,6 +31,7 @@ export function CommandPrompt({
   onSearch: () => void;
   onClear: () => void;
   onScroll: (delta: number) => void;
+  onWheel: (delta: number) => void;
 }) {
   const [cursor, setCursor] = useState(0);
   const cursorRef = useRef(0);
@@ -45,10 +46,11 @@ export function CommandPrompt({
   const [draft, setDraft] = useState("");
   const [dismissed, setDismissed] = useState(false);
   const valueRef = useRef(value);
+  const pointerInChoiceRows = useRef(false);
   valueRef.current = value;
 
   useEffect(() => { updateCursor(c => Math.min(c, value.length)); }, [value.length, updateCursor]);
-  useEffect(() => { setSelected(0); setHovered(null); setDismissed(false); }, [menu?.id]);
+  useEffect(() => { pointerInChoiceRows.current = false; setSelected(0); setHovered(null); setDismissed(false); }, [menu?.id]);
   const menuActive = Boolean(menu && !searchOpen && !disabled);
   const menuMatches = menuActive ? filterChoices(menu!.choices, value) : [];
   const suggestions = menuActive || dismissed || searchOpen || disabled ? [] : matchCommands(value, commands);
@@ -122,12 +124,20 @@ export function CommandPrompt({
     }
     if (key.pageUp || key.pageDown || key.wheelUp || key.wheelDown) {
       event.stopImmediatePropagation();
+      const isWheel = key.wheelUp || key.wheelDown;
       if (menuActive) {
+        // Wheel events have no target widget in the current renderer.
+        // Ignore wheel motion from the prompt, footer and outside the list.
+        if (isWheel && !pointerInChoiceRows.current) return;
         const delta = key.pageUp ? -maxMenuRows : key.pageDown ? maxMenuRows : key.wheelUp ? -1 : 1;
         setHovered(null);
-        if (menuMatches.length) setSelected(i => Math.max(0, Math.min(menuMatches.length - 1, i + delta)));
+        if (menuMatches.length) {
+          setSelected(i => Math.max(0, Math.min(menuMatches.length - 1, i + delta)));
+        }
+      } else if (isWheel) {
+        onWheel(key.wheelUp ? -3 : 3);
       } else {
-        onScroll(key.pageUp || key.wheelUp ? -12 : 12);
+        onScroll(key.pageUp ? -12 : 12);
       }
       return;
     }
@@ -205,7 +215,8 @@ export function CommandPrompt({
   return (
     <Box flexDirection="column" paddingX={2}>
       {(showPalette || menuActive) && (
-        <Box flexDirection="column" borderStyle="single" borderColor="#39383D" paddingX={1} flexShrink={0}>
+        <Box flexDirection="column" borderStyle="single" borderColor="#39383D" paddingX={1} flexShrink={0}
+          onMouseLeave={() => { pointerInChoiceRows.current = false; setHovered(null); }}>
           <Box justifyContent="space-between">
             <Text color="#E2A083" bold>{menuActive ? menu!.title : "COMMANDS"}</Text>
             <Text dimColor>{menuActive ? String(menuMatches.length) + "/" + String(menu!.choices.length) : String(suggestions.length) + " available"}</Text>
@@ -219,8 +230,8 @@ export function CommandPrompt({
                 return (
                   <Box key={option.value} flexDirection="row" width="100%" paddingX={1} flexShrink={0}
                     backgroundColor={active ? "#373338" : undefined}
-                    onMouseEnter={() => { setHovered(index); setSelected(index); }}
-                    onMouseLeave={() => setHovered(null)}
+                    onMouseEnter={() => { pointerInChoiceRows.current = true; setHovered(index); setSelected(index); }}
+                    onMouseLeave={() => { pointerInChoiceRows.current = false; setHovered(null); }}
                     onClick={event => { event.stopImmediatePropagation(); pickMenu(option.value); }}
                   >
                     <Text color={active ? "#E7A287" : "#7B7981"}>{active ? "❯ " : "  "}</Text>
@@ -238,8 +249,8 @@ export function CommandPrompt({
                 return (
                   <Box key={option.name} paddingX={1} flexDirection="row" width="100%"
                     backgroundColor={active ? "#444049" : undefined}
-                    onMouseEnter={() => { setHovered(index); setSelected(index); }}
-                    onMouseLeave={() => setHovered(null)}
+                    onMouseEnter={() => { pointerInChoiceRows.current = true; setHovered(index); setSelected(index); }}
+                    onMouseLeave={() => { pointerInChoiceRows.current = false; setHovered(null); }}
                     onClick={event => { event.stopImmediatePropagation(); choose(option.name, true); }}
                   >
                     <Box width={17}>
