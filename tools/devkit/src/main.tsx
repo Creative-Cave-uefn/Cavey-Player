@@ -119,6 +119,7 @@ function App() {
   const [inputValue, setInputValue] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const terminal = useTerminalSize();
+  const compact = terminal.rows < 29 || terminal.columns < 110;
   const historyRef = useRef<VirtualListHandle>(null);
   const nextId = useRef(0);
   const active = useRef<AbortController | null>(null);
@@ -433,7 +434,6 @@ function App() {
   }, [messages]);
 
   const matched = menu ? [] : matchCommands(inputValue, catalog);
-  const compact = terminal.rows < 29 || terminal.columns < 110;
   const headerRows = 3;
   const maxMenuRows = Math.max(2, Math.min(7, terminal.rows - 20));
   const menuCount = menu && !loading && !searchOpen ? Math.min(maxMenuRows, menu.choices.length) + (menu.subtitle ? 5 : 4) : 0;
