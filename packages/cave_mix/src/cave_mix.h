@@ -38,7 +38,10 @@ enum cm_param {
   CM_FILTER = 5,  // −1…0 фильтр низких частот (срез вниз до 80 Гц), 0…+1 фильтр высоких (вверх до 8 кГц)
   CM_FILTER_RES = 6, // резонанс фильтра 0…1
   CM_TEMPO = 7,   // скорость относительно родного темпа: 1.0 — как записано, 1.06 — на 6 % быстрее
-  CM_PARAM_COUNT = 8
+  CM_ECHO_SEND = 8,     // сколько звука деки (после EQ и фильтра, до фейдера) уходит в эхо, 0…1
+  CM_ECHO_TIME = 9,     // задержка эха, секунды (0,02…2)
+  CM_ECHO_FEEDBACK = 10, // обратная связь эха 0…0,95; хвост звучит и после остановки деки
+  CM_PARAM_COUNT = 11
 };
 
 // Форма кривой автоматизации
@@ -115,6 +118,8 @@ CM_API void cm_ramp(cm_engine *e, int32_t deck, int32_t param, int64_t from_cloc
                     double from, double to, int32_t curve);
 // Убрать все будущие и текущие автоматизации деки (параметры остаются на текущих значениях).
 CM_API void cm_clear_automation(cm_engine *e, int32_t deck);
+// Снять запланированные старт (cm_play_at) и остановку (cm_stop_at) деки.
+CM_API void cm_cancel_schedule(cm_engine *e, int32_t deck);
 
 CM_API void cm_set_master_volume(cm_engine *e, double volume); // 0…1, кубическая кривая как у mpv
 CM_API void cm_set_paused(cm_engine *e, int32_t paused);      // пауза всего движка (часы стоят)
@@ -123,6 +128,23 @@ CM_API void cm_get_state(cm_engine *e, cm_state *out);
 
 // Только для offline: вывести frames кадров стерео float в out. Возвращает число кадров.
 CM_API int32_t cm_render(cm_engine *e, float *out, int32_t frames);
+
+// ---------------------------------------------------------------- автомикс
+
+// Запланировать DJ-переход с играющей деки `from` на загруженную (CM_READY) деку `to`.
+// profile_from / profile_to — профили треков v2 (JSON из cm_analyze_file).
+// options — JSON: {"style":"smooth|balanced|energetic","maxBars":32,"matchTempo":true,"maxTempoPct":8,
+//   "keyAware":true,"allowEcho":true,"allowCut":true,"seed":N,"prev":<номер прошлой техники>,
+//   "gainA":<амплитуда уходящей>,"gainB":<амплитуда приходящей>,"minLeadSec":1.5,"fadeSec":8,"force":<номер техники>}.
+// Движок сам выбирает точки на границах фраз, подгоняет темп B к A, выбирает технику (T1 бас-свап, T2 фильтр,
+// T3 эхо-аут, T4 склейка, T11 плавный переход) и раскладывает автоматизации, старт B и остановку A по часам.
+// Возвращает JSON плана {"technique","name","bars","aOutSec","bInSec","tempoRatio","startClock","endClock","reason"}
+// (освободить cm_free) или NULL с текстом в *error_out.
+CM_API char *cm_automix(cm_engine *e, int32_t from, int32_t to, const char *profile_from, const char *profile_to,
+                        const char *options, char **error_out);
+// Отменить запланированный (или идущий) переход: снять автоматизации и расписание обеих дек, вернуть EQ, фильтр,
+// эхо и темп к исходным, громкости — gain_from и gain_to.
+CM_API void cm_automix_cancel(cm_engine *e, int32_t from, int32_t to, double gain_from, double gain_to);
 
 // ---------------------------------------------------------------- анализ треков
 

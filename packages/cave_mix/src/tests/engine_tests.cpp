@@ -459,6 +459,42 @@ static void testFfmpegFormats() {
   }
 }
 
+
+// Эхо: повторы точно через заданное время, затухают и звучат после остановки деки
+static void testEcho() {
+  const int sr = 48000;
+  std::vector<float> src((size_t)sr * 3 * 2, 0.0f);
+  for (int i = 0; i < 48; ++i) src[(size_t)(sr / 2 + i) * 2] = src[(size_t)(sr / 2 + i) * 2 + 1] = (float)(0.8 * std::sin(2 * M_PI * 2000.0 * i / sr));
+  writeWav(path("ping.wav"), src, sr);
+  Rig r;
+  cm_load(r.e, 0, path("ping.wav").c_str(), 0.0);
+  CHECK(r.waitReady(0), "deck not ready");
+  cm_set(r.e, 0, CM_ECHO_SEND, 1.0);
+  cm_set(r.e, 0, CM_ECHO_TIME, 0.25);
+  cm_set(r.e, 0, CM_ECHO_FEEDBACK, 0.5);
+  r.render(sr / 10);
+  const int64_t S = r.clock() + 100;
+  cm_play_at(r.e, 0, S);
+  cm_stop_at(r.e, 0, S + (int64_t)(sr * 0.6));  // дека замолкает до второго повтора
+  r.render(sr * 2);
+  auto peakNear = [&](double t) {
+    const long long c = S + kLim + std::llround(t * sr);
+    float m = 0; long long at = 0;
+    for (long long i = c - 480; i < c + 480; ++i) if (std::abs(r.out[(size_t)i * 2]) > m) { m = std::abs(r.out[(size_t)i * 2]); at = i; }
+    return std::make_pair(m, (double)(at - c) / sr);
+  };
+  float prev = 1e9f;
+  for (int k = 1; k <= 4; ++k) {
+    auto p = peakNear(0.5 + 0.25 * k);
+    std::printf("    echo %d: level %.3f, offset %.2f ms\n", k, p.first, p.second * 1000);
+    CHECK(p.first > 0.01, "echo %d missing", k);
+    CHECK(std::abs(p.second) < 0.002, "echo %d at wrong time", k);
+    CHECK(p.first < prev, "echo %d not decaying", k);
+    prev = p.first;
+  }
+  CHECK(r.state().deck[0].status != CM_PLAYING, "deck still playing");
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) g_dir = argv[1];
   struct T { const char *name; void (*fn)(); } tests[] = {
@@ -471,6 +507,7 @@ int main(int argc, char **argv) {
       {"equal-power crossfade", testEqualPowerCrossfade},
       {"pause, seek, end, errors", testControlFlow},
       {"M4A / Opus / Ogg via ffmpeg", testFfmpegFormats},
+      {"echo with tail after deck stops", testEcho},
   };
   for (auto &t : tests) {
     const int before = g_failed;

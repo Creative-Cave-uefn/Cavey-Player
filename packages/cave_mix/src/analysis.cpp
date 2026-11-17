@@ -368,44 +368,84 @@ struct Grid {
   bool variable = false;
 };
 
-// Ровная сетка по долям: номера долей по медианному интервалу, затем МНК t = t0 + p·k с отбрасыванием выбросов
+// Ровная сетка по долям, устойчивая к лишним ударам (нейросеть иногда отмечает восьмые) и пропускам:
+// 1) период — кластер интервалов, покрывающий больше всего времени; 2) фаза — круговое среднее;
+// 3) МНК t = t0 + p·k в окне, которое удваивается (10, 20, 40… с): номер доли каждый раз считается заново от t0,
+//    поэтому ошибка не копится; удары дальше четверти доли от сетки (восьмые, сбои) в подгонку не идут.
 static Grid fitGrid(const std::vector<double> &b) {
   Grid g;
   if (b.size() < 8) return g;
   std::vector<double> ibi;
   for (size_t i = 1; i < b.size(); ++i) ibi.push_back(b[i] - b[i - 1]);
-  std::vector<double> s = ibi;
-  std::nth_element(s.begin(), s.begin() + (long)s.size() / 2, s.end());
-  const double med = s[s.size() / 2];
-  if (med <= 0.2 || med > 1.5) return g;  // 40…300 BPM
-
-  std::vector<double> idx(b.size());
-  idx[0] = 0;
-  for (size_t i = 1; i < b.size(); ++i) idx[i] = idx[i - 1] + std::max(1.0, std::round(ibi[i - 1] / med));
-
-  std::vector<char> use(b.size(), 1);
-  double t0 = 0, p = med;
-  for (int iter = 0; iter < 4; ++iter) {
-    double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
-    for (size_t i = 0; i < b.size(); ++i) {
-      if (!use[i]) continue;
-      n += 1; sx += idx[i]; sy += b[i]; sxx += idx[i] * idx[i]; sxy += idx[i] * b[i];
-    }
-    const double den = n * sxx - sx * sx;
-    if (n < 8 || std::abs(den) < 1e-12) return g;
-    p = (n * sxy - sx * sy) / den;
-    t0 = (sy - p * sx) / n;
-    const double tol = iter < 2 ? 0.07 : 0.04;
-    for (size_t i = 0; i < b.size(); ++i) use[i] = std::abs(b[i] - (t0 + p * idx[i])) < tol;
+  // 1. период
+  double bestSupport = 0, p = 0;
+  for (double c = 0.25; c <= 1.5; c += 0.005) {
+    double sup = 0;
+    for (double x : ibi) if (std::abs(x - c) <= 0.08 * c) sup += x;
+    if (sup > bestSupport) { bestSupport = sup; p = c; }
   }
-  double ss = 0, n = 0;
-  for (size_t i = 0; i < b.size(); ++i)
-    if (use[i]) { const double r = b[i] - (t0 + p * idx[i]); ss += r * r; n += 1; }
-  g.residualMs = n > 0 ? std::sqrt(ss / n) * 1000 : 0;
+  if (p <= 0) return g;
+  {
+    std::vector<double> close_;
+    for (double x : ibi) if (std::abs(x - p) <= 0.08 * p) close_.push_back(x);
+    std::nth_element(close_.begin(), close_.begin() + (long)close_.size() / 2, close_.end());
+    p = close_[close_.size() / 2];
+  }
+  // 2. затравка: самая длинная по времени цепочка ударов с шагом ≈ p. Восьмые/сбои идут кусками,
+  //    а настоящие доли тянутся через весь трек — по цепочке и берём фазу и уточняем период.
+  const size_t B = b.size();
+  std::vector<int> nxt(B, -1);
+  std::vector<double> span(B, 0);
+  for (size_t i = 0; i < B; ++i) {
+    double best = 0.08 * p;
+    for (size_t j = i + 1; j < B && b[j] - b[i] < 1.1 * p; ++j) {
+      const double d = std::abs(b[j] - b[i] - p);
+      if (d < best) { best = d; nxt[i] = (int)j; }
+    }
+  }
+  for (size_t ii = B; ii-- > 0;) span[ii] = nxt[ii] < 0 ? 0 : (b[nxt[ii]] - b[ii]) + span[nxt[ii]];
+  size_t s0 = 0;
+  for (size_t i = 1; i < B; ++i) if (span[i] > span[s0]) s0 = i;
+  double t0 = b[s0];
+  {
+    double N = 0, sk = 0, st = 0, skk = 0, skt = 0, k = 0;
+    for (int i = (int)s0; i >= 0; i = nxt[i]) {
+      N += 1; sk += k; st += b[i]; skk += k * k; skt += k * b[i];
+      k += 1;  // шаг цепочки — ровно одна доля
+    }
+    const double den = N * skk - sk * sk;
+    if (N >= 8 && std::abs(den) > 1e-9) { p = (N * skt - sk * st) / den; t0 = (st - p * sk) / N; }
+  }
+  // 3. по всему треку: номер доли от t0, МНК по ударам у сетки, допуск сужается
+  std::vector<char> use(B, 0);
+  for (int iter = 0; iter < 8; ++iter) {
+    const double tol = iter < 3 ? 0.25 * p : (iter < 5 ? std::min(0.07, 0.2 * p) : std::min(0.04, 0.15 * p));
+    double N = 0, sk = 0, st = 0, skk = 0, skt = 0;
+    for (size_t i = 0; i < B; ++i) {
+      const double k = std::round((b[i] - t0) / p);
+      use[i] = std::abs(b[i] - (t0 + p * k)) < tol;
+      if (!use[i]) continue;
+      N += 1; sk += k; st += b[i]; skk += k * k; skt += k * b[i];
+    }
+    const double den = N * skk - sk * sk;
+    if (N < 8 || std::abs(den) < 1e-9) return g;
+    const double np = (N * skt - sk * st) / den;
+    if (np <= 0.2 || np > 1.6) return g;
+    t0 = (st - np * sk) / N; p = np;
+  }
+  // итог
+  double ss = 0, cnt = 0, onGrid = 0;
+  for (size_t i = 0; i < b.size(); ++i) {
+    const double r = b[i] - (t0 + p * std::round((b[i] - t0) / p));
+    if (std::abs(r) < 0.25 * p) onGrid += 1;
+    if (use[i]) { ss += r * r; cnt += 1; }
+  }
+  if (cnt < 8) return g;
+  g.residualMs = std::sqrt(ss / cnt) * 1000;
   g.period = p;
   g.firstBeat = t0 - std::floor(t0 / p) * p;
-  // плавающий темп: доли заметно расходятся с ровной сеткой или выпало много долей
-  g.variable = g.residualMs > 20.0 || n < 0.8 * (double)b.size();
+  // плавающий темп: доли заметно расходятся с ровной сеткой или многие удары у сетки в неё не легли
+  g.variable = g.residualMs > 20.0 || cnt < 0.8 * onGrid;
   g.ok = true;
   return g;
 }

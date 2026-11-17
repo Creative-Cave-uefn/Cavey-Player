@@ -58,7 +58,8 @@ struct Block {
 // ---------------------------------------------------------------- Команды
 
 enum CmdType : int32_t {
-  C_SET, C_RAMP, C_CLEAR_AUTO, C_PLAY_AT, C_PAUSE, C_STOP_AT, C_SEEK, C_LOAD, C_UNLOAD, C_MASTER_VOL, C_PAUSED
+  C_SET, C_RAMP, C_CLEAR_AUTO, C_PLAY_AT, C_PAUSE, C_STOP_AT, C_SEEK, C_LOAD, C_UNLOAD, C_MASTER_VOL, C_PAUSED,
+  C_CANCEL_SCHEDULE
 };
 
 struct Cmd {
@@ -411,6 +412,8 @@ class Deck {
     outL_.assign(4096, 0.0f); outR_.assign(4096, 0.0f);
     lane_[CM_GAIN].base = 1.0;
     lane_[CM_TEMPO].base = 1.0;
+    lane_[CM_ECHO_TIME].base = 0.375;
+    lane_[CM_ECHO_FEEDBACK].base = 0.5;
     for (int p = 0; p < CM_PARAM_COUNT; ++p) sm_[p].jump(lane_[p].base);
     source.start(sr_);
   }
@@ -418,7 +421,19 @@ class Deck {
   Source source;
 
   // --- команды
+  // Все параметры деки — к исходным (новый трек не наследует EQ, фильтр, эхо и темп прошлого перехода)
+  void resetParams() {
+    for (int p = 0; p < CM_PARAM_COUNT; ++p) {
+      lane_[p].clear();
+      lane_[p].base = p == CM_GAIN ? 1.0 : p == CM_TEMPO ? 1.0 : p == CM_ECHO_TIME ? 0.375 : p == CM_ECHO_FEEDBACK ? 0.5 : 0.0;
+      sm_[p].jump(lane_[p].base);
+    }
+    flt_.setup(sr_);
+    isoMix_.jump(0.0);
+  }
+
   void cmdLoad(uint32_t gen, int32_t loadId, double startSec) {
+    resetParams();
     playing_ = false;
     startClock_ = -1;
     stopClock_ = -1;
@@ -477,6 +492,12 @@ class Deck {
     if (p == CM_TEMPO) { from = std::clamp(from, 0.5, 2.0); to = std::clamp(to, 0.5, 2.0); }
     lane_[p].add(Seg{a, b, from, to, curve});
   }
+  // Снять запланированные старт и остановку (если переход отменили)
+  void cmdCancelSchedule() {
+    startClock_ = -1;
+    stopClock_ = -1;
+  }
+
   void cmdClearAuto() {
     for (int p = 0; p < CM_PARAM_COUNT; ++p) {
       lane_[p].base = sm_[p].cur;
@@ -492,8 +513,11 @@ class Deck {
     return e;
   }
 
-  // Вывести n кадров деки (уже после EQ/фильтра/громкости) с добавлением в mix.
-  void render(float *mix, int n, int64_t clock, int64_t &underruns) {
+  /// Текущее (сглаженное) значение параметра
+  double param(int p) const { return sm_[p].cur; }
+
+  // Вывести n кадров деки (уже после EQ/фильтра/громкости) с добавлением в mix; посыл в эхо — в send.
+  void render(float *mix, float *send, int n, int64_t clock, int64_t &underruns) {
     pullBlocks();
 
     // старт и остановка по часам
@@ -511,7 +535,7 @@ class Deck {
     while (done < n) {
       const int len = std::min(kSub, n - done);
       const int64_t c = clock + done;
-      renderSub(mix + (size_t)done * 2, len, c, underruns);
+      renderSub(mix + (size_t)done * 2, send + (size_t)done * 2, len, c, underruns);
       done += len;
       if (!playing_) break;
     }
@@ -681,7 +705,7 @@ class Deck {
     return true;
   }
 
-  void renderSub(float *mix, int n, int64_t clock, int64_t &underruns) {
+  void renderSub(float *mix, float *send, int n, int64_t clock, int64_t &underruns) {
     // темп на этот кусок
     advanceTempoOnly(clock);
     const double tempo = sm_[CM_TEMPO].cur;
@@ -757,6 +781,12 @@ class Deck {
       if (w > 0) { l += (pl - l) * w; r += (pr - r) * w; }
       l = flt_.tick(0, l);
       r = flt_.tick(1, r);
+      const double es = sm_[CM_ECHO_SEND].cur;
+      if (es > 0) {
+        const double sg = es * (fadeOut_ > 0 ? fadeOut_ / (double)kDeclick : 1.0);
+        send[i * 2] += (float)(l * sg);
+        send[i * 2 + 1] += (float)(r * sg);
+      }
       l *= g; r *= g;
       mix[i * 2] += (float)l;
       mix[i * 2 + 1] += (float)r;
@@ -860,6 +890,8 @@ class Engine {
       sr_ = sampleRate > 0 ? sampleRate : 48000;
     }
     for (auto &d : decks_) d.setup(sr_);
+    for (auto &x : echo_) x.setup(sr_);
+    for (auto &b : sendBuf_) b.assign(4096 * 2, 0.0f);
     limiter_.setup(sr_, -1.0, 5.0, 80.0);
     masterVol_.jump(1.0);
     pauseGain_.jump(1.0);
@@ -970,6 +1002,7 @@ class Engine {
       case C_SET: d.cmdSet(c.param, c.x); break;
       case C_RAMP: d.cmdRamp(c.param, c.a, c.b, c.x, c.y, c.curve); break;
       case C_CLEAR_AUTO: d.cmdClearAuto(); break;
+      case C_CANCEL_SCHEDULE: d.cmdCancelSchedule(); break;
       case C_PLAY_AT: d.cmdPlayAt(c.a); break;
       case C_PAUSE: d.cmdPause(); break;
       case C_STOP_AT: d.cmdStopAt(c.a); break;
@@ -987,7 +1020,12 @@ class Engine {
     }
     float *mix = mixBuf_.data();
     std::memset(mix, 0, sizeof(float) * (size_t)n * 2);
-    for (auto &d : decks_) d.render(mix, n, clock_, underruns_);
+    for (int k = 0; k < CM_DECKS; ++k) {
+      float *send = sendBuf_[k].data();
+      std::memset(send, 0, sizeof(float) * (size_t)n * 2);
+      decks_[k].render(mix, send, n, clock_, underruns_);
+      echo_[k].process(send, mix, n, decks_[k].param(CM_ECHO_TIME), decks_[k].param(CM_ECHO_FEEDBACK));
+    }
     double mp = masterPeak_;
     for (int i = 0; i < n; ++i) {
       const double g = masterVol_.next() * pauseGain_.next();
@@ -1020,6 +1058,8 @@ class Engine {
   ma_device device_{};
   bool deviceStarted_ = false;
   Deck decks_[CM_DECKS];
+  Echo echo_[CM_DECKS];
+  std::vector<float> sendBuf_[CM_DECKS];
   Limiter limiter_;
   Smoothed masterVol_, pauseGain_;
   bool paused_ = false;
@@ -1126,6 +1166,12 @@ CM_API void cm_ramp(cm_engine *e, int32_t deck, int32_t param, int64_t from_cloc
 CM_API void cm_clear_automation(cm_engine *e, int32_t deck) {
   if (!e || !validDeck(deck)) return;
   cm::Cmd c{cm::C_CLEAR_AUTO}; c.deck = deck;
+  e->engine.push(c);
+}
+
+CM_API void cm_cancel_schedule(cm_engine *e, int32_t deck) {
+  if (!e || !validDeck(deck)) return;
+  cm::Cmd c{cm::C_CANCEL_SCHEDULE}; c.deck = deck;
   e->engine.push(c);
 }
 

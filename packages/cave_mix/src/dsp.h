@@ -205,4 +205,57 @@ class Limiter {
   long long n_ = 0;
 };
 
+// Эхо деки: задержка до 2 с с обратной связью; в петле срезаны низ (300 Гц) и верх (5 кГц), чтобы повторы
+// не гудели и мягко темнели. Работает всегда, поэтому хвост доигрывает и после остановки деки.
+class Echo {
+ public:
+  void setup(double fs) {
+    fs_ = fs;
+    buf_.assign((size_t)(fs * 2.05) * 2, 0.0f);
+    w_ = 0;
+    hp_.highpass(fs, 300.0, 0.707);
+    lp_.lowpass(fs, 5000.0, 0.707);
+    time_.jump(0.375 * fs);
+  }
+  // send — посыл деки (стерео), out — куда прибавить выход эха
+  void process(const float *send, float *out, int n, double timeSec, double feedback) {
+    const size_t len = buf_.size() / 2;
+    time_.set(std::clamp(timeSec, 0.02, 2.0) * fs_, (int)(fs_ / 20));  // смена времени — плавно, за 50 мс
+    const double fb = std::clamp(feedback, 0.0, 0.95);
+    bool silentIn = true;
+    for (int i = 0; i < n * 2; ++i) if (send[i] != 0.0f) { silentIn = false; break; }
+    // пока в задержке может что-то звучать, считаем; после долгой тишины на входе и в выходе — нет
+    if (!silentIn) quiet_ = 0;
+    const long long len2 = (long long)(buf_.size() / 2);
+    if (silentIn && quiet_ > len2 && sinceLoud_ > len2) return;
+    for (int i = 0; i < n; ++i) {
+      const double d = time_.next();
+      double rp = (double)w_ - d;
+      while (rp < 0) rp += (double)len;
+      const size_t i0 = (size_t)rp % len, i1 = (i0 + 1) % len;
+      const double fr = rp - std::floor(rp);
+      double y[2];
+      for (int ch = 0; ch < 2; ++ch) {
+        y[ch] = buf_[i0 * 2 + ch] * (1 - fr) + buf_[i1 * 2 + ch] * fr;
+        const double fbk = lp_.tick(ch, hp_.tick(ch, y[ch])) * fb;
+        buf_[w_ * 2 + ch] = (float)(send[i * 2 + ch] + fbk);
+        out[i * 2 + ch] += (float)y[ch];
+        if (std::abs(y[ch]) > 1e-5) sinceLoud_ = 0;
+      }
+      ++sinceLoud_;
+      w_ = (w_ + 1) % len;
+    }
+    if (silentIn) quiet_ += n;
+  }
+
+ private:
+  double fs_ = 48000;
+  std::vector<float> buf_;
+  size_t w_ = 0;
+  Biquad hp_, lp_;
+  Smoothed time_;
+  long long quiet_ = 1LL << 40;      // сколько сэмплов подряд вход молчит
+  long long sinceLoud_ = 1LL << 40;  // сколько сэмплов подряд выход эха тише −100 дБ
+};
+
 }  // namespace cm

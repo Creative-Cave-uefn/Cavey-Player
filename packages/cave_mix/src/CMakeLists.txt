@@ -13,6 +13,7 @@ set(CM_SOURCES
   ${CMAKE_CURRENT_LIST_DIR}/engine.cpp
   ${CMAKE_CURRENT_LIST_DIR}/readers.cpp
   ${CMAKE_CURRENT_LIST_DIR}/analysis.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/automix.cpp
   ${CMAKE_CURRENT_LIST_DIR}/third_party/miniaudio/miniaudio.c
   ${CMAKE_CURRENT_LIST_DIR}/third_party/rubberband/single/RubberBandSingle.cpp
 )
@@ -52,6 +53,11 @@ if(CM_BUILD_TESTS)
   cm_configure(cave_mix_static)
   add_executable(cave_mix_tests ${CMAKE_CURRENT_LIST_DIR}/tests/engine_tests.cpp)
   add_executable(cave_mix_analysis_tests ${CMAKE_CURRENT_LIST_DIR}/tests/analysis_tests.cpp)
+  add_executable(cave_mix_automix_tests ${CMAKE_CURRENT_LIST_DIR}/tests/automix_tests.cpp)
+  target_link_libraries(cave_mix_automix_tests PRIVATE cave_mix_static)
+  if(NOT MSVC)
+    target_link_libraries(cave_mix_automix_tests PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
+  endif()
   target_link_libraries(cave_mix_analysis_tests PRIVATE cave_mix_static)
   if(NOT MSVC)
     target_link_libraries(cave_mix_analysis_tests PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
