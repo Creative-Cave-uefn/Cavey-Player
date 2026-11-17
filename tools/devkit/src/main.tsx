@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AlternateScreen, Box, Text, render, useApp } from "@claude-code-kit/ink-renderer";
 import { MessageList, SearchOverlay, StatusLine, Spinner, useTerminalSize, type Message, type StatusLineSegment, type VirtualListHandle } from "@claude-code-kit/ui";
 import { CommandPrompt, matchCommands } from "./CommandPrompt.js";
+import { releaseChannels, type ChoiceMenu, type ReleaseRecord } from "./choices.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -64,6 +65,7 @@ const helpText = [
 type Wizard =
   | { kind: "branch"; branches: string[] }
   | { kind: "mode"; branch: string }
+  | { kind: "channel"; branch: string; channels: { value: string; label: string; detail?: string }[] }
   | { kind: "confirm"; command: "build" | "clean"; args: string[]; summary: string };
 
 function formatMessage(m: Message): React.ReactNode {
@@ -89,7 +91,7 @@ function Header({ directory, branch, activity, loading, compact }: {
     <Box flexDirection="column" paddingX={2} paddingTop={compact ? 0 : 1}>
       <Box borderStyle="round" borderColor="#525058" paddingX={2} flexDirection="column">
         <Box justifyContent="space-between">
-          <Text bold color="#E89A78">◆ CAVEY <Text color="#E4E1E6">DEVKIT</Text> <Text dimColor>v1.1</Text></Text>
+          <Text bold color="#E89A78">◆ CAVEY <Text color="#E4E1E6">DEVKIT</Text> <Text dimColor>v1.2</Text></Text>
           <Text color={color}>{loading ? "● " + activity : "● READY"}</Text>
         </Box>
         {!compact && (
@@ -203,59 +205,147 @@ function App() {
   }, [append, directory, execute]);
 
   const buildWizard = useCallback(async () => {
-    if (active.current) return;
+    if (active.current || loading) return;
     setLoading(true);
     setActivity("fetching branches");
     try {
+      const fetched = await runCommand({
+        program: "git", args: ["fetch", "origin", "--prune"],
+        cwd: directory, label: "git fetch origin",
+      });
+      if (fetched.code !== 0) {
+        append("assistant", "Не удалось обновить ветки: " + fetched.output);
+      }
       const result = await runCommand(gitBranchesRequest(directory));
       const branches = result.output.split(/\r?\n/).map(x => x.trim())
         .filter(x => x.startsWith("origin/") && x !== "origin/HEAD")
-        .map(x => x.slice(7)).slice(0, 15);
+        .map(x => x.slice(7)).slice(0, 60);
       if (result.code !== 0 || branches.length === 0) {
         append("assistant", "Ветки не найдены. Проверьте git fetch origin и /doctor.");
         return;
       }
       setWizard({ kind: "branch", branches });
-      append("assistant",
-        "Выберите ветку для сборки (цифра или имя):\n\n" +
-        branches.map((x, i) => "  " + String(i + 1).padStart(2) + ". " + x).join("\n") +
-        "\n\n/quit — выход из DevKit, /build для перезапуска мастера.");
+      append("assistant", "Выберите ветку для сборки в интерактивном меню над строкой ввода.");
     } catch (error) { append("assistant", "Ошибка чтения веток: " + String(error)); }
     finally { setLoading(false); setActivity("ready"); }
-  }, [append, directory]);
+  }, [append, directory, loading]);
 
   const wizardInput = useCallback(async (value: string) => {
     if (!wizard) return;
-    append("user", value);
-    remember(value);
     const answer = value.trim();
+    append("user", answer);
+    remember(answer);
     if (wizard.kind === "branch") {
       const index = Number(answer) - 1;
       const chosen = Number.isInteger(index) && index >= 0 && index < wizard.branches.length
         ? wizard.branches[index] : wizard.branches.find(x => x === answer);
-      if (!chosen) { append("assistant", "Укажите номер из списка или точное имя ветки."); return; }
+      if (!chosen) {
+        append("assistant", "Выберите ветку мышью, стрелками или введите её имя.");
+        return;
+      }
       setWizard({ kind: "mode", branch: chosen });
-      append("assistant", "Ветка: " + chosen + "\n\n1. Собрать локально на ПК\n2. Опубликовать тестовый релиз\n\nВыберите 1 или 2.");
+      append("assistant", "Источник: " + chosen + "\nВыберите действие: локальная сборка, новый тестовый релиз или обновление канала.");
       return;
     }
     if (wizard.kind === "mode") {
-      if (answer !== "1" && answer !== "2") { append("assistant", "Введите 1 или 2."); return; }
-      const local = answer === "1";
+      const value = answer === "1" ? "local" : answer === "2" ? "new" : answer === "3" ? "update" : answer;
+      if (!["local", "new", "update"].includes(value)) {
+        append("assistant", "Выберите вариант из меню.");
+        return;
+      }
+      if (value === "update") {
+        setLoading(true);
+        setActivity("fetching releases");
+        try {
+          const result = await runCommand({
+            program: "gh",
+            args: ["release", "list", "--repo", "Creative-Cave-uefn/cave-player-releases",
+              "--limit", "500", "--json", "tagName,name,isPrerelease,publishedAt"],
+            cwd: directory, label: "gh release list",
+          });
+          if (result.code !== 0) {
+            append("assistant", "Не удалось загрузить каналы: " + result.output +
+              "\nПроверьте gh auth status.");
+            return;
+          }
+          const channels = releaseChannels(JSON.parse(result.output) as ReleaseRecord[]);
+          if (!channels.length) {
+            append("assistant", "Пока нет тестовых каналов для обновления.");
+            return;
+          }
+          setWizard({ kind: "channel", branch: wizard.branch, channels });
+          append("assistant", "Выберите существующий тестовый канал. Предыдущая версия удалится только после успешной публикации новой.");
+        } catch (error) {
+          append("assistant", "Ошибка загрузки каналов: " + String(error));
+        } finally {
+          setLoading(false);
+          setActivity("ready");
+        }
+        return;
+      }
+      const local = value === "local";
       const args = ["--branch", wizard.branch, "--mode", "new", ...(local ? ["--local"] : [])];
-      setWizard({ kind: "confirm", command: "build", args, summary: local ? "локальная сборка" : "публикация тестового релиза" });
-      append("assistant", "Подтвердите: " + (local ? "локальная сборка" : "публикация тестового релиза") +
-        "\nВетка: " + wizard.branch + "\nОтветьте ДА для запуска или нет для отмены.");
+      const summary = (local ? "Локальная сборка" : "Новый тестовый релиз") + "\nВетка: " + wizard.branch;
+      setWizard({ kind: "confirm", command: "build", args, summary });
+      append("assistant", summary + "\nПодтвердите запуск.");
       return;
     }
-    if (/^(да|yes|y)$/i.test(answer)) {
+    if (wizard.kind === "channel") {
+      const index = Number(answer) - 1;
+      const channel = Number.isInteger(index) && index >= 0 && index < wizard.channels.length
+        ? wizard.channels[index]?.value : wizard.channels.find(c => c.value === answer)?.value;
+      if (!channel) {
+        append("assistant", "Выберите канал из меню.");
+        return;
+      }
+      const args = ["--branch", wizard.branch, "--mode", "update", "--channel", channel];
+      const summary = "Обновить тестовый релиз\nВетка: " + wizard.branch + "\nКанал: " + channel;
+      setWizard({ kind: "confirm", command: "build", args, summary });
+      append("assistant", summary + "\nПодтвердите запуск.");
+      return;
+    }
+    if (/^(да|yes|y|confirm)$/i.test(answer)) {
       const { command, args } = wizard;
       setWizard(null);
       await runEngine(command, [...args, "--yes"], false);
-    } else {
+    } else if (/^(нет|no|n|cancel)$/i.test(answer)) {
       setWizard(null);
       append("assistant", "Действие отменено.");
+    } else {
+      append("assistant", "Выберите «Подтвердить» или «Отмена».");
     }
-  }, [append, remember, runEngine, wizard]);
+  }, [append, remember, runEngine, wizard, directory]);
+
+  const menu: ChoiceMenu | undefined = useMemo(() => {
+    if (!wizard) return undefined;
+    if (wizard.kind === "branch") return {
+      id: "branches", title: "ВЫБОР ВЕТКИ", subtitle: "Поиск · ↑↓ · PgUp/PgDn · наведение мыши · клик",
+      choices: wizard.branches.map((name, i) => ({
+        value: name, label: name, detail: String(i + 1),
+      })),
+    };
+    if (wizard.kind === "mode") return {
+      id: "mode:" + wizard.branch, title: "ТИП СБОРКИ", subtitle: "Источник: " + wizard.branch,
+      choices: [
+        { value: "local", label: "Локальная сборка", detail: "Без публикации" },
+        { value: "new", label: "Новый тестовый релиз", detail: "Создать отдельный канал" },
+        { value: "update", label: "Обновить канал", detail: "Выбрать существующий тестовый релиз" },
+      ],
+    };
+    if (wizard.kind === "channel") return {
+      id: "channel:" + wizard.branch, title: "КАНАЛ ПУБЛИКАЦИИ",
+      subtitle: "Обновление существующего тестового релиза",
+      choices: wizard.channels,
+    };
+    return {
+      id: "confirm:" + wizard.summary, title: "ПОДТВЕРЖДЕНИЕ",
+      subtitle: wizard.summary.replace(/\n/g, "  ·  "),
+      choices: [
+        { value: "yes", label: "Подтвердить", detail: "Запустить действие" },
+        { value: "no", label: "Отмена", detail: "Вернуться в DevKit" },
+      ],
+    };
+  }, [wizard]);
 
   const handleCommand = useCallback(async (name: string, text = "") => {
     const args = splitArgs(text);
@@ -299,7 +389,12 @@ function App() {
   const handleSubmit = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    if (wizard) { await wizardInput(trimmed); return; }
+    if (wizard && /^\/(?:cancel|назад)$/i.test(trimmed)) {
+      setWizard(null); append("assistant", "Мастер отменён."); return;
+    }
+    if (wizard && !/^\/(?:help|quit|clear|build|terminal)$/i.test(trimmed)) {
+      await wizardInput(trimmed); return;
+    }
     if (trimmed.startsWith("/")) {
       const tokens = splitArgs(trimmed.slice(1));
       await handleCommand((tokens.shift() || "").toLowerCase(), tokens.join(" "));
@@ -319,7 +414,7 @@ function App() {
 
   const cancel = useCallback(() => {
     if (active.current) active.current.abort();
-    else if (wizard) { setWizard(null); append("assistant", "Мастер отменён."); }
+    else if (wizard) { setWizard(null); setInputValue(""); append("assistant", "Мастер отменён."); }
   }, [append, wizard]);
 
   const statusSegments: StatusLineSegment[] = useMemo(() => [
@@ -341,12 +436,14 @@ function App() {
     return found;
   }, [messages]);
 
-  const matched = matchCommands(inputValue, catalog);
+  const matched = menu ? [] : matchCommands(inputValue, catalog);
   const compact = terminal.rows < 29 || terminal.columns < 70;
   const headerRows = compact ? 4 : 7;
-  const paletteRows = matched.length > 0 && !loading && !searchOpen ? matched.length + 3 : 0;
-  const promptRows = paletteRows + 4;
-  const historyHeight = Math.max(3, terminal.rows - headerRows - promptRows - (searchOpen ? 2 : 0) - 2);
+  const maxMenuRows = Math.max(2, Math.min(7, terminal.rows - 20));
+  const menuCount = menu && !loading && !searchOpen ? Math.min(maxMenuRows, menu.choices.length) + (menu.subtitle ? 5 : 4) : 0;
+  const paletteRows = menuCount || (matched.length > 0 && !loading && !searchOpen ? matched.length + 3 : 0);
+  const promptRows = paletteRows + (paletteRows ? 4 : 5);
+  const historyHeight = Math.max(2, terminal.rows - headerRows - promptRows - (searchOpen ? 2 : 0) - 3);
   const displayedMessages: Message[] = streaming && loading
     ? [...messages, { id: "__cavey_stream", role: "assistant", content: streaming }]
     : messages;
@@ -386,6 +483,10 @@ function App() {
           onSubmit={handleSubmit}
           history={history}
           commands={catalog}
+          menu={menu}
+          maxMenuRows={maxMenuRows}
+          onMenuPick={wizardInput}
+          onMenuCancel={() => { setWizard(null); setInputValue(""); append("assistant", "Мастер отменён."); }}
           disabled={loading}
           searchOpen={searchOpen}
           onCancel={cancel}

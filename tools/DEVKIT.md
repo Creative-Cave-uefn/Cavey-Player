@@ -37,6 +37,12 @@ The command palette appears **above** the input. Moving the mouse highlights an 
 | `/clear` | Clear visible transcript |
 | `/quit` | Exit |
 
+## Interactive menus
+
+The DevKit command palette and all build/publish wizard choices use the same keyboard-and-mouse component. Slash-command suggestions, branch selection, build mode (local / new test release / update an existing channel), release-channel selection and publish confirmations appear **above** the pinned input. Hover highlights a choice and clicking selects it; `↑↓` navigates, `Enter` selects, `Esc` cancels, and typing filters long lists. `PgUp/PgDn` and the mouse wheel page through a long menu.
+
+The `/build` wizard refreshes remote refs from `origin` before displaying branches, and can choose a previously published prerelease channel when updating. A confirmation is still mandatory before running destructive or publishing operations.
+
 ## Commands
 
 `/build` starts a guided sequence: branch, local build or test release, confirmation. For scripts use `/build --branch latest --local --yes` or `/build --branch <name> --mode new --yes`. `/clean` asks for confirmation unless `--dry-run` or `--yes` is supplied. `/status`, `/branches`, `/releases`, `/history`, `/logs`, `/run`, `/doctor`, and `/project` call `tools/cavey-devkit-engine.ps1` with live output.

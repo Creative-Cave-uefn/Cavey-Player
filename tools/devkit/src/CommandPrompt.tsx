@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "@claude-code-kit/ink-renderer";
+import { filterChoices, visibleChoices, type ChoiceMenu } from "./choices.js";
 
 export type CommandOption = { name: string; description: string };
 
@@ -10,7 +11,8 @@ export function matchCommands(value: string, options: CommandOption[]): CommandO
 }
 
 export function CommandPrompt({
-  value, onChange, onSubmit, history, commands, disabled = false, searchOpen = false,
+  value, onChange, onSubmit, history, commands, menu, onMenuPick, onMenuCancel, maxMenuRows = 7,
+  disabled = false, searchOpen = false,
   onCancel, onTerminal, onSearch, onClear, onScroll,
 }: {
   value: string;
@@ -18,6 +20,10 @@ export function CommandPrompt({
   onSubmit: (value: string) => void | Promise<void>;
   history: string[];
   commands: CommandOption[];
+  menu?: ChoiceMenu;
+  onMenuPick?: (value: string) => void | Promise<void>;
+  onMenuCancel?: () => void;
+  maxMenuRows?: number;
   disabled?: boolean;
   searchOpen?: boolean;
   onCancel: () => void;
@@ -41,10 +47,15 @@ export function CommandPrompt({
   const valueRef = useRef(value);
   valueRef.current = value;
 
-  useEffect(() => { updateCursor(c => Math.min(c, value.length)); }, [value.length]);
-  const suggestions = dismissed || searchOpen || disabled ? [] : matchCommands(value, commands);
-  const focused = Math.min(hovered ?? selected, Math.max(0, suggestions.length - 1));
-  const showPalette = suggestions.length > 0;
+  useEffect(() => { updateCursor(c => Math.min(c, value.length)); }, [value.length, updateCursor]);
+  useEffect(() => { setSelected(0); setHovered(null); setDismissed(false); }, [menu?.id]);
+  const menuActive = Boolean(menu && !searchOpen && !disabled);
+  const menuMatches = menuActive ? filterChoices(menu!.choices, value) : [];
+  const suggestions = menuActive || dismissed || searchOpen || disabled ? [] : matchCommands(value, commands);
+  const total = menuActive ? menuMatches.length : suggestions.length;
+  const focused = Math.min(hovered ?? selected, Math.max(0, total - 1));
+  const showPalette = !menuActive && suggestions.length > 0;
+  const page = menuActive ? visibleChoices(menuMatches, focused, maxMenuRows) : null;
 
   const edit = useCallback((next: string, position: number) => {
     valueRef.current = next;
@@ -73,6 +84,20 @@ export function CommandPrompt({
     }
   }, [onChange, onSubmit]);
 
+  const clearInput = useCallback(() => {
+    valueRef.current = "";
+    onChange("");
+    updateCursor(0);
+    setSelected(0);
+    setHovered(null);
+    setDismissed(false);
+    setHistoryIndex(-1);
+  }, [onChange, updateCursor]);
+  const pickMenu = useCallback((choice: string) => {
+    if (disabled || !onMenuPick) return;
+    clearInput();
+    void onMenuPick(choice);
+  }, [clearInput, disabled, onMenuPick]);
   useInput((input, key, event) => {
     if (key.ctrl && input === "c") {
       event.stopImmediatePropagation();
@@ -95,60 +120,60 @@ export function CommandPrompt({
       onClear();
       return;
     }
-    if (key.pageUp || key.pageDown) {
+    if (key.pageUp || key.pageDown || key.wheelUp || key.wheelDown) {
       event.stopImmediatePropagation();
-      onScroll(key.pageUp ? -12 : 12);
+      if (menuActive) {
+        const delta = key.pageUp ? -maxMenuRows : key.pageDown ? maxMenuRows : key.wheelUp ? -1 : 1;
+        setHovered(null);
+        if (menuMatches.length) setSelected(i => Math.max(0, Math.min(menuMatches.length - 1, i + delta)));
+      } else {
+        onScroll(key.pageUp || key.wheelUp ? -12 : 12);
+      }
       return;
     }
     if (disabled) return;
     const current = valueRef.current;
     const activeCursor = Math.min(cursorRef.current, current.length);
     if (key.escape) {
-      if (showPalette) setDismissed(true);
+      if (menuActive) { clearInput(); onMenuCancel?.(); }
+      else if (showPalette) setDismissed(true);
       else edit("", 0);
       return;
     }
     if (key.return) {
-      if (showPalette && (current === "/" || (current.length > 1 && !commands.some(c => "/" + c.name === current)))) {
-        const option = suggestions[focused];
-        if (option) { choose(option.name, true); return; }
-      }
+      if (menuActive && menuMatches[focused]) { pickMenu(menuMatches[focused]!.value); return; }
+      if (showPalette && suggestions[focused]) { choose(suggestions[focused]!.name, true); return; }
       if (current.trim()) {
-        valueRef.current = "";
-        onChange("");
-        updateCursor(0);
-        setSelected(0);
-        setHovered(null);
-        setDismissed(false);
-        setHistoryIndex(-1);
+        clearInput();
         void onSubmit(current);
       }
       return;
     }
     if (key.tab) {
-      const option = suggestions[focused];
-      if (option) { choose(option.name, false); }
+      if (menuActive && menuMatches[focused]) { pickMenu(menuMatches[focused]!.value); return; }
+      if (showPalette && suggestions[focused]) choose(suggestions[focused]!.name, false);
       return;
     }
     if (key.upArrow || key.downArrow) {
-      if (showPalette) {
+      if (menuActive || showPalette) {
         setHovered(null);
-        setSelected(i => (i + suggestions.length + (key.upArrow ? -1 : 1)) % suggestions.length);
+        if (total) setSelected(i => (i + total + (key.upArrow ? -1 : 1)) % total);
       } else if (history.length > 0) {
         if (key.upArrow) {
           if (historyIndex === -1) setDraft(current);
           const index = Math.min(historyIndex + 1, history.length - 1);
           setHistoryIndex(index);
-          onChange(history[index]);
-          valueRef.current = history[index];
-          updateCursor(history[index].length);
+          const entry = history[index]!;
+          valueRef.current = entry;
+          onChange(entry);
+          updateCursor(entry.length);
         } else if (historyIndex >= 0) {
           const index = historyIndex - 1;
-          const next = index < 0 ? draft : history[index];
+          const entry = index < 0 ? draft : history[index]!;
           setHistoryIndex(index);
-          onChange(next);
-          valueRef.current = next;
-          updateCursor(next.length);
+          valueRef.current = entry;
+          onChange(entry);
+          updateCursor(entry.length);
         }
       }
       return;
@@ -179,33 +204,61 @@ export function CommandPrompt({
 
   return (
     <Box flexDirection="column" paddingX={2}>
-      {showPalette && (
-        <Box flexDirection="column" borderStyle="round" borderColor="#48454A" paddingX={1}>
+      {(showPalette || menuActive) && (
+        <Box flexDirection="column" borderStyle="round" borderColor="#48454A" paddingX={1} flexShrink={0}>
           <Box justifyContent="space-between">
-            <Text color="#E2A083" bold>КОМАНДЫ</Text>
-            <Text dimColor>↑↓ выбрать · Tab дополнить · Enter запустить · Esc закрыть</Text>
+            <Text color="#E2A083" bold>{menuActive ? menu!.title : "КОМАНДЫ"}</Text>
+            <Text dimColor>{menuActive ? String(menuMatches.length) + "/" + String(menu!.choices.length) : String(suggestions.length) + " доступно"}</Text>
           </Box>
-          {suggestions.map((option, index) => {
-            const active = focused === index;
-            return (
-              <Box key={option.name} paddingX={1} flexDirection="row"
-                backgroundColor={active ? "#434047" : undefined}
-                onMouseEnter={() => { setHovered(index); setSelected(index); }}
-                onMouseLeave={() => setHovered(null)}
-                onClick={event => { event.stopImmediatePropagation(); choose(option.name, true); }}
-              >
-                <Box width={17}>
-                  <Text bold={active} color={active ? "#F0A787" : "#DDDDE2"}>
-                    {active ? "❯ " : "  "}/{option.name}
-                  </Text>
-                </Box>
-                <Text color={active ? "white" : "#9B9AA4"}>{option.description}</Text>
-              </Box>
-            );
-          })}
+          {menuActive && menu!.subtitle && <Text dimColor wrap="truncate-end">{menu!.subtitle}</Text>}
+          {menuActive && menuMatches.length === 0 && <Text dimColor>Нет совпадений · Esc — назад</Text>}
+          {menuActive
+            ? page!.rows.map((option, row) => {
+                const index = page!.start + row;
+                const active = index === focused;
+                return (
+                  <Box key={option.value} flexDirection="row" width="100%" paddingX={1} flexShrink={0}
+                    backgroundColor={active ? "#444049" : undefined}
+                    onMouseEnter={() => { setHovered(index); setSelected(index); }}
+                    onMouseLeave={() => setHovered(null)}
+                    onClick={event => { event.stopImmediatePropagation(); pickMenu(option.value); }}
+                  >
+                    <Text color={active ? "#E7A287" : "#7B7981"}>{active ? "❯ " : "  "}</Text>
+                    <Box width="55%" flexShrink={1}>
+                      <Text bold={active} color={active ? "#F0AB8E" : "#DAD7DD"} wrap="truncate-end">{option.label}</Text>
+                    </Box>
+                    <Box flexGrow={1}>
+                      <Text color={active ? "#E1DEE4" : "#98969F"} wrap="truncate-end">{option.detail || ""}</Text>
+                    </Box>
+                  </Box>
+                );
+              })
+            : suggestions.map((option, index) => {
+                const active = focused === index;
+                return (
+                  <Box key={option.name} paddingX={1} flexDirection="row" width="100%"
+                    backgroundColor={active ? "#444049" : undefined}
+                    onMouseEnter={() => { setHovered(index); setSelected(index); }}
+                    onMouseLeave={() => setHovered(null)}
+                    onClick={event => { event.stopImmediatePropagation(); choose(option.name, true); }}
+                  >
+                    <Box width={17}>
+                      <Text bold={active} color={active ? "#F0AB8E" : "#DAD7DD"}>{active ? "❯ " : "  "}/{option.name}</Text>
+                    </Box>
+                    <Text color={active ? "#E1DEE4" : "#98969F"}>{option.description}</Text>
+                  </Box>
+                );
+              })}
+          {menuActive && page!.count > page!.rows.length && (
+            <Box justifyContent="space-between">
+              <Text dimColor>{page!.start > 0 ? "↑ выше" : ""}</Text>
+              <Text dimColor>↑↓ · PgUp/PgDn · колесо</Text>
+              <Text dimColor>{page!.start + page!.rows.length < page!.count ? "ниже ↓" : ""}</Text>
+            </Box>
+          )}
         </Box>
       )}
-      <Box marginTop={showPalette ? 0 : 1} borderStyle="round" borderColor={disabled ? "#535259" : "#D57B5F"}
+      <Box marginTop={showPalette || menuActive ? 0 : 1} borderStyle="round" borderColor={disabled ? "#535259" : "#D57B5F"}
         paddingX={1} flexDirection="column">
         <Box gap={1}>
           <Text color="#E8A080" bold>❯</Text>
@@ -214,12 +267,12 @@ export function CommandPrompt({
           ) : value ? (
             <Text>{value.slice(0, cursor)}<Text inverse>{value[cursor] || " "}</Text>{value.slice(cursor + 1)}</Text>
           ) : (
-            <Text><Text inverse> </Text><Text dimColor>Команда, / для действий…</Text></Text>
+            <Text><Text inverse> </Text><Text dimColor>{menuActive ? "Поиск варианта или выбор стрелками…" : "Команда, / для действий…"}</Text></Text>
           )}
         </Box>
       </Box>
       <Box justifyContent="space-between" paddingX={1}>
-        <Text dimColor>{showPalette ? "Наведи мышь для выделения, нажми для запуска" : "Enter выполнить  ·  / команды  ·  Ctrl+J терминал"}</Text>
+        <Text dimColor>{menuActive ? "Наведение / клик · ↑↓ · Enter · Esc" : showPalette ? "Наведи мышь для выделения, нажми для запуска" : "Enter выполнить · / команды · Ctrl+J терминал"}</Text>
         <Text dimColor>PgUp/PgDn история · Ctrl+F поиск</Text>
       </Box>
     </Box>
