@@ -1,37 +1,40 @@
-﻿# Static syntax and non-interactive command smoke tests. Run with Windows PowerShell 5.1.
+﻿# Validate DevKit launcher, backend and shortcut installer. PowerShell 5.1.
 [CmdletBinding()]
-param()
+param([switch]$SkipNpm)
 $ErrorActionPreference = 'Stop'
-$root = $PSScriptRoot
 $files = @(
     'cavey-devkit.ps1',
-    'cavey-devkit-tui.ps1',
+    'cavey-devkit-engine.ps1',
     'install-devkit-shortcuts.ps1',
     'test-cavey-devkit.ps1'
 )
-foreach ($name in $files) {
-    $path = Join-Path $root $name
-    if (-not (Test-Path -LiteralPath $path)) { throw "Отсутствует $path" }
+foreach ($filename in $files) {
+    $path = Join-Path $PSScriptRoot $filename
+    if (-not (Test-Path -LiteralPath $path)) { throw "Missing: $filename" }
     $tokens = $null
     $errors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
-    if ($errors.Count) {
-        $detail = ($errors | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
-        throw "PowerShell syntax error in $name : $detail"
+    if ($errors.Count -gt 0) {
+        throw "Parse error in filename: $filename : $(($errors | Out-String).Trim())"
     }
-    Write-Host "PASS parse: $name" -ForegroundColor Green
+    Write-Host "PASS PowerShell syntax: $filename" -ForegroundColor Green
 }
-$main = Get-Content -LiteralPath (Join-Path $root 'cavey-devkit.ps1') -Raw
-if (([regex]::Matches($main,'(?m)^function Dispatch\b')).Count -ne 1) {
-    throw 'Dispatch must only be defined once.'
+if (Test-Path (Join-Path $PSScriptRoot 'cavey-devkit-tui.ps1')) {
+    throw 'Old PowerShell TUI must be removed.'
 }
-if (([regex]::Matches($main,'(?m)^function Check-Repo\b')).Count -ne 1) {
-    throw 'Check-Repo must only be defined once.'
+$entry = Join-Path $PSScriptRoot 'cavey-devkit-engine.ps1'
+$output = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry help 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $output -notmatch '/build') {
+    throw "Build engine help failed: $output"
 }
-$cli = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$output = & $cli -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'cavey-devkit.ps1') help 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0) { throw "CLI help command failed: $output" }
-if ($output -notmatch '/terminal' -or $output -notmatch '/build') {
-    throw "CLI help output is missing commands: $output"
+Write-Host 'PASS build engine help' -ForegroundColor Green
+if (-not $SkipNpm) {
+    Push-Location (Join-Path $PSScriptRoot 'devkit')
+    try {
+        & npm.cmd run typecheck
+        if ($LASTEXITCODE -ne 0) { throw 'DevKit typecheck failed.' }
+        & npm.cmd test
+        if ($LASTEXITCODE -ne 0) { throw 'DevKit tests failed.' }
+    } finally { Pop-Location }
 }
-Write-Host 'PASS non-interactive help and command catalog' -ForegroundColor Green
+Write-Host 'PASS Cavey DevKit checks' -ForegroundColor Green

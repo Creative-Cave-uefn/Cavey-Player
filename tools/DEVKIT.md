@@ -1,51 +1,57 @@
-# Cavey DevKit · Windows terminal workspace
+# Cavey DevKit · React terminal
 
-Cavey DevKit is a **local** PowerShell 5.1 console. No npm/Bun/Node dependency is required. The UI follows a compact boxed terminal layout and command palette from the supplied Workbench CLI visual reference; no reference branding or agent backend is bundled.
+DevKit now uses [claude-code-kit](https://github.com/Minnzen/claude-code-kit) 0.4.0 and React 19.2.4. The old PowerShell TUI is deleted. The existing build/release command engine is kept as a **noninteractive backend**, not as another UI.
 
-## Install / update
+## Requirements
 
-Open PowerShell **inside the Cavey-Player repository**:
+- Windows 10/11 with Windows Terminal recommended.
+- **Node.js 22 or newer** with npm (first launch installs UI dependencies into `tools/devkit/node_modules`).
+- PowerShell 5.1 for build commands; Git and GitHub CLI for repository/release operations; Flutter/Inno Setup for Windows packaging.
+
+## Update
 
 ```powershell
 git fetch origin
 git switch feat/keivi-devkit-20261117
 git pull --ff-only origin feat/keivi-devkit-20261117
-
-# One-time setup: creates Desktop and Start Menu shortcuts
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install-devkit-shortcuts.ps1
-
-# Or launch directly without installing shortcuts
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\cavey-devkit.ps1
 ```
 
-**Cavey DevKit** shortcut opens the visual command palette. **Cavey DevKit Terminal** shortcut opens a real, interactive Windows PowerShell session in the project directory.
+Existing **Cavey DevKit** shortcuts continue to use `tools/cavey-devkit.ps1`; on first launch it installs React dependencies. The **Cavey DevKit Terminal** shortcut opens a real PowerShell, not the old TUI.
 
-## Keyboard and commands
+## Keyboard
 
-| Action | Command / shortcut |
+| Keys | Action |
 | --- | --- |
-| Interactive shell within DevKit | `Ctrl+J` or `/terminal` |
-| Return from child PowerShell session | `exit` |
-| Run PowerShell directly | `git status`, `dir`, `cd`, `flutter --version` |
-| DevKit commands | `/` or `/help` |
-| Autocomplete | `Tab` |
-| Navigate suggestions/history | `↑` and `↓` |
-| Edit input | `←`, `→`, `Home`, `End`, `Backspace`, `Delete` |
-| Redraw | `Ctrl+L` or `/clear` |
-| Change project folder | `/project C:\path\to\repo` |
-| Launch installed Claude Code | `/agent` |
-| Quit | `/quit` |
+| `/` | Command palette with autocomplete |
+| `Tab`, `↑` / `↓` | Complete command / navigate suggestions or history |
+| `PgUp`, `PgDn` | Scroll output |
+| `Ctrl+F` | Search history |
+| `Ctrl+C` | Stop current operation |
+| `Ctrl+J` | Open PowerShell in a Windows Terminal tab or window |
+| `/clear` | Clear visible transcript |
+| `/quit` | Exit |
 
-Commands without `/` run in the DevKit PowerShell runspace, so `cd` remains effective while DevKit is open. `/terminal` starts a nested PowerShell process supporting real interactive programs; use `exit` to return to DevKit.
+## Commands
 
-## Build and development
+`/build` starts a guided sequence: branch, local build or test release, confirmation. For scripts use `/build --branch latest --local --yes` or `/build --branch <name> --mode new --yes`. `/clean` asks for confirmation unless `--dry-run` or `--yes` is supplied. `/status`, `/branches`, `/releases`, `/history`, `/logs`, `/run`, `/doctor`, and `/project` call `tools/cavey-devkit-engine.ps1` with live output.
 
-Existing `/branches`, `/build`, `/releases`, `/clean`, `/history`, `/logs`, `/run` and `/doctor` commands are retained. Run `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-cavey-devkit.ps1` to validate PowerShell syntax and smoke-test CLI help.
+Other text (`git status`, `flutter --version`, `Get-ChildItem`) runs in a PowerShell child process. `cd` is handled by DevKit so the working directory persists between executions. **Other PowerShell variables/functions do not persist**; for prompts, REPLs or full interactive programs use `/terminal`, which opens a real PowerShell in Windows Terminal or a separate console window.
 
-## Notes
+`/agent` opens installed Claude Code, if available. Cavey DevKit is not itself Claude Code or an AI agent and uses Cavey branding.
 
-- Shortcuts use the local checkout, create no service, and require no administrator permissions.
-- The shell executes only user-entered commands.
-- For best rendering, use Windows Terminal or a UTF-8-capable console. Redirected input/output falls back to a normal prompt.
-- If you move the repository, rerun the shortcut installer.
-- `/agent` starts an already installed Claude Code CLI. DevKit itself does not incorporate the referenced project's AI functionality.
+## Checks
+
+```powershell
+cd tools\devkit
+npm install
+npm run typecheck
+npm test
+cd ..\..
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-cavey-devkit.ps1
+```
+
+The launcher preserves noninteractive usage: `powershell -File .\tools\cavey-devkit.ps1 status` calls the headless engine. The UI always uses the new React frontend without arguments.
+
+Dependencies: `@claude-code-kit/ui` 0.4.0 and `@claude-code-kit/ink-renderer` 0.4.0, MIT license. Initial dependency installation needs internet.

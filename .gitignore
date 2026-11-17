@@ -13,3 +13,8 @@ deezer_auth.ini
 sockseek.conf
 .env
 .env.*
+
+# Cavey DevKit local dependencies
+/tools/devkit/node_modules/
+/tools/devkit/.dependency-stamp
+/tools/devkit/package-lock.json
