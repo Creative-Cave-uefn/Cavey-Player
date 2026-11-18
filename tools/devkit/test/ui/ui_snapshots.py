@@ -32,7 +32,7 @@ import pyte
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.abspath(os.path.join(HERE, "..", ".."))
 FAKES = os.path.join(HERE, "fakes")
-ESC, ENTER, CTRL_O, CTRL_C = "\x1b", "\r", "\x0f", "\x03"
+ESC, ENTER, CTRL_O, CTRL_C, CTRL_U = "\x1b", "\r", "\x0f", "\x03", "\x15"
 CORNERS = "╭╮╰╯"
 
 
@@ -182,6 +182,38 @@ def build_wizard_back_and_cancel(s):
     s.wait_for("? for shortcuts")
 
 
+def name_channel_and_note(s):
+    s.wait_for("? for shortcuts")
+    s.type("/build")
+    s.type(ENTER)
+    s.wait_for("Build which branch?")
+    s.type("alph")
+    s.wait_gone("feature/beta")
+    s.type(ENTER)
+    s.wait_for("What kind of build?")
+    s.type("2")
+    s.wait_for("Name the new channel")
+    assert "devkit/alpha (press Enter)" in s.text()
+    check_layout(s)
+    s.type("alpha/20261118-ab12")
+    s.type(ENTER)
+    s.wait_for("already exists")
+    assert "Name the new channel" in s.text(), "a taken name keeps the naming step open"
+    s.type(CTRL_U)
+    s.type(ENTER)
+    s.wait_for("Build and publish a new test release?")
+    text = s.text()
+    assert "⏺ Channel  devkit/alpha" in text and "devkit/alpha (new)" in text
+    assert "then a launch check" in text
+    s.type("2")
+    s.wait_for("Note for testers")
+    s.type("check the mixer")
+    s.type(ENTER)
+    s.wait_for("⏺ Note  check the mixer")
+    s.wait_for("⏺ Build feature/alpha → new test release")
+    s.wait_for("Failed · exit 1", timeout=20)
+
+
 def failing_build_output(s):
     s.wait_for("? for shortcuts")
     s.type("/build --branch main --local --yes")
@@ -236,8 +268,11 @@ def small_terminal(s):
     check_layout(s)
     s.type(ENTER)
     s.type("2")
+    s.wait_for("Name the new channel")
+    check_layout(s)
+    s.type(ENTER)
     s.wait_for("Build and publish a new test release?")
-    s.wait_for("3. No, go back")
+    s.wait_for("4. No, go back")
     check_layout(s)
 
 
@@ -257,6 +292,7 @@ def double_ctrl_c_exits(s):
 SCENARIOS = [
     ("welcome_palette_and_shortcuts", welcome_palette_and_shortcuts, (100, 34)),
     ("build_wizard_back_and_cancel", build_wizard_back_and_cancel, (100, 34)),
+    ("name_channel_and_note", name_channel_and_note, (100, 34)),
     ("failing_build_output", failing_build_output, (100, 34)),
     ("releases_manager", releases_manager, (100, 34)),
     ("small_terminal", small_terminal, (80, 24)),

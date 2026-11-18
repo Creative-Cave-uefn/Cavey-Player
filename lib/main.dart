@@ -13,6 +13,7 @@ import 'core/autostart.dart';
 import 'core/log.dart';
 import 'core/share_link.dart';
 import 'core/single_instance.dart';
+import 'core/smoke_test.dart';
 import 'core/window_style.dart';
 
 /// Автозапуск в трей: ждём, пока значок встанет, и прячем окно. Не встал — окно остаётся, чтобы не потерять приложение
@@ -34,6 +35,9 @@ Future<void> _hideToTray(AppServices app) async {
 Future<void> main(List<String> args) async {
   runZonedGuarded(() async {
     CaveBinding.ensureInitialized();
+    // Build check from Cavey DevKit: report what this build is and exit, before anything else runs
+    final smokeTest = smokeTestPath(args);
+    if (smokeTest != null) await runSmokeTest(smokeTest);
     // Уже запущена другая копия (возможно, спрятанная в трее) — показываем её и выходим
     final link = linkFromArgs(args);
     // Автозапуск «в трей» (--tray): окно не показываем, а если Cavey уже запущена — ничего не делаем

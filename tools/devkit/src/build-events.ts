@@ -1,4 +1,4 @@
-export const stageOrder = ["source", "prepare", "checks", "compile", "package", "publish"] as const;
+export const stageOrder = ["source", "prepare", "checks", "compile", "package", "verify", "publish"] as const;
 export type StageName = (typeof stageOrder)[number];
 export type StageState = "waiting" | "running" | "done" | "failed" | "skipped";
 export type StageRecord = { name: StageName; state: StageState; label: string; updatedAt: number; startedAt?: number; durationMs?: number };

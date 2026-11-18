@@ -241,6 +241,25 @@ function Cache-Manager([string[]]$tokens) {
     }
     Hint 'Cache is keyed by source commit and Flutter version. Use /cache prune to reclaim space.'
 }
+function Read-Config {
+    $config = [ordered]@{}
+    if (Test-Path -LiteralPath $script:ConfigFile) {
+        try {
+            $saved = Get-Content -LiteralPath $script:ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($property in $saved.PSObject.Properties) { $config[$property.Name] = $property.Value }
+        } catch { Hint "Ignoring unreadable settings: $script:ConfigFile" }
+    }
+    return $config
+}
+function Write-Config([hashtable]$changes) {
+    # Merge: /project and /notify each own one key and must not erase the other.
+    $config = Read-Config
+    foreach ($key in $changes.Keys) {
+        if ($null -eq $changes[$key]) { $config.Remove($key) } else { $config[$key] = $changes[$key] }
+    }
+    New-Item -ItemType Directory -Force -Path $script:DataHome | Out-Null
+    $config | ConvertTo-Json | Set-Content -LiteralPath $script:ConfigFile -Encoding UTF8
+}
 function Project([string[]]$tokens) {
     if ($tokens.Count -lt 2) {
         Heading 'Current project'
@@ -258,8 +277,7 @@ function Project([string[]]$tokens) {
     if ($origin -notmatch '(?i)Creative-Cave-uefn/Cavey-Player(\.git)?$') {
         Fail "This is not the Cavey Player repository: $origin"
     }
-    New-Item -ItemType Directory -Force -Path $script:DataHome | Out-Null
-    @{ projectRoot = $resolved } | ConvertTo-Json | Set-Content -LiteralPath $script:ConfigFile -Encoding UTF8
+    Write-Config @{ projectRoot = $resolved }
     $script:Root = $resolved
     Set-Location $script:Root
     Say "  Project saved: $script:Root" Green
@@ -542,6 +560,115 @@ function Trim-ChannelReleases([string]$channel, [int]$keep = $script:KeepPerChan
         }
     }
 }
+function Previous-ChannelRelease([string]$channel) {
+    # Newest active release of the channel and the commit recorded in its notes.
+    $prefix = Channel-Prefix $channel
+    $members = @(Sort-Newest @(Test-Releases | Where-Object { ([string]$_.tagName).StartsWith($prefix,[StringComparison]::Ordinal) }))
+    if ($members.Count -eq 0) { return $null }
+    try {
+        $body = (Gh @('release','view',$members[0].tagName,'--repo',$script:ReleaseRepo,'--json','body') | ConvertFrom-Json).body
+    } catch { return $null }
+    $match = [regex]::Match([string]$body, '(?m)^Commit:\s*([0-9a-fA-F]{7,40})\s*$')
+    if (-not $match.Success) { return $null }
+    return [pscustomobject]@{ tag = [string]$members[0].tagName; sha = $match.Groups[1].Value }
+}
+function Change-Log([string]$source, [string]$sha, [string]$mode, [string]$channel, [bool]$local) {
+    # What testers get compared with the previous build of this channel; for a
+    # new channel, what the branch adds on top of main.
+    $since = ''; $title = ''
+    if ($mode -eq 'update' -and -not $local) {
+        $previous = Previous-ChannelRelease $channel
+        if ($previous) {
+            try {
+                Git @('merge-base','--is-ancestor',$previous.sha,$sha) | Out-Null
+                $since = $previous.sha; $title = "Changes since $($previous.tag)"
+            } catch { Hint "The previous build's commit $($previous.sha) is not in this branch; listing branch changes instead." }
+        }
+    }
+    if (-not $since -and $source -ne 'main') {
+        try { Git @('rev-parse','--verify','refs/remotes/origin/main') | Out-Null; $since = 'refs/remotes/origin/main'; $title = "Changes on $source" } catch {}
+    }
+    $range = if ($since) { "$since..$sha" } else { $sha }
+    $limit = 30
+    $lines = @()
+    try {
+        $text = Git @('log','--no-merges',"--max-count=$($limit + 1)",'--format=%s (%h)',$range)
+        $lines = @($text -split "\r?\n" | Where-Object { $_.Trim() })
+    } catch {}
+    if (-not $title) { $title = 'Recent changes' }
+    $more = $lines.Count -gt $limit
+    return [pscustomobject]@{ title = $title; items = @($lines | Select-Object -First $limit); more = $more }
+}
+function Release-Notes([object]$record) {
+    # The player shows these notes to testers, so the human part comes first.
+    # The "Commit:" line is parsed by the next update to build its changelog.
+    $lines = @()
+    if ($record.message) { $lines += [string]$record.message; $lines += '' }
+    if ($record.changes -and @($record.changes.items).Count) {
+        $lines += [string]$record.changes.title
+        $lines += @($record.changes.items | ForEach-Object { "- $_" })
+        if ($record.changes.more) { $lines += '- …' }
+        $lines += ''
+    }
+    $lines += @('---', 'Cavey DevKit', "Source: $script:SourceRepo",
+        "Branch: $($record.source)", "Commit: $($record.sha)",
+        "Update channel: $($record.channel)", "Version: $($record.version)")
+    if ($record.downloader -and $record.downloader.sha256) {
+        $lines += "Downloader: $($record.downloader.source) · SHA-256 $($record.downloader.sha256)"
+    }
+    return ($lines -join "`n")
+}
+function Discord-Message([object]$record, [string]$url) {
+    $lines = @("**Cavey test build** ``$($record.channel)`` · $($record.version)")
+    if ($record.message) { $lines += [string]$record.message }
+    $items = @(if ($record.changes) { @($record.changes.items) })
+    if ($items.Count) {
+        $lines += @($items | Select-Object -First 10 | ForEach-Object { "• $_" })
+        if ($items.Count -gt 10 -or $record.changes.more) { $lines += '• …' }
+    }
+    $lines += "Branch ``$($record.source)`` · $(([string]$record.sha).Substring(0, [Math]::Min(8, ([string]$record.sha).Length)))"
+    $lines += $url
+    $text = $lines -join "`n"
+    if ($text.Length -gt 1900) { $text = $text.Substring(0, 1890) + "…`n" + $url }
+    return $text
+}
+function Test-DiscordWebhook([string]$url) {
+    return $url -match '^https://(?:canary\.|ptb\.)?(?:discord|discordapp)\.com/api/webhooks/\d+/[\w-]+$'
+}
+function Send-Discord([string]$text) {
+    $webhook = [string](Read-Config)['discordWebhook']
+    if (-not $webhook) { return $false }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $body = [Text.Encoding]::UTF8.GetBytes((@{ content = $text; allowed_mentions = @{ parse = @() } } | ConvertTo-Json -Compress -Depth 4))
+    Invoke-RestMethod -Uri $webhook -Method Post -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 20 | Out-Null
+    return $true
+}
+function Announce([object]$record, [string]$url) {
+    # A failed announcement never fails the publication.
+    try {
+        if (Send-Discord (Discord-Message $record $url)) { Hint 'Announced in Discord.' }
+    } catch { Say "  ! Discord announcement failed: $($_.Exception.Message)" Yellow }
+}
+function Notify-Settings([string[]]$tokens) {
+    $value = if ($tokens.Count -ge 2) { [string]$tokens[1] } else { '' }
+    if ($value -eq 'off') { Write-Config @{ discordWebhook = $null }; Say '  Discord announcements turned off.' Green; return }
+    if ($value -eq 'test') {
+        if (Send-Discord '**Cavey DevKit** · test message: announcements for new test builds will appear here.') { Say '  ✓ Test message sent.' Green }
+        else { Fail 'No Discord webhook is set. Use /notify <webhook-url>.' }
+        return
+    }
+    if ($value) {
+        if (-not (Test-DiscordWebhook $value)) { Fail 'That is not a Discord webhook URL (https://discord.com/api/webhooks/<id>/<token>).' }
+        Write-Config @{ discordWebhook = $value }
+        Say '  Discord announcements on: every published test build is posted to this webhook.' Green
+        Hint 'Send a test message with /notify test.'
+        return
+    }
+    $webhook = [string](Read-Config)['discordWebhook']
+    Heading 'Discord announcements'
+    if ($webhook) { Say "  On · $($webhook -replace '/[\w-]+$', '/••••••')" } else { Say '  Off' }
+    Hint 'Set: /notify <webhook-url> · Test: /notify test · Disable: /notify off'
+}
 function Compare-RemoteAssets([object]$remote, [object]$record) {
     # Pure comparison so it can be self-tested: does the release on GitHub
     # carry exactly the verified files of this run?
@@ -604,23 +731,19 @@ function Publish-Manifest([object]$record, [bool]$replace = $false) {
         }
     }
     Stage 'publish' 'running' 'Uploading release assets'
-    $notes = @(
-        'Cavey DevKit', "Source: $script:SourceRepo",
-        "Branch: $($record.source)", "Commit: $($record.sha)",
-        "Update channel: $($record.channel)", "Version: $($record.version)"
-    )
-    if ($record.downloader) { $notes += "Downloader: $($record.downloader.source) · SHA-256 $($record.downloader.sha256)" }
     $publishArgs = @('release','create',$tag) + $files + @(
         '--repo',$script:ReleaseRepo,'--prerelease',
         '--title',"Test: $($record.channel) · $($record.version)",
-        '--notes',($notes -join [Environment]::NewLine)
+        '--notes',(Release-Notes $record)
     )
     Gh $publishArgs | Out-Null
     $record.status = 'published'
     $script:CurrentManifest = $record
     Save-BuildState
     Stage 'publish' 'done' 'Release uploaded'
-    Say "  ✓ https://github.com/$script:ReleaseRepo/releases/tag/$tag" Green
+    $url = "https://github.com/$script:ReleaseRepo/releases/tag/$tag"
+    Say "  ✓ $url" Green
+    Announce $record $url
     if ($record.mode -eq 'update') { Trim-ChannelReleases ([string]$record.channel) }
 }
 function Recovery([string[]]$tokens) {
@@ -771,6 +894,45 @@ function DevKit-Update {
     Say "  Updated DevKit: $before → $upstream" Green
     Write-Host '@@CAVEY_RESTART|updated'
 }
+function Smoke-Problem([object]$result, [string]$version, [string]$channel) {
+    # Pure check of the report written by `cave_player.exe --smoke-test=<file>`.
+    if ($null -eq $result) { return 'no report' }
+    if ($result.error) { return "the app reported an error: $($result.error)" }
+    if ($result.mediaKit -ne $true) { return 'the native player libraries did not load' }
+    if ($result.frame -ne $true) { return 'the first frame was not rendered' }
+    if ([string]$result.version -cne $version) { return "it reports version '$($result.version)' instead of '$version'" }
+    if ([string]$result.channel -cne $channel) { return "it reports channel '$($result.channel)' instead of '$channel'" }
+    return ''
+}
+function Test-BuildRuns([string]$zip, [string]$folder, [string]$version, [string]$channel, [string]$sourceTree) {
+    if (-not (Test-Path -LiteralPath (Join-Path $sourceTree 'lib\core\smoke_test.dart') -PathType Leaf)) {
+        Stage 'verify' 'skipped' 'Branch predates the smoke test'
+        Say '  ! This branch has no --smoke-test support; the build was not launched before publishing.' Yellow
+        return
+    }
+    Stage 'verify' 'running' 'Launch the build'
+    $target = Join-Path $folder 'smoke'
+    $report = Join-Path $folder 'smoke.json'
+    Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $report -Force -ErrorAction SilentlyContinue
+    Expand-Archive -LiteralPath $zip -DestinationPath $target -Force
+    $exe = Join-Path $target 'cave_player.exe'
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { Fail 'The portable archive has no cave_player.exe.' }
+    $process = Start-Process -FilePath $exe -ArgumentList ('--smoke-test="' + $report + '"') `
+        -WorkingDirectory $target -PassThru -WindowStyle Minimized
+    if (-not $process.WaitForExit(90000)) {
+        try { $process.Kill() } catch {}
+        Fail 'Smoke test failed: the build did not start within 90 seconds.'
+    }
+    if (-not (Test-Path -LiteralPath $report -PathType Leaf)) {
+        Fail "Smoke test failed: the build exited with code $($process.ExitCode) before writing its report."
+    }
+    $problem = Smoke-Problem (Get-Content -LiteralPath $report -Raw -Encoding UTF8 | ConvertFrom-Json) $version $channel
+    if ($problem) { Fail "Smoke test failed: $problem." }
+    Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+    Stage 'verify' 'done' "Started as $version"
+    Hint "Smoke test passed: the build starts and reports $version · $channel"
+}
 function Build([string[]]$tokens) {
     Check-Repo
     $source = Select-Source (Option $tokens '--branch')
@@ -825,6 +987,7 @@ function Build([string[]]$tokens) {
         folder=$folder; status='building'; stages=@{}
         source=$source; sha=''; mode=$mode; channel=$channel
         version=$version; tag=$tag; local=$local
+        message=(Option $tokens '--message'); changes=$null
         artifacts=@(); startedUtc=[DateTime]::UtcNow.ToString('o')
         updatedUtc=[DateTime]::UtcNow.ToString('o')
     }
@@ -836,6 +999,13 @@ function Build([string[]]$tokens) {
         $sha = $tree.sha
         $cached = [bool]$tree.cached
         $script:CurrentManifest.sha = $sha
+        $changes = Change-Log $source $sha $mode $channel $local
+        $script:CurrentManifest.changes = $changes
+        if (@($changes.items).Count) {
+            Heading $changes.title
+            $changes.items | Select-Object -First 10 | ForEach-Object { Say "  · $_" }
+            if (@($changes.items).Count -gt 10 -or $changes.more) { Hint '  … the full list goes into the release notes' }
+        }
         Stage 'source' 'done' 'Source checkout ready'
         $buildArgs = @(
             '-NoProfile','-ExecutionPolicy','Bypass','-File',$script:BuildScript,
@@ -876,6 +1046,11 @@ function Build([string[]]$tokens) {
             else { Say '  ! This build has no Cavey-Downloader.exe; track downloads will not work.' Yellow }
         }
         if ($tree.marker) { Set-Content -LiteralPath $tree.marker -Value $sha -Encoding Ascii }
+        if (Flag $tokens '--skip-smoke') {
+            Stage 'verify' 'skipped' 'Smoke test skipped on request'
+        } else {
+            Test-BuildRuns (Join-Path $folder 'CavePlayer-portable.zip') $folder $version $channel $worktree
+        }
         $status = 'built'
         $script:CurrentManifest.status = $status
         $script:CurrentManifest.artifacts = $artifacts
@@ -973,6 +1148,9 @@ function Help {
         '/build --branch <name> --mode new --yes'
         '/build --branch <name> --mode update --channel <name> --yes'
         '/build --branch <name> --fresh --yes   (no source cache)'
+        '/build ... --skip-smoke       Do not launch the build before publishing'
+        '/build ... --message "<text>" Note for testers, shown first in the release notes'
+        '/notify [<webhook-url>|test|off]   Announce published builds in Discord'
         '/releases [--channel <name>]  Test channels and their versions'
         '/rollback --channel <name> --to <tag> --yes'
         '/rollforward --channel <name> --yes   Undo a rollback'
@@ -1145,6 +1323,49 @@ function Dispatch([string[]]$tokens) {
             if ((Compare-RemoteAssets $other $record) -notmatch 'SHA-256') { Fail 'Digest mismatch not detected.' }
             Say 'PASS interrupted publication reconciliation' Green
         }
+        'selftest-smoke' {
+            $good = [pscustomobject]@{ version = '0.4.0.12'; channel = 'devkit/dj'; mediaKit = $true; frame = $true }
+            if (Smoke-Problem $good '0.4.0.12' 'devkit/dj') { Fail 'A good smoke report was rejected.' }
+            if ((Smoke-Problem $good '0.4.0.13' 'devkit/dj') -notmatch 'version') { Fail 'Version mismatch not detected.' }
+            if ((Smoke-Problem $good '0.4.0.12' 'devkit/x') -notmatch 'channel') { Fail 'Channel mismatch not detected.' }
+            $noMedia = [pscustomobject]@{ version = '0.4.0.12'; channel = 'devkit/dj'; mediaKit = $false; frame = $false }
+            if ((Smoke-Problem $noMedia '0.4.0.12' 'devkit/dj') -notmatch 'native player') { Fail 'Missing media libraries not detected.' }
+            $crashed = [pscustomobject]@{ error = 'boom' }
+            if ((Smoke-Problem $crashed '0.4.0.12' 'devkit/dj') -notmatch 'boom') { Fail 'App error not reported.' }
+            Say 'PASS smoke test report validation' Green
+        }
+        'selftest-notes' {
+            $record = [pscustomobject]@{
+                message = 'Check the new mixer'; source = 'feature/dj'; sha = 'abcdef1234567890'
+                channel = 'devkit/dj'; version = '0.4.0.12'; downloader = $null
+                changes = [pscustomobject]@{ title = 'Changes since test-devkit-dj-v0.4.0.11'; more = $false
+                    items = @('Fix crossfade (abc1234)', 'Faster waveform (def5678)') }
+            }
+            $notes = Release-Notes $record
+            if (-not $notes.StartsWith('Check the new mixer')) { Fail 'The tester note must come first.' }
+            if ($notes -notmatch '(?m)^- Fix crossfade \(abc1234\)$') { Fail 'Changelog missing from notes.' }
+            if ($notes -notmatch '(?m)^Commit: abcdef1234567890$') { Fail 'Commit line must stay parseable.' }
+            $discord = Discord-Message $record 'https://example.test/r'
+            if ($discord -notmatch '^\*\*Cavey test build\*\* `devkit/dj` · 0\.4\.0\.12' -or $discord -notmatch '• Faster waveform') {
+                Fail "Unexpected Discord message: $discord"
+            }
+            $record.changes.items = @(1..400 | ForEach-Object { 'A very long change description number ' + $_ })
+            if ((Discord-Message $record 'https://example.test/r').Length -gt 2000) { Fail 'Discord message exceeds the limit.' }
+            if (-not (Test-DiscordWebhook 'https://discord.com/api/webhooks/123/abc_DEF-1')) { Fail 'Valid webhook rejected.' }
+            if (Test-DiscordWebhook 'https://evil.example/api/webhooks/123/abc') { Fail 'Foreign URL accepted as webhook.' }
+            Say 'PASS release notes and Discord message' Green
+            $script:DataHome = Join-Path ([IO.Path]::GetTempPath()) ('cavey-config-test-' + [guid]::NewGuid().ToString('N'))
+            $script:ConfigFile = Join-Path $script:DataHome 'config.json'
+            try {
+                Write-Config @{ projectRoot = 'C:\src\cavey' }
+                Write-Config @{ discordWebhook = 'https://discord.com/api/webhooks/1/x' }
+                $config = Read-Config
+                if ($config['projectRoot'] -ne 'C:\src\cavey' -or -not $config['discordWebhook']) { Fail 'Settings were not merged.' }
+                Write-Config @{ discordWebhook = $null }
+                if ((Read-Config).Contains('discordWebhook')) { Fail 'Setting was not removed.' }
+                Say 'PASS settings merge' Green
+            } finally { Remove-Item -LiteralPath $script:DataHome -Recurse -Force -ErrorAction SilentlyContinue }
+        }
         'selftest-lock' {
             $script:DataHome = Join-Path ([IO.Path]::GetTempPath()) ('cavey-lock-test-' + [guid]::NewGuid().ToString('N'))
             try {
@@ -1181,6 +1402,7 @@ function Dispatch([string[]]$tokens) {
         'manager' { Release-Manager $tokens }
         'rollback' { Rollback-Release $tokens }
         'rollforward' { Rollforward-Release $tokens }
+        'notify' { Notify-Settings $tokens }
         'recover' { Recovery $tokens }
         'resume' { Recovery $tokens }
         'retry-publish' { Recovery $tokens }

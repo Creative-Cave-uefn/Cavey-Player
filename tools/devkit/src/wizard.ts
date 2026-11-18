@@ -17,10 +17,14 @@ export type Wizard =
   | { kind: "manager-action"; channel: string; releases: ReleaseRecord[] }
   | { kind: "manager-versions"; channel: string; releases: ReleaseRecord[] }
   | { kind: "recover"; runs: SavedRun[] }
-  | {
-      kind: "confirm"; command: ConfirmCommand; args: string[]; question: string;
-      plan: [string, string][]; options: Choice[];
-    };
+  | { kind: "name"; branch: Branch; releases: ReleaseRecord[] }
+  | { kind: "note"; confirm: Confirm }
+  | Confirm;
+
+export type Confirm = {
+  kind: "confirm"; command: ConfirmCommand; args: string[]; question: string;
+  plan: [string, string][]; options: Choice[];
+};
 
 export type Dialog = {
   id: string;
@@ -29,6 +33,8 @@ export type Dialog = {
   options: Choice[];
   /** Long lists accept typed filters; short ones pick on a digit key. */
   filterable: boolean;
+  /** Free text step: Enter submits what was typed (or the placeholder default when empty). */
+  input?: { placeholder: string };
 };
 
 export const KEEP_PER_CHANNEL = 3;
@@ -107,10 +113,30 @@ function etaLine(etaMs: number | null): string {
   return etaMs ? "~" + formatDuration(etaMs) + " (average of recent builds)" : "unknown (no previous builds)";
 }
 
+/** Default name for a new channel: the last part of the branch, made unique. */
+export function suggestChannelName(branch: string, releases: readonly ReleaseRecord[]): string {
+  const base = slug(branch.split("/").filter(Boolean).pop() ?? branch).slice(0, 32) || "build";
+  const taken = new Set(releases.map(r => /^test-(.+)-v\d+(?:\.\d+)+$/.exec(r.tagName)?.[1]).filter(Boolean));
+  let name = base;
+  for (let n = 2; taken.has(slug("devkit/" + name)); n++) name = base + "-" + n;
+  return name;
+}
+
+/** Empty string when the name is usable; otherwise why not. */
+export function channelNameProblem(name: string, releases: readonly ReleaseRecord[]): string {
+  const clean = name.trim().replace(/^devkit\//i, "");
+  if (!clean) return "Type a name.";
+  if (clean.length > 40) return "Use at most 40 characters.";
+  if (!/^[a-z0-9][a-z0-9-]*(?:\/[a-z0-9-]+)*$/i.test(clean)) return "Use letters, digits, - and /.";
+  const prefix = "test-" + slug("devkit/" + clean) + "-v";
+  if (releases.some(r => r.tagName.startsWith(prefix))) return "Channel devkit/" + clean + " already exists. Pick another name or update it.";
+  return "";
+}
+
 export function buildConfirm(
   branch: Branch, mode: "local" | "new" | "update", releases: readonly ReleaseRecord[],
   etaMs: number | null, channel?: string,
-): Wizard {
+): Confirm {
   const plan: [string, string][] = [["Source", sourceLine(branch)]];
   let args: string[];
   let question: string;
@@ -124,15 +150,18 @@ export function buildConfirm(
     question = "Build and update channel “" + channel + "”?";
     options = [
       { value: "yes", label: "Yes, build and update the channel" },
+      { value: "note", label: "Yes, with a note for testers" },
       { value: "back", label: "No, go back" },
     ];
   } else if (mode === "new") {
-    plan.push(["Channel", "new · devkit/" + branch.name + "/<timestamp>"]);
+    const name = channel ? "devkit/" + channel.replace(/^devkit\//i, "") : "";
+    plan.push(["Channel", name ? name + " (new)" : "new · devkit/" + branch.name + "/<timestamp>"]);
     plan.push(["Publish", "Cavey-Player-Releases as a prerelease"]);
-    args = ["--branch", branch.name, "--mode", "new"];
+    args = ["--branch", branch.name, "--mode", "new", ...(name ? ["--channel", name] : [])];
     question = "Build and publish a new test release?";
     options = [
       { value: "yes", label: "Yes, build and publish" },
+      { value: "note", label: "Yes, with a note for testers" },
       { value: "local", label: "Build locally only" },
       { value: "back", label: "No, go back" },
     ];
@@ -145,7 +174,7 @@ export function buildConfirm(
       { value: "back", label: "No, go back" },
     ];
   }
-  plan.push(["Checks", "flutter analyze + flutter test"]);
+  plan.push(["Checks", mode === "local" ? "flutter analyze + flutter test" : "analyze + test, then a launch check"]);
   plan.push(["Time", etaLine(etaMs)]);
   return { kind: "confirm", command: "build", args, question, plan, options };
 }
@@ -189,6 +218,16 @@ export function simpleConfirm(command: ConfirmCommand, args: string[]): Wizard {
 
 export function dialogFor(w: Wizard): Dialog {
   switch (w.kind) {
+    case "name": {
+      const suggested = suggestChannelName(w.branch.name, w.releases);
+      return { id: "name:" + w.branch.name, question: "Name the new channel", filterable: false, options: [],
+        plan: [["Testers see", "devkit/<name> in Settings → Updates"], ["Default", "devkit/" + suggested + " (press Enter)"]],
+        input: { placeholder: suggested } };
+    }
+    case "note":
+      return { id: "note:" + w.confirm.args.join(" "), question: "Note for testers", filterable: false, options: [],
+        plan: [["Shown", "first in the release notes and the Discord post"]],
+        input: { placeholder: "What should testers check? (Enter to skip)" } };
     case "releases-home":
       return { id: "releases-home", question: "What do you want to do with test releases?", filterable: false,
         options: [
@@ -270,6 +309,8 @@ export function pickSummary(w: Wizard, value: string): [string, string] | null {
     case "manager-channel": return ["Channel", value];
     case "recover": return ["Run", value];
     case "manager-versions": return ["Restore", value];
+    case "name": return value.trim() ? ["Channel", "devkit/" + value.trim().replace(/^devkit\//i, "")] : null;
+    case "note": return value.trim() ? ["Note", value.trim()] : null;
     default: return null;
   }
 }

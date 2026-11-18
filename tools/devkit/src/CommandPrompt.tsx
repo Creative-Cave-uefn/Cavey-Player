@@ -111,7 +111,9 @@ export function CommandPrompt(p: Props) {
       else p.onEscapeIdle();
       return;
     }
-    if (dialogActive && !dialog!.filterable && /^[1-9]$/.test(input) && !key.ctrl) {
+    const textDialog = dialogActive && Boolean(dialog!.input);
+    if (textDialog && key.return) { clear(); void p.onPick(current); return; }
+    if (dialogActive && !textDialog && !dialog!.filterable && /^[1-9]$/.test(input) && !key.ctrl) {
       const choice = options[Number(input) - 1];
       if (choice) pick(choice.value);
       return;
@@ -160,7 +162,7 @@ export function CommandPrompt(p: Props) {
       edit(current.slice(0, start) + current.slice(at), start);
       return;
     }
-    if (dialogActive && !dialog!.filterable) return;
+    if (dialogActive && !dialog!.filterable && !textDialog) return;
     if (key.ctrl || key.meta || !input || input.startsWith("\u001b")) return;
     edit(current.slice(0, at) + input + current.slice(at), at + input.length);
   }, { isActive: true, captureCtrlC: true });
@@ -193,7 +195,10 @@ export function CommandPrompt(p: Props) {
           {d.filterable && (
             <Box marginTop={1}><Text color={theme.dim}>Search </Text>{field("type to filter")}</Box>
           )}
-          <Box flexDirection="column" marginTop={1}>
+          {d.input && (
+            <Box marginTop={1}><Text color={theme.accent}>{"> "}</Text>{field(d.input.placeholder)}</Box>
+          )}
+          {!d.input && <Box flexDirection="column" marginTop={1}>
             {options.length === 0 && <Text color={theme.dim}>  No matches</Text>}
             {page!.start > 0 && <Text color={theme.dim}>  ↑ {page!.start} more</Text>}
             {page!.rows.map((option, row) => {
@@ -219,10 +224,12 @@ export function CommandPrompt(p: Props) {
             {page!.start + page!.rows.length < page!.count && (
               <Text color={theme.dim}>  ↓ {page!.count - page!.start - page!.rows.length} more</Text>
             )}
-          </Box>
+          </Box>}
+          {p.footerNote && <Box marginTop={1}><Text color={theme.warning} wrap="wrap">{p.footerNote}</Text></Box>}
           <Box marginTop={1}>
             <Text color={theme.dim}>
-              {(d.filterable ? "Type to filter · " : "Press a number or ") + "Enter to select · Esc to go back"}
+              {d.input ? "Enter to continue · Esc to go back"
+                : (d.filterable ? "Type to filter · " : "Press a number or ") + "Enter to select · Esc to go back"}
             </Text>
           </Box>
         </Box>

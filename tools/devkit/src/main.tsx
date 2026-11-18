@@ -20,7 +20,7 @@ import {
   estimateBuildMs, formatDuration, summarizeOutput, type Entry, type NewEntry, type RunStatus,
 } from "./transcript.js";
 import {
-  buildConfirm, channelReleases, dialogFor, isDevKitChannel, parseBranches, pickSummary, runTitle, simpleConfirm,
+  buildConfirm, channelNameProblem, channelReleases, dialogFor, isDevKitChannel, parseBranches, pickSummary, runTitle, simpleConfirm,
   type Branch, type ConfirmCommand, type SavedRun, type Wizard,
 } from "./wizard.js";
 
@@ -36,10 +36,11 @@ const VERSION = (() => {
 
 const stageVerbs: Record<string, string> = {
   source: "Preparing source", prepare: "Preparing project", checks: "Running checks",
-  compile: "Compiling", package: "Packaging", publish: "Publishing",
+  compile: "Compiling", package: "Packaging", verify: "Launching the build", publish: "Publishing",
 };
 const stageTitles: Record<string, string> = {
-  source: "Source", prepare: "Prepare", checks: "Checks", compile: "Compile", package: "Package", publish: "Publish",
+  source: "Source", prepare: "Prepare", checks: "Checks", compile: "Compile", package: "Package",
+  verify: "Verify", publish: "Publish",
 };
 
 function loadHistory(): string[] {
@@ -437,7 +438,8 @@ function App() {
           push({ kind: "channel", branch: wizard.branch, releases });
           return;
         }
-        push(buildConfirm(wizard.branch, value as "local" | "new", wizard.releases, etaMs()));
+        if (value === "new") { push({ kind: "name", branch: wizard.branch, releases: wizard.releases }); return; }
+        push(buildConfirm(wizard.branch, "local", wizard.releases, etaMs()));
         return;
       }
       case "channel":
@@ -472,8 +474,28 @@ function App() {
       case "recover":
         push(simpleConfirm("resume", ["--id", value]));
         return;
+      case "name": {
+        const name = value.trim() || dialogFor(wizard).input!.placeholder;
+        const problem = channelNameProblem(name, wizard.releases);
+        if (problem) {
+          if (summary) setEntries(old => old.slice(0, -1));
+          flash(problem);
+          return;
+        }
+        if (!value.trim()) step("Channel", "devkit/" + name);
+        push(buildConfirm(wizard.branch, "new", wizard.releases, etaMs(), name));
+        return;
+      }
+      case "note": {
+        closeWizard();
+        const note = value.trim();
+        const args = [...wizard.confirm.args, ...(note ? ["--message", note] : [])];
+        await runEngine(wizard.confirm.command, [...args, "--yes"], { title: runTitle(wizard.confirm.command, args), etaMs: etaMs() });
+        return;
+      }
       case "confirm": {
         if (value === "back") { back(); return; }
+        if (value === "note") { push({ kind: "note", confirm: wizard }); return; }
         closeWizard();
         if (value === "dry-run") { await runEngine("clean", [...wizard.args, "--dry-run"]); return; }
         const local = value === "local";
@@ -484,7 +506,7 @@ function App() {
         return;
       }
     }
-  }, [back, closeWizard, etaMs, fail, fetching, loadBranches, loadReleases, push, runEngine, step, wizard]);
+  }, [back, closeWizard, etaMs, fail, fetching, flash, loadBranches, loadReleases, push, runEngine, step, wizard]);
 
   const confirm = useCallback((command: ConfirmCommand, args: string[]) => {
     setStack([command === "build"
@@ -596,8 +618,13 @@ function App() {
   }, [entries]);
 
   // ── Layout ──
-  const maxDialogRows = Math.max(3, Math.min(12, terminal.rows - 18 - (dialog?.plan?.length ?? 0)));
+  // Short numbered menus always show every option; only long filterable lists page.
+  const maxDialogRows = dialog && !dialog.filterable ? Math.max(1, dialog.options.length)
+    : Math.max(3, Math.min(12, terminal.rows - 18 - (dialog?.plan?.length ?? 0)));
   const promptRows = (() => {
+    if (dialog && !searchOpen && dialog.input) {
+      return 2 + 1 + (dialog.plan?.length ? 1 + dialog.plan.length : 0) + 2 + 2;
+    }
     if (dialog && !searchOpen) {
       const shown = Math.min(maxDialogRows, Math.max(1, dialog.options.length));
       const more = dialog.options.length > shown ? 2 : 0;

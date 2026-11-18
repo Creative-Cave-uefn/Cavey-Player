@@ -34,6 +34,8 @@ export const commandSpecs: CommandSpec[] = [
     usage: ["/clean --dry-run", "/clean --drafts --yes"] },
   { name: "cache", core: false, description: "Source build cache", usage: ["/cache", "/cache prune"] },
   { name: "project", core: false, description: "Show or change the project folder", usage: ["/project <path>"] },
+  { name: "notify", core: false, description: "Announce published builds in Discord",
+    usage: ["/notify <webhook-url>", "/notify test", "/notify off"] },
   { name: "update", core: false, description: "Update DevKit itself and restart" },
   { name: "agent", core: false, description: "Open Claude Code in a new tab" },
   { name: "clear", core: false, description: "Clear the transcript" },

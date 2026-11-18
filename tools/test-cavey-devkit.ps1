@@ -88,6 +88,18 @@ if ($LASTEXITCODE -ne 0 -or $retentionOutput -notmatch 'PASS interrupted publica
 }
 Write-Host 'PASS retention and publication reconciliation' -ForegroundColor Green
 
+$smokeOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-smoke 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $smokeOutput -notmatch 'PASS smoke test report validation') {
+    throw "Smoke report test failed: $smokeOutput"
+}
+Write-Host 'PASS smoke test report validation' -ForegroundColor Green
+
+$notesOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-notes 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $notesOutput -notmatch 'PASS settings merge') {
+    throw "Release notes test failed: $notesOutput"
+}
+Write-Host 'PASS release notes, Discord message and settings' -ForegroundColor Green
+
 # Two windows must not build or change releases at the same time.
 $lockOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-lock 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0 -or $lockOutput -notmatch 'PASS build lock') {

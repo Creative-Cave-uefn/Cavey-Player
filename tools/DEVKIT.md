@@ -49,7 +49,7 @@ The layout follows Claude Code: a welcome box, a transcript, one spinner line wh
 
 ## Guided flows
 
-`/build` asks for a branch (with last commit time, author and the channel that already carries it), then the build type: local, new test release, or update a DevKit channel (the branch's own DevKit channel is suggested first; CI channels cannot be updated). A new test release allocates a unique channel (`devkit/<source>/<timestamp>-<random>`) and never changes an existing one. Updating a channel publishes a new numbered prerelease into it; the confirmation lists the older releases that will be pruned after a successful publish.
+`/build` asks for a branch (with last commit time, author and the channel that already carries it), then the build type: local, new test release, or update a DevKit channel (the branch's own DevKit channel is suggested first; CI channels cannot be updated). A new test release asks for a channel name (default: the last part of the branch, made unique) and creates `devkit/<name>`; it never changes an existing channel. Scripts that pass no `--channel` still get a unique `devkit/<source>/<timestamp>-<random>`. Updating a channel publishes a new numbered prerelease into it; the confirmation lists the older releases that will be pruned after a successful publish.
 
 `/releases` opens: manage a channel (show versions, update from a branch, roll back), list all test releases, or clean up outdated ones. `/recover` lists saved builds whose verified artifacts can be published again.
 
@@ -87,6 +87,15 @@ Dependencies: `@claude-code-kit/ui` 0.4.0 and `@claude-code-kit/ink-renderer` 0.
 ## Build progress and manifests
 
 Stage events (`@@CAVEY_STAGE|…`) stream from the engine during the build and are drawn on the build's transcript entry, then removed from the visible output. `/logs` keeps the detailed build output and `/history` the run status. Each build writes a recoverable manifest to `%LOCALAPPDATA%\CaveyDevKit\builds\<run-id>\run.json` with the source commit, version, channel, artifact paths and SHA-256 checksums.
+
+## Launch check before publishing
+
+After packaging, DevKit unpacks the portable ZIP and runs `cave_player.exe --smoke-test=<run folder>\smoke.json`. The app (`lib/core/smoke_test.dart`) loads the native player libraries, renders one frame, writes its `APP_VERSION` and `BUILD_CHANNEL` and exits before the single-instance check, without touching user data. The build is published only if the report matches the planned version and channel. Branches older than this feature are not launched (the Verify stage shows "skipped"); `--skip-smoke` skips the check on purpose.
+
+## Release notes and announcements
+
+- Release notes start with an optional note for testers (`--message`, or "Yes, with a note for testers" in the confirmation), then the changes: for a channel update, commits since the commit recorded in the channel's previous release; for a new channel, what the branch adds on top of `main` (up to 30). The metadata block keeps a `Commit:` line that the next update reads. The player shows these notes in Settings → Updates.
+- `/notify <discord-webhook-url>` posts every published build to Discord (channel, version, note, up to 10 changes, link). `/notify test` sends a test message, `/notify off` stops. The webhook is stored only in `%LOCALAPPDATA%\CaveyDevKit\config.json`; a failed post never fails the publication.
 
 ## Channels and retention
 

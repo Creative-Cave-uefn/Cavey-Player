@@ -73,7 +73,7 @@ test("update preview names the releases that will be pruned, rollback drafts inc
 test("new release confirmation offers a local fallback and a way back", () => {
   const w = buildConfirm(branch, "new", releases, null);
   const d = dialogFor(w);
-  assert.deepEqual(d.options.map(o => o.value), ["yes", "local", "back"]);
+  assert.deepEqual(d.options.map(o => o.value), ["yes", "note", "local", "back"]);
   assert.equal(d.filterable, false);
   assert.match(new Map(d.plan).get("Time")!, /unknown/);
 });
@@ -108,4 +108,27 @@ test("run titles read like actions", async () => {
   assert.equal(runTitle("build", ["--branch", "x", "--mode", "update", "--channel", "dj", "--yes"]), "Build x → dj");
   assert.equal(runTitle("rollback", ["--channel", "dj", "--to", "t1", "--yes"]), "Roll back dj to t1");
   assert.equal(runTitle("status", []), "/status");
+});
+
+test("new channels get a readable, unique name", async () => {
+  const { suggestChannelName, channelNameProblem } = await import("./wizard.js");
+  const taken: ReleaseRecord[] = [{ tagName: "test-devkit-alpha-v0.4.0.1", isPrerelease: true }];
+  assert.equal(suggestChannelName("feature/beta", taken), "beta");
+  assert.equal(suggestChannelName("feature/alpha", taken), "alpha-2");
+  assert.equal(channelNameProblem("alpha", taken), "Channel devkit/alpha already exists. Pick another name or update it.");
+  assert.equal(channelNameProblem("devkit/mixer-test", taken), "");
+  assert.match(channelNameProblem("bad name!", taken), /letters, digits/);
+  const named = buildConfirm(branch, "new", taken, null, "mixer");
+  assert.deepEqual(named.args, ["--branch", "claude/wave-fix", "--mode", "new", "--channel", "devkit/mixer"]);
+  assert.equal(new Map(named.plan).get("Channel"), "devkit/mixer (new)");
+});
+
+test("naming and tester-note steps are free-text dialogs", () => {
+  const name = dialogFor({ kind: "name", branch, releases });
+  assert.equal(name.input?.placeholder, "wave-fix");
+  assert.equal(name.options.length, 0);
+  const confirm = buildConfirm(branch, "update", releases, null, "devkit/dj");
+  const note = dialogFor({ kind: "note", confirm });
+  assert.equal(note.question, "Note for testers");
+  assert.ok(note.input);
 });

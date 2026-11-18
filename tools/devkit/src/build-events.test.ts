@@ -6,7 +6,8 @@ test("stage events are parsed without exposing control markers", () => {
   const evt = parseWorkflowLine("@@CAVEY_STAGE|compile|running|Flutter Windows");
   assert.deepEqual(evt, {kind:"stage",stage:"compile",state:"running",label:"Flutter Windows"});
   assert.equal(parseWorkflowLine("@@CAVEY_STAGE|unknown|running|not valid"), null);
-  assert.equal(stageOrder.length, 6);
+  assert.equal(stageOrder.length, 7);
+  assert.equal(stageOrder[5], "verify");
   assert.equal(stripWorkflowMarkers("text\n@@CAVEY_STAGE|compile|done|done\nnext"), "text\nnext");
 });
 
