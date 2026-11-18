@@ -643,7 +643,8 @@ static Grid fitGrid(const std::vector<double> &b) {
 // Поэтому фаза берётся по самим ударам: у каждой доли сетки — самая резкая атака в окне ±40 мс (подъём огибающей
 // за 2 мс, в децибелах), и сетка сдвигается на медиану этих отклонений. Порога «стоит ли сдвигать» нет: одинаковое
 // правило для всех треков важнее, чем точность любого из них. Мало атак (тихая, без ударных музыка) — сдвиг 0.
-static double refinePhase(const std::vector<float> &x, int fs, const Grid &g, double duration, double *gainOut) {
+static double refinePhase(const std::vector<float> &x, int fs, const Grid &g, double duration, double *gainOut,
+                          double from = 0, double to = 1e18) {
   const size_t n = x.size();
   if (n < (size_t)fs) { *gainOut = 0; return 0; }
   // огибающая: |x| в окне 1 мс (скользящая сумма), в log10
@@ -661,7 +662,8 @@ static double refinePhase(const std::vector<float> &x, int fs, const Grid &g, do
   const int span = (int)(0.040 * fs);
   std::vector<double> offs;
   int beats = 0;
-  for (double t = g.firstBeat; t < duration - 0.05; t += g.period) {
+  for (double t = g.firstBeat; t < std::min(duration, to) - 0.05; t += g.period) {
+    if (t < from) continue;
     const long c = std::lround(t * fs);
     if (c - span < 0 || c + span >= (long)n) continue;
     ++beats;
@@ -1040,6 +1042,33 @@ class Analyzer {
       if (g.firstBeat < 0) g.firstBeat += g.period;
       if (g.firstBeat >= g.period) g.firstBeat -= g.period;
     }
+    // Темп плавает по треку (живые барабаны, запись концерта), но для перехода нужна сетка только там, где он
+    // идёт: в начале (вход B) и в конце (выход A). Если на этих участках темп ровный — своя сетка для участка.
+    struct Edge { bool ok = false; Grid g; double from = 0, to = 0; };
+    Edge edges[2];  // 0 — начало, 1 — конец
+    if (g.ok && g.variable && duration > 40) {
+      for (int e = 0; e < 2; ++e) {
+        Edge &E = edges[e];
+        // участок подлиннее, если он ровный; иначе короче — до 30 с (8 тактов при 64 BPM)
+        for (double span : {90.0, 60.0, 45.0, 30.0}) {
+          span = std::min(span, duration * 0.45);
+          E.from = e == 0 ? 0 : duration - span;
+          E.to = e == 0 ? span : duration;
+          std::vector<double> sub;
+          for (double t : beats) if (t >= E.from && t < E.to) sub.push_back(t);
+          if (sub.size() < 24) continue;
+          E.g = fitGrid(sub);
+          if (E.g.ok && !E.g.variable) break;
+        }
+        if (!E.g.ok || E.g.variable) continue;
+        double gain = 0;
+        const double sh = refinePhase(mono, kModelRate, E.g, duration, &gain, E.from, E.to);
+        E.g.firstBeat += sh;
+        if (E.g.firstBeat < 0) E.g.firstBeat += E.g.period;
+        if (E.g.firstBeat >= E.g.period) E.g.firstBeat -= E.g.period;
+        E.ok = true;
+      }
+    }
     int beatsPerBar = 4;
     {
       int hist[9] = {};
@@ -1063,6 +1092,26 @@ class Analyzer {
       }
       firstDownbeatIndex = (int)(std::max_element(votes.begin(), votes.end()) - votes.begin());
       firstDownbeat = g.firstBeat + firstDownbeatIndex * g.period;
+    }
+    // сильная доля участка: первая доля сетки участка с тем номером, на который чаще попадают даунбиты участка
+    double edgeDown[2] = {-1, -1};
+    for (int e = 0; e < 2; ++e) {
+      const Edge &E = edges[e];
+      if (!E.ok) continue;
+      const Grid &q = E.g;
+      std::vector<int> votes((size_t)beatsPerBar, 0);
+      int n = 0;
+      for (double d : downs) {
+        if (d < E.from || d >= E.to) continue;
+        const long k = std::lround((d - q.firstBeat) / q.period);
+        votes[(size_t)(((k % beatsPerBar) + beatsPerBar) % beatsPerBar)]++;
+        ++n;
+      }
+      if (n < 4) continue;
+      const int idx = (int)(std::max_element(votes.begin(), votes.end()) - votes.begin());
+      long k0 = (long)std::ceil((E.from - q.firstBeat) / q.period);
+      while (((k0 % beatsPerBar) + beatsPerBar) % beatsPerBar != idx) ++k0;
+      edgeDown[e] = q.firstBeat + k0 * q.period;
     }
 
     // 4. Тишина в начале и конце (порог −60 дБFS по окнам 50 мс)
@@ -1209,7 +1258,7 @@ class Analyzer {
     Json j;
     j.open('{');
     j.key("v"); j.integer(2);
-    j.key("algo"); j.integer(2);  // версия алгоритма сетки: старые профили пересчитываются
+    j.key("algo"); j.integer(3);  // версия алгоритма сетки: старые профили пересчитываются
     j.key("level"); j.str("quick");
     j.key("analyzer"); j.str("cave_mix/beat_this");
     j.key("durationMs"); j.integer(std::llround(duration * 1000));
@@ -1219,6 +1268,17 @@ class Analyzer {
     j.key("gridResidualMs"); j.num(g.residualMs, 1);
     j.key("tempoDriftPct"); j.num(g.maxLocalDevPct, 2);
     j.key("phaseShiftMs"); j.num(phaseShift * 1000, 1);
+    // ровные участки в начале и конце трека с плавающим темпом (для перехода хватает их)
+    for (int e = 0; e < 2; ++e) {
+      j.key(e == 0 ? "inGrid" : "outGrid");
+      if (edgeDown[e] < 0) { j.raw("null"); continue; }
+      j.open('{');
+      j.key("bpm"); j.num(60.0 / edges[e].g.period, 3);
+      j.key("downbeatMs"); j.integer(std::llround(edgeDown[e] * 1000));
+      j.key("fromMs"); j.integer(std::llround(edges[e].from * 1000));
+      j.key("toMs"); j.integer(std::llround(edges[e].to * 1000));
+      j.close('}');
+    }
     j.key("firstBeatMs"); if (g.ok) j.integer(std::llround(g.firstBeat * 1000)); else j.raw("null");
     j.key("beatsPerBar"); j.integer(beatsPerBar);
     j.key("firstDownbeatIndex"); j.integer(firstDownbeatIndex);

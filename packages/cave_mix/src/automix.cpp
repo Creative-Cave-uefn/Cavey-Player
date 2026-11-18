@@ -172,6 +172,11 @@ struct Profile {
   std::vector<Point> mixIn, mixOut;
   std::vector<Section> sections;
 
+  // ровные участки трека с плавающим темпом: начало (для входа) и конец (для выхода); bpm 0 — нет
+  struct Edge { double bpm = 0, downbeat = 0, from = 0, to = 0; } inGrid, outGrid;
+  // где сетка годится для сведения (у ровного трека — весь трек)
+  double gridFrom = 0, gridTo = 1e18;
+
   double barStart(int i) const { return firstBar + i * barLen; }
   double vocalAt(int i) const { return i >= 0 && i < (int)vocal.size() ? vocal[(size_t)i] : 0.0; }
   double avgVocal(int a, int n) const {
@@ -226,6 +231,16 @@ static bool parseProfileJ(const J &j, Profile &p, std::string &err) {
     if (const J *v = j.get(k); v && v->t == J::ARR)
       for (auto &x : v->a) out.push_back({(int)x.num("bar", 0), x.num("score", 0)});
   };
+  auto edge = [&](const char *k, Profile::Edge &e) {
+    if (const J *v = j.get(k); v && v->t == J::OBJ && v->num("bpm", 0) > 40) {
+      e.bpm = v->num("bpm", 0);
+      e.downbeat = v->num("downbeatMs", 0) / 1000;
+      e.from = v->num("fromMs", 0) / 1000;
+      e.to = v->num("toMs", 0) / 1000;
+    }
+  };
+  edge("inGrid", p.inGrid);
+  edge("outGrid", p.outGrid);
   points("mixIn", p.mixIn);
   points("mixOut", p.mixOut);
   if (const J *v = j.get("sections"); v && v->t == J::ARR)
@@ -233,6 +248,43 @@ static bool parseProfileJ(const J &j, Profile &p, std::string &err) {
   if (p.duration <= 0) { err = "в профиле нет длительности"; return false; }
   p.ok = true;
   return true;
+}
+
+// Трек с плавающим темпом, у которого ровный нужный участок (конец — для уходящего, начало — для входящего):
+// профиль с сеткой этого участка. Всё, что размечено по тактам общей сетки (энергия, голос, точки, части),
+// переносится на такты новой сетки по времени, а сводить можно только внутри участка.
+static Profile edgeView(const Profile &p, bool outgoing) {
+  const Profile::Edge &e = outgoing ? p.outGrid : p.inGrid;
+  if (p.grid || e.bpm <= 0 || p.barLen <= 0) return p;
+  Profile q = p;
+  q.bpm = e.bpm;
+  q.barLen = 60.0 / e.bpm * p.bpb;
+  q.firstDownbeat = e.downbeat;
+  double t = e.downbeat;
+  while (t - q.barLen > 0) t -= q.barLen;
+  q.firstBar = t;
+  q.firstDownbeatBar = (int)std::lround((e.downbeat - q.firstBar) / q.barLen);
+  q.grid = true;
+  q.gridFrom = e.from;
+  q.gridTo = e.to;
+  // такт новой сетки → такт старой (по середине такта)
+  auto oldBar = [&](int k) { return (int)std::floor((q.barStart(k) + 0.5 * q.barLen - p.firstBar) / p.barLen); };
+  auto newBar = [&](int k) { return (int)std::lround((p.barStart(k) - q.firstBar) / q.barLen); };
+  const int n = std::max(0, (int)std::ceil((p.duration - q.firstBar) / q.barLen));
+  q.energy.assign((size_t)n, 5);
+  for (int k = 0; k < n; ++k) {
+    const int o = oldBar(k);
+    if (o >= 0 && o < (int)p.energy.size()) q.energy[(size_t)k] = p.energy[(size_t)o];
+  }
+  q.nBars = p.energy.empty() ? 0 : n;
+  if (!p.vocal.empty()) {
+    q.vocal.assign((size_t)n, 0.0);
+    for (int k = 0; k < n; ++k) q.vocal[(size_t)k] = p.vocalAt(oldBar(k));
+  }
+  for (auto &m : q.mixIn) m.bar = newBar(m.bar);
+  for (auto &m : q.mixOut) m.bar = newBar(m.bar);
+  for (auto &x : q.sections) x.bar = newBar(x.bar);
+  return q;
 }
 
 // ================================================================ планирование
@@ -442,6 +494,8 @@ class Automix {
       double F = o.fadeSec;
       // обе дорожки ровные, но темп не подогнать — наложение короткое, иначе бочки идут вразнобой
       if (beats && !p.matched) F = std::min(F, 4 * a.barLen / a.bpb);
+      // у обоих есть удары, но сетки нет: долгое наложение — две ритмики вразнобой; коротко, как смена трека
+      if (!beats && a.bpm > 0 && b.bpm > 0) F = std::min(F, 2.5);
       // с подгонкой — целое число тактов
       if (p.matched) F = std::max(1.0, std::round(F / a.barLen)) * a.barLen;
       double start = end - F;
@@ -508,6 +562,8 @@ class Automix {
         // торможение занимает две доли перед сильной долей, на которой входит B
         const double brake = std::clamp(2 * a.barLen / a.bpb / tempoA_, 0.6, 1.6);
         if (t - (p.tech == T7 ? brake * tempoA_ : 0) < lead || t + L * a.barLen > end) continue;
+        // у трека с плавающим темпом сетка верна только на ровном участке: сведение — внутри него
+        if (t < a.gridFrom || b.barStart(inBar + std::max(L, 1)) > b.gridTo) continue;
         if ((p.tech == T3 || p.tech == T8) && t > end) continue;
         // наложение голосов: в сведении (T1, T2) — по всей длине; в обрывах голос A кончается на точке, но B
         // с первых тактов не должен перебивать хвост эха и реверберации
@@ -540,13 +596,15 @@ class Automix {
       if ((lb - a.firstDownbeatBar) % 4 != 0) continue;           // петля кончается на границе фразы
       const double t0 = a.barStart(lb - 4), t1 = a.barStart(lb);
       if (t1 > end - 0.05) continue;
-      if (t0 < lead + 0.5) return false;                            // участок должен быть впереди
+      if (t0 < lead + 0.5 || t0 < a.gridFrom) return false;        // участок должен быть впереди и на сетке
       if (a.avgEnergy(lb - 4, 4) < std::max(3.0, 0.6 * body)) continue;  // не затухание и не тишина
       p.outBar = lb - 4;
       p.aOut = t0;
       p.loopA = t0;
       p.loopB = t1;
       p.inBar = b.mixIn.empty() ? b.firstDownbeatBar : b.mixIn[0].bar;
+      if (b.barStart(p.inBar + L) > b.gridTo) p.inBar = b.firstDownbeatBar;
+      if (b.barStart(p.inBar + L) > b.gridTo) return false;
       if (clash(a, lb - 4, b, p.inBar, L, 4) > kClash) { ++vocalAvoided_; continue; }
       p.bIn = std::max(0.0, b.barStart(p.inBar));
       p.bars = L;
@@ -701,7 +759,7 @@ CM_API char *cm_automix(cm_engine *e, int32_t from, int32_t to, const char *prof
   if (err.empty()) {
     const Options o = parseOptions(options);
     Automix m(e, from, to);
-    m.run(a, b, o, p, err);
+    m.run(edgeView(a, true), edgeView(b, false), o, p, err);
   }
   if (!err.empty()) {
     if (error_out) *error_out = dupStr(err);
@@ -752,7 +810,8 @@ struct PairScore { double total = 0, tempo = 0, key = 0, energy = 0, mix = 0, lo
 
 static double bodyEnergy(const Profile &p) { return p.avgEnergy(p.firstDownbeatBar, std::max(1, p.nBars - p.firstDownbeatBar)); }
 
-static PairScore pairScore(const Profile &a, const Profile &b, double maxTempoPct) {
+static PairScore pairScore(const Profile &a0, const Profile &b0, double maxTempoPct) {
+  const Profile a = edgeView(a0, true), b = edgeView(b0, false);
   PairScore s;
   std::string why;
   if (a.grid && b.grid) {

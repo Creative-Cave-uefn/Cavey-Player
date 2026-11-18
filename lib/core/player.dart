@@ -807,7 +807,9 @@ class PlayerController extends ChangeNotifier {
     if (_djPending || _dj != null) return;
     // чуть раньше плана — порядок: какой из следующих треков лучше всего ляжет после этого
     if (useMixEngine && duration - d < const Duration(seconds: _djLeadSec + 30) && _orderedFor != current?.id) _djReorder();
-    if (duration - d < const Duration(seconds: _djLeadSec) && _djTriedFor != current?.id) {
+    // после перемотки — пауза: при быстрых перемотках подряд не строим план на каждое место
+    final calm = _djSeekAt == null || DateTime.now().difference(_djSeekAt!) > const Duration(milliseconds: 1200);
+    if (calm && duration - d < const Duration(seconds: _djLeadSec) && _djTriedFor != current?.id) {
       final why = _djWhyNot();
       if (why == null) {
         _djTriedFor = current?.id;
@@ -1009,6 +1011,9 @@ class PlayerController extends ChangeNotifier {
   _DjMix? _dj;
   bool _djPending = false;
   String? _djTriedFor;
+
+  /// Когда последний раз перематывали (план после перемотки строится, когда перемотки затихнут)
+  DateTime? _djSeekAt;
   int _djPrevTech = 0;
   final math.Random _djRandom = math.Random();
 
@@ -1563,6 +1568,7 @@ class PlayerController extends ChangeNotifier {
       return;
     }
     // Перемотка ломает расписание DJ-перехода (оно привязано к позиции трека): снимаем, после перемотки спланируем заново
+    _djSeekAt = DateTime.now();
     if (_dj != null || _djPending) _djCancel(retry: true);
     await _p.seek(d);
     onUserAction?.call();

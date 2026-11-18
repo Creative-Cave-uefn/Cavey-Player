@@ -238,7 +238,9 @@ class _Worker {
 
 /// Профили v2: анализ, хранение, чтение
 class BeatAnalysis {
-  static const _algo = 3;  // 3 — разметка вокала
+  // версия разбора, которой помечается сохранённый профиль (своя, не из движка): 3 — разметка вокала,
+  // 4 — ровные участки в начале и конце у треков с плавающим темпом
+  static const _algo = 4;
 
   BeatAnalysis(this.mixDir, Directory toolsDir) : assets = BeatAssets(Directory('${toolsDir.path}${Platform.pathSeparator}beat'));
 
@@ -315,6 +317,7 @@ class BeatAnalysis {
       final json = await w.analyze(src.path, ffmpeg);
       final p = jsonDecode(json) as Map<String, dynamic>;
       p['analyzedAt'] = DateTime.now().toUtc().toIso8601String();
+      p['algo'] = _algo;
       await mixDir.create(recursive: true);
       await _file(id).writeAsString(jsonEncode(p));
       _mem[id] = p;
