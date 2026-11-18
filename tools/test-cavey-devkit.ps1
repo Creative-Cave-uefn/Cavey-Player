@@ -80,9 +80,25 @@ if ($LASTEXITCODE -ne 0 -or $workflowOutput -notmatch 'PASS build numbering, art
     throw "Workflow smoke test failed: $workflowOutput"
 }
 Write-Host 'PASS build persistence and recovery guards' -ForegroundColor Green
+
+# Retention rules, DevKit channel namespace and interrupted-upload reconciliation.
+$retentionOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-retention 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $retentionOutput -notmatch 'PASS interrupted publication reconciliation') {
+    throw "Retention smoke test failed: $retentionOutput"
+}
+Write-Host 'PASS retention and publication reconciliation' -ForegroundColor Green
+
+# Two windows must not build or change releases at the same time.
+$lockOutput = & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $entry selftest-lock 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $lockOutput -notmatch 'PASS build lock') {
+    throw "Build lock test failed: $lockOutput"
+}
+Write-Host 'PASS build lock' -ForegroundColor Green
 if (-not $SkipNpm) {
     Push-Location (Join-Path $PSScriptRoot 'devkit')
     try {
+        & npm.cmd ci --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
         & npm.cmd run typecheck
         if ($LASTEXITCODE -ne 0) { throw 'DevKit typecheck failed.' }
         & npm.cmd test

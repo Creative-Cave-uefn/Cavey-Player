@@ -1,0 +1,7 @@
+[
+ {"tagName":"test-devkit-alpha-20261118-ab12-v0.4.0.104","name":"Test: devkit/alpha/20261118-ab12 · 0.4.0.104","isPrerelease":true,"isDraft":true,"publishedAt":null},
+ {"tagName":"test-devkit-alpha-20261118-ab12-v0.4.0.103","name":"Test: devkit/alpha/20261118-ab12 · 0.4.0.103","isPrerelease":true,"isDraft":false,"publishedAt":"2026-11-18T08:00:00Z"},
+ {"tagName":"test-devkit-alpha-20261118-ab12-v0.4.0.102","name":"Test: devkit/alpha/20261118-ab12 · 0.4.0.102","isPrerelease":true,"isDraft":false,"publishedAt":"2026-11-17T08:00:00Z"},
+ {"tagName":"test-feature-beta-v0.4.0.50","name":"Test: feature/beta · 0.4.0.50","isPrerelease":true,"isDraft":false,"publishedAt":"2026-11-16T08:00:00Z"},
+ {"tagName":"v0.4.0","name":"0.4.0","isPrerelease":false,"isDraft":false,"publishedAt":"2026-11-13T08:00:00Z"}
+]

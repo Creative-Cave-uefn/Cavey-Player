@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Test double for Windows PowerShell used by the UI snapshot tests.
+# "-Command <line>" runs the line in bash; "-File engine.ps1 /build ..." prints
+# a short failing build with DevKit stage markers.
+for arg in "$@"; do last="$arg"; done
+if printf '%s\n' "$@" | grep -qx -- "-Command"; then exec bash -c "$last"; fi
+echo "Build plan"
+echo "@@CAVEY_STAGE|source|running|Prepare source checkout"; sleep 0.3
+echo "@@CAVEY_STAGE|source|done|Source checkout ready"
+echo "@@CAVEY_STAGE|prepare|running|Prepare Windows project"
+for n in $(seq 1 30); do echo "Resolving dependencies $n"; done
+echo "@@CAVEY_STAGE|prepare|done|Windows project prepared"
+echo "@@CAVEY_STAGE|checks|skipped|Checks skipped on request"
+echo "@@CAVEY_STAGE|compile|running|Compile Flutter Windows"; sleep 1.5
+echo "ERROR: lib/main.dart:12:3: Undefined name 'foo'"
+for n in $(seq 1 10); do echo "Build step $n"; done
+echo "@@CAVEY_STAGE|compile|failed|Compile failed"
+echo "DevKit engine error: Windows build failed with exit code 1." >&2
+exit 1

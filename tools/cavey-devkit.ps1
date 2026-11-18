@@ -9,6 +9,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $engine = Join-Path $PSScriptRoot 'cavey-devkit-engine.ps1'
 $appDir = Join-Path $PSScriptRoot 'devkit'
 $package = Join-Path $appDir 'package.json'
+$lockFile = Join-Path $appDir 'package-lock.json'
 $tsx = Join-Path $appDir 'node_modules\tsx\dist\cli.mjs'
 $entry = Join-Path $appDir 'src\main.tsx'
 $stamp = Join-Path $appDir '.dependency-stamp'
@@ -62,14 +63,17 @@ try {
     try {
         $completed = $false
         for ($attempt = 0; $attempt -lt 3; $attempt++) {
-            # Recalculate dependencies after self-update: package.json may change.
-            $packageHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash
+            # Recalculate dependencies after self-update: package.json or the lockfile may change.
+            $stampFiles = @($package) + @(if (Test-Path -LiteralPath $lockFile) { $lockFile })
+            $packageHash = (@($stampFiles | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }) -join '')
             $installedHash = if (Test-Path -LiteralPath $stamp) {
                 (Get-Content -LiteralPath $stamp -Raw).Trim()
             } else { '' }
             if (-not (Test-Path -LiteralPath $tsx) -or $installedHash -ne $packageHash) {
                 Write-Host 'Installing Cavey DevKit dependencies...' -ForegroundColor Cyan
-                & $nodePath $npmCli install --prefix $appDir --no-audit --no-fund
+                # npm ci installs exactly the committed lockfile: same packages on every machine.
+                $npmCommand = if (Test-Path -LiteralPath $lockFile) { 'ci' } else { 'install' }
+                & $nodePath $npmCli $npmCommand --prefix $appDir --no-audit --no-fund
                 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $tsx)) {
                     throw 'Failed to install React DevKit. Check your internet connection.'
                 }
