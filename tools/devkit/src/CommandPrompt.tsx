@@ -251,7 +251,15 @@ export function CommandPrompt(p: Props) {
                 onMouseLeave={() => setHovered(null)}
                 onClick={event => { event.stopImmediatePropagation(); runCommand(option.name, true); }}>
                 <Box width={nameWidth} flexShrink={0}>
-                  <Text color={active ? theme.accent : theme.text}>/{option.name}</Text>
+                  {(() => {
+                    const typed = value.startsWith("/") ? value.slice(1).split(/\s/)[0]!.toLowerCase() : "";
+                    const n = option.name.toLowerCase().startsWith(typed) ? typed.length : 0;
+                    return (
+                      <Text color={active ? theme.accent : theme.text}>
+                        /<Text bold>{option.name.slice(0, n)}</Text>{option.name.slice(n)}
+                      </Text>
+                    );
+                  })()}
                 </Box>
                 <Text color={active ? theme.text : theme.dim} wrap="truncate-end">{option.description}</Text>
               </Box>

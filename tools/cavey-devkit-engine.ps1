@@ -916,8 +916,17 @@ function DevKit-Update {
     if ($current -ne $updateBranch -and $current -ne 'devkit-live' -and $current -notlike 'feat/keivi-devkit-*') {
         Fail "Self-update is disabled on branch $current. Run DevKit from a checkout of '$updateBranch'."
     }
-    $dirty = Native 'git' @('-C',$ownRepo,'status','--porcelain')
-    if ($dirty) { Fail 'DevKit has uncommitted changes. Self-update will not overwrite them.' }
+    # Only tracked files matter: a fast-forward never touches untracked ones unless the update adds the same path,
+    # and git refuses that on its own.
+    $dirty = @((Native 'git' @('-C',$ownRepo,'status','--porcelain','--untracked-files=no')) -split "\r?\n" | Where-Object { $_.Trim() })
+    if ($dirty.Count) {
+        Say '  Changed files in the DevKit checkout:' Yellow
+        $dirty | Select-Object -First 8 | ForEach-Object { Hint "    $_" }
+        if ($dirty.Count -gt 8) { Hint "    … and $($dirty.Count - 8) more" }
+        Hint "  Commit them, or discard with: git -C `"$ownRepo`" checkout -- ."
+        Hint '  If every file differs only by line endings: git config core.autocrlf false, then discard.'
+        Fail 'DevKit has uncommitted changes. Self-update will not overwrite them.'
+    }
     $before = Native 'git' @('-C',$ownRepo,'rev-parse','HEAD')
     Heading "Checking for DevKit updates on $updateBranch"
     Native 'git' @('-C',$ownRepo,'fetch','origin',$updateBranch) | Out-Null
