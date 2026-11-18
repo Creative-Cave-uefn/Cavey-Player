@@ -806,30 +806,20 @@ function Doctor {
 function Help {
     Heading 'Cavey DevKit · Commands'
     @(
-        '/status                       Статус проекта'
-        '/branches                     Ветки по дате последнего коммита'
-        '/build                        Интерактивный выбор ветки/публикации'
-        '/build --branch latest --mode new --yes'
-        '/build --branch <branch> --mode update --channel <channel>'
-        '/build --branch <branch> --local --yes'
-        '/build --branch <branch> --mode update --channel <name> --yes'
-        '/build --branch <branch> --fresh --yes (без кеша)'
-        '/manager [--channel <name>]    Управление каналами и историей релизов'
+        '/build                        Guided build: branch, type, confirmation'
+        '/build --branch <name> --local --yes'
+        '/build --branch <name> --mode new --yes'
+        '/build --branch <name> --mode update --channel <name> --yes'
+        '/build --branch <name> --fresh --yes   (no source cache)'
+        '/releases [--channel <name>]  Test channels and their versions'
         '/rollback --channel <name> --to <tag> --yes'
-        '/recover                      Прерванные сборки и публикации'
-        '/resume --id <id> --yes        Повторная публикация готовых файлов'
-        '/cache                        Состояние кеша сборок'
-        '/cache prune --yes            Очистка кеша'
-        '/update                       Обновить и перезапустить DevKit'
-        '/releases                     Тестовые релизы'
-        '/clean                        Очистка старых тестовых релизов'
-        '/clean --dry-run               Просмотр без удаления'
-        '/history                      История локальных сборок'
-        '/logs                         Последний лог сборки'
-        '/run --latest                 Последняя успешная локальная сборка'
-        '/doctor                       Диагностика'
-        '/project [folder]               Папка проекта; сохраняется между запусками'
-        '/quit                         Выход'
+        '/clean [--dry-run] [--keep N] [--yes]'
+        '/recover                      Saved builds that can be published'
+        '/resume --id <id> --yes       Publish a saved build without rebuilding'
+        '/cache [prune --yes]          Source build cache'
+        '/status   /branches   /history   /logs   /run   /doctor'
+        '/project [folder]             Project folder, kept between launches'
+        '/update                       Update DevKit and restart'
     ) | ForEach-Object { Say "  $_" }
 }
 function Dispatch([string[]]$tokens) {
@@ -969,6 +959,7 @@ function Dispatch([string[]]$tokens) {
             foreach ($b in $branches) { Say ("  {0,-52} {1}  {2}" -f $b.branch,$b.date,$b.sha) }
         }
         'releases' {
+            if (Option $tokens '--channel') { Release-Manager $tokens; return }
             $releases = @(Test-Releases | Sort-Object publishedAt -Descending)
             Heading "Test releases · $($releases.Count)"
             foreach ($r in $releases) { Say "  $($r.tagName) · $($r.publishedAt)" }

@@ -20,35 +20,40 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\cavey-devkit.ps1
 
 Existing **Cavey DevKit** shortcuts continue to use `tools/cavey-devkit.ps1`; on first launch it installs React dependencies. The **Cavey DevKit Terminal** shortcut opens a real PowerShell, not the old TUI.
 
-## UI design
+## Interface
 
-The command palette appears **above** the input. Moving the mouse highlights an entry and clicking it executes the command. Arrow keys also change the highlighted entry, Tab completes the command and Enter executes it. The revised header keeps title, workspace path and live state aligned in a compact border. Build output remains scrollable with a fixed bottom input and status bar.
+The layout follows Claude Code: a welcome box, a transcript, one spinner line while work runs, and a rounded input box with a single hint line. Every color comes from `src/theme.ts` (text, dim, border, accent, success, error, warning); components must not add others.
+
+- **Transcript.** Typed commands appear as `> /build`. Each run is a `⏺ Title` entry with its output under `⎿`. Output is collapsed to the last lines; error lines are always kept visible and coloured. `Ctrl+O` expands or collapses all output. Builds show their stages on the first `⎿` line (`✓ Source 2s  ✓ Prepare 41s  ◆ Compile …`).
+- **Status in one place.** While something runs, the spinner line shows the current stage, elapsed time, an ETA from recent builds (`history.jsonl`) and `esc to interrupt`. The window title, tab status dot and Windows Terminal taskbar progress follow the same state. A long run that finishes while the terminal is unfocused rings the bell.
+- **Footer.** `? for shortcuts` on the left; project, branch, `●` for uncommitted changes and `↑/↓` for ahead/behind on the right. Short notices (copied text, "press Ctrl+C again") replace the left hint for a moment.
+- **Dialogs.** Guided steps are questions in a rounded box (“Build which branch?”) with numbered options. Short lists pick on a digit key; long lists (branches, channels, versions) take a typed filter. Each pick is written to the transcript as one `⏺` line; Esc (or Backspace on an empty filter) goes back one step and removes that line. Confirmations show a plan (source, channel, what will be removed, checks, estimated time) instead of a one-line summary.
+- **Selection.** Mouse tracking stays on for clicks and the wheel; drag to select text and it is copied immediately. `Ctrl+C` also copies an active selection.
 
 ## Keyboard
 
 | Keys | Action |
 | --- | --- |
-| `/` | Command palette with autocomplete |
-| `Tab`, `↑` / `↓` | Complete command / navigate suggestions or history |
-| `PgUp`, `PgDn` | Scroll output |
-| `Ctrl+F` | Search history |
-| `Ctrl+C` | Stop current operation |
-| `Ctrl+J` | Open PowerShell in a Windows Terminal tab or window |
-| `/clear` | Clear visible transcript |
-| `/quit` | Exit |
+| `/` | Core commands; type to see the rest |
+| `?` | Shortcut sheet (empty input) |
+| `Enter`, `Tab` | Run / complete a command, pick an option |
+| `1`–`9` | Pick a numbered option |
+| `↑` / `↓` | History, or move in a list |
+| `Esc` | Interrupt a run · go back a step · clear input |
+| `Ctrl+C` | Copy selection · interrupt · exit when pressed twice |
+| `Ctrl+O` | Expand / collapse output |
+| `Ctrl+F` | Search the transcript |
+| `Ctrl+J` | PowerShell in a Windows Terminal tab |
+| `Ctrl+L` | Clear the transcript |
+| `PgUp`, `PgDn`, wheel | Scroll the transcript or a long list |
 
-## Interactive menus
+## Guided flows
 
-The minimal Cavey DevKit layout uses a compact unboxed header, subdued status bar and a pinned input inspired by the Claude Code console. English is used for interface labels, statuses and instructions; only descriptions of command and selection options remain Russian. The command palette and all build/publish wizard choices use the same keyboard-and-mouse component. Slash-command suggestions, branch selection, build mode (local / new test release / update an existing channel), release-channel selection and publish confirmations appear **above** the pinned input. Hover highlights a choice and clicking selects it; `↑↓` navigates, `Enter` selects, `Esc` cancels, and typing filters long lists. `PgUp/PgDn` and the mouse wheel page through a long menu.
+`/build` asks for a branch (with last commit time, author and the channel that already carries it), then the build type: local, new test release, or update a channel (the branch's own channel is suggested first). A new test release allocates a unique channel (`devkit/<source>/<timestamp>-<random>`) and never changes an existing one. Updating a channel publishes a new numbered prerelease into it; the confirmation lists the older releases that will be pruned after a successful publish.
 
-The `/build` wizard has **two separate publication actions**:
-- **New test release** allocates a unique channel (`devkit/<source>/<timestamp>-<random>`). It never changes an existing channel. If `--mode new --channel <name>` is supplied and the channel exists, the command refuses to overwrite it and directs the user to Update.
-- **Update channel** lists previously published test-release channels, accepts the selected channel and publishes a new numbered prerelease into that same channel. Older builds are removed only **after** the replacement is published successfully.
-- **Local build** packages the selected source without publishing.
+`/releases` opens: manage a channel (show versions, update from a branch, roll back), list all test releases, or clean up outdated ones. `/recover` lists saved builds whose verified artifacts can be published again.
 
-The branch/release selector shows up to 12 rows on sufficiently tall terminals. Wheel scrolling is active only while the mouse is over selectable rows, not the bottom hints/input or status area. The transcript scrolls under the pointer only while the mouse is over its output area; PgUp/PgDn still work anywhere.
-
-The `/build` wizard refreshes remote refs from `origin` before displaying branches. Confirmation is mandatory before build or publication. The Release Manager also has an explicit rollback confirmation.
+The command list lives in `src/commands.ts` and feeds the palette, `/help` and aliases (`/manager` → `/releases`, `/resume` and `/retry-publish` → `/recover`).
 
 ## Commands
 
@@ -75,20 +80,15 @@ Windows PowerShell 5.1 source files include a UTF-8 BOM. Run the parser/smoke-te
 
 Dependencies: `@claude-code-kit/ui` 0.4.0 and `@claude-code-kit/ink-renderer` 0.4.0, MIT license. Initial dependency installation needs internet.
 
-## Build Center · interactive steps and progress
+## Build progress and manifests
 
-The pinned Build Center shows Source → Prepare → Checks → Compile → Package → Publish.
-Stage updates stream during Flutter compilation. The final transcript and `/logs` retain
-the detailed build output, while `/history` records a run status. Each build writes a
-recoverable manifest to `%LOCALAPPDATA%\CaveyDevKit\builds\<run-id>\run.json`.
-It contains the source commit, version, channel, artifact paths and SHA-256 checksums.
-The UI removes internal stage control markers from the visible transcript.
+Stage events (`@@CAVEY_STAGE|…`) stream from the engine during the build and are drawn on the build's transcript entry, then removed from the visible output. `/logs` keeps the detailed build output and `/history` the run status. Each build writes a recoverable manifest to `%LOCALAPPDATA%\CaveyDevKit\builds\<run-id>\run.json` with the source commit, version, channel, artifact paths and SHA-256 checksums.
 
 ## Release Manager · history, updates and rollback
 
-- `/manager` opens an interactive channel selector. Choose View versions,
-  Update channel (select source branch), or Rollback (select an older release).
-- `/manager --channel <channel>` prints the published versions.
+- `/releases` → Manage a channel opens the channel selector: show versions,
+  update from a branch, or roll back to an older release.
+- `/releases --channel <channel>` prints the published versions.
 - `/rollback --channel <channel> --to <tag> --yes` restores an earlier version by
   marking **newer** releases as GitHub drafts. Their tags and assets remain stored,
   and old binaries are **not** republished under a false newer version number.

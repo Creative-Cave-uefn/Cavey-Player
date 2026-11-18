@@ -83,16 +83,43 @@ export function shellRequest(line: string, cwd: string): RunRequest {
   };
 }
 
-export function gitBranchRequest(cwd: string): RunRequest {
-  return { program: "git", args: ["branch", "--show-current"], cwd, label: "git branch" };
+export function gitStatusRequest(cwd: string): RunRequest {
+  return { program: "git", args: ["status", "--porcelain=v1", "--branch", "--untracked-files=no"],
+    cwd, label: "git status" };
+}
+
+export type GitState = { branch: string; dirty: boolean; ahead: number; behind: number };
+
+/** Parse `git status --porcelain=v1 --branch`: "## main...origin/main [ahead 1, behind 2]". */
+export function parseGitStatus(text: string): GitState {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  const head = lines[0]?.startsWith("## ") ? lines[0].slice(3) : "";
+  let branch = head.split("...")[0]!.split(" ")[0] || "(unknown)";
+  if (head.startsWith("HEAD (no branch)")) branch = "(detached)";
+  if (branch === "No") branch = head.replace(/^No commits yet on /, "");
+  const ahead = Number(/ahead (\d+)/.exec(head)?.[1] ?? 0);
+  const behind = Number(/behind (\d+)/.exec(head)?.[1] ?? 0);
+  return { branch, dirty: lines.slice(1).length > 0, ahead, behind };
 }
 
 export function gitBranchesRequest(cwd: string): RunRequest {
   return {
     program: "git",
-    args: ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)",
+    args: ["for-each-ref", "--sort=-committerdate",
+      "--format=%(refname)|%(committerdate:iso-strict)|%(objectname:short)|%(authorname)",
       "refs/remotes/origin"],
     cwd, label: "git branches",
+  };
+}
+
+export const releaseRepository = "Creative-Cave-uefn/Cavey-Player-Releases";
+
+export function releaseListRequest(cwd: string): RunRequest {
+  return {
+    program: "gh",
+    args: ["release", "list", "--repo", releaseRepository, "--limit", "500",
+      "--json", "tagName,name,isPrerelease,isDraft,publishedAt"],
+    cwd, label: "gh release list",
   };
 }
 

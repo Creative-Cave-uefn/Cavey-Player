@@ -1,28 +1,34 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { matchCommands } from "./CommandPrompt.js";
+import { commandSpecs, helpText, paletteCommands, resolveCommand } from "./commands.js";
 
-const options = [
-  { name: "build", description: "Build project" },
-  { name: "branches", description: "GitHub branches" },
-  { name: "terminal", description: "PowerShell terminal" },
-];
-
-test("slash opens ordered suggestions", () => {
-  assert.deepEqual(matchCommands("/", options).map(c => c.name), ["build", "branches", "terminal"]);
+test("bare slash shows only the core commands", () => {
+  const names = paletteCommands("/").map(c => c.name);
+  assert.deepEqual(names, commandSpecs.filter(c => c.core).map(c => c.name));
+  assert.ok(names.length <= 8);
+  assert.ok(!names.includes("cache"));
 });
 
-test("typing filters palette without requiring a click", () => {
-  assert.deepEqual(matchCommands("/BR", options).map(c => c.name), ["branches"]);
-  assert.deepEqual(matchCommands("/term", options).map(c => c.name), ["terminal"]);
+test("typing a prefix reveals secondary commands, core first", () => {
+  assert.deepEqual(paletteCommands("/ca").map(c => c.name), ["cache"]);
+  assert.deepEqual(paletteCommands("/RE").map(c => c.name).slice(0, 2), ["releases", "recover"]);
+  assert.deepEqual(paletteCommands("/manag").map(c => c.name), ["releases"]);
 });
 
-test("commands with parameters don't show autocomplete over the input", () => {
-  assert.deepEqual(matchCommands("/build --local", options), []);
-  assert.deepEqual(matchCommands("git status", options), []);
+test("commands with parameters don't show the palette", () => {
+  assert.deepEqual(paletteCommands("/build --local"), []);
+  assert.deepEqual(paletteCommands("git status"), []);
 });
 
-test("only seven matching items fit in the keyboard/mouse palette", () => {
-  const many = Array.from({ length: 15 }, (_, i) => ({ name: "build" + i, description: "" }));
-  assert.equal(matchCommands("/build", many).length, 7);
+test("aliases resolve to one canonical command", () => {
+  assert.equal(resolveCommand("manager")?.name, "releases");
+  assert.equal(resolveCommand("resume")?.name, "recover");
+  assert.equal(resolveCommand("retry-publish")?.name, "recover");
+  assert.equal(resolveCommand("EXIT")?.name, "quit");
+  assert.equal(resolveCommand("nope"), undefined);
+});
+
+test("help lists every command exactly once", () => {
+  const help = helpText();
+  for (const spec of commandSpecs) assert.ok(help.includes("/" + spec.name), spec.name);
 });

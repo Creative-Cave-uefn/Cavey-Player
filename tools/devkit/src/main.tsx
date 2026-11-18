@@ -1,25 +1,46 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlternateScreen, Box, Text, render, useApp } from "@claude-code-kit/ink-renderer";
-import { MessageList, SearchOverlay, StatusLine, Spinner, useTerminalSize, type Message, type StatusLineSegment, type VirtualListHandle } from "@claude-code-kit/ui";
-import { CommandPrompt, matchCommands } from "./CommandPrompt.js";
-import { releaseChannels, type ChoiceMenu, type ReleaseRecord, type Choice } from "./choices.js";
-import { BuildCenter } from "./BuildCenter.js";
-import { createWorkflowStream, stripWorkflowMarkers, type StageRecord } from "./build-events.js";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  AlternateScreen, Box, Text, render, useApp, useSelection, useTabStatus, useTerminalFocus, useTerminalTitle,
+} from "@claude-code-kit/ink-renderer";
+import { SearchOverlay, VirtualList, useTerminalSize, type VirtualListHandle } from "@claude-code-kit/ui";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CommandPrompt } from "./CommandPrompt.js";
+import { helpText, resolveCommand } from "./commands.js";
+import { createWorkflowStream, stageOrder, stripWorkflowMarkers, type StageRecord } from "./build-events.js";
+import type { ReleaseRecord } from "./choices.js";
 import {
-  changeDirectory, commandRequest, engineCommands, gitBranchRequest, gitBranchesRequest,
-  initialDirectory, launchTerminal, prettyDirectory, projectLabel, repositoryRoot,
-  runCommand, shellRequest, splitArgs, type RunRequest,
+  changeDirectory, commandRequest, engineCommands, gitBranchesRequest, gitStatusRequest, initialDirectory,
+  launchTerminal, parseGitStatus, prettyDirectory, projectLabel, releaseListRequest, repositoryRoot,
+  runCommand, shellRequest, splitArgs, type GitState, type RunRequest,
 } from "./runner.js";
+import { spinnerFrames, theme, toneColor } from "./theme.js";
+import {
+  estimateBuildMs, formatDuration, summarizeOutput, type Entry, type NewEntry, type RunStatus,
+} from "./transcript.js";
+import {
+  buildConfirm, channelReleases, dialogFor, parseBranches, pickSummary, runTitle, simpleConfirm,
+  type Branch, type ConfirmCommand, type SavedRun, type Wizard,
+} from "./wizard.js";
 
-const ACCENT = "#DA7756";
 const DATA_HOME = process.env.LOCALAPPDATA
   ? join(process.env.LOCALAPPDATA, "CaveyDevKit")
   : join(homedir(), ".cavey-devkit");
 const HISTORY_FILE = join(DATA_HOME, "terminal-history.json");
-const LIMIT = 100;
+const LIMIT = 150;
+const VERSION = (() => {
+  try { return String(JSON.parse(readFileSync(join(repositoryRoot, "tools", "devkit", "package.json"), "utf8")).version); }
+  catch { return ""; }
+})();
+
+const stageVerbs: Record<string, string> = {
+  source: "Preparing source", prepare: "Preparing project", checks: "Running checks",
+  compile: "Compiling", package: "Packaging", publish: "Publishing",
+};
+const stageTitles: Record<string, string> = {
+  source: "Source", prepare: "Prepare", checks: "Checks", compile: "Compile", package: "Package", publish: "Publish",
+};
 
 function loadHistory(): string[] {
   try {
@@ -29,628 +50,500 @@ function loadHistory(): string[] {
   return [];
 }
 
-const catalog = [
-  { name: "build", description: "Мастер сборок / параметры ветки" },
-  { name: "manager", description: "Управление каналами, версиями и откатами" },
-  { name: "recover", description: "Восстановить прерванную публикацию" },
-  { name: "cache", description: "Кеш повторных сборок и очистка" },
-  { name: "update", description: "Обновить сам DevKit" },
-  { name: "terminal", description: "Открыть настоящий PowerShell" },
-  { name: "branches", description: "Ветки GitHub" },
-  { name: "rollback", description: "Вернуть прежнюю тестовую версию" },
-  { name: "resume", description: "Повторить публикацию готовых файлов" },
-  { name: "retry-publish", description: "Повторить публикацию без сборки" },
-  { name: "agent", description: "Открыть установленный Claude Code" },
-  { name: "project", description: "Папка исходников проекта" },
-  { name: "status", description: "Git и последние сборки" },
-  { name: "releases", description: "Тестовые релизы" },
-  { name: "clean", description: "Очистить старые тестовые релизы" },
-  { name: "history", description: "История сборок" },
-  { name: "logs", description: "Просмотреть журнал сборки" },
-  { name: "run", description: "Запустить последнюю сборку" },
-  { name: "doctor", description: "Диагностика инструментов" },
-  { name: "clear", description: "Очистить историю на экране" },
-  { name: "help", description: "Все доступные команды" },
-  { name: "quit", description: "Выйти из DevKit" },
+function loadBuildHistory(): { status?: string; seconds?: number }[] {
+  try {
+    return readFileSync(join(DATA_HOME, "history.jsonl"), "utf8").split(/\r?\n/).filter(Boolean)
+      .map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
 
-];
-
-const helpText = [
-  "CAVEY DEVKIT  ·  Commands",
-  "",
-  "/build                           Интерактивный мастер сборки",
-  "/build --branch latest --local    Локальная сборка (с подтверждением)",
-  "/build --branch <name>            Тестовый релиз (с подтверждением)",
-  "/branches   /status   /releases   /history   /logs",
-  "/clean --dry-run                  Просмотр без удаления",
-  "/run        /doctor   /project [path]   /terminal",
-  "/manager   /rollback   /recover   /resume --id <id>",
-  "/cache     /cache prune     /update",
-  "/build --branch <branch> --fresh --local --yes",
-  "/agent      /clear    /quit",
-  "",
-  "Commands without / run in PowerShell. cd persists between commands.",
-  "For interactive processes, use /terminal.",
-  "Tab: autocomplete · ↑↓: history · PgUp/PgDn: scroll",
-  "Ctrl+F: search · Ctrl+C: cancel · Ctrl+J: terminal",
-].join("\n");
-
-type Wizard =
-  | { kind: "branch"; branches: string[] }
-  | { kind: "mode"; branch: string }
-  | { kind: "channel"; branch: string; channels: Choice[] }
-  | { kind: "manager-channel"; channels: Choice[]; releases: ReleaseRecord[] }
-  | { kind: "manager-action"; channel: string; releases: ReleaseRecord[] }
-  | { kind: "manager-versions"; channel: string; releases: ReleaseRecord[] }
-  | { kind: "manager-branch"; channel: string; branches: string[] }
-  | { kind: "recover"; runs: SavedRun[] }
-  | { kind: "confirm"; command: "build" | "clean" | "rollback" | "resume" | "cache"; args: string[]; summary: string };
-
-type SavedRun = { id: string; source: string; channel: string; status: string; updatedUtc?: string };
 function loadRecoverableRuns(): SavedRun[] {
   const root = join(DATA_HOME, "builds");
   try {
-    return readdirSync(root, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => {
-        try {
-          const v = JSON.parse(readFileSync(join(root, d.name, "run.json"), "utf8")) as SavedRun;
-          return v;
-        } catch { return null; }
-      })
+    return readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory())
+      .map(d => { try { return JSON.parse(readFileSync(join(root, d.name, "run.json"), "utf8")) as SavedRun; } catch { return null; } })
       .filter((v): v is SavedRun => v !== null && ["built", "publish_failed"].includes(v.status))
       .sort((a, b) => (b.updatedUtc ?? "").localeCompare(a.updatedUtc ?? ""));
   } catch { return []; }
 }
 
-function formatMessage(m: Message): React.ReactNode {
-  const body = typeof m.content === "string" ? m.content :
-    m.content.map(part => "text" in part ? part.text : JSON.stringify(part)).join("\n");
+function entryText(e: Entry): string {
+  switch (e.kind) {
+    case "welcome": return "";
+    case "input": return e.text;
+    case "step": return e.title + " " + (e.detail ?? "");
+    case "note": return e.text;
+    case "run": return e.title + "\n" + e.output;
+  }
+}
+
+// ── Transcript rendering ─────────────────────────────────────────────
+
+function Welcome({ directory }: { directory: string }) {
   return (
-    <Box flexDirection="row" gap={2} paddingX={1} marginBottom={1}>
-      <Text color={m.role === "user" ? "#A6A4AD" : ACCENT} bold>
-        {m.role === "user" ? "›" : "✳"}
-      </Text>
-      <Box flexGrow={1}>
-        <Text color={m.role === "user" ? "#E0DCE1" : "#D5D1D7"} wrap="wrap">{body}</Text>
-      </Box>
+    <Box flexDirection="column" borderStyle="round" borderColor={theme.accent} paddingX={1} alignSelf="flex-start">
+      <Text><Text color={theme.accent}>✻ </Text><Text bold color={theme.text}>Cavey DevKit</Text>
+        {VERSION ? <Text color={theme.dim}> v{VERSION}</Text> : null}</Text>
+      <Text> </Text>
+      <Text color={theme.dim}>  /build to start · /help for all commands · ? for shortcuts</Text>
+      <Text color={theme.dim}>  {prettyDirectory(directory)}</Text>
     </Box>
   );
 }
 
-
-function Header({ directory, branch, activity, loading, compact }: {
-  directory: string; branch: string; activity: string; loading: boolean; compact: boolean;
-}) {
-  const stateColor = loading ? "#DBAC72" : activity === "error" ? "#DB817C" : "#A4B8A5";
+function StageLine({ stages }: { stages: StageRecord[] }) {
+  const byName = new Map(stages.map(s => [s.name, s]));
   return (
-    <Box flexDirection="column" paddingX={3} paddingTop={1} flexShrink={0}>
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center">
-        <Box gap={1}>
-          <Text color="#DF9472" bold>✳</Text>
-          <Text bold color="#E9E3E5">Cavey DevKit</Text>
-          <Text color="#77737C">v1.4</Text>
+    <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+      {stageOrder.map(name => {
+        const stage = byName.get(name);
+        const state = stage?.state ?? "waiting";
+        const mark = state === "done" ? "✓" : state === "failed" ? "✗" : state === "skipped" ? "–"
+          : state === "running" ? "◆" : "·";
+        const color = state === "done" ? theme.success : state === "failed" ? theme.error
+          : state === "running" ? theme.accent : theme.dim;
+        const time = stage?.durationMs !== undefined && state !== "skipped" ? " " + formatDuration(stage.durationMs) : "";
+        return <Text key={name} color={color}>{mark} {stageTitles[name]}{time}</Text>;
+      })}
+    </Box>
+  );
+}
+
+function Gutter({ first, children }: { first: boolean; children: React.ReactNode }) {
+  return (
+    <Box flexDirection="row">
+      <Box width={5} flexShrink={0}><Text color={theme.dim}>{first ? "  ⎿  " : "     "}</Text></Box>
+      <Box flexGrow={1} flexShrink={1}>{children}</Box>
+    </Box>
+  );
+}
+
+function RunView({ entry, expanded }: { entry: Extract<Entry, { kind: "run" }>; expanded: boolean }) {
+  const view = summarizeOutput(entry.output, expanded);
+  const dot: Record<RunStatus, string> = {
+    running: theme.dim, success: theme.success, error: theme.error, cancelled: theme.warning,
+  };
+  const rows: React.ReactNode[] = [];
+  if (entry.stages?.length) rows.push(<StageLine key="stages" stages={entry.stages} />);
+  view.lines.forEach((line, i) => {
+    rows.push(line === null
+      ? <Text key={"gap" + i} color={theme.dim}>… +{view.hidden} lines (ctrl+o to expand)</Text>
+      : <Text key={i} wrap="wrap" color={line.kind === "error" ? theme.error : line.kind === "warning" ? theme.warning
+        : line.kind === "success" ? theme.success : theme.text}>{line.text}</Text>);
+  });
+  if (entry.status !== "running") {
+    const time = entry.durationMs !== undefined && entry.durationMs >= 3000 ? formatDuration(entry.durationMs) : "";
+    if (entry.status === "error") rows.push(<Text key="end" color={theme.error}>Failed · exit {entry.exitCode ?? 1}{time ? " · " + time : ""}</Text>);
+    else if (entry.status === "cancelled") rows.push(<Text key="end" color={theme.warning}>Interrupted{time ? " · " + time : ""}</Text>);
+    else if (time) rows.push(<Text key="end" color={theme.dim}>Done in {time}</Text>);
+    else if (!view.total && !entry.stages?.length) rows.push(<Text key="end" color={theme.dim}>(no output)</Text>);
+  }
+  return (
+    <Box flexDirection="column">
+      <Text><Text color={dot[entry.status]}>⏺ </Text><Text bold color={theme.text}>{entry.title}</Text></Text>
+      {rows.map((row, i) => <Gutter key={i} first={i === 0}>{row}</Gutter>)}
+    </Box>
+  );
+}
+
+function EntryView({ entry, expanded, directory }: { entry: Entry; expanded: boolean; directory: string }) {
+  switch (entry.kind) {
+    case "welcome": return <Welcome directory={directory} />;
+    case "input": return <Text color={theme.dim}>{"> " + entry.text}</Text>;
+    case "step":
+      return (
+        <Text><Text color={toneColor(entry.tone ?? "success")}>⏺ </Text><Text bold color={theme.text}>{entry.title}</Text>
+          {entry.detail ? <Text color={theme.text}>  {entry.detail}</Text> : null}</Text>
+      );
+    case "note":
+      return (
+        <Box flexDirection="column">
+          {entry.text.split("\n").map((line, i) => (
+            <Gutter key={i} first={i === 0}><Text wrap="wrap" color={toneColor(entry.tone ?? "dim")}>{line || " "}</Text></Gutter>
+          ))}
         </Box>
-        <Text color={stateColor}>{loading ? "● " + activity : activity === "error" ? "● error" : "● ready"}</Text>
-      </Box>
-      <Box flexDirection="row" gap={1}>
-        <Text color="#817D87" wrap="truncate-end">{prettyDirectory(directory)}</Text>
-        {!compact && <Text color="#6E6B74" wrap="truncate-end">·  {branch}</Text>}
-      </Box>
+      );
+    case "run": return <RunView entry={entry} expanded={expanded} />;
+  }
+}
+
+function SpinnerLine({ verb, startedAt, etaMs }: { verb: string; startedAt: number; etaMs: number | null }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const id = setInterval(() => setNow(Date.now()), 120); return () => clearInterval(id); }, []);
+  const elapsed = now - startedAt;
+  const frame = spinnerFrames[Math.floor(elapsed / 120) % spinnerFrames.length];
+  const parts = [formatDuration(elapsed)];
+  if (etaMs && etaMs > elapsed) parts.push("~" + formatDuration(etaMs - elapsed) + " left");
+  parts.push("esc to interrupt");
+  return (
+    <Box paddingX={2} marginTop={1} flexShrink={0}>
+      <Text><Text color={theme.accent}>{frame} {verb}…</Text><Text color={theme.dim}> ({parts.join(" · ")})</Text></Text>
     </Box>
   );
 }
+
+// ── App ───────────────────────────────────────────────────────────────
+
+type Busy = { verb: string; startedAt: number; etaMs: number | null };
+type RunOptions = { title?: string; echo?: string; etaMs?: number | null };
 
 function App() {
   const { exit } = useApp();
+  const selection = useSelection();
+  const focusedTerminal = useTerminalFocus();
   const [directory, setDirectory] = useState(initialDirectory);
-  const [branch, setBranch] = useState("loading");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [git, setGit] = useState<GitState | null>(null);
+  const [entries, setEntries] = useState<Entry[]>([{ id: "welcome", kind: "welcome" }]);
   const [history, setHistory] = useState(loadHistory);
-  const [loading, setLoading] = useState(false);
-  const [streaming, setStreaming] = useState<string | null>(null);
-  const [activity, setActivity] = useState("ready");
-  const [wizard, setWizard] = useState<Wizard | null>(null);
+  const [busy, setBusy] = useState<Busy | null>(null);
+  const [stack, setStack] = useState<Wizard[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [buildStages, setBuildStages] = useState<StageRecord[]>([]);
+  const [expanded, setExpanded] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
   const terminal = useTerminalSize();
-  const compact = terminal.rows < 29 || terminal.columns < 110;
-  const historyRef = useRef<VirtualListHandle>(null);
-  const historyPointerRef = useRef(false);
+  const listRef = useRef<VirtualListHandle>(null);
+  const pointerInTranscript = useRef(false);
   const nextId = useRef(0);
   const active = useRef<AbortController | null>(null);
+  const lastCtrlC = useRef(0);
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wizard = stack.length ? stack[stack.length - 1]! : null;
+  const dialog = wizard ? dialogFor(wizard) : undefined;
 
-  const append = useCallback((role: Message["role"], content: string) => {
-    const id = String(++nextId.current);
-    setMessages(old => [...old.slice(-(LIMIT - 1)), { id, role, content, timestamp: Date.now() }]);
+  const flash = useCallback((text: string) => {
+    setNote(text);
+    if (noteTimer.current) clearTimeout(noteTimer.current);
+    noteTimer.current = setTimeout(() => setNote(null), 2500);
   }, []);
+
+  const add = useCallback((entry: NewEntry) => {
+    const id = entry.id ?? String(++nextId.current);
+    setEntries(old => [...old.slice(-(LIMIT - 1)), { ...entry, id } as Entry]);
+    return id;
+  }, []);
+  const patch = useCallback((id: string, update: (e: Extract<Entry, { kind: "run" }>) => Partial<Extract<Entry, { kind: "run" }>>) => {
+    setEntries(old => old.map(e => e.id === id && e.kind === "run" ? { ...e, ...update(e) } : e));
+  }, []);
+  const step = useCallback((title: string, detail?: string) => { add({ kind: "step", title, detail }); }, [add]);
+  const fail = useCallback((text: string) => { add({ kind: "note", text: text.replace(/^Error: /, ""), tone: "error" }); }, [add]);
 
   const remember = useCallback((entry: string) => {
     if (!entry.trim()) return;
     setHistory(previous => {
       const updated = [entry, ...previous.filter(item => item !== entry)].slice(0, 200);
-      try {
-        mkdirSync(DATA_HOME, { recursive: true });
-        writeFileSync(HISTORY_FILE, JSON.stringify(updated), "utf8");
-      } catch { /* read-only disk: session history still works */ }
+      try { mkdirSync(DATA_HOME, { recursive: true }); writeFileSync(HISTORY_FILE, JSON.stringify(updated), "utf8"); }
+      catch { /* read-only disk */ }
       return updated;
     });
   }, []);
 
-  const refreshBranch = useCallback(async (cwd: string) => {
+  const refreshGit = useCallback(async (cwd: string) => {
     try {
-      const state = await runCommand(gitBranchRequest(cwd));
-      setBranch(state.code === 0 ? (state.output || "(detached)") : "no git");
-    } catch { setBranch("no git"); }
+      const state = await runCommand(gitStatusRequest(cwd));
+      setGit(state.code === 0 ? parseGitStatus(state.output) : null);
+    } catch { setGit(null); }
   }, []);
+  useEffect(() => { void refreshGit(directory); }, [directory, refreshGit]);
 
+  // Copy on select, like Claude Code's fullscreen mode.
   useEffect(() => {
-    void refreshBranch(directory);
-  }, [directory, refreshBranch]);
+    selection.setSelectionBgColor("#3D3A44");
+    let dragging = false;
+    return selection.subscribe(() => {
+      const state = selection.getState();
+      const nowDragging = Boolean(state?.isDragging);
+      if (dragging && !nowDragging && selection.hasSelection()) {
+        const text = selection.copySelectionNoClear();
+        if (text) flash("Copied " + text.length + " characters");
+      }
+      dragging = nowDragging;
+    });
+  }, [selection, flash]);
 
-  const execute = useCallback(async (label: string, req: RunRequest, echo = true) => {
-    if (active.current) { append("system", "A command is already running. Press Ctrl+C to cancel."); return; }
-    if (echo) { append("user", label); remember(label); }
+  // Terminal chrome: title, tab dot and Windows Terminal taskbar progress.
+  const running = busy !== null;
+  useTerminalTitle(busy ? busy.verb + " · Cavey DevKit" : "Cavey DevKit");
+  useTabStatus(busy ? "busy" : dialog ? "waiting" : "idle");
+  useEffect(() => {
+    if (!process.env.WT_SESSION) return;
+    try { process.stdout.write(running ? "\x1b]9;4;3;0\x07" : "\x1b]9;4;0;0\x07"); } catch { /* ignore */ }
+  }, [running]);
+
+  const execute = useCallback(async (req: RunRequest, options: RunOptions = {}) => {
+    if (active.current) { flash("A command is already running · Esc to interrupt"); return; }
+    if (options.echo) { add({ kind: "input", text: options.echo }); remember(options.echo); }
     const controller = new AbortController();
     active.current = controller;
-    setLoading(true);
-    setActivity("running");
-    setStreaming("");
+    const startedAt = Date.now();
     const isBuild = /^\/(?:build|rollback|resume|retry-publish)(?:\s|$)/.test(req.label);
-    if (isBuild) setBuildStages([]);
+    const id = add({ kind: "run", title: options.title ?? req.label, output: "", status: "running",
+      stages: isBuild ? [] : undefined });
+    setBusy({ verb: isBuild ? "Starting" : "Running", startedAt, etaMs: options.etaMs ?? null });
     let restart = false;
     const stream = createWorkflowStream(event => {
-      if (event.kind === "restart") {
-        restart = true;
-      } else {
-        setBuildStages(previous => {
-          const old = previous.find(x => x.name === event.stage);
-          const now = Date.now();
-          const startedAt = old?.startedAt ?? now;
-          const next = previous.filter(x => x.name !== event.stage);
-          return [...next, {
-            name: event.stage, state: event.state, label: event.label,
-            startedAt, updatedAt: now,
-            durationMs: ["done", "failed", "skipped"].includes(event.state)
-              ? now - startedAt : undefined,
-          }];
-        });
-      }
+      if (event.kind === "restart") { restart = true; return; }
+      const now = Date.now();
+      patch(id, e => {
+        const stages = e.stages ?? [];
+        const old = stages.find(x => x.name === event.stage);
+        const begun = old?.startedAt ?? now;
+        return { stages: [...stages.filter(x => x.name !== event.stage), {
+          name: event.stage, state: event.state, label: event.label, startedAt: begun, updatedAt: now,
+          durationMs: ["done", "failed", "skipped"].includes(event.state) ? now - begun : undefined,
+        }] };
+      });
+      if (event.state === "running") setBusy(b => b && { ...b, verb: stageVerbs[event.stage] ?? "Running" });
     });
     let raw = "";
-    let pendingFlush: ReturnType<typeof setTimeout> | null = null;
-    const flush = () => {
-      pendingFlush = null;
-      setStreaming(raw.slice(-11000));
-    };
+    let pending: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => { pending = null; const text = raw.slice(-40000); patch(id, () => ({ output: text })); };
     try {
       const result = await runCommand(req, controller.signal, chunk => {
-        raw = (raw + stream.push(chunk)).slice(-60000);
-        if (!pendingFlush) pendingFlush = setTimeout(flush, 65);
+        raw = (raw + stream.push(chunk)).slice(-80000);
+        if (!pending) pending = setTimeout(flush, 80);
       });
       raw += stream.finish();
-      if (pendingFlush) clearTimeout(pendingFlush);
-      setStreaming(null);
-      const output = stripWorkflowMarkers(result.output).slice(-25000);
-      append("assistant", (result.cancelled ? "Cancelled by user.\n" : "") +
-        (output || (result.cancelled ? "" : "Command finished without output.")) +
-        "\n\n" + (result.cancelled ? "cancelled" : result.code === 0 ? "✓ success" : "✗ exit " + result.code) +
-        "  ·  " + (result.durationMs / 1000).toFixed(1) + "s");
-      setActivity(result.cancelled ? "cancelled" : result.code === 0 ? "ready" : "error");
-      if (isBuild && (result.cancelled || result.code !== 0)) {
-        setBuildStages(previous => previous.map(stage => stage.state === "running"
-          ? { ...stage, state: "failed" as const, label: "Build interrupted or failed" } : stage));
-      }
+      if (pending) clearTimeout(pending);
+      const status: RunStatus = result.cancelled ? "cancelled" : result.code === 0 ? "success" : "error";
+      patch(id, e => ({
+        output: stripWorkflowMarkers(result.output).slice(-40000), status, exitCode: result.code,
+        durationMs: result.durationMs,
+        stages: e.stages?.map(s => s.state === "running" && status !== "success"
+          ? { ...s, state: "failed" as const, label: "Interrupted or failed" } : s),
+      }));
+      if (result.durationMs > 60000 && !focusedTerminal) { try { process.stdout.write("\x07"); } catch { /* ignore */ } }
       if (req.label.startsWith("/project") && result.code === 0) {
         const updated = initialDirectory();
         if (updated !== directory) setDirectory(updated);
       }
-      if (restart && result.code === 0) {
-        process.exitCode = 42;
-        exit();
-      }
+      if (restart && result.code === 0) { process.exitCode = 42; exit(); }
     } catch (error) {
-      if (pendingFlush) clearTimeout(pendingFlush);
-      setStreaming(null);
-      append("assistant", "✗ " + String(error));
-      setActivity("error");
-      if (isBuild) setBuildStages(previous => previous.map(stage => stage.state === "running"
-        ? { ...stage, state: "failed" as const, label: String(error) } : stage));
+      if (pending) clearTimeout(pending);
+      patch(id, () => ({ output: raw + "\n" + String(error), status: "error", durationMs: Date.now() - startedAt }));
     } finally {
       if (active.current === controller) active.current = null;
-      setLoading(false);
-      void refreshBranch(directory);
+      setBusy(null);
+      void refreshGit(directory);
     }
-  }, [append, directory, exit, refreshBranch, remember]);
+  }, [add, directory, exit, flash, focusedTerminal, patch, refreshGit, remember]);
 
-  const runEngine = useCallback(async (command: string, args: string[], echo = true) => {
-    const label = "/" + command + (args.length ? " " + args.join(" ") : "");
-    try {
-      await execute(label, commandRequest(command, args, directory), echo);
-    } catch (error) { append("assistant", String(error)); }
-  }, [append, directory, execute]);
+  const runEngine = useCallback(async (command: string, args: string[], options: RunOptions = {}) => {
+    try { await execute(commandRequest(command, args, directory), { title: runTitle(command, args), ...options }); }
+    catch (error) { fail(String(error)); }
+  }, [directory, execute, fail]);
 
-  const buildWizard = useCallback(async () => {
-    if (active.current || loading) return;
-    setLoading(true);
-    setActivity("fetching branches");
-    try {
-      const fetched = await runCommand({
-        program: "git", args: ["fetch", "origin", "--prune"],
-        cwd: directory, label: "git fetch origin",
-      });
-      if (fetched.code !== 0) {
-        append("assistant", "Could not refresh branches: " + fetched.output);
-      }
-      const result = await runCommand(gitBranchesRequest(directory));
-      const branches = result.output.split(/\r?\n/).map(x => x.trim())
-        .filter(x => x.startsWith("origin/") && x !== "origin/HEAD")
-        .map(x => x.slice(7)).slice(0, 60);
-      if (result.code !== 0 || branches.length === 0) {
-        append("assistant", "No branches found. Check git fetch origin and /doctor.");
-        return;
-      }
-      setWizard({ kind: "branch", branches });
-      append("assistant", "Select a source branch from the menu above the prompt.");
-    } catch (error) { append("assistant", "Could not read branches: " + String(error)); }
-    finally { setLoading(false); setActivity("ready"); }
-  }, [append, directory, loading]);
+  /** Background fetch shown on the spinner line, not in the transcript. */
+  const fetching = useCallback(async <T,>(verb: string, work: () => Promise<T>): Promise<T | null> => {
+    if (active.current || busy) { flash("A command is already running · Esc to interrupt"); return null; }
+    setBusy({ verb, startedAt: Date.now(), etaMs: null });
+    try { return await work(); }
+    catch (error) { fail(String(error)); return null; }
+    finally { setBusy(null); }
+  }, [busy, fail, flash]);
 
-  const openReleaseManager = useCallback(async () => {
-    if (active.current || loading) return;
-    setLoading(true);
-    setActivity("loading releases");
-    try {
-      const result = await runCommand({
-        program: "gh",
-        args: ["release", "list", "--repo", "Creative-Cave-uefn/Cavey-Player-Releases",
-          "--limit", "500", "--json", "tagName,name,isPrerelease,isDraft,publishedAt"],
-        cwd: directory, label: "gh release list",
-      });
-      if (result.code !== 0) { append("assistant", "Could not load releases: " + result.output); return; }
-      const releases = JSON.parse(result.output) as ReleaseRecord[];
-      const channels = releaseChannels(releases);
-      if (!channels.length) { append("assistant", "No published test channels. Use /build to create one."); return; }
-      setWizard({ kind: "manager-channel", channels, releases });
-      append("assistant", "Release Manager: select a channel to view versions, update or roll back.");
-    } catch (error) {
-      append("assistant", "Release Manager error: " + String(error));
-    } finally {
-      setLoading(false);
-      setActivity("ready");
+  const loadBranches = useCallback(async (): Promise<Branch[]> => {
+    const fetched = await runCommand({ program: "git", args: ["fetch", "origin", "--prune"], cwd: directory, label: "git fetch" });
+    if (fetched.code !== 0) add({ kind: "note", text: "Could not refresh from origin; showing cached branches.", tone: "warning" });
+    const refs = await runCommand(gitBranchesRequest(directory));
+    if (refs.code !== 0) throw new Error("git for-each-ref failed: " + refs.output);
+    return parseBranches(refs.output).slice(0, 100);
+  }, [add, directory]);
+
+  const loadReleases = useCallback(async (required: boolean): Promise<ReleaseRecord[]> => {
+    let result: Awaited<ReturnType<typeof runCommand>>;
+    try { result = await runCommand(releaseListRequest(directory)); }
+    catch (error) {
+      if (required) throw new Error("GitHub CLI (gh) is not available: " + String(error));
+      return [];
     }
-  }, [append, directory, loading]);
+    if (result.code !== 0) {
+      if (required) throw new Error("Could not load releases. Check gh auth status.\n" + result.output);
+      return [];
+    }
+    return JSON.parse(result.output) as ReleaseRecord[];
+  }, [directory]);
 
-  const openRecovery = useCallback(() => {
+  const etaMs = useCallback(() => estimateBuildMs(loadBuildHistory()), []);
+
+  // ── Wizard navigation ──
+  const push = useCallback((w: Wizard) => setStack(s => [...s, w]), []);
+  const closeWizard = useCallback(() => setStack([]), []);
+  const back = useCallback(() => {
+    // Undo the transcript line written when this step was reached.
+    if (stack.length > 1) setEntries(old => old.length && old[old.length - 1]!.kind === "step" ? old.slice(0, -1) : old);
+    setStack(s => {
+      if (s.length <= 1) { add({ kind: "note", text: "Cancelled" }); return []; }
+      return s.slice(0, -1);
+    });
+  }, [add, stack.length]);
+
+  const openBuild = useCallback(async () => {
+    const data = await fetching("Fetching branches", async () =>
+      Promise.all([loadBranches(), loadReleases(false)]));
+    if (!data) return;
+    const [branches, releases] = data;
+    if (!branches.length) { fail("No remote branches found. Run /doctor."); return; }
+    setStack([{ kind: "branch", branches, releases }]);
+  }, [fail, fetching, loadBranches, loadReleases]);
+
+  const openReleases = useCallback(async (start: "home" | "channel") => {
+    const releases = await fetching("Loading releases", () => loadReleases(true));
+    if (!releases) return;
+    const manager: Wizard = { kind: "manager-channel", releases };
+    if (!releases.some(r => r.isPrerelease && !r.isDraft && r.tagName.startsWith("test-"))) {
+      add({ kind: "note", text: "No test releases yet. Use /build to publish one." });
+      return;
+    }
+    if (start === "channel") setStack([manager]);
+    else setStack([{ kind: "releases-home" }]);
+  }, [add, fetching, loadReleases]);
+
+  const openRecovery = useCallback(async () => {
     const runs = loadRecoverableRuns();
-    if (!runs.length) {
-      append("assistant", "No recoverable publications. Use /recover to view other saved run states.");
-      return;
-    }
-    setWizard({ kind: "recover", runs });
-    append("assistant", "Select a saved build to retry publishing its SHA-256 verified artifacts.");
-  }, [append]);
+    if (!runs.length) { await runEngine("recover", [], { title: "Saved builds" }); return; }
+    setStack([{ kind: "recover", runs }]);
+  }, [runEngine]);
 
-  const wizardInput = useCallback(async (value: string) => {
+  const pick = useCallback(async (value: string) => {
     if (!wizard) return;
-    const answer = value.trim();
-    append("user", answer);
-    remember(answer);
-    if (wizard.kind === "manager-channel") {
-      const index = Number(answer) - 1;
-      const channel = Number.isInteger(index) && index >= 0
-        ? wizard.channels[index]?.value : wizard.channels.find(c => c.value === answer)?.value;
-      if (!channel) { append("assistant", "Select a release channel."); return; }
-      setWizard({ kind: "manager-action", channel, releases: wizard.releases });
-      append("assistant", "Channel: " + channel + "\nChoose an action.");
-      return;
-    }
-    if (wizard.kind === "manager-action") {
-      const action = answer === "1" ? "history" : answer === "2" ? "update"
-        : answer === "3" ? "rollback" : answer;
-      if (action === "history") {
-        setWizard(null);
-        await runEngine("manager", ["--channel", wizard.channel], false);
+    const summary = pickSummary(wizard, value);
+    if (summary) step(summary[0], summary[1] || undefined);
+    switch (wizard.kind) {
+      case "releases-home": {
+        if (value === "list") { closeWizard(); await runEngine("releases", []); return; }
+        if (value === "clean") { push(simpleConfirm("clean", ["--keep", "3"])); return; }
+        const releases = await fetching("Loading releases", () => loadReleases(true));
+        if (releases) push({ kind: "manager-channel", releases });
         return;
       }
-      if (action === "rollback") {
-        const slug = wizard.channel.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-        const matching = wizard.releases.filter(r => r.isPrerelease && !r.isDraft &&
-          r.tagName.startsWith("test-" + slug + "-v"))
-          .sort((a, b) => (b.publishedAt ?? "").localeCompare(a.publishedAt ?? ""));
-        if (matching.length < 2) {
-          append("assistant", "At least two retained versions are required to roll back.");
+      case "branch": {
+        const branch = wizard.branches.find(b => b.name === value);
+        if (!branch) return;
+        if (wizard.target) { push(buildConfirm(branch, "update", wizard.releases, etaMs(), wizard.target)); return; }
+        push({ kind: "mode", branch, releases: wizard.releases });
+        return;
+      }
+      case "mode": {
+        if (value === "update") {
+          const releases = wizard.releases.length ? wizard.releases
+            : await fetching("Loading channels", () => loadReleases(true));
+          if (!releases) return;
+          if (!releases.some(r => r.isPrerelease && !r.isDraft)) { fail("No test channels exist yet. Choose New test release."); return; }
+          push({ kind: "channel", branch: wizard.branch, releases });
           return;
         }
-        setWizard({ kind: "manager-versions", channel: wizard.channel, releases: matching.slice(1) });
-        append("assistant", "Select an older version. Newer releases will be hidden as drafts, not deleted.");
+        push(buildConfirm(wizard.branch, value as "local" | "new", wizard.releases, etaMs()));
         return;
       }
-      if (action === "update") {
-        setLoading(true);
-        setActivity("loading branches");
-        try {
-          const fetched = await runCommand({
-            program: "git", args: ["fetch", "origin", "--prune"],
-            cwd: directory, label: "git fetch origin",
-          });
-          if (fetched.code !== 0) {
-            append("assistant", "Could not refresh branches: " + fetched.output);
-            return;
-          }
-          const refs = await runCommand(gitBranchesRequest(directory));
-          const branches = refs.output.split(/\r?\n/).map(x => x.trim())
-            .filter(x => x.startsWith("origin/") && x !== "origin/HEAD")
-            .map(x => x.slice(7)).slice(0, 100);
-          if (refs.code !== 0 || !branches.length) { append("assistant", "No source branches found."); return; }
-          setWizard({ kind: "manager-branch", channel: wizard.channel, branches });
-          append("assistant", "Select a source branch for the channel update.");
-        } catch (error) {
-          append("assistant", "Could not load branches: " + String(error));
-        } finally {
-          setLoading(false);
-          setActivity("ready");
+      case "channel":
+        push(buildConfirm(wizard.branch, "update", wizard.releases, etaMs(), value));
+        return;
+      case "manager-channel":
+        push({ kind: "manager-action", channel: value, releases: wizard.releases });
+        return;
+      case "manager-action": {
+        if (value === "history") {
+          closeWizard();
+          await runEngine("manager", ["--channel", wizard.channel]);
+          return;
         }
-        return;
-      }
-      append("assistant", "Select View versions, Update or Rollback.");
-      return;
-    }
-    if (wizard.kind === "manager-versions") {
-      const index = Number(answer) - 1;
-      const tag = Number.isInteger(index) && index >= 0
-        ? wizard.releases[index]?.tagName
-        : wizard.releases.find(r => r.tagName === answer)?.tagName;
-      if (!tag) { append("assistant", "Select an older release."); return; }
-      const args = ["--channel", wizard.channel, "--to", tag];
-      const summary = "Rollback channel: " + wizard.channel + "\nFrom: " + tag +
-        "\nNewer versions will become drafts; no assets will be deleted.";
-      setWizard({ kind: "confirm", command: "rollback", args, summary });
-      append("assistant", summary + "\nConfirm to start.");
-      return;
-    }
-    if (wizard.kind === "manager-branch") {
-      const index = Number(answer) - 1;
-      const branch = Number.isInteger(index) && index >= 0
-        ? wizard.branches[index] : wizard.branches.find(b => b === answer);
-      if (!branch) { append("assistant", "Select a source branch."); return; }
-      const args = ["--branch", branch, "--mode", "update", "--channel", wizard.channel];
-      const summary = "Update channel: " + wizard.channel + "\nSource branch: " + branch;
-      setWizard({ kind: "confirm", command: "build", args, summary });
-      append("assistant", summary + "\nConfirm to start.");
-      return;
-    }
-    if (wizard.kind === "recover") {
-      const index = Number(answer) - 1;
-      const run = Number.isInteger(index) && index >= 0
-        ? wizard.runs[index] : wizard.runs.find(r => r.id === answer);
-      if (!run) { append("assistant", "Select a saved run."); return; }
-      const summary = "Republish verified artifacts\nRun: " + run.id + "\nChannel: " + run.channel;
-      setWizard({ kind: "confirm", command: "resume", args: ["--id", run.id], summary });
-      append("assistant", summary + "\nConfirm to start.");
-      return;
-    }
-    if (wizard.kind === "branch") {
-      const index = Number(answer) - 1;
-      const chosen = Number.isInteger(index) && index >= 0 && index < wizard.branches.length
-        ? wizard.branches[index] : wizard.branches.find(x => x === answer);
-      if (!chosen) {
-        append("assistant", "Choose a branch with your mouse or arrow keys, or enter its name.");
-        return;
-      }
-      setWizard({ kind: "mode", branch: chosen });
-      append("assistant", "Source: " + chosen + "\nChoose local build, new test release, or update a channel.");
-      return;
-    }
-    if (wizard.kind === "mode") {
-      const value = answer === "1" ? "local" : answer === "2" ? "new" : answer === "3" ? "update" : answer;
-      if (!["local", "new", "update"].includes(value)) {
-        append("assistant", "Select an option from the menu.");
-        return;
-      }
-      if (value === "update") {
-        setLoading(true);
-        setActivity("fetching releases");
-        try {
-          const result = await runCommand({
-            program: "gh",
-            args: ["release", "list", "--repo", "Creative-Cave-uefn/Cavey-Player-Releases",
-              "--limit", "500", "--json", "tagName,name,isPrerelease,isDraft,publishedAt"],
-            cwd: directory, label: "gh release list",
-          });
-          if (result.code !== 0) {
-            append("assistant", "Could not load release channels: " + result.output +
-              "\nCheck gh auth status.");
-            return;
-          }
-          const channels = releaseChannels(JSON.parse(result.output) as ReleaseRecord[]);
-          if (!channels.length) {
-            append("assistant", "No existing test-release channels were found.");
-            return;
-          }
-          setWizard({ kind: "channel", branch: wizard.branch, channels });
-          append("assistant", "Select an existing test channel. The latest three versions are retained after a successful publish.");
-        } catch (error) {
-          append("assistant", "Could not load release channels: " + String(error));
-        } finally {
-          setLoading(false);
-          setActivity("ready");
+        if (value === "rollback") {
+          const versions = channelReleases(wizard.releases, wizard.channel);
+          if (versions.length < 2) { fail("Rollback needs at least two active versions in this channel."); return; }
+          push({ kind: "manager-versions", channel: wizard.channel, releases: versions.slice(1) });
+          return;
         }
+        const branches = await fetching("Fetching branches", loadBranches);
+        if (branches) push({ kind: "branch", branches, releases: wizard.releases, target: wizard.channel });
         return;
       }
-      const local = value === "local";
-      const args = ["--branch", wizard.branch, "--mode", "new", ...(local ? ["--local"] : [])];
-      const summary = (local ? "Local build" : "New test release") + "\nBranch: " + wizard.branch;
-      setWizard({ kind: "confirm", command: "build", args, summary });
-      append("assistant", summary + "\nConfirm to start.");
-      return;
-    }
-    if (wizard.kind === "channel") {
-      const index = Number(answer) - 1;
-      const channel = Number.isInteger(index) && index >= 0 && index < wizard.channels.length
-        ? wizard.channels[index]?.value : wizard.channels.find(c => c.value === answer)?.value;
-      if (!channel) {
-        append("assistant", "Select a channel from the menu.");
+      case "manager-versions":
+        push(simpleConfirm("rollback", ["--channel", wizard.channel, "--to", value]));
+        return;
+      case "recover":
+        push(simpleConfirm("resume", ["--id", value]));
+        return;
+      case "confirm": {
+        if (value === "back") { back(); return; }
+        closeWizard();
+        if (value === "dry-run") { await runEngine("clean", [...wizard.args, "--dry-run"]); return; }
+        const local = value === "local";
+        const args = local ? [...wizard.args, "--local"] : wizard.args;
+        await runEngine(wizard.command, [...args, "--yes"], {
+          title: runTitle(wizard.command, args), etaMs: wizard.command === "build" ? etaMs() : null,
+        });
         return;
       }
-      const args = ["--branch", wizard.branch, "--mode", "update", "--channel", channel];
-      const summary = "Update test release\nBranch: " + wizard.branch + "\nChannel: " + channel;
-      setWizard({ kind: "confirm", command: "build", args, summary });
-      append("assistant", summary + "\nConfirm to start.");
-      return;
     }
-    if (/^(да|yes|y|confirm)$/i.test(answer)) {
-      const { command, args } = wizard;
-      setWizard(null);
-      await runEngine(command, [...args, "--yes"], false);
-    } else if (/^(нет|no|n|cancel)$/i.test(answer)) {
-      setWizard(null);
-      append("assistant", "Action cancelled.");
-    } else {
-      append("assistant", "Select Confirm or Cancel.");
-    }
-  }, [append, remember, runEngine, wizard, directory]);
+  }, [back, closeWizard, etaMs, fail, fetching, loadBranches, loadReleases, push, runEngine, step, wizard]);
 
-  const menu: ChoiceMenu | undefined = useMemo(() => {
-    if (!wizard) return undefined;
-    if (wizard.kind === "branch") return {
-      id: "branches", title: "SELECT BRANCH", subtitle: "Search · ↑↓ · PgUp/PgDn · Hover · Click",
-      choices: wizard.branches.map((name, i) => ({
-        value: name, label: name, detail: String(i + 1),
-      })),
-    };
-    if (wizard.kind === "mode") return {
-      id: "mode:" + wizard.branch, title: "BUILD TYPE", subtitle: "Source: " + wizard.branch,
-      choices: [
-        { value: "local", label: "Local build", detail: "Без публикации" },
-        { value: "new", label: "New test release", detail: "Создать отдельный канал" },
-        { value: "update", label: "Update channel", detail: "Выбрать существующий тестовый релиз" },
-      ],
-    };
-    if (wizard.kind === "channel") return {
-      id: "channel:" + wizard.branch, title: "RELEASE CHANNEL",
-      subtitle: "Update an existing test release",
-      choices: wizard.channels,
-    };
-    if (wizard.kind === "manager-channel") return {
-      id: "manager-channel", title: "RELEASE MANAGER",
-      subtitle: "Select published channel · update, history or rollback",
-      choices: wizard.channels,
-    };
-    if (wizard.kind === "manager-action") return {
-      id: "manager-action:" + wizard.channel, title: "RELEASE ACTION",
-      subtitle: "Channel: " + wizard.channel,
-      choices: [
-        { value: "history", label: "View versions", detail: "История опубликованных сборок" },
-        { value: "update", label: "Update channel", detail: "Собрать из выбранной ветки" },
-        { value: "rollback", label: "Rollback", detail: "Вернуть рабочие файлы старой версии" },
-      ],
-    };
-    if (wizard.kind === "manager-versions") return {
-      id: "manager-versions:" + wizard.channel, title: "ROLLBACK TARGET",
-      subtitle: "Choose an older version to restore",
-      choices: wizard.releases.map(r => ({
-        value: r.tagName, label: r.tagName,
-        detail: r.publishedAt ?? "",
-      })),
-    };
-    if (wizard.kind === "manager-branch") return {
-      id: "manager-branch:" + wizard.channel, title: "SOURCE BRANCH",
-      subtitle: "Updating channel: " + wizard.channel,
-      choices: wizard.branches.map(name => ({ value: name, label: name })),
-    };
-    if (wizard.kind === "recover") return {
-      id: "recovery", title: "RECOVER BUILD",
-      subtitle: "Only SHA-256 verified artifacts will be published",
-      choices: wizard.runs.map(r => ({
-        value: r.id, label: r.id, detail: r.status + " · " + r.channel,
-      })),
-    };
-    return {
-      id: "confirm:" + wizard.summary, title: "CONFIRM ACTION",
-      subtitle: wizard.summary.replace(/\n/g, "  ·  "),
-      choices: [
-        { value: "yes", label: "Confirm", detail: "Run action" },
-        { value: "no", label: "Cancel", detail: "Return to DevKit" },
-      ],
-    };
-  }, [wizard]);
+  const confirm = useCallback((command: ConfirmCommand, args: string[]) => {
+    setStack([command === "build"
+      ? { kind: "confirm", command, args, question: "Run this build?", plan: [["Options", args.join(" ")]],
+          options: [{ value: "yes", label: "Yes, run it" }, { value: "back", label: "No, cancel" }] }
+      : simpleConfirm(command, args)]);
+  }, []);
 
-  const handleCommand = useCallback(async (name: string, text = "") => {
+  const handleCommand = useCallback(async (typed: string, text: string) => {
     const args = splitArgs(text);
-    const label = "/" + name + (text.trim() ? " " + text.trim() : "");
-    if (name === "quit") { exit(); return; }
-    if (name === "clear") {
-      setMessages([]); setWizard(null); setActivity("ready"); setStreaming(null); setBuildStages([]); return;
-    }
-    if (name === "help") { append("assistant", helpText); remember(label); return; }
-    if (name === "terminal" || name === "agent") {
-      append("user", label); remember(label);
-      try { append("assistant", await launchTerminal(directory, name === "agent")); }
-      catch (error) { append("assistant", "✗ " + String(error)); }
-      return;
-    }
-    if (name === "manager" && args.length === 0) {
-      append("user", label); remember(label);
-      await openReleaseManager();
-      return;
-    }
-    if (name === "rollback" && args.length === 0) {
-      append("user", label); remember(label);
-      await openReleaseManager();
-      return;
-    }
-    if (["recover", "resume", "retry-publish"].includes(name) && args.length === 0) {
-      append("user", label); remember(label);
-      openRecovery();
-      return;
-    }
-    if ((name === "rollback" || name === "resume" || name === "retry-publish" ||
-         (name === "cache" && args.includes("prune"))) && !args.includes("--yes")) {
-      append("user", label); remember(label);
-      setWizard({
-        kind: "confirm",
-        command: name === "retry-publish" ? "resume" : name as "rollback" | "resume" | "cache",
-        args, summary: "Confirm action: /" + name + " " + args.join(" "),
-      });
-      append("assistant", "Confirm the requested operation.");
-      return;
-    }
-    if (name === "build") {
-      append("user", label); remember(label);
-      if (args.length === 0) { await buildWizard(); return; }
-      if (!args.includes("--yes")) {
-        setWizard({ kind: "confirm", command: "build", args,
-          summary: "Build with options: " + args.join(" ") });
-        append("assistant", "Build: " + args.join(" ") +
-          "\nType yes to confirm or no to cancel.");
+    const label = "/" + typed + (text.trim() ? " " + text.trim() : "");
+    const spec = resolveCommand(typed);
+    if (!spec) { add({ kind: "input", text: label }); fail("Unknown command /" + typed + ". Type /help."); return; }
+    const echo = () => { add({ kind: "input", text: label }); remember(label); };
+    const yes = args.includes("--yes");
+    switch (spec.name) {
+      case "quit": exit(); return;
+      case "clear": setEntries([{ id: "welcome", kind: "welcome" }]); closeWizard(); return;
+      case "help": echo(); add({ kind: "note", text: helpText(), tone: "normal" }); return;
+      case "terminal": case "agent": {
+        echo();
+        try { add({ kind: "note", text: await launchTerminal(directory, spec.name === "agent") }); }
+        catch (error) { fail(String(error)); }
         return;
       }
+      case "releases":
+        echo();
+        if (!args.length) { await openReleases("home"); return; }
+        await runEngine("manager", args);
+        return;
+      case "rollback":
+        echo();
+        if (!args.length) { await openReleases("channel"); return; }
+        if (!yes) { confirm("rollback", args); return; }
+        break;
+      case "recover":
+        echo();
+        if (!args.includes("--id")) { await openRecovery(); return; }
+        if (!yes) { confirm("resume", args); return; }
+        await runEngine("resume", args);
+        return;
+      case "clean":
+        echo();
+        if (!yes && !args.includes("--dry-run")) { confirm("clean", args); return; }
+        break;
+      case "cache":
+        echo();
+        if (args.includes("prune") && !yes) { confirm("cache", args); return; }
+        break;
+      case "build":
+        echo();
+        if (!args.length) { await openBuild(); return; }
+        if (!yes) { confirm("build", args); return; }
+        await runEngine("build", args, { etaMs: etaMs() });
+        return;
+      default:
+        echo();
     }
-    if (name === "clean" && !args.includes("--dry-run") && !args.includes("--yes")) {
-      append("user", label); remember(label);
-      setWizard({ kind: "confirm", command: "clean", args,
-        summary: "Clean test releases" });
-      append("assistant", "Remove outdated test releases? Select Confirm or Cancel.");
-      return;
-    }
-    if (engineCommands.has(name)) {
-      await runEngine(name, args, name !== "build");
-      return;
-    }
-    append("assistant", "Unknown command: /" + name + ". Use /help.");
-  }, [append, buildWizard, directory, exit, remember, openReleaseManager, openRecovery, runEngine]);
+    if (engineCommands.has(spec.name)) await runEngine(spec.name, args);
+    else fail("/" + spec.name + " is not available here.");
+  }, [add, closeWizard, confirm, directory, etaMs, exit, fail, openBuild, openRecovery, openReleases, remember, runEngine]);
 
   const handleSubmit = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    if (wizard && /^\/(?:cancel|назад)$/i.test(trimmed)) {
-      setWizard(null); append("assistant", "Wizard cancelled."); return;
-    }
-    if (wizard && !/^\/(?:help|quit|clear|build|terminal)$/i.test(trimmed)) {
-      await wizardInput(trimmed); return;
-    }
+    if (busy) { flash("Wait for the current command, or press Esc to interrupt"); return; }
     if (trimmed.startsWith("/")) {
       const tokens = splitArgs(trimmed.slice(1));
       await handleCommand((tokens.shift() || "").toLowerCase(), tokens.join(" "));
@@ -660,103 +553,112 @@ function App() {
     try {
       const next = changeDirectory(directory, trimmed);
       if (next) {
-        append("user", trimmed); remember(trimmed); setDirectory(next);
-        append("assistant", "Working directory: " + next);
+        add({ kind: "input", text: trimmed }); remember(trimmed); setDirectory(next);
+        step("Directory", next);
         return;
       }
-    } catch (error) { append("assistant", "✗ " + String(error)); return; }
-    await execute(trimmed, shellRequest(trimmed, directory));
-  }, [append, directory, execute, exit, handleCommand, remember, wizard, wizardInput]);
+    } catch (error) { add({ kind: "input", text: trimmed }); fail(String(error)); return; }
+    await execute(shellRequest(trimmed, directory), { echo: trimmed, title: "PowerShell(" + trimmed + ")" });
+  }, [add, busy, directory, execute, exit, fail, flash, handleCommand, remember, step]);
 
-  const cancel = useCallback(() => {
-    if (active.current) active.current.abort();
-    else if (wizard) { setWizard(null); setInputValue(""); append("assistant", "Wizard cancelled."); }
-  }, [append, wizard]);
+  const interrupt = useCallback(() => { active.current?.abort(); }, []);
 
-  const statusSegments: StatusLineSegment[] = useMemo(() => [
-    { content: "LOCAL", color: "#8C8991" },
-    { content: compact ? "git:" + (branch.length > 26 ? "…" + branch.slice(-25) : branch) : "PowerShell", color: "#A6A0A9" },
-    { content: compact ? "PowerShell" : "/help", color: "#8C8991" },
-    { content: loading ? "● " + activity : activity, color: loading ? "#D8B17B" : "#8A868E" },
-  ], [activity, loading, compact, branch]);
+  const ctrlC = useCallback(() => {
+    if (selection.hasSelection()) {
+      const text = selection.copySelection();
+      flash("Copied " + text.length + " characters");
+      return;
+    }
+    if (active.current) { active.current.abort(); return; }
+    if (wizard) { closeWizard(); setInputValue(""); add({ kind: "note", text: "Cancelled" }); return; }
+    if (inputValue) { setInputValue(""); return; }
+    const now = Date.now();
+    if (now - lastCtrlC.current < 1500) { exit(); return; }
+    lastCtrlC.current = now;
+    flash("Press Ctrl+C again to exit");
+  }, [add, closeWizard, exit, flash, inputValue, selection, wizard]);
 
   const searchMatches = useCallback((query: string) => {
     if (!query.trim()) return [];
     const found: { index: number; offset: number; length: number }[] = [];
-    messages.forEach((message, index) => {
-      const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
-      const offset = content.toLowerCase().indexOf(query.toLowerCase());
+    entries.forEach((entry, index) => {
+      const offset = entryText(entry).toLowerCase().indexOf(query.toLowerCase());
       if (offset >= 0) found.push({ index, offset, length: query.length });
     });
     return found;
-  }, [messages]);
+  }, [entries]);
 
-  const matched = menu ? [] : matchCommands(inputValue, catalog);
-  const headerRows = 3;
-  // Let long branch/release menus show more items without hiding the input.
-  const maxMenuRows = Math.max(2, Math.min(12, terminal.rows - 18));
-  const menuCount = menu && !loading && !searchOpen ? Math.min(maxMenuRows, menu.choices.length) + (menu.subtitle ? 5 : 4) : 0;
-  const paletteRows = menuCount || (matched.length > 0 && !loading && !searchOpen ? matched.length + 3 : 0);
-  const promptRows = paletteRows + (paletteRows ? 4 : 5);
-  const buildCenterRows = buildStages.length ? (compact ? 3 : 4) : 0;
-  const historyHeight = Math.max(2, terminal.rows - headerRows - promptRows - buildCenterRows - (searchOpen ? 2 : 0) - 3);
-  const displayedMessages: Message[] = streaming && loading
-    ? [...messages, { id: "__cavey_stream", role: "assistant", content: streaming }]
-    : messages;
+  // ── Layout ──
+  const maxDialogRows = Math.max(3, Math.min(12, terminal.rows - 18 - (dialog?.plan?.length ?? 0)));
+  const promptRows = (() => {
+    if (dialog && !searchOpen) {
+      const shown = Math.min(maxDialogRows, Math.max(1, dialog.options.length));
+      const more = dialog.options.length > shown ? 2 : 0;
+      return 2 + 1 + (dialog.plan?.length ? 1 + dialog.plan.length : 0) + (dialog.filterable ? 2 : 0) + 1 + shown + more + 2;
+    }
+    const typed = inputValue.startsWith("/") && !/\s/.test(inputValue);
+    return 3 + (showKeys ? 13 : typed ? 8 : 1);
+  })();
+  const spinnerRows = busy ? 2 : 0;
+  const viewport = Math.max(3, terminal.rows - promptRows - spinnerRows - (searchOpen ? 2 : 0) - 2);
+
+  const footerRight = useMemo(() => {
+    if (!git) return projectLabel(directory);
+    const sync = (git.ahead ? " ↑" + git.ahead : "") + (git.behind ? " ↓" + git.behind : "");
+    return projectLabel(directory) + " · " + git.branch + (git.dirty ? " ●" : " ✓") + sync;
+  }, [directory, git]);
 
   return (
     <AlternateScreen mouseTracking>
-      <Box flexDirection="column" width="100%" flexGrow={1}>
-        <Header directory={directory} branch={branch} activity={activity} loading={loading} compact={compact} />
-        <Box flexDirection="column" flexGrow={1} paddingX={2} paddingTop={compact ? 0 : 1}
-          onMouseEnter={() => { historyPointerRef.current = true; }}
-          onMouseLeave={() => { historyPointerRef.current = false; }}>
-          {messages.length === 0 && !streaming && (
-            <Box flexDirection="column" marginLeft={1}>
-              <Text dimColor>Start with <Text color="#E69C7D">/build</Text> or enter a PowerShell command.</Text>
-
-            </Box>
-          )}
-          <MessageList
-            ref={historyRef}
-            viewportHeight={historyHeight}
-            messages={displayedMessages}
-            renderMessage={formatMessage}
+      <Box flexDirection="column" width="100%" height="100%">
+        <Box flexDirection="column" flexGrow={1} paddingX={2} paddingTop={1}
+          onMouseEnter={() => { pointerInTranscript.current = true; }}
+          onMouseLeave={() => { pointerInTranscript.current = false; }}>
+          <VirtualList
+            ref={listRef}
+            items={entries}
+            itemKey={e => e.id}
+            viewportHeight={viewport}
+            followOutput
+            overscan={3}
+            renderItem={(entry, index) => (
+              <Box flexDirection="column" paddingTop={index > 0 ? 1 : 0}>
+                <EntryView entry={entry} expanded={expanded} directory={directory} />
+              </Box>
+            )}
           />
-          {loading && !streaming && (
-            <Box marginLeft={2}><Spinner label={activity} /></Box>
-          )}
         </Box>
-        <BuildCenter stages={buildStages} running={loading} compact={compact} />
+        {busy && <SpinnerLine verb={busy.verb} startedAt={busy.startedAt} etaMs={busy.etaMs} />}
         {searchOpen && (
-          <SearchOverlay
-            isOpen={searchOpen}
-            onClose={() => setSearchOpen(false)}
-            onSearch={searchMatches}
-            onNavigate={match => historyRef.current?.scrollTo(match.index)}
-          />
+          <SearchOverlay isOpen={searchOpen} onClose={() => setSearchOpen(false)} onSearch={searchMatches}
+            onNavigate={match => listRef.current?.scrollTo(match.index)} />
         )}
-        <CommandPrompt
-          value={inputValue}
-          onChange={setInputValue}
-          onSubmit={handleSubmit}
-          history={history}
-          commands={catalog}
-          menu={menu}
-          maxMenuRows={maxMenuRows}
-          onMenuPick={wizardInput}
-          onMenuCancel={() => { setWizard(null); setInputValue(""); append("assistant", "Wizard cancelled."); }}
-          disabled={loading}
-          searchOpen={searchOpen}
-          onCancel={cancel}
-          onTerminal={() => { void handleCommand("terminal"); }}
-          onSearch={() => setSearchOpen(true)}
-          onClear={() => { void handleCommand("clear"); setInputValue(""); }}
-          onScroll={delta => historyRef.current?.scrollBy(delta)}
-          onWheel={delta => { if (historyPointerRef.current) historyRef.current?.scrollBy(delta); }}
-        />
-        <Box paddingX={2} paddingBottom={0}>
-          <StatusLine segments={statusSegments} paddingX={1} />
+        <Box marginTop={1} flexShrink={0} flexDirection="column">
+          <CommandPrompt
+            value={inputValue}
+            onChange={setInputValue}
+            onSubmit={handleSubmit}
+            history={history}
+            dialog={busy ? undefined : dialog}
+            maxDialogRows={maxDialogRows}
+            onPick={pick}
+            onBack={back}
+            running={running}
+            searchOpen={searchOpen}
+            footerRight={footerRight}
+            footerNote={note}
+            showKeys={showKeys}
+            setShowKeys={setShowKeys}
+            onEscapeIdle={() => { /* nothing to cancel */ }}
+            onInterrupt={interrupt}
+            onCtrlC={ctrlC}
+            onTerminal={() => { void handleCommand("terminal", ""); }}
+            onSearch={() => setSearchOpen(true)}
+            onClear={() => { void handleCommand("clear", ""); setInputValue(""); }}
+            onToggleExpand={() => setExpanded(x => !x)}
+            onScroll={delta => listRef.current?.scrollBy(delta)}
+            onWheel={delta => { if (pointerInTranscript.current) listRef.current?.scrollBy(delta); }}
+          />
         </Box>
       </Box>
     </AlternateScreen>
@@ -769,3 +671,4 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 } else {
   await render(<App />);
 }
+
