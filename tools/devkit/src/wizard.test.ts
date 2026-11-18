@@ -127,7 +127,7 @@ test("rebuild repeats local builds and updates a channel the last build created"
   assert.deepEqual(rebuildArgs({ args: ["--branch", "x", "--mode", "new", "--local", "--yes"] }),
     ["--branch", "x", "--mode", "new", "--local"]);
   const result = { id: "r", status: "published", folder: "f", version: "0.4.0.9", channel: "devkit/x", tag: "t",
-    local: false, source: "x", url: "u", artifacts: [] };
+    local: false, source: "x", url: "u", artifacts: [], platform: "windows" as const };
   assert.deepEqual(rebuildArgs({ args: ["--branch", "x", "--mode", "new", "--channel", "devkit/x", "--message", "hi", "--yes"], result }),
     ["--branch", "x", "--mode", "update", "--channel", "devkit/x"]);
   assert.deepEqual(rebuildArgs({ args: ["--branch", "x", "--mode", "update", "--channel", "devkit/x", "--yes"], result }),
@@ -142,4 +142,13 @@ test("working copy builds are local, with a faster option", async () => {
   assert.deepEqual(w.args, ["--working-tree", "--local"]);
   assert.deepEqual(w.options.map(o => o.value), ["yes", "fast", "back"]);
   assert.equal(runTitle("build", w.args), "Build working copy · local");
+});
+
+test("Android APK is a local build with its own confirmation", async () => {
+  const { androidConfirm, runTitle } = await import("./wizard.js");
+  const mode = dialogFor({ kind: "mode", branch, releases });
+  assert.equal(mode.options.at(-1)!.value, "android");
+  const w = androidConfirm(branch, null);
+  assert.deepEqual(w.args, ["--android", "--branch", "claude/wave-fix", "--local"]);
+  assert.equal(runTitle("build", w.args), "Build claude/wave-fix · Android APK");
 });

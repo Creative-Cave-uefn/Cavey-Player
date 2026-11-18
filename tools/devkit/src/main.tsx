@@ -20,7 +20,7 @@ import {
   estimateBuildMs, formatDuration, formatSize, summarizeOutput, type Entry, type NewEntry, type RunStatus,
 } from "./transcript.js";
 import {
-  buildConfirm, channelNameProblem, channelReleases, dialogFor, isDevKitChannel, rebuildConfirm, workingCopyConfirm, WORKING_COPY, type LastBuild, pickSummary, runTitle, simpleConfirm,
+  buildConfirm, channelNameProblem, channelReleases, dialogFor, isDevKitChannel, rebuildConfirm, workingCopyConfirm, androidConfirm, WORKING_COPY, type LastBuild, pickSummary, runTitle, simpleConfirm,
   type Branch, type ConfirmCommand, type SavedRun, type Wizard,
 } from "./wizard.js";
 
@@ -46,7 +46,9 @@ function saveLastBuild(update: (old: LastBuild | null) => LastBuild | null): voi
   } catch { /* read-only disk */ }
 }
 
-type CardActions = { run: () => void; open: (folder: string) => void; copy: (text: string) => void; rebuild: () => void };
+type CardActions = {
+  run: () => void; install: () => void; open: (folder: string) => void; copy: (text: string) => void; rebuild: () => void;
+};
 const ActionsContext = createContext<CardActions | null>(null);
 const VERSION = (() => {
   try { return String(JSON.parse(readFileSync(join(repositoryRoot, "tools", "devkit", "package.json"), "utf8")).version); }
@@ -187,7 +189,8 @@ function BuildCard({ result, actions }: { result: BuildResult; actions: CardActi
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text color={theme.success}>
-        {result.status === "published" ? "Published " + result.version + " to " + result.channel : "Built " + result.version + " · local"}
+        {result.status === "published" ? "Published " + result.version + " to " + result.channel
+          : "Built " + result.version + (result.platform === "android" ? " · Android APK" : " · local")}
       </Text>
       {result.artifacts.map(a => (
         <Text key={a.name}><Text color={theme.text}>{a.name.padEnd(width)}</Text><Text color={theme.dim}>{formatSize(a.size)}</Text></Text>
@@ -195,7 +198,9 @@ function BuildCard({ result, actions }: { result: BuildResult; actions: CardActi
       {result.url ? <Link url={result.url}><Text color={theme.dim}>{result.url}</Text></Link> : null}
       {actions && (
         <Box flexDirection="row" gap={3} marginTop={1}>
-          <Chip label="Run" onPress={actions.run} />
+          {result.platform === "android"
+            ? <Chip label="Install on phone" onPress={actions.install} />
+            : <Chip label="Run" onPress={actions.run} />}
           <Chip label="Open folder" onPress={() => actions.open(result.folder)} />
           {result.url ? <Chip label="Copy link" onPress={() => actions.copy(result.url)} /> : null}
           <Chip label="Build again" onPress={actions.rebuild} />
@@ -506,6 +511,7 @@ function App() {
           return;
         }
         if (value === "new") { push({ kind: "name", branch: wizard.branch, releases: wizard.releases }); return; }
+        if (value === "android") { push(androidConfirm(wizard.branch, etaMs())); return; }
         push(buildConfirm(wizard.branch, "local", wizard.releases, etaMs()));
         return;
       }
@@ -722,6 +728,7 @@ function App() {
 
   const cardActions = useMemo<CardActions>(() => ({
     run: () => { void handleSubmit("/run"); },
+    install: () => { void handleSubmit("/install-apk"); },
     open: folder => { openExternal(folder); flash("Opened " + folder); },
     copy: text => { void copyText(text).then(ok => flash(ok ? "Link copied" : "Could not reach the clipboard")); },
     rebuild: () => { void handleSubmit("/rebuild"); },

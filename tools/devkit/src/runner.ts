@@ -11,7 +11,7 @@ const dataHome = join(process.env.LOCALAPPDATA || join(homedir(), ".cavey-devkit
 
 export const engineCommands = new Set([
   "status", "doctor", "branches", "releases", "build", "clean",
-  "history", "logs", "run", "project", "manager", "rollback", "rollforward", "notify", "sign",
+  "history", "logs", "run", "project", "manager", "rollback", "rollforward", "notify", "sign", "install-apk", "android-key",
   "recover", "resume", "retry-publish", "cache", "update",
 ]);
 

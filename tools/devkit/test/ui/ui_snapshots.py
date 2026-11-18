@@ -168,6 +168,7 @@ def build_wizard_back_and_cancel(s):
     s.type(ENTER)
     s.wait_for("What kind of build?")
     assert "⏺ Branch  feature/alpha" in s.text()
+    assert "4. Android APK" in s.text()
     s.type("1")
     s.wait_for("Build locally?")
     text = s.text()

@@ -293,6 +293,26 @@ Run-Test 'working-copy-snapshot' {
     }
 }
 
+Run-Test 'android-support' {
+    $tree = Join-Path ([IO.Path]::GetTempPath()) ('cavey-android-test-' + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Force -Path $tree | Out-Null
+        if (@(Android-Support $tree).Count -ne 3) { Fail 'A tree without Android files was accepted.' }
+        foreach ($file in 'lib\mobile_main.dart','tool\setup_android.sh','tool\android\signing.init.gradle') {
+            $path = Join-Path $tree $file
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+            Set-Content -LiteralPath $path -Value '' -Encoding Ascii
+        }
+        $missing = @(Android-Support $tree)
+        if ($missing.Count) { Fail "Complete Android tree rejected: $($missing -join ', ')" }
+    } finally { Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue }
+    $previous = $env:ANDROID_HOME
+    try {
+        $env:ANDROID_HOME = Join-Path ([IO.Path]::GetTempPath()) 'no-such-android-sdk'
+        if (Find-AndroidTool 'apksigner') { Fail 'A tool was found without an SDK.' }
+    } finally { $env:ANDROID_HOME = $previous }
+}
+
 Write-Host ''
 if ($script:Failures) {
     Write-Host "$($script:Failures) engine test(s) failed, $($script:Passed) passed." -ForegroundColor Red

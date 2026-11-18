@@ -168,6 +168,17 @@ export function buildConfirm(
 
 export const WORKING_COPY = "@working-copy";
 
+/** Local Android APK; phone releases (android-v*) stay with CI. */
+export function androidConfirm(branch: Branch, etaMs: number | null): Confirm {
+  return { kind: "confirm", command: "build", args: ["--android", "--branch", branch.name, "--local"],
+    question: "Build an Android APK?",
+    plan: [["Source", sourceLine(branch)], ["Publish", "no · install with /install-apk or copy the APK"],
+      ["Needs", "Java 17, Android SDK, Git Bash, Python 3"], ["Signing", "/android-key, otherwise the debug key"],
+      ["Time", etaLine(etaMs)]],
+    options: [{ value: "yes", label: "Yes, build the APK" }, { value: "fast", label: "Build faster", detail: "skip analyze" },
+      { value: "back", label: "No, go back" }] };
+}
+
 /** Local build of the project folder as it is now, uncommitted changes included. */
 export function workingCopyConfirm(currentBranch: string, etaMs: number | null): Confirm {
   return { kind: "confirm", command: "build", args: ["--working-tree", "--local"],
@@ -253,6 +264,7 @@ export function dialogFor(w: Wizard): Dialog {
           { value: "local", label: "Local build", detail: "no publication" },
           { value: "new", label: "New test release", detail: "separate channel" },
           { value: "update", label: "Update a channel", detail: channel ? "suggested: " + channel : "pick an existing one" },
+          { value: "android", label: "Android APK", detail: "local · needs the Android SDK" },
         ] };
     }
     case "channel": {
@@ -307,7 +319,7 @@ function describeChannel(releases: readonly ReleaseRecord[], channel: string): C
 export function pickSummary(w: Wizard, value: string): [string, string] | null {
   switch (w.kind) {
     case "branch": return ["Branch", value === WORKING_COPY ? "working copy" : value];
-    case "mode": return [value === "local" ? "Local build" : value === "new" ? "New test release" : "Update a channel", ""];
+    case "mode": return [{ local: "Local build", new: "New test release", update: "Update a channel", android: "Android APK" }[value] ?? value, ""];
     case "channel": return ["Channel", value];
     case "manager-channel": return ["Channel", value];
     case "recover": return ["Run", value];
@@ -324,6 +336,7 @@ export function runTitle(command: string, args: string[]): string {
   switch (command) {
     case "build": {
       if (args.includes("--working-tree")) return "Build working copy · local";
+      if (args.includes("--android")) return "Build " + (opt("--branch") || "latest branch") + " · Android APK";
       const branch = opt("--branch") || "latest branch";
       if (args.includes("--local")) return "Build " + branch + " · local";
       if (opt("--mode") === "update") return "Build " + branch + " → " + (opt("--channel") || "channel");

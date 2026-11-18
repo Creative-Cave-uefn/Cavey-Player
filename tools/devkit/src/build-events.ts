@@ -8,6 +8,7 @@ const states = new Set<string>(["waiting", "running", "done", "failed", "skipped
 export type BuildResult = {
   id: string; status: string; folder: string; version: string; channel: string; tag: string;
   local: boolean; source: string; url: string; artifacts: { name: string; size: number }[];
+  platform: "windows" | "android";
 };
 
 function parseResult(json: string): BuildResult | null {
@@ -20,6 +21,7 @@ function parseResult(json: string): BuildResult | null {
       artifacts: Array.isArray(v.artifacts)
         ? v.artifacts.filter(a => a && typeof a.name === "string").map(a => ({ name: a.name, size: Number(a.size) || 0 }))
         : [],
+      platform: v.platform === "android" ? "android" : "windows",
     };
   } catch { return null; }
 }

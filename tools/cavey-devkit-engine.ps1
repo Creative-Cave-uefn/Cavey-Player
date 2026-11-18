@@ -1039,6 +1039,202 @@ function Signing-Settings([string[]]$tokens) {
     if ($current) { Say "  On · certificate $current" } else { Say '  Off · SmartScreen warns testers about unsigned builds' }
     Hint 'Set: /sign <certificate-thumbprint> · Disable: /sign off'
 }
+function Android-Support([string]$tree) {
+    # Which Android pieces this source has; empty "missing" means it can build an APK.
+    $missing = @()
+    foreach ($file in @('lib\mobile_main.dart', 'tool\setup_android.sh', 'tool\android\signing.init.gradle')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $tree $file) -PathType Leaf)) { $missing += ($file -replace '\\', '/') }
+    }
+    return $missing
+}
+function Find-Bash {
+    foreach ($candidate in @("$env:ProgramFiles\Git\bin\bash.exe", "${env:ProgramFiles(x86)}\Git\bin\bash.exe",
+            "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe")) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
+    }
+    $command = Get-Command 'bash' -CommandType Application -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -notmatch '\\System32\\' } | Select-Object -First 1
+    return $(if ($command) { $command.Source } else { '' })
+}
+function Android-Sdk {
+    $candidates = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT)
+    if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA 'Android\Sdk') }
+    foreach ($path in $candidates) {
+        if ($path -and (Test-Path -LiteralPath (Join-Path $path 'build-tools'))) { return $path }
+    }
+    return ''
+}
+function Find-AndroidTool([string]$name) {
+    $sdk = Android-Sdk
+    if (-not $sdk) { return '' }
+    if ($name -eq 'adb') {
+        $adb = Join-Path $sdk 'platform-tools\adb.exe'
+        if (-not (Test-Path -LiteralPath $adb)) { $adb = Join-Path $sdk 'platform-tools/adb' }
+        return $(if (Test-Path -LiteralPath $adb) { $adb } else { '' })
+    }
+    $tool = Get-ChildItem -LiteralPath (Join-Path $sdk 'build-tools') -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.BaseName -eq $name } | Sort-Object FullName -Descending | Select-Object -First 1
+    return $(if ($tool) { $tool.FullName } else { '' })
+}
+function Android-Prerequisites {
+    $problems = @()
+    if (-not (Has 'flutter')) { $problems += 'Flutter is not on PATH.' }
+    if (-not (Has 'java')) { $problems += 'Java 17 is not on PATH (install Temurin 17).' }
+    if (-not (Android-Sdk)) { $problems += 'Android SDK not found (set ANDROID_HOME or install Android Studio).' }
+    if (-not (Find-Bash)) { $problems += 'bash was not found (install Git for Windows).' }
+    if (-not (Get-Command 'python3','python' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        $problems += 'Python 3 is not on PATH (tool/setup_android.sh needs it).'
+    }
+    return $problems
+}
+function Android-KeySettings([string[]]$tokens) {
+    $value = if ($tokens.Count -ge 2) { [string]$tokens[1] } else { '' }
+    if ($value -eq 'off') { Write-Config @{ androidKeystore = $null; androidKeyAlias = $null }; Say '  APKs will use the debug key.' Green; return }
+    if ($value) {
+        if (-not (Test-Path -LiteralPath $value -PathType Leaf)) { Fail "Keystore not found: $value" }
+        $alias = if ($tokens.Count -ge 3) { [string]$tokens[2] } else { 'cavey' }
+        Write-Config @{ androidKeystore = (Resolve-Path -LiteralPath $value).Path; androidKeyAlias = $alias }
+        Say "  APKs will be signed with $value (alias $alias)." Green
+        Hint 'Passwords are read from CAVEY_KEYSTORE_PASSWORD (and CAVEY_KEY_PASSWORD if different); they are never stored.'
+        return
+    }
+    $config = Read-Config
+    Heading 'Android signing key'
+    if ($config['androidKeystore']) { Say "  $($config['androidKeystore']) · alias $($config['androidKeyAlias'])" }
+    else { Say '  Not set: APKs use the debug key and will not install over a release build.' }
+    Hint 'Set: /android-key <path.jks> [alias] · Debug key: /android-key off'
+}
+function Build-Android([string[]]$tokens) {
+    # Local APK, mirroring .github/workflows/android-apk.yml of the Android
+    # branches. Never published: phones update from android-v* releases,
+    # which only CI creates.
+    Check-Repo
+    if (-not (Flag $tokens '--local')) { Fail 'Android builds from DevKit stay on this computer; add --local. Phone releases come from CI.' }
+    $source = Select-Source (Option $tokens '--branch')
+    $problems = @(Android-Prerequisites)
+    if ($problems.Count) { Fail ("Android build needs: " + ($problems -join ' ')) }
+    $config = Read-Config
+    $keystore = [string]$config['androidKeystore']
+    if ($keystore -and -not $env:CAVEY_KEYSTORE_PASSWORD) { Fail 'Set CAVEY_KEYSTORE_PASSWORD for the Android signing key, or use /android-key off.' }
+    Heading 'Android build plan'
+    Say "  Source: origin/$source"
+    Say "  Signing: $(if ($keystore) { $keystore } else { 'debug key (will not install over a release build)' })"
+    if (-not (Ask 'Build the APK?' (Flag $tokens '--yes'))) { return }
+    $lock = Enter-ReleaseLock
+    $epoch = [DateTimeOffset]::new(2026,11,9,0,0,0,[TimeSpan]::Zero).ToUnixTimeSeconds()
+    $number = [int][Math]::Max(1, [Math]::Floor(([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - $epoch) / 60))
+    $version = "1.0.$number"
+    $channel = DevKit-ChannelName ("android/" + (Slug $source))
+    $id = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6)
+    $folder = Join-Path (Join-Path $script:DataHome 'builds') $id
+    New-Item -ItemType Directory -Force -Path $folder | Out-Null
+    $start = Get-Date
+    $status = 'building'; $worktree = $null; $sha = ''
+    $script:CurrentManifest = @{
+        id=$id; manifestPath=(Join-Path $folder 'run.json'); folder=$folder; status='building'; stages=@{}
+        source=$source; sha=''; mode='new'; channel=$channel; version=$version; tag=''; local=$true
+        platform='android'; artifacts=@(); tools=(Tool-Versions)
+        startedUtc=[DateTime]::UtcNow.ToString('o'); updatedUtc=[DateTime]::UtcNow.ToString('o')
+    }
+    Save-BuildState
+    $saved = @{}
+    foreach ($name in 'CAVEY_KEYSTORE','CAVEY_KEY_ALIAS','BUILD_CHANNEL') { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
+    try {
+        Stage 'source' 'running' 'Prepare source checkout'
+        $tree = Create-BuildWorktree $source $folder
+        $worktree = $tree.path; $sha = $tree.sha; $script:CurrentManifest.sha = $sha
+        $missing = @(Android-Support $worktree)
+        if ($missing.Count) { Fail "Branch $source has no Android app (missing $($missing -join ', '))." }
+        Stage 'source' 'done' 'Source checkout ready'
+        Push-Location $worktree
+        try {
+            Stage 'prepare' 'running' 'Generate the Android project'
+            & (Find-Bash) 'tool/setup_android.sh'
+            if ($LASTEXITCODE -ne 0) { Fail "tool/setup_android.sh failed with exit code $LASTEXITCODE." }
+            Stage 'prepare' 'done' 'Android project ready'
+            if (Flag $tokens '--skip-checks') { Stage 'checks' 'skipped' 'Checks skipped on request' } else {
+                Stage 'checks' 'running' 'Analyze mobile code'
+                & (Resolve-NativeCommand 'flutter') analyze --no-fatal-infos --no-fatal-warnings lib/mobile_main.dart lib/mobile
+                if ($LASTEXITCODE -ne 0) { Fail 'flutter analyze found errors in the mobile code.' }
+                Stage 'checks' 'done' 'Analyze passed'
+            }
+            Stage 'compile' 'running' 'Build release APK'
+            if ($keystore) { $env:CAVEY_KEYSTORE = $keystore; $env:CAVEY_KEY_ALIAS = [string]$config['androidKeyAlias'] }
+            $defines = @("--dart-define=APP_VERSION=$version", "--dart-define=BUILD_CHANNEL=$channel")
+            foreach ($name in 'GOOGLE_WEB_CLIENT_ID','GOOGLE_ANDROID_CLIENT_ID') {
+                $value = [Environment]::GetEnvironmentVariable($name)
+                if ($value) { $defines += "--dart-define=$name=$value" } else { Say "  ! $name is not set; Google sign-in will not work in this APK." Yellow }
+            }
+            & (Resolve-NativeCommand 'flutter') build apk --release --target lib/mobile_main.dart --build-name $version --build-number $number @defines
+            if ($LASTEXITCODE -ne 0) { Fail "flutter build apk failed with exit code $LASTEXITCODE." }
+            Stage 'compile' 'done' 'APK compiled'
+        } finally { Pop-Location }
+        Stage 'package' 'running' 'Collect the APK'
+        $apk = Join-Path $worktree 'build\app\outputs\flutter-apk\app-release.apk'
+        if (-not (Test-Path -LiteralPath $apk -PathType Leaf)) { Fail 'flutter build apk produced no app-release.apk.' }
+        $dest = Join-Path $folder 'CaveyPlayer.apk'
+        Copy-Item -LiteralPath $apk -Destination $dest -Force
+        $hash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant()
+        $script:CurrentManifest.artifacts = @(@{ path = $dest; name = 'CaveyPlayer.apk'; sha256 = $hash; size = (Get-Item $dest).Length })
+        Stage 'package' 'done' 'APK ready'
+        Stage 'verify' 'running' 'Check the APK signature'
+        $apksigner = Find-AndroidTool 'apksigner'
+        if ($apksigner) {
+            $certs = (& $apksigner verify --print-certs $dest 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { Fail "apksigner rejected the APK: $($certs.Trim())" }
+            $sha1 = [regex]::Match($certs, 'SHA-1 digest:\s*([0-9a-fA-F]+)').Groups[1].Value
+            $script:CurrentManifest.signingSha1 = $sha1
+            if ($certs -match 'Android Debug') {
+                if ($keystore) { Fail 'The APK is signed with the debug key although a release key is configured.' }
+                Say '  ! Signed with the debug key: it will not install over a release build.' Yellow
+            }
+            Stage 'verify' 'done' "Signature SHA-1 $sha1"
+        } else { Stage 'verify' 'skipped' 'apksigner not found in the Android SDK' }
+        Stage 'publish' 'skipped' 'Android builds from DevKit stay local'
+        $status = 'built'
+    } catch {
+        $status = 'failed'
+        if ($script:CurrentStage) { Stage $script:CurrentStage 'failed' $_.Exception.Message }
+        throw
+    } finally {
+        foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
+        # setup_android.sh installs a Gradle init script into the user's ~/.gradle
+        # (it forces minSdk 24 and release signing for every Android project);
+        # remove it so other projects on this computer are not affected.
+        Remove-Item -LiteralPath (Join-Path $HOME '.gradle\init.d\cavey-signing.gradle') -Force -ErrorAction SilentlyContinue
+        if ($worktree) {
+            try { Git @('worktree','remove','--force',$worktree) | Out-Null } catch { Say "  ! Could not clean temporary worktree: $_" Yellow }
+        }
+        if ($null -ne $script:CurrentManifest) {
+            $script:CurrentManifest.status = $status
+            Save-BuildState
+            Emit-Result $script:CurrentManifest
+            $script:CurrentManifest = $null
+        }
+        $script:CurrentStage = ''
+        Add-History ([pscustomobject]@{
+            time=(Get-Date).ToUniversalTime().ToString('o'); mode='android'; sourceBranch=$source; channel=$channel
+            sha=$sha; version=$version; status=$status; folder=$folder; id=$id; platform='android'
+            seconds=[math]::Round(((Get-Date)-$start).TotalSeconds,1)
+        })
+        $lock.Dispose()
+    }
+    Say "  ✓ $status · $folder" Green
+}
+function Install-Apk([string[]]$tokens) {
+    $adb = Find-AndroidTool 'adb'
+    if (-not $adb) { Fail 'adb was not found in the Android SDK (platform-tools).' }
+    $record = @(History | Where-Object { $_.platform -eq 'android' -and $_.status -eq 'built' } | Select-Object -Last 1)
+    if ($record.Count -eq 0) { Fail 'No Android build yet. Use /build and choose Android APK.' }
+    $apk = Join-Path $record[0].folder 'CaveyPlayer.apk'
+    if (-not (Test-Path -LiteralPath $apk)) { Fail "The APK is missing: $apk" }
+    $devices = @((& $adb devices) -split "\r?\n" | Where-Object { $_ -match '\tdevice$' })
+    if ($devices.Count -eq 0) { Fail 'No phone connected. Enable USB debugging and connect the phone (adb devices).' }
+    Heading "Installing $($record[0].version) on $($devices.Count) device(s)"
+    $output = & $adb install -r $apk 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0 -or $output -notmatch 'Success') { Fail "adb install failed: $($output.Trim())" }
+    Say "  ✓ Installed Cavey $($record[0].version)" Green
+}
 function Emit-Result([object]$record) {
     # Machine-readable summary for the terminal UI's build card.
     if ($null -eq $record) { return }
@@ -1050,6 +1246,7 @@ function Emit-Result([object]$record) {
         id = [string]$record.id; status = [string]$record.status; folder = [string]$record.folder
         version = [string]$record.version; channel = [string]$record.channel; tag = [string]$record.tag
         local = [bool]$record.local; source = [string]$record.source; url = $url; artifacts = $artifacts
+        platform = $(if ($record.platform) { [string]$record.platform } else { 'windows' })
     }
     Write-Host ('@@CAVEY_RESULT|' + ($data | ConvertTo-Json -Compress -Depth 4))
 }
@@ -1315,6 +1512,9 @@ function Help {
         '/notify [<webhook-url>|test|off]   Announce published builds in Discord'
         '/build --working-tree --local --yes   Build uncommitted changes of the project folder'
         '/sign [<thumbprint>|off]      Sign builds with a code-signing certificate'
+        '/build --android --branch <name> --local --yes   Android APK (local only)'
+        '/install-apk                  Install the latest APK on a USB-connected phone'
+        '/android-key [<path.jks> [alias]|off]   Android signing key'
         '/releases [--channel <name>]  Test channels and their versions'
         '/rollback --channel <name> --to <tag> --yes'
         '/rollforward --channel <name> --yes   Undo a rollback'
@@ -1363,7 +1563,9 @@ function Dispatch([string[]]$tokens) {
             foreach ($r in $releases) { Say "  $($r.tagName) · $($r.publishedAt)" }
         }
         'clean' { Clean $tokens }
-        'build' { Build $tokens }
+        'build' { if (Flag $tokens '--android') { Build-Android $tokens } else { Build $tokens } }
+        'install-apk' { Install-Apk $tokens }
+        'android-key' { Android-KeySettings $tokens }
         'cache' { Cache-Manager $tokens }
         'manager' { Release-Manager $tokens }
         'rollback' { Rollback-Release $tokens }
