@@ -13,6 +13,8 @@ $lockFile = Join-Path $appDir 'package-lock.json'
 $tsx = Join-Path $appDir 'node_modules\tsx\dist\cli.mjs'
 $entry = Join-Path $appDir 'src\main.tsx'
 $stamp = Join-Path $appDir '.dependency-stamp'
+$bundle = Join-Path $appDir 'dist\devkit.mjs'
+$bundleStamp = Join-Path $appDir 'dist\.source-stamp'
 $workspace = $repoRoot
 $config = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'CaveyDevKit\config.json' } else { Join-Path $HOME '.cavey-devkit\config.json' }
 if (Test-Path -LiteralPath $config) {
@@ -79,7 +81,22 @@ try {
                 }
                 Set-Content -LiteralPath $stamp -Value $packageHash -Encoding Ascii
             }
-            & $nodePath $tsx $entry
+            # The UI runs from a prebuilt esbuild bundle (faster start than
+            # transpiling with tsx); rebuilt whenever sources or packages change.
+            $sources = @(Get-ChildItem -LiteralPath (Join-Path $appDir 'src') -Filter '*.ts*' -File |
+                Where-Object { $_.Name -notlike '*.test.ts' } | Sort-Object Name)
+            $sourceHash = $packageHash + (@($sources | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }) -join '')
+            $builtHash = if (Test-Path -LiteralPath $bundleStamp) { (Get-Content -LiteralPath $bundleStamp -Raw).Trim() } else { '' }
+            if (-not (Test-Path -LiteralPath $bundle) -or $builtHash -ne $sourceHash) {
+                & $nodePath $npmCli run build --prefix $appDir --silent
+                if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $bundle)) {
+                    Set-Content -LiteralPath $bundleStamp -Value $sourceHash -Encoding Ascii
+                } else {
+                    Write-Host 'Could not build the DevKit bundle; starting from sources.' -ForegroundColor Yellow
+                    Remove-Item -LiteralPath $bundle -Force -ErrorAction SilentlyContinue
+                }
+            }
+            if (Test-Path -LiteralPath $bundle) { & $nodePath $bundle } else { & $nodePath $tsx $entry }
             $code = $LASTEXITCODE
             if ($code -eq 42) {
                 Write-Host 'DevKit updated. Restarting terminal UI...' -ForegroundColor Cyan

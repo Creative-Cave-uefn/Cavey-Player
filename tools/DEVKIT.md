@@ -12,8 +12,8 @@ DevKit uses [claude-code-kit](https://github.com/Minnzen/claude-code-kit) 0.4.0 
 
 ```powershell
 git fetch origin
-git switch feat/keivi-devkit-20261117
-git pull --ff-only origin feat/keivi-devkit-20261117
+git switch devkit
+git pull --ff-only origin devkit
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install-devkit-shortcuts.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\cavey-devkit.ps1
 ```
@@ -149,7 +149,12 @@ After packaging, DevKit unpacks the portable ZIP and runs `cave_player.exe --smo
 - Published builds must contain `Cavey-Downloader.exe`; without it the build
   stops before publishing. Its source and SHA-256 are written to `run.json` and
   to the release notes.
-- `/update` fetches `feat/keivi-devkit-20261117` and fast-forwards the dedicated
-  `devkit-live`/DevKit source branch if clean. Divergence and uncommitted changes
-  block the operation. On a successful update, the launcher reinstalls changed
-  dependencies as needed and restarts the terminal automatically (exit code 42).
+- `/update` fetches the `devkit` branch (`devkitBranch` in `tools/devkit.config.json`)
+  and fast-forwards DevKit's own checkout if it is clean — on `devkit`, a local
+  `devkit-live` worktree, or the old `feat/keivi-devkit-*` branch. Divergence and
+  uncommitted changes block it. It lists what's new, then the launcher reinstalls
+  changed dependencies, rebuilds the UI bundle and restarts (exit code 42).
+- The launcher runs the UI from an esbuild bundle (`tools/devkit/dist/devkit.mjs`,
+  about twice as fast to start as `tsx`), rebuilt automatically when sources or the
+  lockfile change; it falls back to `tsx` if the build fails. `npm run dev` runs
+  from sources.

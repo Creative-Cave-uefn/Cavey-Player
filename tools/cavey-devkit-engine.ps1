@@ -910,21 +910,29 @@ function Rollforward-Release([string[]]$tokens) {
 function DevKit-Update {
     # Only fast-forward the DevKit's OWN checkout. Never update the app source.
     $ownRepo = $script:RepoFallback
+    $updateBranch = [string]$script:Shared.devkitBranch
     $current = Native 'git' @('-C',$ownRepo,'branch','--show-current')
-    if ($current -notin @('devkit-live','feat/keivi-devkit-20261117')) {
-        Fail "Self-update disabled on branch $current. Use a dedicated DevKit worktree."
+    # devkit-live: a dedicated local worktree; feat/keivi-devkit-*: where DevKit lived before.
+    if ($current -ne $updateBranch -and $current -ne 'devkit-live' -and $current -notlike 'feat/keivi-devkit-*') {
+        Fail "Self-update is disabled on branch $current. Run DevKit from a checkout of '$updateBranch'."
     }
     $dirty = Native 'git' @('-C',$ownRepo,'status','--porcelain')
     if ($dirty) { Fail 'DevKit has uncommitted changes. Self-update will not overwrite them.' }
     $before = Native 'git' @('-C',$ownRepo,'rev-parse','HEAD')
-    Heading 'Checking for DevKit updates'
-    Native 'git' @('-C',$ownRepo,'fetch','origin','feat/keivi-devkit-20261117') | Out-Null
+    Heading "Checking for DevKit updates on $updateBranch"
+    Native 'git' @('-C',$ownRepo,'fetch','origin',$updateBranch) | Out-Null
     $upstream = Native 'git' @('-C',$ownRepo,'rev-parse','FETCH_HEAD')
     if ($before -eq $upstream) { Say '  DevKit is already up to date.' Green; return }
     $base = Native 'git' @('-C',$ownRepo,'merge-base',$before,$upstream)
     if ($base -ne $before) { Fail 'DevKit branch has diverged. Update cancelled; local commits are preserved.' }
+    $news = @((Native 'git' @('-C',$ownRepo,'log','--no-merges','--max-count=15','--format=%s',"$before..$upstream")) -split "\r?\n" |
+        Where-Object { $_.Trim() })
     Native 'git' @('-C',$ownRepo,'merge','--ff-only',$upstream) | Out-Null
-    Say "  Updated DevKit: $before → $upstream" Green
+    Say "  Updated DevKit: $($before.Substring(0,8)) → $($upstream.Substring(0,8))" Green
+    if ($news.Count) {
+        Heading "What's new"
+        $news | ForEach-Object { Say "  · $_" }
+    }
     Write-Host '@@CAVEY_RESTART|updated'
 }
 function Smoke-Problem([object]$result, [string]$version, [string]$channel) {

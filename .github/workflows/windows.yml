@@ -6,7 +6,7 @@ on:
   # в плеере: Настройки → Обновления → Тестовые сборки
   push:
     # Keivi DevKit source updates must not trigger remote compilation.
-    branches: ['**', '!feat/keivi-devkit-*']
+    branches: ['**', '!feat/keivi-devkit-*', '!devkit']
   workflow_dispatch:
   # Ветку удалили — убираем её тестовую сборку
   delete:

@@ -41,12 +41,16 @@ CORNERS = "╭╮╰╯"
 class Screen:
     """A running DevKit in a pseudo-terminal of a fixed size."""
 
+    # Set by --bundle: run the esbuild bundle (dist/devkit.mjs) the launcher uses.
+    bundle = False
+
     def __init__(self, env, cols=100, rows=34):
         self.cols, self.rows = cols, rows
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             os.chdir(APP)
-            os.execvpe("node", ["node", "node_modules/tsx/dist/cli.mjs", "src/main.tsx"], env)
+            entry = ["dist/devkit.mjs"] if Screen.bundle else ["node_modules/tsx/dist/cli.mjs", "src/main.tsx"]
+            os.execvpe("node", ["node", *entry], env)
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
         self.screen = pyte.Screen(cols, rows)
         self.stream = pyte.ByteStream(self.screen)
@@ -376,7 +380,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "devkit-ui-screens"))
     parser.add_argument("-k", default="", help="run scenarios whose name contains this text")
+    parser.add_argument("--bundle", action="store_true", help="test dist/devkit.mjs (run `npm run build` first)")
     args = parser.parse_args()
+    Screen.bundle = args.bundle
     os.makedirs(args.out, exist_ok=True)
     failures = 0
     for name, scenario, (cols, rows) in SCENARIOS:

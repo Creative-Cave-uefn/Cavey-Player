@@ -17,4 +17,5 @@ sockseek.conf
 # Cavey DevKit local dependencies
 /tools/devkit/node_modules/
 /tools/devkit/.dependency-stamp
+/tools/devkit/dist/
 /tools/devkit/test/ui/__pycache__/

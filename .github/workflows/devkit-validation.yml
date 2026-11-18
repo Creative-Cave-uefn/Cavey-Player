@@ -3,11 +3,14 @@ name: Cavey DevKit validation
 on:
   push:
     branches:
+      - devkit
       - feat/keivi-devkit-20261117
     paths:
       - tools/**
-      - lib/core/test_build_admin.dart
+      - lib/core/**
+      - lib/main.dart
       - test/test_build_admin_test.dart
+      - test/smoke_test_test.dart
       - .github/workflows/devkit-validation.yml
   workflow_dispatch:
 
@@ -60,14 +63,20 @@ jobs:
         run: |
           npm ci --prefix tools/devkit --no-audit --no-fund
           pip install pyte==0.8.2
-      - name: Terminal UI screen tests
+      - name: Terminal UI screen tests (sources)
         run: python3 tools/devkit/test/ui/ui_snapshots.py --out ui-screens
+      - name: Terminal UI screen tests (bundle the launcher runs)
+        run: |
+          npm run build --prefix tools/devkit
+          python3 tools/devkit/test/ui/ui_snapshots.py --bundle --out ui-screens-bundle
       - name: Upload screens
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: devkit-ui-screens
-          path: ui-screens
+          path: |
+            ui-screens
+            ui-screens-bundle
 
   player-cleanup-rules:
     # The player's "delete old test builds" must follow the same retention as DevKit.
@@ -81,7 +90,8 @@ jobs:
         with:
           flutter-version: '3.27.4'
           channel: stable
-      - name: Test build cleanup rules
+      - name: Analyze and test the player code DevKit depends on
         run: |
           flutter pub get
-          flutter test test/test_build_admin_test.dart
+          flutter analyze --no-fatal-infos --no-fatal-warnings lib/core lib/main.dart
+          flutter test test/test_build_admin_test.dart test/smoke_test_test.dart

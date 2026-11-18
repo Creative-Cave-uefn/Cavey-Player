@@ -13,7 +13,7 @@
 gh auth login
 ```
 
-Находясь в локальном репозитории Cavey-Player, в котором присутствует файл `tools/cavey-devkit.ps1`:
+DevKit живёт в ветке `devkit` (команда `/update` обновляет его оттуда). Находясь в локальном репозитории Cavey-Player на этой ветке:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\cavey-devkit.ps1

@@ -1,15 +1,17 @@
 {
   "name": "cavey-devkit",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "start": "tsx src/main.tsx",
+    "start": "node dist/devkit.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test src/runner.test.ts src/CommandPrompt.test.ts src/choices.test.ts src/build-events.test.ts src/transcript.test.ts src/wizard.test.ts"
+    "test": "node --import tsx --test src/runner.test.ts src/CommandPrompt.test.ts src/choices.test.ts src/build-events.test.ts src/transcript.test.ts src/wizard.test.ts",
+    "build": "esbuild src/main.tsx --bundle --platform=node --format=esm --target=node22 --packages=external --jsx=automatic --outfile=dist/devkit.mjs --log-level=warning",
+    "dev": "tsx src/main.tsx"
   },
   "dependencies": {
     "@claude-code-kit/ink-renderer": "0.4.0",
@@ -20,6 +22,7 @@
   "devDependencies": {
     "@types/node": "^22.15.0",
     "@types/react": "^19.2.0",
+    "esbuild": "0.25.12",
     "tsx": "4.21.0",
     "typescript": "~5.9.3"
   }
