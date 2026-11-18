@@ -18,6 +18,8 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'github_cache.dart';
+
 import '../config.dart';
 import 'log.dart';
 import 'store.dart';
@@ -168,9 +170,7 @@ class Updater extends ChangeNotifier {
     BuildInfo? best;
     var reachable = 0;
     for (final repo in kReleasesRepos) {
-      final res = await http
-          .get(Uri.parse('https://api.github.com/repos/$repo/releases/latest'), headers: _headers)
-          .timeout(const Duration(seconds: 20));
+      final res = await GithubCache.get(Uri.parse('https://api.github.com/repos/$repo/releases/latest'), _headers);
       // 404 — репозитория нет, он приватный или релизов ещё нет
       if (res.statusCode == 404) continue;
       if (res.statusCode != 200) {
@@ -203,9 +203,7 @@ class Updater extends ChangeNotifier {
   Future<List<(String, String)>> _changesUpTo(BuildInfo target) async {
     if (!target.stable) return [(target.version, cleanNotes(target.notes))];
     try {
-      final res = await http
-          .get(Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=40'), headers: _headers)
-          .timeout(const Duration(seconds: 20));
+      final res = await GithubCache.get(Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=40'), _headers);
       if (res.statusCode != 200) return [(target.version, cleanNotes(target.notes))];
       final out = <(String, String)>[];
       for (final r in (jsonDecode(res.body) as List).whereType<Map>()) {
@@ -239,9 +237,8 @@ class Updater extends ChangeNotifier {
     // invisible and cannot be cleaned up from Settings.
     final results = <Map>[];
     for (var page = 1; page <= 10; page++) {
-      final res = await http
-          .get(Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=100&page=$page'), headers: _headers)
-          .timeout(const Duration(seconds: 20));
+      final res = await GithubCache.get(
+          Uri.parse('https://api.github.com/repos/$kReleasesRepo/releases?per_page=100&page=$page'), _headers);
       if (res.statusCode == 404 && page == 1) return const [];
       if (res.statusCode != 200) throw HttpException('GitHub ответил ${res.statusCode}');
       final batch = (jsonDecode(res.body) as List).whereType<Map>().toList();

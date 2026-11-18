@@ -13,6 +13,7 @@ import '../core/autostart.dart';
 import '../core/log.dart';
 import '../core/notices.dart';
 import '../core/notify_prefs.dart';
+import '../core/problem_report.dart';
 import '../core/store.dart' show Settings;
 import '../core/updater.dart';
 import '../core/test_build_admin.dart';
@@ -724,6 +725,28 @@ class _UpdatesSectionState extends State<_UpdatesSection> {
               icon: const Icon(Icons.refresh_rounded, size: 18),
               label: const Text('Проверить обновления'),
             ),
+            // Тестер копирует готовое сообщение с версией, каналом и концом журнала и вставляет его в Discord
+            if (up.isTestBuild)
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await AppLog.flush();
+                  await Clipboard.setData(ClipboardData(
+                    text: problemReport(
+                      version: kAppVersion,
+                      channel: up.channel,
+                      os: Platform.operatingSystemVersion,
+                      errors: AppLog.errorsThisRun,
+                      log: AppLog.tail(200),
+                    ),
+                  ));
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Сообщение о проблеме скопировано: вставьте его в Discord и допишите, что случилось.'),
+                  ));
+                },
+                icon: const Icon(Icons.bug_report_outlined, size: 18),
+                label: const Text('Сообщить о проблеме'),
+              ),
             // С тестовой сборки или с беты, когда галочку сняли, — можно вернуться сразу
             if (up.isTestBuild || up.isBeta)
               OutlinedButton.icon(

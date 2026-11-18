@@ -11,6 +11,9 @@ on:
       - lib/main.dart
       - test/test_build_admin_test.dart
       - test/smoke_test_test.dart
+      - test/github_cache_test.dart
+      - test/problem_report_test.dart
+      - lib/ui/accounts_view.dart
       - .github/workflows/devkit-validation.yml
   workflow_dispatch:
 
@@ -93,5 +96,5 @@ jobs:
       - name: Analyze and test the player code DevKit depends on
         run: |
           flutter pub get
-          flutter analyze --no-fatal-infos --no-fatal-warnings lib/core lib/main.dart
-          flutter test test/test_build_admin_test.dart test/smoke_test_test.dart
+          flutter analyze --no-fatal-infos --no-fatal-warnings lib/core lib/main.dart lib/ui/accounts_view.dart
+          flutter test test/test_build_admin_test.dart test/smoke_test_test.dart test/github_cache_test.dart test/problem_report_test.dart
