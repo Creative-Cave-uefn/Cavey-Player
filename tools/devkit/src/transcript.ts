@@ -1,4 +1,4 @@
-import type { StageRecord } from "./build-events.js";
+import type { BuildResult, StageRecord } from "./build-events.js";
 import type { Tone } from "./theme.js";
 
 // Transcript entries, rendered Claude Code style:
@@ -14,7 +14,7 @@ export type Entry =
   | { id: string; kind: "note"; text: string; tone?: Tone }
   | {
       id: string; kind: "run"; title: string; output: string; status: RunStatus;
-      exitCode?: number; durationMs?: number; stages?: StageRecord[];
+      exitCode?: number; durationMs?: number; stages?: StageRecord[]; result?: BuildResult;
     };
 
 export type LineKind = "error" | "warning" | "success" | "normal";
@@ -92,3 +92,9 @@ export function estimateBuildMs(history: { status?: string; seconds?: number }[]
 
 /** Entry without an id (distributes over the union so each kind keeps its fields). */
 export type NewEntry = Entry extends infer E ? E extends Entry ? Omit<E, "id"> & { id?: string } : never : never;
+
+export function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + " MB";
+  if (bytes >= 1024) return Math.round(bytes / 1024) + " KB";
+  return bytes + " B";
+}

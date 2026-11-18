@@ -768,6 +768,7 @@ function Recovery([string[]]$tokens) {
     $script:CurrentManifest.stages = @{}
     try {
         Publish-Manifest $record[0] $replace
+        Emit-Result $record[0]
     } catch {
         if ($record[0].status -ne 'published') {
             $record[0].status = 'publish_failed'
@@ -933,6 +934,20 @@ function Test-BuildRuns([string]$zip, [string]$folder, [string]$version, [string
     Stage 'verify' 'done' "Started as $version"
     Hint "Smoke test passed: the build starts and reports $version · $channel"
 }
+function Emit-Result([object]$record) {
+    # Machine-readable summary for the terminal UI's build card.
+    if ($null -eq $record) { return }
+    $artifacts = @(@($record.artifacts) | Where-Object { $null -ne $_ } | ForEach-Object {
+        [ordered]@{ name = $(if ($_.name) { [string]$_.name } else { Split-Path -Leaf ([string]$_.path) }); size = [int64]$_.size }
+    })
+    $url = if ($record.status -eq 'published') { "https://github.com/$script:ReleaseRepo/releases/tag/$($record.tag)" } else { '' }
+    $data = [ordered]@{
+        id = [string]$record.id; status = [string]$record.status; folder = [string]$record.folder
+        version = [string]$record.version; channel = [string]$record.channel; tag = [string]$record.tag
+        local = [bool]$record.local; source = [string]$record.source; url = $url; artifacts = $artifacts
+    }
+    Write-Host ('@@CAVEY_RESULT|' + ($data | ConvertTo-Json -Compress -Depth 4))
+}
 function Build([string[]]$tokens) {
     Check-Repo
     $source = Select-Source (Option $tokens '--branch')
@@ -1089,6 +1104,7 @@ function Build([string[]]$tokens) {
         if ($null -ne $script:CurrentManifest) {
             $script:CurrentManifest.status = $status
             Save-BuildState
+            Emit-Result $script:CurrentManifest
             $script:CurrentManifest = $null
         }
         $script:CurrentStage = ''

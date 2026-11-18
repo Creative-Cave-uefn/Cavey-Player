@@ -11,7 +11,7 @@ test("bare slash shows only the core commands", () => {
 
 test("typing a prefix reveals secondary commands, core first", () => {
   assert.deepEqual(paletteCommands("/ca").map(c => c.name), ["cache"]);
-  assert.deepEqual(paletteCommands("/RE").map(c => c.name).slice(0, 2), ["releases", "recover"]);
+  assert.deepEqual(paletteCommands("/RE").map(c => c.name).slice(0, 3), ["rebuild", "releases", "recover"]);
   assert.deepEqual(paletteCommands("/manag").map(c => c.name), ["releases"]);
 });
 

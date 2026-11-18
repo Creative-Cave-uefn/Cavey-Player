@@ -1,26 +1,26 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlternateScreen, Box, Text, render, useApp, useSelection, useTabStatus, useTerminalFocus, useTerminalTitle,
+  AlternateScreen, Box, Link, Text, render, useApp, useSelection, useTabStatus, useTerminalFocus, useTerminalTitle,
 } from "@claude-code-kit/ink-renderer";
 import { SearchOverlay, VirtualList, useTerminalSize, type VirtualListHandle } from "@claude-code-kit/ui";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CommandPrompt } from "./CommandPrompt.js";
 import { helpText, resolveCommand } from "./commands.js";
-import { createWorkflowStream, stageOrder, stripWorkflowMarkers, type StageRecord } from "./build-events.js";
+import { createWorkflowStream, stageOrder, stripWorkflowMarkers, type BuildResult, type StageRecord } from "./build-events.js";
 import { releaseChannels, type ReleaseRecord } from "./choices.js";
 import {
-  changeDirectory, commandRequest, engineCommands, gitBranchesRequest, gitStatusRequest, initialDirectory,
+  changeDirectory, commandRequest, copyText, engineCommands, openExternal, gitBranchesRequest, gitStatusRequest, initialDirectory,
   launchTerminal, parseGitStatus, prettyDirectory, projectLabel, releaseListRequest, repositoryRoot,
   runCommand, shellRequest, splitArgs, type GitState, type RunRequest,
 } from "./runner.js";
 import { spinnerFrames, theme, toneColor } from "./theme.js";
 import {
-  estimateBuildMs, formatDuration, summarizeOutput, type Entry, type NewEntry, type RunStatus,
+  estimateBuildMs, formatDuration, formatSize, summarizeOutput, type Entry, type NewEntry, type RunStatus,
 } from "./transcript.js";
 import {
-  buildConfirm, channelNameProblem, channelReleases, dialogFor, isDevKitChannel, parseBranches, pickSummary, runTitle, simpleConfirm,
+  buildConfirm, channelNameProblem, channelReleases, dialogFor, isDevKitChannel, rebuildConfirm, type LastBuild, parseBranches, pickSummary, runTitle, simpleConfirm,
   type Branch, type ConfirmCommand, type SavedRun, type Wizard,
 } from "./wizard.js";
 
@@ -29,6 +29,25 @@ const DATA_HOME = process.env.LOCALAPPDATA
   : join(homedir(), ".cavey-devkit");
 const HISTORY_FILE = join(DATA_HOME, "terminal-history.json");
 const LIMIT = 150;
+const LAST_BUILD_FILE = join(DATA_HOME, "last-build.json");
+
+function loadLastBuild(): LastBuild | null {
+  try {
+    const v = JSON.parse(readFileSync(LAST_BUILD_FILE, "utf8"));
+    return Array.isArray(v?.args) ? v as LastBuild : null;
+  } catch { return null; }
+}
+function saveLastBuild(update: (old: LastBuild | null) => LastBuild | null): void {
+  try {
+    const next = update(loadLastBuild());
+    if (!next) return;
+    mkdirSync(DATA_HOME, { recursive: true });
+    writeFileSync(LAST_BUILD_FILE, JSON.stringify(next), "utf8");
+  } catch { /* read-only disk */ }
+}
+
+type CardActions = { run: () => void; open: (folder: string) => void; copy: (text: string) => void; rebuild: () => void };
+const ActionsContext = createContext<CardActions | null>(null);
 const VERSION = (() => {
   try { return String(JSON.parse(readFileSync(join(repositoryRoot, "tools", "devkit", "package.json"), "utf8")).version); }
   catch { return ""; }
@@ -51,7 +70,7 @@ function loadHistory(): string[] {
   return [];
 }
 
-function loadBuildHistory(): { status?: string; seconds?: number }[] {
+function loadBuildHistory(): { status?: string; seconds?: number; folder?: string }[] {
   try {
     return readFileSync(join(DATA_HOME, "history.jsonl"), "utf8").split(/\r?\n/).filter(Boolean)
       .map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
@@ -139,10 +158,49 @@ function RunView({ entry, expanded }: { entry: Extract<Entry, { kind: "run" }>; 
     else if (time) rows.push(<Text key="end" color={theme.dim}>Done in {time}</Text>);
     else if (!view.total && !entry.stages?.length) rows.push(<Text key="end" color={theme.dim}>(no output)</Text>);
   }
+  const actions = useContext(ActionsContext);
+  const result = entry.result;
+  if (result && entry.status === "success" && ["built", "published"].includes(result.status)) {
+    rows.push(<BuildCard key="card" result={result} actions={actions} />);
+  }
   return (
     <Box flexDirection="column">
       <Text><Text color={dot[entry.status]}>⏺ </Text><Text bold color={theme.text}>{entry.title}</Text></Text>
       {rows.map((row, i) => <Gutter key={i} first={i === 0}>{row}</Gutter>)}
+    </Box>
+  );
+}
+
+function Chip({ label, onPress }: { label: string; onPress: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <Box onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      onClick={event => { event.stopImmediatePropagation(); onPress(); }}>
+      <Text color={theme.accent} underline={hover}>{label}</Text>
+    </Box>
+  );
+}
+
+/** What a finished build produced and what to do next. */
+function BuildCard({ result, actions }: { result: BuildResult; actions: CardActions | null }) {
+  const width = Math.max(0, ...result.artifacts.map(a => a.name.length)) + 2;
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color={theme.success}>
+        {result.status === "published" ? "Published " + result.version + " to " + result.channel : "Built " + result.version + " · local"}
+      </Text>
+      {result.artifacts.map(a => (
+        <Text key={a.name}><Text color={theme.text}>{a.name.padEnd(width)}</Text><Text color={theme.dim}>{formatSize(a.size)}</Text></Text>
+      ))}
+      {result.url ? <Link url={result.url}><Text color={theme.dim}>{result.url}</Text></Link> : null}
+      {actions && (
+        <Box flexDirection="row" gap={3} marginTop={1}>
+          <Chip label="Run" onPress={actions.run} />
+          <Chip label="Open folder" onPress={() => actions.open(result.folder)} />
+          {result.url ? <Chip label="Copy link" onPress={() => actions.copy(result.url)} /> : null}
+          <Chip label="Build again" onPress={actions.rebuild} />
+        </Box>
+      )}
     </Box>
   );
 }
@@ -203,6 +261,7 @@ function App() {
   const [expanded, setExpanded] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [queue, setQueue] = useState<string[]>([]);
   const terminal = useTerminalSize();
   const listRef = useRef<VirtualListHandle>(null);
   const pointerInTranscript = useRef(false);
@@ -285,6 +344,12 @@ function App() {
     let restart = false;
     const stream = createWorkflowStream(event => {
       if (event.kind === "restart") { restart = true; return; }
+      if (event.kind === "result") {
+        const result = event.result;
+        patch(id, () => ({ result }));
+        if (req.label.startsWith("/build")) saveLastBuild(old => old ? { ...old, result } : null);
+        return;
+      }
       const now = Date.now();
       patch(id, e => {
         const stages = e.stages ?? [];
@@ -331,6 +396,7 @@ function App() {
   }, [add, directory, exit, flash, focusedTerminal, patch, refreshGit, remember]);
 
   const runEngine = useCallback(async (command: string, args: string[], options: RunOptions = {}) => {
+    if (command === "build") saveLastBuild(() => ({ args }));
     try { await execute(commandRequest(command, args, directory), { title: runTitle(command, args), ...options }); }
     catch (error) { fail(String(error)); }
   }, [directory, execute, fail]);
@@ -556,6 +622,23 @@ function App() {
         echo();
         if (args.includes("prune") && !yes) { confirm("cache", args); return; }
         break;
+      case "rebuild": {
+        echo();
+        const last = loadLastBuild();
+        if (!last) { fail("No previous build to repeat. Use /build."); return; }
+        setStack([rebuildConfirm(last, etaMs())]);
+        return;
+      }
+      case "open": {
+        echo();
+        const folder = loadLastBuild()?.result?.folder
+          ?? [...loadBuildHistory()].reverse().find(h => typeof (h as { folder?: string }).folder === "string")
+            ?.folder as string | undefined;
+        if (!folder || !existsSync(folder)) { fail("No build folder yet. Use /build."); return; }
+        openExternal(folder);
+        add({ kind: "note", text: "Opened " + folder });
+        return;
+      }
       case "build":
         echo();
         if (!args.length) { await openBuild(); return; }
@@ -572,7 +655,12 @@ function App() {
   const handleSubmit = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    if (busy) { flash("Wait for the current command, or press Esc to interrupt"); return; }
+    if (busy) {
+      // Like Claude Code: input typed during a run waits its turn.
+      setQueue(q => [...q, trimmed]);
+      remember(trimmed);
+      return;
+    }
     if (trimmed.startsWith("/")) {
       const tokens = splitArgs(trimmed.slice(1));
       await handleCommand((tokens.shift() || "").toLowerCase(), tokens.join(" "));
@@ -590,7 +678,21 @@ function App() {
     await execute(shellRequest(trimmed, directory), { echo: trimmed, title: "PowerShell(" + trimmed + ")" });
   }, [add, busy, directory, execute, exit, fail, flash, handleCommand, remember, step]);
 
-  const interrupt = useCallback(() => { active.current?.abort(); }, []);
+  const interrupt = useCallback(() => {
+    active.current?.abort();
+    setQueue(q => {
+      if (q.length) flash("Interrupted · " + q.length + " queued command" + (q.length === 1 ? "" : "s") + " dropped");
+      return [];
+    });
+  }, [flash]);
+
+  // Run queued input once the current command and any dialog are done.
+  useEffect(() => {
+    if (busy || wizard || !queue.length) return;
+    const [next, ...rest] = queue;
+    setQueue(rest);
+    void handleSubmit(next!);
+  }, [busy, wizard, queue, handleSubmit]);
 
   const ctrlC = useCallback(() => {
     if (selection.hasSelection()) {
@@ -617,6 +719,13 @@ function App() {
     return found;
   }, [entries]);
 
+  const cardActions = useMemo<CardActions>(() => ({
+    run: () => { void handleSubmit("/run"); },
+    open: folder => { openExternal(folder); flash("Opened " + folder); },
+    copy: text => { void copyText(text).then(ok => flash(ok ? "Link copied" : "Could not reach the clipboard")); },
+    rebuild: () => { void handleSubmit("/rebuild"); },
+  }), [flash, handleSubmit]);
+
   // ── Layout ──
   // Short numbered menus always show every option; only long filterable lists page.
   const maxDialogRows = dialog && !dialog.filterable ? Math.max(1, dialog.options.length)
@@ -633,7 +742,7 @@ function App() {
     const typed = inputValue.startsWith("/") && !/\s/.test(inputValue);
     return 3 + (showKeys ? 13 : typed ? 8 : 1);
   })();
-  const spinnerRows = busy ? 2 : 0;
+  const spinnerRows = (busy ? 2 : 0) + queue.length;
   const viewport = Math.max(3, terminal.rows - promptRows - spinnerRows - (searchOpen ? 2 : 0) - 2);
 
   const footerRight = useMemo(() => {
@@ -643,6 +752,7 @@ function App() {
   }, [directory, git]);
 
   return (
+    <ActionsContext.Provider value={cardActions}>
     <AlternateScreen mouseTracking>
       <Box flexDirection="column" width="100%" height="100%">
         <Box flexDirection="column" flexGrow={1} paddingX={2} paddingTop={1}
@@ -663,6 +773,11 @@ function App() {
           />
         </Box>
         {busy && <SpinnerLine verb={busy.verb} startedAt={busy.startedAt} etaMs={busy.etaMs} />}
+        {queue.map((item, i) => (
+          <Box key={i} paddingX={4} flexShrink={0}>
+            <Text color={theme.dim} wrap="truncate-end">{"⎿  queued: " + item}</Text>
+          </Box>
+        ))}
         {searchOpen && (
           <SearchOverlay isOpen={searchOpen} onClose={() => setSearchOpen(false)} onSearch={searchMatches}
             onNavigate={match => listRef.current?.scrollTo(match.index)} />
@@ -696,6 +811,7 @@ function App() {
         </Box>
       </Box>
     </AlternateScreen>
+    </ActionsContext.Provider>
   );
 }
 

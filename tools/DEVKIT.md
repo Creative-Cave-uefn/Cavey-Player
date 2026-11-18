@@ -28,6 +28,8 @@ The layout follows Claude Code: a welcome box, a transcript, one spinner line wh
 - **Status in one place.** While something runs, the spinner line shows the current stage, elapsed time, an ETA from recent builds (`history.jsonl`) and `esc to interrupt`. The window title, tab status dot and Windows Terminal taskbar progress follow the same state. A long run that finishes while the terminal is unfocused rings the bell.
 - **Footer.** `? for shortcuts` on the left; project, branch, `●` for uncommitted changes and `↑/↓` for ahead/behind on the right. Short notices (copied text, "press Ctrl+C again") replace the left hint for a moment.
 - **Dialogs.** Guided steps are questions in a rounded box (“Build which branch?”) with numbered options. Short lists pick on a digit key; long lists (branches, channels, versions) take a typed filter. Each pick is written to the transcript as one `⏺` line; Esc (or Backspace on an empty filter) goes back one step and removes that line. Confirmations show a plan (source, channel, what will be removed, checks, estimated time) instead of a one-line summary.
+- **Queue.** Commands typed while something runs wait their turn and are listed under the spinner (`⎿ queued: …`). Esc interrupts the current run and drops the queue.
+- **Build card.** A finished build shows what it produced (files and sizes, the release link when published) with clickable actions: Run, Open folder, Copy link, Build again. `/rebuild` repeats the last build — a build that created a new channel is repeated as an update of that channel — and `/open` opens the latest build folder.
 - **Selection.** Mouse tracking stays on for clicks and the wheel; drag to select text and it is copied immediately. `Ctrl+C` also copies an active selection.
 
 ## Keyboard

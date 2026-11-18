@@ -132,3 +132,17 @@ test("naming and tester-note steps are free-text dialogs", () => {
   assert.equal(note.question, "Note for testers");
   assert.ok(note.input);
 });
+
+test("rebuild repeats local builds and updates a channel the last build created", async () => {
+  const { rebuildArgs } = await import("./wizard.js");
+  assert.deepEqual(rebuildArgs({ args: ["--branch", "x", "--mode", "new", "--local", "--yes"] }),
+    ["--branch", "x", "--mode", "new", "--local"]);
+  const result = { id: "r", status: "published", folder: "f", version: "0.4.0.9", channel: "devkit/x", tag: "t",
+    local: false, source: "x", url: "u", artifacts: [] };
+  assert.deepEqual(rebuildArgs({ args: ["--branch", "x", "--mode", "new", "--channel", "devkit/x", "--message", "hi", "--yes"], result }),
+    ["--branch", "x", "--mode", "update", "--channel", "devkit/x"]);
+  assert.deepEqual(rebuildArgs({ args: ["--branch", "x", "--mode", "update", "--channel", "devkit/x", "--yes"], result }),
+    ["--branch", "x", "--mode", "update", "--channel", "devkit/x"]);
+  assert.deepEqual(rebuildArgs({ args: ["--branch", "x", "--mode", "new"], result: { ...result, status: "failed" } }),
+    ["--branch", "x", "--mode", "new"]);
+});

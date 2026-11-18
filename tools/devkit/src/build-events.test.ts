@@ -27,3 +27,16 @@ test("chunked output retains ordinary logs and emits every stage", () => {
 test("published logs are preserved after removing markers", () => {
   assert.equal(stripWorkflowMarkers("before\n@@CAVEY_RESTART|updated\nafter"), "before\nafter");
 });
+
+test("build result marker is parsed and hidden", () => {
+  const line = '@@CAVEY_RESULT|{"id":"r1","status":"published","folder":"C:\\\\b\\\\r1","version":"0.4.0.5","channel":"devkit/dj",' +
+    '"tag":"test-devkit-dj-v0.4.0.5","local":false,"source":"dj","url":"https://x/t","artifacts":[{"name":"a.exe","size":10}]}';
+  const evt = parseWorkflowLine(line);
+  assert.equal(evt?.kind, "result");
+  if (evt?.kind === "result") {
+    assert.equal(evt.result.folder, "C:\\b\\r1");
+    assert.deepEqual(evt.result.artifacts, [{ name: "a.exe", size: 10 }]);
+  }
+  assert.equal(stripWorkflowMarkers("x\n" + line + "\ny"), "x\ny");
+  assert.equal(parseWorkflowLine("@@CAVEY_RESULT|{broken"), null);
+});

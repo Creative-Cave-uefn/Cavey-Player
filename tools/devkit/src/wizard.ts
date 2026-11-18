@@ -1,3 +1,4 @@
+import type { BuildResult } from "./build-events.js";
 import { releaseChannels, type Choice, type ReleaseRecord } from "./choices.js";
 import { formatDuration, relativeTime } from "./transcript.js";
 
@@ -334,4 +335,38 @@ export function runTitle(command: string, args: string[]): string {
     case "manager": return opt("--channel") ? "Versions of " + opt("--channel") : "Release channels";
     default: return "/" + command + (args.length ? " " + args.filter(a => a !== "--yes").join(" ") : "");
   }
+}
+
+export type LastBuild = { args: string[]; result?: BuildResult };
+
+/**
+ * Arguments that repeat the last build. A build that created a new channel is
+ * repeated as an update of that channel (creating it again would fail); the
+ * tester note is not repeated.
+ */
+export function rebuildArgs(last: LastBuild): string[] {
+  const args: string[] = [];
+  for (let i = 0; i < last.args.length; i++) {
+    const a = last.args[i]!;
+    if (a === "--yes") continue;
+    if (a === "--message") { i++; continue; }
+    args.push(a);
+  }
+  const opt = (k: string) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] ?? "" : ""; };
+  if (args.includes("--local")) return args;
+  const channel = last.result?.channel;
+  if (opt("--mode") !== "update" && channel && last.result?.status === "published") {
+    const branch = last.result.source || opt("--branch");
+    return ["--branch", branch, "--mode", "update", "--channel", channel];
+  }
+  return args;
+}
+
+export function rebuildConfirm(last: LastBuild, etaMs: number | null): Confirm {
+  const args = rebuildArgs(last);
+  const plan: [string, string][] = [["Repeat", runTitle("build", args)]];
+  if (last.result?.version) plan.push(["Previous", last.result.version + " · " + last.result.status]);
+  plan.push(["Time", etaMs ? "~" + formatDuration(etaMs) : "unknown"]);
+  return { kind: "confirm", command: "build", args, question: "Build again?", plan,
+    options: [{ value: "yes", label: "Yes, build again" }, { value: "back", label: "No, cancel" }] };
 }

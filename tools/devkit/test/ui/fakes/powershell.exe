@@ -4,6 +4,18 @@
 # a short failing build with DevKit stage markers.
 for arg in "$@"; do last="$arg"; done
 if printf '%s\n' "$@" | grep -qx -- "-Command"; then exec bash -c "$last"; fi
+if printf '%s\n' "$@" | grep -qx -- "/run"; then echo "  ✓ Cavey 0.4.0.7 started"; exit 0; fi
+if printf '%s\n' "$@" | grep -qx -- "feature/alpha" && printf '%s\n' "$@" | grep -qx -- "--local"; then
+  # A successful local build with a result marker for the build card.
+  for stage in source prepare checks compile package; do
+    echo "@@CAVEY_STAGE|$stage|running|$stage"; sleep 0.4; echo "@@CAVEY_STAGE|$stage|done|$stage"
+  done
+  echo "@@CAVEY_STAGE|verify|done|Started as 0.4.0.7"
+  echo "@@CAVEY_STAGE|publish|skipped|Local-only build"
+  echo '@@CAVEY_RESULT|{"id":"run7","status":"built","folder":"/tmp/devkit-ui-run7","version":"0.4.0.7","channel":"devkit/alpha","tag":"test-devkit-alpha-v0.4.0.7","local":true,"source":"feature/alpha","url":"","artifacts":[{"name":"CavePlayer-Setup.exe","size":50593792},{"name":"CavePlayer-portable.zip","size":63963136}]}'
+  echo "  ✓ built · /tmp/devkit-ui-run7"
+  exit 0
+fi
 echo "Build plan"
 echo "@@CAVEY_STAGE|source|running|Prepare source checkout"; sleep 0.3
 echo "@@CAVEY_STAGE|source|done|Source checkout ready"

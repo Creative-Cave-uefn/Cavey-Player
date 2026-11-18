@@ -216,3 +216,24 @@ export function prettyDirectory(directory: string): string {
 export function projectLabel(directory: string): string {
   return basename(directory) || directory;
 }
+
+/** Open a folder or URL with the system handler. */
+export function openExternal(target: string): void {
+  const [program, args] = process.platform === "win32" ? ["explorer.exe", [target]]
+    : process.platform === "darwin" ? ["open", [target]] : ["xdg-open", [target]];
+  const child = spawn(program, args, { detached: true, stdio: "ignore", windowsHide: false });
+  child.on("error", () => { /* no handler installed */ });
+  child.unref();
+}
+
+/** Put text on the system clipboard. Resolves false when no clipboard tool is available. */
+export function copyText(text: string): Promise<boolean> {
+  const [program, args]: [string, string[]] = process.platform === "win32" ? ["clip.exe", []]
+    : process.platform === "darwin" ? ["pbcopy", []] : ["xclip", ["-selection", "clipboard"]];
+  return new Promise(done => {
+    const child = spawn(program, args, { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    child.on("error", () => done(false));
+    child.on("close", code => done(code === 0));
+    child.stdin.end(text, "utf8");
+  });
+}

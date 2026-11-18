@@ -140,9 +140,9 @@ def welcome_palette_and_shortcuts(s):
     s.wait_for("cavey-player · main ✓")
     check_layout(s)
     s.type("/")
-    s.wait_for("/terminal")
+    s.wait_for("/help")
     text = s.text()
-    for name in ["/build", "/releases", "/recover", "/run", "/logs", "/doctor", "/terminal", "/help"]:
+    for name in ["/build", "/rebuild", "/releases", "/recover", "/run", "/logs", "/doctor", "/help"]:
         assert name in text, name
     assert "/cache" not in text, "secondary commands must stay hidden on a bare /"
     s.type("ca")
@@ -235,6 +235,46 @@ def failing_build_output(s):
     s.wait_for("hello-from-shell\n")
 
 
+def build_card_queue_and_rebuild(s):
+    s.wait_for("? for shortcuts")
+    s.type("/build --branch feature/alpha --local --yes")
+    s.type(ENTER)
+    s.wait_for("esc to interrupt")
+    s.type("echo queued-one")
+    s.type(ENTER)
+    s.wait_for("queued: echo queued-one")
+    s.wait_for("Built 0.4.0.7 · local", timeout=20)
+    text = s.text()
+    assert "CavePlayer-Setup.exe" in text and "48.3 MB" in text
+    assert "Run" in text and "Open folder" in text and "Build again" in text
+    assert "Copy link" not in text, "local builds have no link"
+    assert "✓ Verify" in text
+    s.wait_for("⏺ PowerShell(echo queued-one)")
+    s.wait_gone("queued: echo queued-one")
+    s.type("/rebuild")
+    s.type(ENTER)
+    s.wait_for("Build again?")
+    assert "Build feature/alpha · local" in s.text()
+    check_layout(s)
+    s.type(ESC)
+    s.wait_for("Cancelled")
+
+
+def interrupt_drops_queue(s):
+    s.wait_for("? for shortcuts")
+    s.type("/build --branch main --local --yes")
+    s.type(ENTER)
+    s.wait_for("esc to interrupt")
+    s.type("echo never")
+    s.type(ENTER)
+    s.wait_for("queued: echo never")
+    s.type(ESC)
+    s.wait_for("Interrupted")
+    s.wait_gone("queued: echo never")
+    s.pump(1.5)
+    assert "PowerShell(echo never)" not in s.text()
+
+
 def releases_manager(s):
     s.wait_for("? for shortcuts")
     s.type("/releases")
@@ -294,6 +334,8 @@ SCENARIOS = [
     ("build_wizard_back_and_cancel", build_wizard_back_and_cancel, (100, 34)),
     ("name_channel_and_note", name_channel_and_note, (100, 34)),
     ("failing_build_output", failing_build_output, (100, 34)),
+    ("build_card_queue_and_rebuild", build_card_queue_and_rebuild, (100, 34)),
+    ("interrupt_drops_queue", interrupt_drops_queue, (100, 34)),
     ("releases_manager", releases_manager, (100, 34)),
     ("small_terminal", small_terminal, (80, 24)),
     ("double_ctrl_c_exits", double_ctrl_c_exits, (100, 34)),
