@@ -767,7 +767,7 @@ function App() {
       return 2 + 1 + (dialog.plan?.length ? 1 + dialog.plan.length : 0) + (dialog.filterable ? 2 : 0) + 1 + shown + more + 2;
     }
     const typed = inputValue.startsWith("/") && !/\s/.test(inputValue);
-    return 3 + (showKeys ? 13 : typed ? 8 : 1);
+    return 4 + (showKeys ? 13 : typed ? 8 : 0);
   })();
   const spinnerRows = (busy ? 2 : 0) + queue.length;
   const viewport = Math.max(3, terminal.rows - promptRows - spinnerRows - (searchOpen ? 2 : 0) - 2);

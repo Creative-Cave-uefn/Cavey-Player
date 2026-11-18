@@ -164,12 +164,22 @@ def welcome_palette_and_shortcuts(s):
     for name in ["/build", "/rebuild", "/releases", "/recover", "/run", "/logs", "/doctor", "/help"]:
         assert name in text, name
     assert "/cache" not in text, "secondary commands must stay hidden on a bare /"
+    rows = text.split("\n")
+    top = next(i for i, r in enumerate(rows) if "> /" in r) - 1
+    assert "╭" in rows[top], "input frame top border expected right above the prompt"
+    assert top > max(i for i, r in enumerate(rows) if "/help" in r), "palette must sit above the input frame"
+    assert top - 1 == max(i for i, r in enumerate(rows) if "/help" in r), "no gap between palette and frame"
+    assert rows.index(next(r for r in rows if "/build" in r and "Build" in r)) < top
+    assert any("? for shortcuts" in r for r in rows[top + 3:]), "hint line must stay below the frame"
     s.type("ca")
     s.wait_for("Source build cache")
     s.type(ESC)
     s.wait_gone("Source build cache")
     s.type("?")
     s.wait_for("Ctrl+O")
+    rows = s.text().split("\n")
+    frame = next(i for i, r in enumerate(rows) if "╭" in r and i > 0 and "> " in rows[i + 1])
+    assert next(i for i, r in enumerate(rows) if "Ctrl+O" in r) < frame, "shortcut sheet must sit above the frame"
     check_layout(s)
 
 

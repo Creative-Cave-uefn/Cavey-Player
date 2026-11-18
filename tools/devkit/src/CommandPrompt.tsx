@@ -241,10 +241,6 @@ export function CommandPrompt(p: Props) {
   const nameWidth = Math.max(0, ...palette.map(c => c.name.length)) + 4;
   return (
     <Box flexDirection="column" paddingX={2} flexShrink={0}>
-      <Box borderStyle="round" borderColor={theme.border} paddingX={1}>
-        <Text color={running ? theme.dim : theme.text}>{"> "}</Text>
-        {field("Type a command, / for actions, ? for shortcuts")}
-      </Box>
       {palette.length > 0 ? (
         <Box flexDirection="column" paddingX={2}>
           {palette.map((option, index) => {
@@ -269,14 +265,17 @@ export function CommandPrompt(p: Props) {
               <Text color={theme.dim}>{action}</Text></Box>
           ))}
         </Box>
-      ) : (
-        <Box paddingX={2} justifyContent="space-between">
-          <Text color={p.footerNote ? theme.text : theme.dim} wrap="truncate-end">
-            {p.footerNote ?? "? for shortcuts"}
-          </Text>
-          <Text color={theme.dim} wrap="truncate-start">{p.footerRight}</Text>
-        </Box>
-      )}
+      ) : null}
+      <Box borderStyle="round" borderColor={theme.border} paddingX={1}>
+        <Text color={running ? theme.dim : theme.text}>{"> "}</Text>
+        {field("Type a command, / for actions, ? for shortcuts")}
+      </Box>
+      <Box paddingX={2} justifyContent="space-between">
+        <Text color={p.footerNote ? theme.text : theme.dim} wrap="truncate-end">
+          {p.footerNote ?? "? for shortcuts"}
+        </Text>
+        <Text color={theme.dim} wrap="truncate-start">{p.footerRight}</Text>
+      </Box>
     </Box>
   );
 }
