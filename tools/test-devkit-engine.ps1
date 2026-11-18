@@ -306,11 +306,15 @@ Run-Test 'android-support' {
         $missing = @(Android-Support $tree)
         if ($missing.Count) { Fail "Complete Android tree rejected: $($missing -join ', ')" }
     } finally { Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue }
-    $previous = $env:ANDROID_HOME
+    # CI runners have a real SDK: hide every place DevKit looks for one.
+    $saved = @{}
+    foreach ($name in 'ANDROID_HOME','ANDROID_SDK_ROOT','LOCALAPPDATA') { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
     try {
-        $env:ANDROID_HOME = Join-Path ([IO.Path]::GetTempPath()) 'no-such-android-sdk'
+        $nowhere = Join-Path ([IO.Path]::GetTempPath()) ('no-such-android-sdk-' + [guid]::NewGuid().ToString('N'))
+        foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $nowhere) }
+        if (Android-Sdk) { Fail "An SDK was found where there is none: $(Android-Sdk)" }
         if (Find-AndroidTool 'apksigner') { Fail 'A tool was found without an SDK.' }
-    } finally { $env:ANDROID_HOME = $previous }
+    } finally { foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) } }
 }
 
 Run-Test 'release-age' {
