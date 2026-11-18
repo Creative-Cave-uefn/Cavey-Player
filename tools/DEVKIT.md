@@ -55,7 +55,7 @@ The layout follows Claude Code: a welcome box, a transcript, one spinner line wh
 
 `/releases` opens: manage a channel (show versions, update from a branch, roll back), list all test releases, or clean up outdated ones. `/recover` lists saved builds whose verified artifacts can be published again.
 
-The command list lives in `src/commands.ts` and feeds the palette, `/help` and aliases (`/manager` → `/releases`, `/resume` and `/retry-publish` → `/recover`).
+The command list lives in `src/commands.ts` and feeds the palette, `/help` and aliases. The palette shows 8 core commands (`/build`, `/rebuild`, `/releases`, `/recover`, `/run`, `/logs`, `/doctor`, `/help`); the rest appear as you type. Aliases: `/manager` → `/releases`, `/resume` and `/retry-publish` → `/recover`.
 
 ## Commands
 
