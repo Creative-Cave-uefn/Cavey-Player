@@ -15,6 +15,8 @@ export type Entry =
   | {
       id: string; kind: "run"; title: string; output: string; status: RunStatus;
       exitCode?: number; durationMs?: number; stages?: StageRecord[]; result?: BuildResult;
+      /** Expanded by clicking its "… +N lines" line; Ctrl+O expands every entry. */
+      expanded?: boolean;
     };
 
 export type LineKind = "error" | "warning" | "success" | "normal";

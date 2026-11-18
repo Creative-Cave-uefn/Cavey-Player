@@ -313,6 +313,15 @@ Run-Test 'android-support' {
     } finally { $env:ANDROID_HOME = $previous }
 }
 
+Run-Test 'release-age' {
+    $old = [pscustomobject]@{ publishedAt = [DateTime]::UtcNow.AddDays(-20).ToString('o') }
+    $new = [pscustomobject]@{ publishedAt = [DateTime]::UtcNow.AddHours(-3) }
+    $draft = [pscustomobject]@{ publishedAt = $null }
+    if ((Release-Age $old) -lt 19.9) { Fail 'Age of an old release is wrong.' }
+    if ((Release-Age $new) -gt 1) { Fail 'A recent release looks old.' }
+    if ((Release-Age $draft) -ne 0) { Fail 'Drafts must not count as stale.' }
+}
+
 Write-Host ''
 if ($script:Failures) {
     Write-Host "$($script:Failures) engine test(s) failed, $($script:Passed) passed." -ForegroundColor Red

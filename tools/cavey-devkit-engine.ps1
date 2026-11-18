@@ -485,6 +485,18 @@ function Remove-TestRelease([string]$tag) {
     if ($check.tagName -cne $tag -or -not $check.isPrerelease) { Fail "Invalid release: $tag" }
     Gh @('release','delete',$tag,'--repo',$script:ReleaseRepo,'--cleanup-tag','--yes') | Out-Null
 }
+function Release-Age([object]$release) {
+    # Days since publication; drafts and unknown dates count as new.
+    $published = $release.publishedAt
+    if (-not $published) { return 0 }
+    $at = if ($published -is [DateTime]) { $published } else {
+        $parsed = [DateTime]::MinValue
+        if (-not [DateTime]::TryParse([string]$published, [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsed)) { return 0 }
+        $parsed
+    }
+    return ([DateTime]::UtcNow - $at.ToUniversalTime()).TotalDays
+}
 function Clean([string[]]$tokens) {
     # Default retention: DevKit channels keep $script:KeepPerChannel versions for
     # rollback; CI channels keep one (CI replaces them on every push anyway).
@@ -494,6 +506,11 @@ function Clean([string[]]$tokens) {
         Fail '--keep must be an integer of at least 1.'
     }
     $withDrafts = Flag $tokens '--drafts'
+    $staleDays = 0
+    $staleText = Option $tokens '--stale'
+    if ($staleText -and (-not [int]::TryParse($staleText,[ref]$staleDays) -or $staleDays -lt 1)) {
+        Fail '--stale must be a number of days, at least 1.'
+    }
     $all = @(All-TestReleases)
     $channel = Option $tokens '--channel'
     if ($channel) {
@@ -507,6 +524,12 @@ function Clean([string[]]$tokens) {
                 elseif ($slug.StartsWith($script:DevKitSlugPrefix,[StringComparison]::Ordinal)) { $script:KeepPerChannel }
                 else { 1 }
         $active = @(Sort-Newest @($group.Group | Where-Object { -not $_.isDraft }))
+        $devkitChannel = $slug.StartsWith($script:DevKitSlugPrefix,[StringComparison]::Ordinal)
+        if ($staleDays -and $devkitChannel -and $active.Count -and (Release-Age $active[0]) -gt $staleDays) {
+            # A DevKit channel nobody updated for $staleDays days goes away entirely.
+            $remove += @($group.Group)
+            continue
+        }
         if ($active.Count -gt $keep) { $remove += @($active | Select-Object -Skip $keep) }
         if ($withDrafts) { $remove += @($group.Group | Where-Object { $_.isDraft }) }
     }
@@ -1235,6 +1258,44 @@ function Install-Apk([string[]]$tokens) {
     if ($LASTEXITCODE -ne 0 -or $output -notmatch 'Success') { Fail "adb install failed: $($output.Trim())" }
     Say "  ✓ Installed Cavey $($record[0].version)" Green
 }
+function Try-Release([string[]]$tokens) {
+    # Run a published test build on this computer from DevKit's own folder.
+    # It shares the installed Cavey's settings and library, so Cavey must be
+    # closed first.
+    $channel = Option $tokens '--channel'
+    $tag = Option $tokens '--tag'
+    if (-not $channel -and -not $tag) { Fail 'Usage: /try --channel <name> [--tag <test-release-tag>] --yes' }
+    $candidates = @(Sort-Newest @(Test-Releases | Where-Object {
+        ($tag -and $_.tagName -ceq $tag) -or (-not $tag -and ([string]$_.tagName).StartsWith((Channel-Prefix $channel),[StringComparison]::Ordinal))
+    }))
+    if ($candidates.Count -eq 0) { Fail 'No active test release matches.' }
+    $release = $candidates[0]
+    if (Get-Process -Name 'cave_player' -ErrorAction SilentlyContinue) {
+        Fail 'Cavey is running. Close it first: the test build uses the same settings and library.'
+    }
+    if (-not (Ask "Download and start $($release.tagName)?" (Flag $tokens '--yes'))) { return }
+    $root = Join-Path $script:DataHome 'try'
+    $target = Join-Path $root $release.tagName
+    $exe = Join-Path $target 'app\cave_player.exe'
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        Stage 'source' 'running' "Download $($release.tagName)"
+        Gh @('release','download',$release.tagName,'--repo',$script:ReleaseRepo,'--pattern','CavePlayer-portable.zip','--dir',$target,'--clobber') | Out-Null
+        $zip = Join-Path $target 'CavePlayer-portable.zip'
+        if (-not (Test-Path -LiteralPath $zip)) { Fail 'The release has no CavePlayer-portable.zip.' }
+        Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $target 'app') -Force
+        Remove-Item -LiteralPath $zip -Force
+        Stage 'source' 'done' 'Downloaded'
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { Fail 'The portable archive has no cave_player.exe.' }
+    }
+    # Keep the three most recent tried builds.
+    @(Get-ChildItem -LiteralPath $root -Directory | Sort-Object LastWriteTime -Descending | Select-Object -Skip 3) |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    (Get-Item -LiteralPath $target).LastWriteTime = Get-Date
+    Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe)
+    Say "  ✓ Started $($release.tagName)" Green
+    Hint 'Start your installed Cavey again when you are done; it may update its settings from the newer build.'
+}
 function Emit-Result([object]$record) {
     # Machine-readable summary for the terminal UI's build card.
     if ($null -eq $record) { return }
@@ -1514,6 +1575,8 @@ function Help {
         '/sign [<thumbprint>|off]      Sign builds with a code-signing certificate'
         '/build --android --branch <name> --local --yes   Android APK (local only)'
         '/install-apk                  Install the latest APK on a USB-connected phone'
+        '/try --channel <name> --yes   Download and start a test build (close Cavey first)'
+        '/clean --stale <days> --yes   Also delete DevKit channels idle for that long'
         '/android-key [<path.jks> [alias]|off]   Android signing key'
         '/releases [--channel <name>]  Test channels and their versions'
         '/rollback --channel <name> --to <tag> --yes'
@@ -1565,6 +1628,7 @@ function Dispatch([string[]]$tokens) {
         'clean' { Clean $tokens }
         'build' { if (Flag $tokens '--android') { Build-Android $tokens } else { Build $tokens } }
         'install-apk' { Install-Apk $tokens }
+        'try' { Try-Release $tokens }
         'android-key' { Android-KeySettings $tokens }
         'cache' { Cache-Manager $tokens }
         'manager' { Release-Manager $tokens }

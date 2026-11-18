@@ -11,7 +11,7 @@ const dataHome = join(process.env.LOCALAPPDATA || join(homedir(), ".cavey-devkit
 
 export const engineCommands = new Set([
   "status", "doctor", "branches", "releases", "build", "clean",
-  "history", "logs", "run", "project", "manager", "rollback", "rollforward", "notify", "sign", "install-apk", "android-key",
+  "history", "logs", "run", "project", "manager", "rollback", "rollforward", "notify", "sign", "install-apk", "android-key", "try",
   "recover", "resume", "retry-publish", "cache", "update",
 ]);
 
@@ -223,4 +223,28 @@ export function copyText(text: string): Promise<boolean> {
     child.on("close", code => done(code === 0));
     child.stdin.end(text, "utf8");
   });
+}
+
+const TOAST_SCRIPT = [
+  "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null",
+  "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null",
+  "$e = [Security.SecurityElement]",
+  "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument",
+  "$xml.LoadXml(\"<toast><visual><binding template='ToastGeneric'><text>$($e::Escape($env:CAVEY_TOAST_TITLE))</text>\" +",
+  "  \"<text>$($e::Escape($env:CAVEY_TOAST_BODY))</text></binding></visual></toast>\")",
+  "$id = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'",
+  "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id).Show([Windows.UI.Notifications.ToastNotification]::new($xml))",
+].join("\n");
+
+/** Desktop notification (Windows toast, notify-send elsewhere); silently does nothing if unsupported. */
+export function notifyDesktop(title: string, body: string): void {
+  const [program, args, env] = process.platform === "win32"
+    ? ["powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", TOAST_SCRIPT],
+      { ...process.env, CAVEY_TOAST_TITLE: title, CAVEY_TOAST_BODY: body }]
+    : ["notify-send", [title, body], process.env];
+  try {
+    const child = spawn(program as string, args as string[], { env: env as NodeJS.ProcessEnv, stdio: "ignore", windowsHide: true, detached: true });
+    child.on("error", () => { /* no notification service */ });
+    child.unref();
+  } catch { /* ignore */ }
 }

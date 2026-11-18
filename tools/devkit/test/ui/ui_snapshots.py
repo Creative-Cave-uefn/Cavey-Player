@@ -86,6 +86,19 @@ class Screen:
             os.write(self.fd, key.encode())
             self.pump(0.04)
 
+    def click(self, needle):
+        """Left-click the first cell of `needle` (SGR mouse protocol)."""
+        for row, line in enumerate(self.screen.display):
+            col = line.find(needle)
+            if col >= 0:
+                x, y = col + 2, row + 1
+                os.write(self.fd, f"\x1b[<0;{x};{y}M".encode())
+                self.pump(0.05)
+                os.write(self.fd, f"\x1b[<0;{x};{y}m".encode())
+                self.pump(0.2)
+                return
+        raise AssertionError(f"nothing to click: {needle!r}\n{self.text()}")
+
     def close(self):
         try:
             os.kill(self.pid, signal.SIGKILL)
@@ -233,11 +246,15 @@ def failing_build_output(s):
     assert "⏺ Build main · local" in text
     assert "✗ Compile" in text and "✓ Source" in text and "– Checks" in text
     assert "ERROR: lib/main.dart:12:3: Undefined name 'foo'" in text, "errors stay visible when collapsed"
-    assert "lines (ctrl+o to expand)" in text
+    assert "lines (click or ctrl+o to expand)" in text
     assert "@@CAVEY_STAGE" not in text
     check_layout(s)
+    s.click("lines (click or ctrl+o to expand)")
+    s.wait_for("(click to collapse)")
+    s.click("(click to collapse)")
+    s.wait_for("to expand)")
     s.type(CTRL_O)
-    s.wait_gone("lines (ctrl+o to expand)")
+    s.wait_gone("to expand)")
     s.type("echo hello-from-shell")
     s.type(ENTER)
     s.wait_for("⏺ PowerShell(echo hello-from-shell)")
@@ -299,11 +316,12 @@ def releases_manager(s):
     s.type(ENTER)
     s.wait_for("GitHub Actions")
     assert "Update from a branch" not in s.text(), "CI channels are view-only"
+    assert "Try it on this computer" in s.text()
     s.type(ESC)
     s.wait_for("Which channel?")
     s.type(ENTER)
     s.wait_for("Undo rollback")
-    s.type("4")
+    s.type("5")
     s.wait_for("Undo the rollback of")
     check_layout(s)
 

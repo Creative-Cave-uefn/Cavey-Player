@@ -11,7 +11,7 @@ import { helpText, resolveCommand } from "./commands.js";
 import { createWorkflowStream, stageOrder, stripWorkflowMarkers, type BuildResult, type StageRecord } from "./build-events.js";
 import { releaseChannels, type ReleaseRecord } from "./choices.js";
 import {
-  changeDirectory, commandRequest, copyText, engineCommands, openExternal, gitStatusRequest, initialDirectory,
+  changeDirectory, commandRequest, copyText, engineCommands, notifyDesktop, openExternal, gitStatusRequest, initialDirectory,
   launchTerminal, parseGitStatus, prettyDirectory, projectLabel, repositoryRoot,
   runCommand, shellRequest, splitArgs, type GitState, type RunRequest,
 } from "./runner.js";
@@ -48,6 +48,7 @@ function saveLastBuild(update: (old: LastBuild | null) => LastBuild | null): voi
 
 type CardActions = {
   run: () => void; install: () => void; open: (folder: string) => void; copy: (text: string) => void; rebuild: () => void;
+  toggle: (id: string) => void;
 };
 const ActionsContext = createContext<CardActions | null>(null);
 const VERSION = (() => {
@@ -141,7 +142,9 @@ function Gutter({ first, children }: { first: boolean; children: React.ReactNode
 }
 
 function RunView({ entry, expanded }: { entry: Extract<Entry, { kind: "run" }>; expanded: boolean }) {
-  const view = summarizeOutput(entry.output, expanded);
+  const actions = useContext(ActionsContext);
+  const open = expanded || Boolean(entry.expanded);
+  const view = summarizeOutput(entry.output, open);
   const dot: Record<RunStatus, string> = {
     running: theme.dim, success: theme.success, error: theme.error, cancelled: theme.warning,
   };
@@ -149,7 +152,9 @@ function RunView({ entry, expanded }: { entry: Extract<Entry, { kind: "run" }>; 
   if (entry.stages?.length) rows.push(<StageLine key="stages" stages={entry.stages} />);
   view.lines.forEach((line, i) => {
     rows.push(line === null
-      ? <Text key={"gap" + i} color={theme.dim}>… +{view.hidden} lines (ctrl+o to expand)</Text>
+      ? <Box key={"gap" + i} onClick={event => { event.stopImmediatePropagation(); actions?.toggle(entry.id); }}>
+          <Text color={theme.dim}>… +{view.hidden} lines (click or ctrl+o to expand)</Text>
+        </Box>
       : <Text key={i} wrap="wrap" color={line.kind === "error" ? theme.error : line.kind === "warning" ? theme.warning
         : line.kind === "success" ? theme.success : theme.text}>{line.text}</Text>);
   });
@@ -160,7 +165,11 @@ function RunView({ entry, expanded }: { entry: Extract<Entry, { kind: "run" }>; 
     else if (time) rows.push(<Text key="end" color={theme.dim}>Done in {time}</Text>);
     else if (!view.total && !entry.stages?.length) rows.push(<Text key="end" color={theme.dim}>(no output)</Text>);
   }
-  const actions = useContext(ActionsContext);
+  if (entry.expanded && !expanded) {
+    rows.push(<Box key="collapse" onClick={event => { event.stopImmediatePropagation(); actions?.toggle(entry.id); }}>
+      <Text color={theme.dim}>(click to collapse)</Text>
+    </Box>);
+  }
   const result = entry.result;
   if (result && entry.status === "success" && ["built", "published"].includes(result.status)) {
     rows.push(<BuildCard key="card" result={result} actions={actions} />);
@@ -384,7 +393,11 @@ function App() {
         stages: e.stages?.map(s => s.state === "running" && status !== "success"
           ? { ...s, state: "failed" as const, label: "Interrupted or failed" } : s),
       }));
-      if (result.durationMs > 60000 && !focusedTerminal) { try { process.stdout.write("\x07"); } catch { /* ignore */ } }
+      if (result.durationMs > 60000 && !focusedTerminal) {
+        try { process.stdout.write("\x07"); } catch { /* ignore */ }
+        notifyDesktop("Cavey DevKit", (options.title ?? req.label) + " · " +
+          (status === "success" ? "done" : status === "cancelled" ? "interrupted" : "failed") + " in " + formatDuration(result.durationMs));
+      }
       if (req.label.startsWith("/project") && result.code === 0) {
         const updated = initialDirectory();
         if (updated !== directory) setDirectory(updated);
@@ -485,7 +498,8 @@ function App() {
     switch (wizard.kind) {
       case "releases-home": {
         if (value === "list") { closeWizard(); await runEngine("releases", []); return; }
-        if (value === "clean") { push(simpleConfirm("clean", ["--keep", "3"])); return; }
+        if (value === "clean") { push(simpleConfirm("clean", [])); return; }
+        if (value === "stale") { push(simpleConfirm("clean", ["--stale", "14"])); return; }
         const releases = await fetching("Loading releases", () => loadReleases(true));
         if (releases) push({ kind: "manager-channel", releases });
         return;
@@ -529,6 +543,10 @@ function App() {
         }
         if (value === "rollforward") {
           push(simpleConfirm("rollforward", ["--channel", wizard.channel]));
+          return;
+        }
+        if (value === "try") {
+          push(simpleConfirm("try", ["--channel", wizard.channel]));
           return;
         }
         if (value === "rollback") {
@@ -610,7 +628,7 @@ function App() {
         if (!args.length) { await openReleases("home"); return; }
         await runEngine("manager", args);
         return;
-      case "rollback": case "rollforward":
+      case "rollback": case "rollforward": case "try":
         echo();
         if (!args.length) { await openReleases("channel"); return; }
         if (!yes) { confirm(spec.name, args); return; }
@@ -729,6 +747,7 @@ function App() {
   const cardActions = useMemo<CardActions>(() => ({
     run: () => { void handleSubmit("/run"); },
     install: () => { void handleSubmit("/install-apk"); },
+    toggle: id => setEntries(old => old.map(e => e.id === id && e.kind === "run" ? { ...e, expanded: !e.expanded } : e)),
     open: folder => { openExternal(folder); flash("Opened " + folder); },
     copy: text => { void copyText(text).then(ok => flash(ok ? "Link copied" : "Could not reach the clipboard")); },
     rebuild: () => { void handleSubmit("/rebuild"); },

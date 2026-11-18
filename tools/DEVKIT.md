@@ -24,8 +24,8 @@ Existing **Cavey DevKit** shortcuts continue to use `tools/cavey-devkit.ps1`; on
 
 The layout follows Claude Code: a welcome box, a transcript, one spinner line while work runs, and a rounded input box with a single hint line. Every color comes from `src/theme.ts` (text, dim, border, accent, success, error, warning); components must not add others.
 
-- **Transcript.** Typed commands appear as `> /build`. Each run is a `⏺ Title` entry with its output under `⎿`. Output is collapsed to the last lines; error lines are always kept visible and coloured. `Ctrl+O` expands or collapses all output. Builds show their stages on the first `⎿` line (`✓ Source 2s  ✓ Prepare 41s  ◆ Compile …`).
-- **Status in one place.** While something runs, the spinner line shows the current stage, elapsed time, an ETA from recent builds (`history.jsonl`) and `esc to interrupt`. The window title, tab status dot and Windows Terminal taskbar progress follow the same state. A long run that finishes while the terminal is unfocused rings the bell.
+- **Transcript.** Typed commands appear as `> /build`. Each run is a `⏺ Title` entry with its output under `⎿`. Output is collapsed to the last lines; error lines are always kept visible and coloured. Click `… +N lines` to expand one entry; `Ctrl+O` expands or collapses all output. Builds show their stages on the first `⎿` line (`✓ Source 2s  ✓ Prepare 41s  ◆ Compile …`).
+- **Status in one place.** While something runs, the spinner line shows the current stage, elapsed time, an ETA from recent builds (`history.jsonl`) and `esc to interrupt`. The window title, tab status dot and Windows Terminal taskbar progress follow the same state. A run longer than a minute that finishes while the terminal is unfocused rings the bell and shows a Windows notification.
 - **Footer.** `? for shortcuts` on the left; project, branch, `●` for uncommitted changes and `↑/↓` for ahead/behind on the right. Short notices (copied text, "press Ctrl+C again") replace the left hint for a moment.
 - **Dialogs.** Guided steps are questions in a rounded box (“Build which branch?”) with numbered options. Short lists pick on a digit key; long lists (branches, channels, versions) take a typed filter. Each pick is written to the transcript as one `⏺` line; Esc (or Backspace on an empty filter) goes back one step and removes that line. Confirmations show a plan (source, channel, what will be removed, checks, estimated time) instead of a one-line summary.
 - **Queue.** Commands typed while something runs wait their turn and are listed under the spinner (`⎿ queued: …`). Esc interrupts the current run and drops the queue.
@@ -122,6 +122,8 @@ After packaging, DevKit unpacks the portable ZIP and runs `cave_player.exe --smo
 - `/releases --channel <channel>` prints active and hidden versions.
 - `/rollback --channel <channel> --to <tag> --yes` restores an earlier version by marking **newer** releases as GitHub drafts. Their tags and assets remain stored, and old binaries are **not** republished under a false newer version number. Installations already on a newer APP_VERSION are not downgraded.
 - `/rollforward --channel <channel> --yes` makes the releases hidden by a rollback active again.
+- "Try it on this computer" (or `/try --channel <name> --yes`) downloads the channel's newest portable build into DevKit's folder and starts it. It uses the installed Cavey's settings and library, so DevKit refuses while Cavey is running; the installed Cavey is not changed. The three most recent tried builds are kept.
+- "Remove idle DevKit channels" (or `/clean --stale <days>`) deletes DevKit channels without a new version for that many days (14 from the menu).
 - Hidden releases are kept by `/clean` (add `--drafts` to delete them) and removed automatically after the next successful update of that channel. The update confirmation lists every release it will prune.
 
 ## Build cache, recovery and updates

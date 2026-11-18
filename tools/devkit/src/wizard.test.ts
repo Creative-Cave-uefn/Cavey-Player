@@ -26,7 +26,7 @@ test("only DevKit channels can be updated; CI channels are view-only", () => {
   const channel = dialogFor({ kind: "channel", branch, releases });
   assert.deepEqual(channel.options.map(o => o.value), ["devkit/claude/wave-fix/20261118-ab12", "devkit/dj"]);
   const ci = dialogFor({ kind: "manager-action", channel: "claude/wave-fix", releases });
-  assert.deepEqual(ci.options.map(o => o.value), ["history"]);
+  assert.deepEqual(ci.options.map(o => o.value), ["history", "try"]);
   assert.match(new Map(ci.plan).get("Owner")!, /GitHub Actions/);
 });
 
@@ -151,4 +151,14 @@ test("Android APK is a local build with its own confirmation", async () => {
   const w = androidConfirm(branch, null);
   assert.deepEqual(w.args, ["--android", "--branch", "claude/wave-fix", "--local"]);
   assert.equal(runTitle("build", w.args), "Build claude/wave-fix · Android APK");
+});
+
+test("try and idle cleanup explain what they touch", async () => {
+  const { runTitle } = await import("./wizard.js");
+  const tryIt = dialogFor(simpleConfirm("try", ["--channel", "devkit/dj"]));
+  assert.match(new Map(tryIt.plan).get("Profile")!, /close Cavey first/);
+  const stale = dialogFor(simpleConfirm("clean", ["--stale", "14"]));
+  assert.match(new Map(stale.plan).get("Idle")!, /14 days/);
+  assert.equal(runTitle("clean", ["--stale", "14", "--yes"]), "Remove idle DevKit channels");
+  assert.equal(runTitle("try", ["--channel", "devkit/dj", "--yes"]), "Try devkit/dj");
 });

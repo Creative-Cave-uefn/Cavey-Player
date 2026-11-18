@@ -7,7 +7,7 @@ import { formatDuration, relativeTime } from "./transcript.js";
 
 export type Branch = { name: string; date: string; sha: string; author: string };
 export type SavedRun = { id: string; source: string; channel: string; status: string; updatedUtc?: string; version?: string };
-export type ConfirmCommand = "build" | "clean" | "rollback" | "rollforward" | "resume" | "cache";
+export type ConfirmCommand = "build" | "clean" | "rollback" | "rollforward" | "resume" | "cache" | "try";
 
 export type Wizard =
   | { kind: "releases-home" }
@@ -194,6 +194,12 @@ export function simpleConfirm(command: ConfirmCommand, args: string[]): Wizard {
   const flag = (key: string) => { const i = args.indexOf(key); return i >= 0 ? args[i + 1] ?? "" : ""; };
   const plain = args.filter(a => a !== "--yes").join(" ");
   switch (command) {
+    case "try":
+      return { kind: "confirm", command, args, question: "Try “" + flag("--channel") + "” on this computer?",
+        plan: [["Build", flag("--tag") || "newest active version of the channel"],
+          ["Profile", "uses your Cavey settings and library; close Cavey first"],
+          ["Files", "kept in DevKit's folder; the installed Cavey is not changed"]],
+        options: [{ value: "yes", label: "Yes, download and start it" }, { value: "back", label: "No, go back" }] };
     case "rollforward": {
       return { kind: "confirm", command, args, question: "Undo the rollback of “" + flag("--channel") + "”?",
         plan: [["Effect", "releases hidden by the rollback become active again"]],
@@ -213,6 +219,7 @@ export function simpleConfirm(command: ConfirmCommand, args: string[]): Wizard {
     case "clean":
       return { kind: "confirm", command, args, question: "Delete outdated test releases?",
         plan: [["Keep", flag("--keep") ? flag("--keep") + " per channel" : KEEP_PER_CHANNEL + " per DevKit channel, 1 per CI channel"],
+          ...(flag("--stale") ? [["Idle", "DevKit channels without a new version for " + flag("--stale") + " days are deleted"] as [string, string]] : []),
           ["Hidden", args.includes("--drafts") ? "releases hidden by rollback are deleted too" : "releases hidden by rollback are kept"],
           ["Safe", "stable, beta, Android and iOS are never touched"]],
         options: [{ value: "yes", label: "Yes, delete" }, { value: "dry-run", label: "Show the list first" },
@@ -245,6 +252,7 @@ export function dialogFor(w: Wizard): Dialog {
           { value: "channel", label: "Manage a channel", detail: "versions · update · rollback" },
           { value: "list", label: "List all test releases" },
           { value: "clean", label: "Clean up outdated releases" },
+          { value: "stale", label: "Remove idle DevKit channels", detail: "no new version for 14 days" },
         ] };
     case "branch":
       return { id: "branch:" + (w.target ?? ""), filterable: true,
@@ -281,12 +289,13 @@ export function dialogFor(w: Wizard): Dialog {
       if (!isDevKitChannel(w.channel)) {
         return { id: "manager-action:" + w.channel, question: "Channel “" + w.channel + "”", filterable: false,
           plan: [["Owner", "GitHub Actions · replaced on every push to the branch"]],
-          options: [{ value: "history", label: "Show versions" }] };
+          options: [{ value: "history", label: "Show versions" }, { value: "try", label: "Try it on this computer" }] };
       }
       const hidden = hiddenReleases(w.releases, w.channel).length;
       return { id: "manager-action:" + w.channel, question: "Channel “" + w.channel + "”", filterable: false,
         options: [
           { value: "history", label: "Show versions" },
+          { value: "try", label: "Try it on this computer" },
           { value: "update", label: "Update from a branch" },
           { value: "rollback", label: "Roll back to an older version" },
           ...(hidden ? [{ value: "rollforward", label: "Undo rollback", detail: hidden + " hidden" }] : []),
@@ -344,9 +353,11 @@ export function runTitle(command: string, args: string[]): string {
     }
     case "rollback": return "Roll back " + opt("--channel") + " to " + opt("--to");
     case "rollforward": return "Undo rollback of " + opt("--channel");
+    case "try": return "Try " + (opt("--tag") || opt("--channel"));
     case "resume": case "retry-publish": case "recover":
       return (args.includes("--replace") ? "Replace and publish " : "Publish saved build ") + opt("--id");
-    case "clean": return args.includes("--dry-run") ? "Outdated test releases" : "Clean up test releases";
+    case "clean": return args.includes("--dry-run") ? "Outdated test releases"
+      : opt("--stale") ? "Remove idle DevKit channels" : "Clean up test releases";
     case "cache": return args.includes("prune") ? "Clear build cache" : "Build cache";
     case "manager": return opt("--channel") ? "Versions of " + opt("--channel") : "Release channels";
     default: return "/" + command + (args.length ? " " + args.filter(a => a !== "--yes").join(" ") : "");
