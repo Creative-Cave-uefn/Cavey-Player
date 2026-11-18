@@ -90,6 +90,15 @@ Dependencies: `@claude-code-kit/ui` 0.4.0 and `@claude-code-kit/ink-renderer` 0.
 
 Stage events (`@@CAVEY_STAGE|…`) stream from the engine during the build and are drawn on the build's transcript entry, then removed from the visible output. `/logs` keeps the detailed build output and `/history` the run status. Each build writes a recoverable manifest to `%LOCALAPPDATA%\CaveyDevKit\builds\<run-id>\run.json` with the source commit, version, channel, artifact paths and SHA-256 checksums.
 
+## What gets built
+
+- **Working copy.** "Working copy" at the top of the branch list (or `/build --working-tree --local --yes`) builds the project folder as it is now, uncommitted and untracked files included (`.gitignore` respected). DevKit snapshots it with a private Git index, so your index, stash and branch are untouched. Such builds are never published.
+- **Build script.** DevKit runs the branch's own `tools/local-test-build.ps1` when it supports the DevKit parameters, so a branch that changes its build is built the way it expects; otherwise it uses DevKit's copy. The transcript says which one ran, and `run.json` records it (`buildScript`).
+- **Faster builds.** "Build faster" in a local confirmation (or `--skip-checks`) skips `flutter analyze` and `flutter test`.
+- **Tool versions.** Flutter, Git and Inno Setup versions go into `run.json` (`tools`). A Flutter version other than `flutterVersion` in `tools/devkit.config.json` is flagged in the build plan and in `/doctor`.
+- **Code signing.** `/sign <certificate-thumbprint>` signs `cave_player.exe`, the downloader and the installer with `signtool` (Windows SDK) and a certificate from the Windows store; a published build stops if the installer signature is not valid. `/sign off` turns it off.
+- **Secrets.** Publishing stops if the release notes contain the value of an environment variable that looks secret (`*SECRET*`, `*TOKEN*`, `*PASSWORD*`, …); a warning appears if `build-log.txt` contains one.
+
 ## Launch check before publishing
 
 After packaging, DevKit unpacks the portable ZIP and runs `cave_player.exe --smoke-test=<run folder>\smoke.json`. The app (`lib/core/smoke_test.dart`) loads the native player libraries, renders one frame, writes its `APP_VERSION` and `BUILD_CHANNEL` and exits before the single-instance check, without touching user data. The build is published only if the report matches the planned version and channel. Branches older than this feature are not launched (the Verify stage shows "skipped"); `--skip-smoke` skips the check on purpose.

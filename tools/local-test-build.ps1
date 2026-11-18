@@ -26,7 +26,9 @@ param(
     [string]$BuildChannel = '',
     [string]$ProjectRoot = '',
     [string]$SourceBranch = '',
-    [switch]$RequireDownloader
+    [switch]$RequireDownloader,
+    [string]$SignThumbprint = '',
+    [string]$TimestampUrl = 'http://timestamp.digicert.com'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +77,23 @@ function Capture([string]$exe, [string[]]$arguments) {
     $out = & $exe @arguments 2>$null | Out-String
     $ErrorActionPreference = $old
     return $out.Trim()
+}
+
+# Подпись кода (необязательно): signtool из Windows SDK и сертификат из хранилища Windows по отпечатку
+function Sign-Files([string[]]$files) {
+    if (-not $SignThumbprint) { return }
+    $tool = (Get-Command 'signtool.exe' -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if (-not $tool) {
+        $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+        $tool = (Get-ChildItem -LiteralPath $kits -Recurse -Filter 'signtool.exe' -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+    }
+    if (-not $tool) { Fail 'Подпись включена, но signtool.exe не найден. Установите Windows SDK (Signing Tools).' }
+    foreach ($file in @($files | Where-Object { $_ -and (Test-Path -LiteralPath $_) })) {
+        if ((Run $tool @('sign', '/sha1', $SignThumbprint, '/fd', 'SHA256', '/tr', $TimestampUrl, '/td', 'SHA256', $file)) -ne 0) {
+            Fail "Не удалось подписать $file. Подробности в build-log.txt"
+        }
+    }
 }
 
 function Has([string]$name) { return [bool](Get-Command $name -ErrorAction SilentlyContinue) }
@@ -232,6 +251,7 @@ Stage 'compile' 'done' 'Flutter Windows compiled'
 
 $release = Join-Path $root 'build\windows\x64\runner\Release'
 if (-not (Test-Path (Join-Path $release 'cave_player.exe'))) { Fail "Не нашёл cave_player.exe в $release" }
+Sign-Files @((Join-Path $release 'cave_player.exe'))
 
 # ---------- 7. Загрузчик музыки ----------
 Say 'Добавляю Cavey-Downloader.exe'
@@ -253,6 +273,7 @@ if (-not $dlSource) {
 }
 if ($dlSource) {
     Copy-Item $dlSource (Join-Path $release $dlName) -Force
+    Sign-Files @((Join-Path $release $dlName))
     Write-Host "Загрузчик: $dlSource"
 } elseif ($RequireDownloader) {
     Fail 'Cavey-Downloader.exe не найден, а сборка будет опубликована: без него в ней не работает скачивание треков. Укажите путь параметром -Downloader или установите Cavey.'
@@ -273,6 +294,7 @@ $dlInfo = if ($dlSource) {
 [IO.File]::WriteAllText((Join-Path $root 'dist\downloader.json'), ($dlInfo | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
 Compress-Archive -Path (Join-Path $release '*') -DestinationPath 'dist\CavePlayer-portable.zip' -Force
 if ((Run $iscc @("/DMyVersion=$Version", 'installer\cave_player.iss')) -ne 0) { Fail 'Inno Setup не собрал установщик. Подробности в build-log.txt' }
+Sign-Files @((Join-Path $root 'dist\CavePlayer-Setup.exe'))
 foreach ($file in @('dist\CavePlayer-Setup.exe', 'dist\CavePlayer-portable.zip')) {
     if (-not (Test-Path $file) -or (Get-Item $file).Length -le 0) { Fail "Не создан файл $file" }
 }

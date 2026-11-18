@@ -6,7 +6,7 @@ $script:RepoFallback = Split-Path -Parent $PSScriptRoot
 # Shared settings for the engine, the terminal UI and local-test-build.ps1.
 $script:Shared = [pscustomobject]@{
     sourceRepo = 'Creative-Cave-uefn/Cavey-Player'; releaseRepo = 'Creative-Cave-uefn/Cavey-Player-Releases'
-    devkitBranch = 'devkit'; keepPerChannel = 3
+    devkitBranch = 'devkit'; keepPerChannel = 3; flutterVersion = '3.27.4'; useBranchBuildScript = $true
 }
 $sharedFile = Join-Path $PSScriptRoot 'devkit.config.json'
 if (Test-Path -LiteralPath $sharedFile) {
@@ -458,9 +458,9 @@ function Version-BaseFromReleases([object[]]$releases, [string]$mode, [string]$c
     }
     return ''
 }
-function Source-BaseVersion([string]$source) {
+function Source-BaseVersion([string]$source, [string]$revision = '') {
     # Use the source branch version rather than a potentially stale checkout.
-    $ref = "refs/remotes/origin/$($source):pubspec.yaml"
+    $ref = if ($revision) { "$($revision):pubspec.yaml" } else { "refs/remotes/origin/$($source):pubspec.yaml" }
     $yaml = Git @('show', $ref)
     $match = [regex]::Match($yaml, '(?m)^version:\s*(\d+\.\d+\.\d+)(?:\+\d+)?\s*$')
     if (-not $match.Success) {
@@ -737,10 +737,13 @@ function Publish-Manifest([object]$record, [bool]$replace = $false) {
         }
     }
     Stage 'publish' 'running' 'Uploading release assets'
+    $notesText = Release-Notes $record
+    $leaked = @(Find-Secrets ($notesText + "`n" + [string]$record.channel))
+    if ($leaked.Count) { Fail "The release notes contain the value of $($leaked -join ', '). Not publishing." }
     $publishArgs = @('release','create',$tag) + $files + @(
         '--repo',$script:ReleaseRepo,'--prerelease',
         '--title',"Test: $($record.channel) · $($record.version)",
-        '--notes',(Release-Notes $record)
+        '--notes',$notesText
     )
     Gh $publishArgs | Out-Null
     $record.status = 'published'
@@ -940,6 +943,102 @@ function Test-BuildRuns([string]$zip, [string]$folder, [string]$version, [string
     Stage 'verify' 'done' "Started as $version"
     Hint "Smoke test passed: the build starts and reports $version · $channel"
 }
+function Snapshot-WorkingTree([string]$folder) {
+    # Commit object of the working copy, untracked files included (.gitignore
+    # respected), built with a private index: the user's index, stash and
+    # branch are not touched.
+    $index = Join-Path $folder 'snapshot.index'
+    $previous = $env:GIT_INDEX_FILE
+    try {
+        $env:GIT_INDEX_FILE = $index
+        Git @('read-tree','HEAD') | Out-Null
+        Git @('add','--all') | Out-Null
+        $tree = Git @('write-tree')
+        $sha = Git @('commit-tree',$tree,'-p','HEAD','-m','Cavey DevKit working-copy snapshot')
+    } finally {
+        $env:GIT_INDEX_FILE = $previous
+        Remove-Item -LiteralPath $index -Force -ErrorAction SilentlyContinue
+    }
+    if ($sha -notmatch '^[0-9a-fA-F]{40,64}$') { Fail 'Could not snapshot the working copy.' }
+    return $sha
+}
+function Build-ScriptParameters([string]$path) {
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -or -not $ast.ParamBlock) { return @() }
+    return @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+}
+function Select-BuildScript([string]$worktree) {
+    # Prefer the branch's own build script, so a branch that changes how it is
+    # built (new defines, new steps) is built the way CI would build it. Fall
+    # back to DevKit's copy when the branch's script predates the DevKit flags.
+    $own = Join-Path $worktree 'tools\local-test-build.ps1'
+    if ($script:Shared.useBranchBuildScript -and (Test-Path -LiteralPath $own -PathType Leaf)) {
+        $needed = @('ProjectRoot','BuildChannel','SourceBranch','NoPublish','Version','RequireDownloader')
+        $has = @(Build-ScriptParameters $own)
+        $missing = @($needed | Where-Object { $has -notcontains $_ })
+        if ($missing.Count -eq 0) { return [pscustomobject]@{ path = $own; origin = 'branch' } }
+        Hint "The branch's build script lacks $($missing -join ', '); using DevKit's build script."
+    }
+    return [pscustomobject]@{ path = $script:BuildScript; origin = 'devkit' }
+}
+function Tool-Versions {
+    $versions = [ordered]@{}
+    try { $versions.flutter = ((Native 'flutter' @('--version')) -split "\r?\n")[0].Trim() } catch { $versions.flutter = 'unavailable' }
+    try { $versions.git = Git @('--version') } catch {}
+    foreach ($candidate in @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe")) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { $versions.innoSetup = (Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion; break }
+    }
+    return $versions
+}
+function Flutter-Mismatch([string]$flutterLine) {
+    $expected = [string]$script:Shared.flutterVersion
+    if (-not $expected -or -not $flutterLine) { return '' }
+    if ($flutterLine -match ('^Flutter ' + [regex]::Escape($expected) + '\b')) { return '' }
+    return "This machine has '$flutterLine'; CI builds with Flutter $expected. The build may differ from CI."
+}
+function Find-Secrets([string]$text) {
+    # Names of environment variables that look secret and whose values appear in $text.
+    $found = @()
+    if (-not $text) { return $found }
+    foreach ($item in @(Get-ChildItem Env:)) {
+        if ($item.Name -notmatch '(?i)(SECRET|TOKEN|PASSWORD|PASSWD|_ARL|API_?KEY|PRIVATE)') { continue }
+        $value = [string]$item.Value
+        if ($value.Length -lt 8) { continue }
+        if ($text.Contains($value)) { $found += $item.Name }
+    }
+    return $found
+}
+function Find-SignTool {
+    $command = Get-Command 'signtool.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) { return $command.Source }
+    $kits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+    if (-not (Test-Path -LiteralPath $kits)) { return '' }
+    $tool = Get-ChildItem -LiteralPath $kits -Recurse -Filter 'signtool.exe' -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+    return $(if ($tool) { $tool.FullName } else { '' })
+}
+function Signing-Settings([string[]]$tokens) {
+    $value = if ($tokens.Count -ge 2) { [string]$tokens[1] } else { '' }
+    if ($value -eq 'off') { Write-Config @{ signThumbprint = $null }; Say '  Code signing turned off.' Green; return }
+    if ($value) {
+        $thumbprint = ($value -replace '\s', '').ToUpperInvariant()
+        if ($thumbprint -notmatch '^[0-9A-F]{40}$') { Fail 'A certificate thumbprint is 40 hexadecimal characters.' }
+        $certificate = Get-ChildItem -Path Cert:\CurrentUser\My, Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+            Where-Object { $_.Thumbprint -eq $thumbprint } | Select-Object -First 1
+        if (-not $certificate) { Fail "No certificate with thumbprint $thumbprint in the Windows certificate store." }
+        if (-not $certificate.HasPrivateKey) { Fail 'The certificate has no private key on this computer.' }
+        Write-Config @{ signThumbprint = $thumbprint }
+        Say "  Builds will be signed with: $($certificate.Subject)" Green
+        if (-not (Find-SignTool)) { Say '  ! signtool.exe was not found; install the Windows SDK signing tools.' Yellow }
+        return
+    }
+    $current = [string](Read-Config)['signThumbprint']
+    Heading 'Code signing'
+    if ($current) { Say "  On · certificate $current" } else { Say '  Off · SmartScreen warns testers about unsigned builds' }
+    Hint 'Set: /sign <certificate-thumbprint> · Disable: /sign off'
+}
 function Emit-Result([object]$record) {
     # Machine-readable summary for the terminal UI's build card.
     if ($null -eq $record) { return }
@@ -956,9 +1055,17 @@ function Emit-Result([object]$record) {
 }
 function Build([string[]]$tokens) {
     Check-Repo
-    $source = Select-Source (Option $tokens '--branch')
-    $mode = Option $tokens '--mode'
+    $workingTree = Flag $tokens '--working-tree'
     $local = Flag $tokens '--local'
+    if ($workingTree) {
+        # The working copy has no pushed commit, so it is never published.
+        if (-not $local) { Fail 'Working-copy builds stay on this computer. Add --local, or commit and push to publish.' }
+        $source = Git @('branch','--show-current')
+        if (-not $source) { $source = 'detached' }
+    } else {
+        $source = Select-Source (Option $tokens '--branch')
+    }
+    $mode = Option $tokens '--mode'
     $fresh = Flag $tokens '--fresh'
     if (-not $mode) { $mode = 'new' }
     if (@('new','update') -notcontains $mode) { Fail 'Invalid mode; use new/update.' }
@@ -987,20 +1094,25 @@ function Build([string[]]$tokens) {
         }
     }
     Heading 'Build plan'
-    Say "  Source: origin/$source"
+    Say "  Source: $(if ($workingTree) { "working copy of $source (uncommitted changes included)" } else { "origin/$source" })"
     Say "  Channel: $channel"
     Say "  Mode: $mode · $(if ($local) { 'local only' } else { 'publish to GitHub Releases' })"
     Say "  Source cache: $(if ($fresh) { 'disabled (--fresh)' } else { 'enabled, keyed by commit and Flutter version' })"
     if (-not (Ask 'Prepare source and build?' (Flag $tokens '--yes'))) { return }
     $lock = Enter-ReleaseLock
-    $base = if ($local) { Source-BaseVersion $source } else { Stable-Base $mode $channel $source }
+    $tools = Tool-Versions
+    $mismatch = Flutter-Mismatch ([string]$tools.flutter)
+    if ($mismatch) { Say "  ! $mismatch" Yellow }
+    $id = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6)
+    $folder = Join-Path (Join-Path $script:DataHome 'builds') $id
+    New-Item -ItemType Directory -Force -Path $folder | Out-Null
+    $snapshot = if ($workingTree) { Snapshot-WorkingTree $folder } else { '' }
+    $base = if ($workingTree) { Source-BaseVersion $source $snapshot }
+            elseif ($local) { Source-BaseVersion $source } else { Stable-Base $mode $channel $source }
     $existing = if ($local) { @() } else { @(All-TestReleases) }
     $number = Next-BuildNumber $base $channel $existing
     $version = "$base.$number"
     $tag = 'test-' + (Slug $channel) + '-v' + $version
-    $id = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6)
-    $folder = Join-Path (Join-Path $script:DataHome 'builds') $id
-    New-Item -ItemType Directory -Force -Path $folder | Out-Null
     $start = Get-Date
     $status = 'building'; $sha = ''; $worktree = $null; $cached = $false
     $script:CurrentManifest = @{
@@ -1008,14 +1120,18 @@ function Build([string[]]$tokens) {
         folder=$folder; status='building'; stages=@{}
         source=$source; sha=''; mode=$mode; channel=$channel
         version=$version; tag=$tag; local=$local
-        message=(Option $tokens '--message'); changes=$null
+        message=(Option $tokens '--message'); changes=$null; workingTree=$workingTree; tools=$tools
         artifacts=@(); startedUtc=[DateTime]::UtcNow.ToString('o')
         updatedUtc=[DateTime]::UtcNow.ToString('o')
     }
     Save-BuildState
     try {
         Stage 'source' 'running' 'Prepare source checkout'
-        $tree = Cached-Worktree $source $folder $fresh
+        $tree = if ($workingTree) {
+            $path = Join-Path $folder 'source'
+            Git @('worktree','add','--detach',$path,$snapshot) | Out-Null
+            [pscustomobject]@{ path = $path; sha = $snapshot; cached = $false; marker = '' }
+        } else { Cached-Worktree $source $folder $fresh }
         $worktree = $tree.path
         $sha = $tree.sha
         $cached = [bool]$tree.cached
@@ -1028,14 +1144,22 @@ function Build([string[]]$tokens) {
             if (@($changes.items).Count -gt 10 -or $changes.more) { Hint '  … the full list goes into the release notes' }
         }
         Stage 'source' 'done' 'Source checkout ready'
+        $selected = Select-BuildScript $worktree
+        $script:CurrentManifest.buildScript = $selected.origin
+        Hint "Build script: $(if ($selected.origin -eq 'branch') { "the branch's tools\local-test-build.ps1" } else { "DevKit's copy" })"
         $buildArgs = @(
-            '-NoProfile','-ExecutionPolicy','Bypass','-File',$script:BuildScript,
+            '-NoProfile','-ExecutionPolicy','Bypass','-File',$selected.path,
             '-ProjectRoot',$worktree,'-SourceBranch',$source,'-NoPublish',
             '-BuildChannel',$channel,'-Version',$version
         )
         if (Flag $tokens '--skip-checks') { $buildArgs += '-SkipChecks' }
         # A published build without the downloader cannot download tracks.
         if (-not $local) { $buildArgs += '-RequireDownloader' }
+        $signThumbprint = [string](Read-Config)['signThumbprint']
+        if ($signThumbprint) {
+            if (@(Build-ScriptParameters $selected.path) -contains 'SignThumbprint') { $buildArgs += @('-SignThumbprint', $signThumbprint) }
+            else { Say '  ! Code signing is on, but this build script cannot sign; the build will be unsigned.' Yellow; $signThumbprint = '' }
+        }
         Heading "Windows build $version · $($sha.Substring(0,8))"
         $priorProgress = $env:CAVEY_DEVKIT_PROGRESS
         try {
@@ -1058,6 +1182,11 @@ function Build([string[]]$tokens) {
             $hash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant()
             $artifacts += @{path=$dest;name=$name;sha256=$hash;size=(Get-Item $dest).Length}
             Hint "$name · SHA-256 $hash"
+        }
+        if ($signThumbprint) {
+            $signature = Get-AuthenticodeSignature -FilePath (Join-Path $folder 'CavePlayer-Setup.exe')
+            if ($signature.Status -ne 'Valid') { Fail "The installer signature is $($signature.Status): $($signature.StatusMessage)" }
+            Hint "Signed by $($signature.SignerCertificate.Subject)"
         }
         $downloaderInfo = Join-Path (Join-Path $worktree 'dist') 'downloader.json'
         if (Test-Path -LiteralPath $downloaderInfo -PathType Leaf) {
@@ -1101,6 +1230,8 @@ function Build([string[]]$tokens) {
             $logPath = Join-Path $worktree 'build-log.txt'
             if (Test-Path -LiteralPath $logPath -PathType Leaf) {
                 try { Copy-Item -LiteralPath $logPath -Destination (Join-Path $folder 'build-log.txt') -Force } catch {}
+                $leaked = @(Find-Secrets (Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue))
+                if ($leaked.Count) { Say "  ! build-log.txt contains the value of $($leaked -join ', '); do not share this log." Yellow }
             }
             if (-not $cached) {
                 try { Git @('worktree','remove','--force',$worktree) | Out-Null }
@@ -1144,23 +1275,32 @@ function Doctor {
     foreach ($name in @('git','gh','flutter','powershell')) {
         if (Has $name) { Say "  ✓ $name" Green } else { Say "  ✗ $name" Red }
     }
-    $possible = @(
-        "$([Environment]::GetFolderPath('ProgramFilesX86'))\Inno Setup 6\ISCC.exe",
-        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
-    )
-    if (@($possible | Where-Object { Test-Path $_ }).Count) { Say '  ✓ Inno Setup 6' Green }
-    else { Say '  ✗ Inno Setup 6' Red }
-    if (Has 'flutter') {
-        try { Say "  $((Native 'flutter' @('--version') -split [char]10)[0])" }
-        catch { Say "  ! $($_.Exception.Message)" Yellow }
+    $tools = Tool-Versions
+    if ($tools.innoSetup) { Say "  ✓ Inno Setup $($tools.innoSetup)" Green } else { Say '  ✗ Inno Setup 6' Red }
+    if ($tools.flutter -and $tools.flutter -ne 'unavailable') {
+        $mismatch = Flutter-Mismatch ([string]$tools.flutter)
+        if ($mismatch) { Say "  ! $mismatch" Yellow } else { Say "  ✓ $($tools.flutter)" Green }
     }
-    try { Check-Repo; Say '  ✓ Git origin' Green } catch { Say "  ✗ $_" Red }
+    try { Check-Repo; Say '  ✓ Git origin' Green } catch { Say "  ✗ $($_.Exception.Message)" Red }
     if (Has 'gh') {
         try { Gh @('auth','status') | Out-Null; Say '  ✓ GitHub authentication' Green }
         catch { Say '  ✗ Run gh auth login' Yellow }
     }
-    Hint 'Windows build requires Flutter 3.27.4 and Visual Studio 2022 C++ Build Tools.'
+    $config = Read-Config
+    if ($config['signThumbprint']) {
+        if (Find-SignTool) { Say "  ✓ Code signing · certificate $($config['signThumbprint'])" Green }
+        else { Say '  ✗ Code signing is on, but signtool.exe was not found (Windows SDK)' Red }
+    } else { Hint 'Code signing is off (/sign <thumbprint>); SmartScreen warns about unsigned builds.' }
+    if ($config['discordWebhook']) { Say '  ✓ Discord announcements' Green } else { Hint 'Discord announcements are off (/notify <webhook-url>).' }
+    $cacheRoot = Join-Path $script:DataHome 'source-cache'
+    $buildsRoot = Join-Path $script:DataHome 'builds'
+    foreach ($place in @(@{ name = 'Build cache'; path = $cacheRoot }, @{ name = 'Saved builds'; path = $buildsRoot })) {
+        if (Test-Path -LiteralPath $place.path) {
+            $bytes = (Get-ChildItem -LiteralPath $place.path -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+            Hint ("{0}: {1:N1} GB · {2}" -f $place.name, ($bytes / 1GB), $place.path)
+        }
+    }
+    Hint "Windows builds need Flutter $($script:Shared.flutterVersion) and Visual Studio 2022 C++ Build Tools."
 }
 function Help {
     Heading 'Cavey DevKit · Commands'
@@ -1173,6 +1313,8 @@ function Help {
         '/build ... --skip-smoke       Do not launch the build before publishing'
         '/build ... --message "<text>" Note for testers, shown first in the release notes'
         '/notify [<webhook-url>|test|off]   Announce published builds in Discord'
+        '/build --working-tree --local --yes   Build uncommitted changes of the project folder'
+        '/sign [<thumbprint>|off]      Sign builds with a code-signing certificate'
         '/releases [--channel <name>]  Test channels and their versions'
         '/rollback --channel <name> --to <tag> --yes'
         '/rollforward --channel <name> --yes   Undo a rollback'
@@ -1227,6 +1369,7 @@ function Dispatch([string[]]$tokens) {
         'rollback' { Rollback-Release $tokens }
         'rollforward' { Rollforward-Release $tokens }
         'notify' { Notify-Settings $tokens }
+        'sign' { Signing-Settings $tokens }
         'recover' { Recovery $tokens }
         'resume' { Recovery $tokens }
         'retry-publish' { Recovery $tokens }

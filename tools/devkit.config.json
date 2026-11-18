@@ -2,5 +2,7 @@
   "sourceRepo": "Creative-Cave-uefn/Cavey-Player",
   "releaseRepo": "Creative-Cave-uefn/Cavey-Player-Releases",
   "devkitBranch": "devkit",
-  "keepPerChannel": 3
+  "keepPerChannel": 3,
+  "flutterVersion": "3.27.4",
+  "useBranchBuildScript": true
 }

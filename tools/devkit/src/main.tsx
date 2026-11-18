@@ -20,7 +20,7 @@ import {
   estimateBuildMs, formatDuration, formatSize, summarizeOutput, type Entry, type NewEntry, type RunStatus,
 } from "./transcript.js";
 import {
-  buildConfirm, channelNameProblem, channelReleases, dialogFor, isDevKitChannel, rebuildConfirm, type LastBuild, pickSummary, runTitle, simpleConfirm,
+  buildConfirm, channelNameProblem, channelReleases, dialogFor, isDevKitChannel, rebuildConfirm, workingCopyConfirm, WORKING_COPY, type LastBuild, pickSummary, runTitle, simpleConfirm,
   type Branch, type ConfirmCommand, type SavedRun, type Wizard,
 } from "./wizard.js";
 
@@ -486,6 +486,7 @@ function App() {
         return;
       }
       case "branch": {
+        if (value === WORKING_COPY) { push(workingCopyConfirm(git?.branch ?? "", etaMs())); return; }
         const branch = wizard.branches.find(b => b.name === value);
         if (!branch) return;
         if (wizard.target) { push(buildConfirm(branch, "update", wizard.releases, etaMs(), wizard.target)); return; }
@@ -565,14 +566,14 @@ function App() {
         closeWizard();
         if (value === "dry-run") { await runEngine("clean", [...wizard.args, "--dry-run"]); return; }
         const local = value === "local";
-        const args = local ? [...wizard.args, "--local"] : wizard.args;
+        const args = local ? [...wizard.args, "--local"] : value === "fast" ? [...wizard.args, "--skip-checks"] : wizard.args;
         await runEngine(wizard.command, [...args, "--yes"], {
           title: runTitle(wizard.command, args), etaMs: wizard.command === "build" ? etaMs() : null,
         });
         return;
       }
     }
-  }, [back, closeWizard, etaMs, fail, fetching, flash, loadBranches, loadReleases, push, runEngine, step, wizard]);
+  }, [back, closeWizard, etaMs, fail, fetching, flash, git, loadBranches, loadReleases, push, runEngine, step, wizard]);
 
   const confirm = useCallback((command: ConfirmCommand, args: string[]) => {
     setStack([command === "build"

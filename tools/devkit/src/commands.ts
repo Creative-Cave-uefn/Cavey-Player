@@ -11,7 +11,8 @@ export type CommandSpec = {
 export const commandSpecs: CommandSpec[] = [
   { name: "build", core: true, description: "Build a branch locally or publish a test release",
     usage: ["/build", "/build --branch <name> --local --yes", "/build --branch <name> --mode new --yes",
-      "/build --branch <name> --mode update --channel <name> --yes", "/build ... --fresh   (no source cache)"] },
+      "/build --branch <name> --mode update --channel <name> --yes", "/build --working-tree --local --yes",
+      "/build ... --fresh   (no source cache)", "/build ... --skip-checks   (no analyze/test)"] },
   { name: "rebuild", core: true, description: "Repeat the last build (a new channel is updated, not recreated)" },
   { name: "releases", core: true, description: "Test channels: versions, update, rollback, cleanup",
     aliases: ["manager"],
@@ -38,6 +39,8 @@ export const commandSpecs: CommandSpec[] = [
   { name: "project", core: false, description: "Show or change the project folder", usage: ["/project <path>"] },
   { name: "notify", core: false, description: "Announce published builds in Discord",
     usage: ["/notify <webhook-url>", "/notify test", "/notify off"] },
+  { name: "sign", core: false, description: "Sign builds with a code-signing certificate",
+    usage: ["/sign <certificate-thumbprint>", "/sign off"] },
   { name: "update", core: false, description: "Update DevKit itself and restart" },
   { name: "agent", core: false, description: "Open Claude Code in a new tab" },
   { name: "clear", core: false, description: "Clear the transcript" },

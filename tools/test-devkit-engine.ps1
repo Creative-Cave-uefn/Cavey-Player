@@ -242,6 +242,57 @@ Run-Test 'lock' {
     }
 }
 
+Run-Test 'secrets' {
+    $env:CAVEY_TEST_CLIENT_SECRET = 's3cr3t-value-123'
+    try {
+        if (@(Find-Secrets 'release notes without secrets').Count) { Fail 'False positive.' }
+        $found = @(Find-Secrets 'oops s3cr3t-value-123 leaked')
+        if ($found -notcontains 'CAVEY_TEST_CLIENT_SECRET') { Fail 'Secret value not detected.' }
+    } finally { Remove-Item Env:CAVEY_TEST_CLIENT_SECRET -ErrorAction SilentlyContinue }
+}
+Run-Test 'flutter-version' {
+    if (Flutter-Mismatch 'Flutter 3.27.4 • channel stable • https://github.com/flutter/flutter.git') { Fail 'Matching version flagged.' }
+    if (-not (Flutter-Mismatch 'Flutter 3.29.0 • channel stable')) { Fail 'Different version not flagged.' }
+}
+Run-Test 'build-script-selection' {
+    $tree = Join-Path ([IO.Path]::GetTempPath()) ('cavey-script-test-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path (Join-Path $tree 'tools') | Out-Null
+    try {
+        $own = Join-Path $tree 'tools\local-test-build.ps1'
+        Set-Content -LiteralPath $own -Value 'param([string]$ProjectRoot, [string]$Version)' -Encoding UTF8
+        if ((Select-BuildScript $tree).origin -ne 'devkit') { Fail 'An old branch script was chosen.' }
+        Set-Content -LiteralPath $own -Encoding UTF8 -Value ('param([string]$ProjectRoot, [string]$BuildChannel, [string]$SourceBranch, ' +
+            '[switch]$NoPublish, [string]$Version, [switch]$RequireDownloader, [string]$SignThumbprint)')
+        $selected = Select-BuildScript $tree
+        if ($selected.origin -ne 'branch' -or $selected.path -ne $own) { Fail "A compatible branch script was not chosen: $($selected.origin)" }
+        if (@(Build-ScriptParameters $own) -notcontains 'SignThumbprint') { Fail 'Parameters were not read.' }
+    } finally { Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue }
+}
+Run-Test 'working-copy-snapshot' {
+    $repo = Join-Path ([IO.Path]::GetTempPath()) ('cavey-snapshot-test-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $repo | Out-Null
+    $here = Get-Location
+    try {
+        Set-Location $repo
+        Git @('init','-q') | Out-Null
+        Git @('-c','user.name=t','-c','user.email=t@e','commit','-q','--allow-empty','-m','base') | Out-Null
+        Set-Content -LiteralPath (Join-Path $repo 'tracked.txt') -Value 'changed' -Encoding Ascii
+        Set-Content -LiteralPath (Join-Path $repo '.gitignore') -Value 'ignored.txt' -Encoding Ascii
+        Set-Content -LiteralPath (Join-Path $repo 'ignored.txt') -Value 'x' -Encoding Ascii
+        $before = Git @('status','--porcelain')
+        $env:GIT_AUTHOR_NAME = 't'; $env:GIT_AUTHOR_EMAIL = 't@e'; $env:GIT_COMMITTER_NAME = 't'; $env:GIT_COMMITTER_EMAIL = 't@e'
+        $sha = Snapshot-WorkingTree $repo
+        $files = @((Git @('ls-tree','--name-only',$sha)) -split "\r?\n")
+        if ($files -notcontains 'tracked.txt' -or $files -notcontains '.gitignore') { Fail "Snapshot is missing files: $($files -join ',')" }
+        if ($files -contains 'ignored.txt') { Fail 'Ignored files must not be snapshotted.' }
+        if ((Git @('status','--porcelain')) -ne $before) { Fail "The user's index or working tree changed." }
+    } finally {
+        foreach ($name in 'GIT_AUTHOR_NAME','GIT_AUTHOR_EMAIL','GIT_COMMITTER_NAME','GIT_COMMITTER_EMAIL') { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+        Set-Location $here
+        Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host ''
 if ($script:Failures) {
     Write-Host "$($script:Failures) engine test(s) failed, $($script:Passed) passed." -ForegroundColor Red

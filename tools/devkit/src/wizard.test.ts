@@ -69,9 +69,11 @@ test("dialogs ask questions and long lists are filterable", () => {
   const branches = dialogFor({ kind: "branch", branches: [branch], releases });
   assert.equal(branches.question, "Build which branch?");
   assert.equal(branches.filterable, true);
-  assert.match(branches.options[0]!.detail!, /channel devkit\/claude\/wave-fix/);
+  assert.equal(branches.options[0]!.label, "Working copy");
+  assert.match(branches.options[1]!.detail!, /channel devkit\/claude\/wave-fix/);
   const target = dialogFor({ kind: "branch", branches: [branch], releases, target: "dj" });
   assert.equal(target.question, "Update “dj” from which branch?");
+  assert.notEqual(target.options[0]!.label, "Working copy", "a channel update needs a pushed branch");
   const mode = dialogFor({ kind: "mode", branch, releases });
   assert.match(mode.options[2]!.detail!, /suggested: devkit\/claude\/wave-fix/);
 });
@@ -132,4 +134,12 @@ test("rebuild repeats local builds and updates a channel the last build created"
     ["--branch", "x", "--mode", "update", "--channel", "devkit/x"]);
   assert.deepEqual(rebuildArgs({ args: ["--branch", "x", "--mode", "new"], result: { ...result, status: "failed" } }),
     ["--branch", "x", "--mode", "new"]);
+});
+
+test("working copy builds are local, with a faster option", async () => {
+  const { workingCopyConfirm, runTitle } = await import("./wizard.js");
+  const w = workingCopyConfirm("feature/x", null);
+  assert.deepEqual(w.args, ["--working-tree", "--local"]);
+  assert.deepEqual(w.options.map(o => o.value), ["yes", "fast", "back"]);
+  assert.equal(runTitle("build", w.args), "Build working copy · local");
 });

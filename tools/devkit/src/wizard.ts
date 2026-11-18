@@ -157,12 +157,26 @@ export function buildConfirm(
     question = "Build locally?";
     options = [
       { value: "yes", label: "Yes, build" },
+      { value: "fast", label: "Build faster", detail: "skip analyze and test" },
       { value: "back", label: "No, go back" },
     ];
   }
   plan.push(["Checks", mode === "local" ? "flutter analyze + flutter test" : "analyze + test, then a launch check"]);
   plan.push(["Time", etaLine(etaMs)]);
   return { kind: "confirm", command: "build", args, question, plan, options };
+}
+
+export const WORKING_COPY = "@working-copy";
+
+/** Local build of the project folder as it is now, uncommitted changes included. */
+export function workingCopyConfirm(currentBranch: string, etaMs: number | null): Confirm {
+  return { kind: "confirm", command: "build", args: ["--working-tree", "--local"],
+    question: "Build your working copy?",
+    plan: [["Source", "project folder on " + (currentBranch || "the current branch") + ", uncommitted changes included"],
+      ["Publish", "no · working-copy builds stay on this computer"],
+      ["Checks", "flutter analyze + flutter test"], ["Time", etaLine(etaMs)]],
+    options: [{ value: "yes", label: "Yes, build" }, { value: "fast", label: "Build faster", detail: "skip analyze and test" },
+      { value: "back", label: "No, go back" }] };
 }
 
 export function simpleConfirm(command: ConfirmCommand, args: string[]): Wizard {
@@ -224,11 +238,14 @@ export function dialogFor(w: Wizard): Dialog {
     case "branch":
       return { id: "branch:" + (w.target ?? ""), filterable: true,
         question: w.target ? "Update “" + w.target + "” from which branch?" : "Build which branch?",
-        options: w.branches.map(b => {
-          const channel = channelForBranch(w.releases, b.name);
-          return { value: b.name, label: b.name,
-            detail: [relativeTime(b.date), b.author, channel ? "channel " + channel : ""].filter(Boolean).join(" · ") };
-        }) };
+        options: [
+          ...(w.target ? [] : [{ value: WORKING_COPY, label: "Working copy", detail: "this folder, uncommitted changes · local only" }]),
+          ...w.branches.map(b => {
+            const channel = channelForBranch(w.releases, b.name);
+            return { value: b.name, label: b.name,
+              detail: [relativeTime(b.date), b.author, channel ? "channel " + channel : ""].filter(Boolean).join(" · ") };
+          }),
+        ] };
     case "mode": {
       const channel = channelForBranch(w.releases, w.branch.name);
       return { id: "mode:" + w.branch.name, question: "What kind of build?", filterable: false,
@@ -289,7 +306,7 @@ function describeChannel(releases: readonly ReleaseRecord[], channel: string): C
 /** One-line transcript summary of a pick, so the transcript reads like a log of decisions. */
 export function pickSummary(w: Wizard, value: string): [string, string] | null {
   switch (w.kind) {
-    case "branch": return ["Branch", value];
+    case "branch": return ["Branch", value === WORKING_COPY ? "working copy" : value];
     case "mode": return [value === "local" ? "Local build" : value === "new" ? "New test release" : "Update a channel", ""];
     case "channel": return ["Channel", value];
     case "manager-channel": return ["Channel", value];
@@ -306,6 +323,7 @@ export function runTitle(command: string, args: string[]): string {
   const opt = (k: string) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] ?? "" : ""; };
   switch (command) {
     case "build": {
+      if (args.includes("--working-tree")) return "Build working copy · local";
       const branch = opt("--branch") || "latest branch";
       if (args.includes("--local")) return "Build " + branch + " · local";
       if (opt("--mode") === "update") return "Build " + branch + " → " + (opt("--channel") || "channel");
