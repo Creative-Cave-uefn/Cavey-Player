@@ -49,7 +49,7 @@ The layout follows Claude Code: a welcome box, a transcript, one spinner line wh
 
 ## Guided flows
 
-`/build` asks for a branch (with last commit time, author and the channel that already carries it), then the build type: local, new test release, or update a channel (the branch's own channel is suggested first). A new test release allocates a unique channel (`devkit/<source>/<timestamp>-<random>`) and never changes an existing one. Updating a channel publishes a new numbered prerelease into it; the confirmation lists the older releases that will be pruned after a successful publish.
+`/build` asks for a branch (with last commit time, author and the channel that already carries it), then the build type: local, new test release, or update a DevKit channel (the branch's own DevKit channel is suggested first; CI channels cannot be updated). A new test release allocates a unique channel (`devkit/<source>/<timestamp>-<random>`) and never changes an existing one. Updating a channel publishes a new numbered prerelease into it; the confirmation lists the older releases that will be pruned after a successful publish.
 
 `/releases` opens: manage a channel (show versions, update from a branch, roll back), list all test releases, or clean up outdated ones. `/recover` lists saved builds whose verified artifacts can be published again.
 
@@ -69,12 +69,16 @@ Other text (`git status`, `flutter --version`, `Get-ChildItem`) runs in a PowerS
 
 ```powershell
 cd tools\devkit
-npm install
+npm ci
 npm run typecheck
 npm test
 cd ..\..
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test-cavey-devkit.ps1
 ```
+
+`package-lock.json` is committed: the launcher and CI install with `npm ci`, so every machine runs the same package versions. Change dependencies with `npm install <pkg>` and commit the updated lockfile.
+
+**Screen tests.** `python3 tools/devkit/test/ui/ui_snapshots.py` (Linux or macOS, `pip install pyte`) runs the real UI in a pseudo-terminal against a throwaway Git repository, with PowerShell and `gh` replaced by the doubles in `test/ui/fakes`. It checks the palette, the build wizard (including going back), a failing build's collapsed output, the release manager, a 80×24 terminal and exit, and fails on overlapping or cut-off boxes. CI runs it on every DevKit push and uploads the screens as the `devkit-ui-screens` artifact.
 
 Windows PowerShell 5.1 source files include a UTF-8 BOM. Run the parser/smoke-test script before shipping a revision to catch encoding regressions. The launcher preserves noninteractive usage: `powershell -File .\tools\cavey-devkit.ps1 status` calls the headless engine. The UI always uses the new React frontend without arguments.
 
@@ -84,19 +88,20 @@ Dependencies: `@claude-code-kit/ui` 0.4.0 and `@claude-code-kit/ink-renderer` 0.
 
 Stage events (`@@CAVEY_STAGE|…`) stream from the engine during the build and are drawn on the build's transcript entry, then removed from the visible output. `/logs` keeps the detailed build output and `/history` the run status. Each build writes a recoverable manifest to `%LOCALAPPDATA%\CaveyDevKit\builds\<run-id>\run.json` with the source commit, version, channel, artifact paths and SHA-256 checksums.
 
+## Channels and retention
+
+- **DevKit channels** are always named `devkit/…` (tags `test-devkit-…`). A name given with `--channel` is prefixed automatically. Only these channels can be updated or rolled back.
+- **CI channels** (`test-<branch>-v…`) belong to GitHub Actions, which replaces them on every push to the branch and deletes them with the branch. DevKit shows them read-only; CI never deletes `devkit-*` releases.
+- One retention rule everywhere: a DevKit channel keeps **3** active versions (rollback targets), a CI channel keeps 1. It is `$script:KeepPerChannel` in the engine, `KEEP_PER_CHANNEL` in `wizard.ts` and `TestBuildAdmin.devKitKeep` in the player; change all three together. `/clean` and the player's "delete old test builds" follow it unless `--keep` is given.
+- Order inside a channel follows the build number in the tag, not the publication time (drafting resets it).
+
 ## Release Manager · history, updates and rollback
 
-- `/releases` → Manage a channel opens the channel selector: show versions,
-  update from a branch, or roll back to an older release.
-- `/releases --channel <channel>` prints the published versions.
-- `/rollback --channel <channel> --to <tag> --yes` restores an earlier version by
-  marking **newer** releases as GitHub drafts. Their tags and assets remain stored,
-  and old binaries are **not** republished under a false newer version number.
-  Existing installations already on a newer embedded APP_VERSION may require
-  manual reinstallation to downgrade; rollback does not force a client downgrade.
-- New test channels remain distinct from existing channels. Channel updates
-  publish a new version, then keep three most recent visible test releases;
-  other releases are removed only after the new release succeeds.
+- `/releases` → Manage a channel: show versions, update from a branch, roll back, or undo a rollback.
+- `/releases --channel <channel>` prints active and hidden versions.
+- `/rollback --channel <channel> --to <tag> --yes` restores an earlier version by marking **newer** releases as GitHub drafts. Their tags and assets remain stored, and old binaries are **not** republished under a false newer version number. Installations already on a newer APP_VERSION are not downgraded.
+- `/rollforward --channel <channel> --yes` makes the releases hidden by a rollback active again.
+- Hidden releases are kept by `/clean` (add `--drafts` to delete them) and removed automatically after the next successful update of that channel. The update confirmation lists every release it will prune.
 
 ## Build cache, recovery and updates
 
@@ -104,13 +109,23 @@ Stage events (`@@CAVEY_STAGE|…`) stream from the engine during the build and a
   and Flutter version**. This safely reuses Flutter's generated build data for
   repeated builds of an unchanged revision without mixing branches or toolchains.
   `/build --branch <branch> --fresh --local --yes` forces a clean one-off worktree.
-- `/cache` lists cached worktrees; `/cache prune` prompts before removing them.
-  Cached worktrees remain on disk until manually pruned. Monitor free disk
-  space and prune old worktrees periodically.
-- `/recover` lists saved runs. `/resume --id <run-id> --yes` checks both
-  artifacts' SHA-256 checksums and retries **publication only**. It refuses
-  already-published tags or corrupted artifacts. Incomplete compilation still
-  requires rebuilding (with the source cache available).
+- A cached worktree is marked complete (`<cache>.ok`) only after a build in it
+  finishes. A build killed mid-compile leaves no marker, and the next build of
+  that commit recreates the worktree instead of reusing half-written output.
+- `/cache` lists cached worktrees and whether they are ready; `/cache prune`
+  prompts before removing them. Monitor free disk space and prune periodically.
+- Only one build or release change runs at a time: a second DevKit window gets
+  "Another DevKit window is building…". The lock (`build.lock`) is released by
+  the OS if DevKit crashes.
+- `/recover` lists saved runs. `/recover --id <run-id> --yes` checks both
+  artifacts' SHA-256 checksums and retries **publication only**. If an earlier
+  upload was interrupted and the tag already exists, DevKit compares the files on
+  GitHub (name, size, SHA-256 when GitHub reports it): identical files are simply
+  marked published; otherwise it stops and `--replace` deletes that release and
+  uploads again. Incomplete compilation still requires rebuilding.
+- Published builds must contain `Cavey-Downloader.exe`; without it the build
+  stops before publishing. Its source and SHA-256 are written to `run.json` and
+  to the release notes.
 - `/update` fetches `feat/keivi-devkit-20261117` and fast-forwards the dedicated
   `devkit-live`/DevKit source branch if clean. Divergence and uncommitted changes
   block the operation. On a successful update, the launcher reinstalls changed

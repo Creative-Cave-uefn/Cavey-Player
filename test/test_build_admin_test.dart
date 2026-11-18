@@ -38,6 +38,20 @@ void main() {
       });
     });
 
+    test('DevKit channels keep three versions for rollback', () {
+      final entries = [
+        for (final n in [5, 4, 3, 2, 1]) build('devkit/dj/20261118', '0.4.0.$n'),
+        build('feat/a', '0.4.0.9'),
+        build('feat/a', '0.4.0.8'),
+      ];
+      final stale = TestBuildAdmin.staleBuilds(entries);
+      expect(stale.map((b) => TestBuildAdmin.tagOf(b)).toSet(), {
+        'test-devkit-dj-20261118-v0.4.0.2',
+        'test-devkit-dj-20261118-v0.4.0.1',
+        'test-feat-a-v0.4.0.8',
+      });
+    });
+
     test('never schedules installed build for mass deletion', () {
       final entries = [
         build('feat/a', '0.4.0.3'),

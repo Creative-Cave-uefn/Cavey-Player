@@ -12,7 +12,15 @@ class TestBuildAdmin {
 
   static String tagOf(BuildInfo build) => 'test-${build.slug}-v${build.version}';
 
-  /// Keep the latest release per update channel and protect the running one.
+  /// Versions kept per DevKit channel (`devkit-*` slugs) as rollback targets.
+  /// Must match `$script:KeepPerChannel` in tools/cavey-devkit-engine.ps1.
+  static const devKitKeep = 3;
+
+  /// How many versions of a channel survive cleanup: DevKit channels keep
+  /// [devKitKeep] for rollback, CI branch channels keep only the newest.
+  static int keepFor(String slug) => slug.startsWith('devkit-') ? devKitKeep : 1;
+
+  /// Keep the latest releases per update channel and protect the running one.
   static List<BuildInfo> staleBuilds(List<BuildInfo> builds, {String? protectedTag}) {
     final bySlug = <String, List<BuildInfo>>{};
     for (final build in builds) {
@@ -27,7 +35,7 @@ class TestBuildAdmin {
         return (b.published ?? DateTime(1970))
             .compareTo(a.published ?? DateTime(1970));
       });
-      for (final build in group.skip(1)) {
+      for (final build in group.skip(keepFor(group.first.slug))) {
         if (tagOf(build) != protectedTag) stale.add(build);
       }
     }

@@ -25,7 +25,8 @@ param(
     [string]$Version = '',
     [string]$BuildChannel = '',
     [string]$ProjectRoot = '',
-    [string]$SourceBranch = ''
+    [string]$SourceBranch = '',
+    [switch]$RequireDownloader
 )
 
 $ErrorActionPreference = 'Stop'
@@ -246,6 +247,8 @@ if (-not $dlSource) {
 if ($dlSource) {
     Copy-Item $dlSource (Join-Path $release $dlName) -Force
     Write-Host "Загрузчик: $dlSource"
+} elseif ($RequireDownloader) {
+    Fail 'Cavey-Downloader.exe не найден, а сборка будет опубликована: без него в ней не работает скачивание треков. Укажите путь параметром -Downloader или установите Cavey.'
 } else {
     Warn 'Загрузчик не найден: скачивание треков в этой сборке работать не будет. Укажите путь параметром -Downloader.'
 }
@@ -254,7 +257,13 @@ if ($dlSource) {
 Stage 'package' 'running' 'Package installer and portable ZIP'
 Say 'Собираю установщик и portable-архив'
 New-Item -ItemType Directory -Force 'dist' | Out-Null
-Remove-Item 'dist\CavePlayer-Setup.exe', 'dist\CavePlayer-portable.zip' -ErrorAction SilentlyContinue
+Remove-Item 'dist\CavePlayer-Setup.exe', 'dist\CavePlayer-portable.zip', 'dist\downloader.json' -ErrorAction SilentlyContinue
+# Which downloader went into this build: DevKit records it in the build manifest and release notes.
+$dlInfo = if ($dlSource) {
+    $dlFile = Join-Path $release $dlName
+    [ordered]@{ source = $dlSource; sha256 = (Get-FileHash -LiteralPath $dlFile -Algorithm SHA256).Hash.ToLowerInvariant(); size = (Get-Item -LiteralPath $dlFile).Length }
+} else { [ordered]@{ source = $null; sha256 = $null; size = 0 } }
+[IO.File]::WriteAllText((Join-Path $root 'dist\downloader.json'), ($dlInfo | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
 Compress-Archive -Path (Join-Path $release '*') -DestinationPath 'dist\CavePlayer-portable.zip' -Force
 if ((Run $iscc @("/DMyVersion=$Version", 'installer\cave_player.iss')) -ne 0) { Fail 'Inno Setup не собрал установщик. Подробности в build-log.txt' }
 foreach ($file in @('dist\CavePlayer-Setup.exe', 'dist\CavePlayer-portable.zip')) {

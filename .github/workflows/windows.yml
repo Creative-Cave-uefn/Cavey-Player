@@ -411,9 +411,10 @@ jobs:
           }
           $repo = 'Creative-Cave-uefn/cave-player-releases'
           $prefix = "test-$env:BUILD_SLUG-v"
-          # Старые сборки этой ветки больше не нужны: оставляем только свежую
+          # Старые сборки этой ветки больше не нужны: оставляем только свежую.
+          # Каналы devkit-* принадлежат Cavey DevKit (он хранит 3 версии для отката) — их CI не трогает.
           $old = @(gh release list --repo $repo --limit 200 --json tagName --jq '.[].tagName' 2>$null) |
-            Where-Object { $_ -and $_.StartsWith($prefix) }
+            Where-Object { $_ -and $_.StartsWith($prefix) -and -not $prefix.StartsWith('test-devkit-') }
           foreach ($tag in $old) { gh release delete $tag --repo $repo --cleanup-tag --yes | Out-Null }
           $notes = if ($env:NOTES) { $env:NOTES } else { "Тестовая сборка ветки $env:BUILD_CHANNEL" }
           $out = gh release create "$prefix$env:APP_VERSION" dist/CavePlayer-Setup.exe dist/CavePlayer-portable.zip `
@@ -466,6 +467,8 @@ jobs:
           if [ -z "$GH_TOKEN" ]; then echo "::notice::Секрет RELEASES_TOKEN не задан"; exit 0; fi
           slug=$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
           [ -z "$slug" ] && slug=branch
+          # Каналы devkit-* принадлежат Cavey DevKit — их не удаляем вместе с веткой.
+          case "$slug" in devkit-*) echo "::notice::Канал $slug принадлежит DevKit, пропускаю"; exit 0;; esac
           gh release list --repo Creative-Cave-uefn/cave-player-releases --limit 200 --json tagName \
             --jq ".[].tagName | select(startswith(\"test-$slug-v\"))" |
           while read -r tag; do

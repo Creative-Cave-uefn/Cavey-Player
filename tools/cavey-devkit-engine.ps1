@@ -21,6 +21,11 @@ if (-not (Test-Path $script:BuildScript)) {
     $script:BuildScript = Join-Path $script:Root 'tools\local-test-build.ps1'
 }
 $script:Interactive = $false
+# One retention rule for DevKit channels everywhere (engine, /clean, player).
+# GitHub Actions owns test-<branch>-v* channels and keeps one build per branch;
+# DevKit channels always start with devkit/ so CI never deletes them.
+$script:KeepPerChannel = 3
+$script:DevKitSlugPrefix = 'devkit-'
 Set-Location $script:Root
 
 function Say([string]$message, [ConsoleColor]$color = [ConsoleColor]::Gray) { Write-Host $message -ForegroundColor $color }
@@ -113,6 +118,20 @@ function Stage([string]$name, [string]$state, [string]$label) {
         Save-BuildState
     }
 }
+function Enter-ReleaseLock {
+    # One build or release change at a time across all DevKit windows.
+    # The OS releases the handle if the process dies, so a lock never goes stale.
+    New-Item -ItemType Directory -Force -Path $script:DataHome | Out-Null
+    $path = Join-Path $script:DataHome 'build.lock'
+    try {
+        $stream = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [IO.IOException] {
+        Fail 'Another DevKit window is building or changing releases. Wait for it to finish, then retry.'
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes("pid=$PID started=$([DateTime]::UtcNow.ToString('o'))")
+    $stream.SetLength(0); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush()
+    return $stream
+}
 function Build-Records {
     $root = Join-Path $script:DataHome 'builds'
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { return @() }
@@ -154,27 +173,47 @@ function Cache-Location([string]$source) {
         sha=$sha; path=(Join-Path (Join-Path $script:DataHome 'source-cache') ($sha.Substring(0,12) + '-' + $fingerprint))
     }
 }
+function Remove-CachedWorktree([string]$path) {
+    try { Git @('worktree','remove','--force',$path) | Out-Null } catch {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop }
+    }
+    try { Git @('worktree','prune') | Out-Null } catch {}
+    Remove-Item -LiteralPath "$path.ok" -Force -ErrorAction SilentlyContinue
+}
 function Cached-Worktree([string]$source, [string]$folder, [bool]$fresh) {
     if ($fresh) {
         $tree = Create-BuildWorktree $source $folder
         $tree | Add-Member -NotePropertyName cached -NotePropertyValue $false
+        $tree | Add-Member -NotePropertyName marker -NotePropertyValue ''
         return $tree
     }
     $cache = Cache-Location $source
     $dest = $cache.path
+    # "<cache>.ok" exists only after a build in this worktree finished. A build
+    # killed mid-compile leaves no marker, and its half-written build/ folder
+    # must not be reused.
+    $marker = "$dest.ok"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
     if (Test-Path -LiteralPath $dest -PathType Container) {
-        $actual = Git @('-C',$dest,'rev-parse','HEAD')
-        if ($actual -ne $cache.sha) {
-            Fail "Cached worktree does not match selected commit. Use /cache prune then retry: $dest"
+        $actual = ''
+        try { $actual = Git @('-C',$dest,'rev-parse','HEAD') } catch {}
+        if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) {
+            Hint 'The previous build in this cache did not finish; recreating it.'
+            Remove-CachedWorktree $dest
+        } elseif ($actual -ne $cache.sha) {
+            Hint 'Cached worktree does not match the selected commit; recreating it.'
+            Remove-CachedWorktree $dest
         }
+    }
+    if (Test-Path -LiteralPath $dest -PathType Container) {
         Git @('-C',$dest,'reset','--hard',$cache.sha) | Out-Null
         Hint "Reusing build cache: $dest"
     } else {
         Git @('worktree','add','--detach',$dest,$cache.sha) | Out-Null
         Hint "Created build cache: $dest"
     }
-    return [pscustomobject]@{path=$dest;sha=$cache.sha;cached=$true}
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{path=$dest;sha=$cache.sha;cached=$true;marker=$marker}
 }
 function Cache-Manager([string[]]$tokens) {
     $root = Join-Path $script:DataHome 'source-cache'
@@ -183,15 +222,23 @@ function Cache-Manager([string[]]$tokens) {
     })
     if ($tokens -contains 'prune') {
         if (-not (Ask "Remove $($paths.Count) cached source worktrees?" (Flag $tokens '--yes'))) { return }
-        foreach ($item in $paths) {
-            Git @('worktree','remove','--force',$item.FullName) | Out-Null
-        }
-        Git @('worktree','prune') | Out-Null
+        $lock = Enter-ReleaseLock
+        try {
+            $failed = 0
+            foreach ($item in $paths) {
+                try { Remove-CachedWorktree $item.FullName }
+                catch { $failed++; Say "  ✗ $($item.Name): $_" Red }
+            }
+        } finally { $lock.Dispose() }
+        if ($failed) { Fail "$failed cached worktree(s) could not be removed." }
         Say '  Build cache cleared.' Green
         return
     }
     Heading "Source build cache · $($paths.Count) worktree(s)"
-    foreach ($item in $paths) { Say "  $($item.Name) · $($item.LastWriteTime)" }
+    foreach ($item in $paths) {
+        $state = if (Test-Path -LiteralPath "$($item.FullName).ok") { 'ready' } else { 'incomplete, rebuilt on next use' }
+        Say "  $($item.Name) · $state · $($item.LastWriteTime)"
+    }
     Hint 'Cache is keyed by source commit and Flutter version. Use /cache prune to reclaim space.'
 }
 function Project([string[]]$tokens) {
@@ -300,6 +347,28 @@ function Slug([string]$channel) {
     if (-not $slug) { Fail 'Empty release channel.' }
     return $slug
 }
+function Is-DevKitChannel([string]$channel) {
+    if ([string]::IsNullOrWhiteSpace($channel)) { return $false }
+    return (Slug $channel).StartsWith($script:DevKitSlugPrefix, [StringComparison]::Ordinal)
+}
+function DevKit-ChannelName([string]$channel) {
+    # User-supplied names are namespaced so CI cleanup can never match them.
+    if (Is-DevKitChannel $channel) { return $channel }
+    return 'devkit/' + $channel.Trim().Trim('/')
+}
+function Release-Build([object]$release) {
+    # Build order comes from the version in the tag, not publishedAt:
+    # drafting and un-drafting a release resets its publication time.
+    $match = [regex]::Match([string]$release.tagName, '-v(\d+(?:\.\d+){1,3})$')
+    if ($match.Success) { try { return [version]$match.Groups[1].Value } catch {} }
+    return [version]'0.0'
+}
+function Sort-Newest([object[]]$releases) {
+    return @(@($releases | Where-Object { $null -ne $_ }) | Sort-Object `
+        @{ Expression = { Release-Build $_ }; Descending = $true },
+        @{ Expression = { [string]$_.publishedAt }; Descending = $true })
+}
+function Channel-Prefix([string]$channel) { return 'test-' + (Slug $channel) + '-v' }
 function Test-ChannelExists([string]$channel, [object[]]$releases) {
     $prefix = 'test-' + (Slug $channel) + '-v'
     foreach ($release in @($releases)) {
@@ -393,26 +462,39 @@ function Remove-TestRelease([string]$tag) {
     Gh @('release','delete',$tag,'--repo',$script:ReleaseRepo,'--cleanup-tag','--yes') | Out-Null
 }
 function Clean([string[]]$tokens) {
-    $keep = 1
+    # Default retention: DevKit channels keep $script:KeepPerChannel versions for
+    # rollback; CI channels keep one (CI replaces them on every push anyway).
+    $explicitKeep = 0
     $keepText = Option $tokens '--keep'
-    if ($keepText -and (-not [int]::TryParse($keepText,[ref]$keep) -or $keep -lt 1)) {
+    if ($keepText -and (-not [int]::TryParse($keepText,[ref]$explicitKeep) -or $explicitKeep -lt 1)) {
         Fail '--keep must be an integer of at least 1.'
     }
-    $items = @(Test-Releases)
+    $withDrafts = Flag $tokens '--drafts'
+    $all = @(All-TestReleases)
     $channel = Option $tokens '--channel'
     if ($channel) {
-        $prefix = 'test-' + (Slug $channel) + '-v'
-        $items = @($items | Where-Object { $_.tagName.StartsWith($prefix) })
+        $prefix = Channel-Prefix $channel
+        $all = @($all | Where-Object { ([string]$_.tagName).StartsWith($prefix,[StringComparison]::Ordinal) })
     }
     $remove = @()
-    foreach ($group in ($items | Group-Object { $_.tagName -replace '-v\d+(\.\d+)+$','' })) {
-        $sorted = @($group.Group | Sort-Object publishedAt -Descending)
-        if ($sorted.Count -gt $keep) { $remove += @($sorted | Select-Object -Skip $keep) }
+    foreach ($group in ($all | Group-Object { $_.tagName -replace '-v\d+(\.\d+)+$','' })) {
+        $slug = ([string]$group.Name).Substring(5)
+        $keep = if ($explicitKeep) { $explicitKeep }
+                elseif ($slug.StartsWith($script:DevKitSlugPrefix,[StringComparison]::Ordinal)) { $script:KeepPerChannel }
+                else { 1 }
+        $active = @(Sort-Newest @($group.Group | Where-Object { -not $_.isDraft }))
+        if ($active.Count -gt $keep) { $remove += @($active | Select-Object -Skip $keep) }
+        if ($withDrafts) { $remove += @($group.Group | Where-Object { $_.isDraft }) }
     }
-    if ($remove.Count -eq 0) { Say '  No outdated test releases.' Green; return }
+    $hiddenDrafts = @($all | Where-Object { $_.isDraft }).Count
+    if ($remove.Count -eq 0) {
+        Say '  No outdated test releases.' Green
+        if ($hiddenDrafts -and -not $withDrafts) { Hint "$hiddenDrafts release(s) hidden by rollback are kept; add --drafts to delete them." }
+        return
+    }
     Heading "Releases eligible for deletion: $($remove.Count)"
-    $remove | ForEach-Object { Hint "$($_.tagName) · $($_.publishedAt)" }
-    Hint "Stable, beta, Android and iOS releases are protected. Keep $keep per channel."
+    $remove | ForEach-Object { Hint "$($_.tagName)$(if ($_.isDraft) { ' [hidden by rollback]' })" }
+    Hint "Stable, beta, Android and iOS releases are protected. DevKit channels keep $($script:KeepPerChannel), CI channels keep 1$(if ($explicitKeep) { "; overridden: keep $explicitKeep" })."
     if (Flag $tokens '--dry-run') { return }
     if (-not (Ask 'Delete the listed test releases?' (Flag $tokens '--yes'))) { return }
     $success = 0
@@ -441,14 +523,17 @@ function Next-BuildNumber([string]$base, [string]$channel, [object[]]$releases) 
     }
     return $number
 }
-function Trim-ChannelReleases([string]$channel, [int]$keep = 3) {
-    # Never remove stable releases. Keep three newest published test releases,
-    # so Release Manager has rollback targets after an update.
-    $prefix = 'test-' + (Slug $channel) + '-v'
-    $versions = @(Test-Releases | Where-Object {
+function Trim-ChannelReleases([string]$channel, [int]$keep = $script:KeepPerChannel) {
+    # Runs only after a successful publish. Never touches stable releases.
+    # Keeps the newest $keep active versions as rollback targets; releases
+    # hidden by an earlier rollback are obsolete once a newer build is live.
+    $prefix = Channel-Prefix $channel
+    $channelReleases = @(All-TestReleases | Where-Object {
         ([string]$_.tagName).StartsWith($prefix,[StringComparison]::Ordinal)
-    } | Sort-Object publishedAt -Descending)
-    foreach ($old in @($versions | Select-Object -Skip $keep)) {
+    })
+    $active = @(Sort-Newest @($channelReleases | Where-Object { -not $_.isDraft }))
+    $obsolete = @($active | Select-Object -Skip $keep) + @($channelReleases | Where-Object { $_.isDraft })
+    foreach ($old in $obsolete) {
         try {
             Remove-TestRelease $old.tagName
             Hint "Pruned old test release: $($old.tagName)"
@@ -457,7 +542,25 @@ function Trim-ChannelReleases([string]$channel, [int]$keep = 3) {
         }
     }
 }
-function Publish-Manifest([object]$record) {
+function Compare-RemoteAssets([object]$remote, [object]$record) {
+    # Pure comparison so it can be self-tested: does the release on GitHub
+    # carry exactly the verified files of this run?
+    $assets = @($remote.assets | Where-Object { $null -ne $_ })
+    foreach ($artifact in @($record.artifacts)) {
+        $name = if ($artifact.name) { [string]$artifact.name } else { Split-Path -Leaf ([string]$artifact.path) }
+        $size = if ($artifact.size) { [int64]$artifact.size } else { (Get-Item -LiteralPath ([string]$artifact.path)).Length }
+        $asset = @($assets | Where-Object { $_.name -ceq $name } | Select-Object -First 1)
+        if ($asset.Count -eq 0) { return "$name is missing" }
+        if ($asset[0].state -and $asset[0].state -ne 'uploaded') { return "$name upload did not finish" }
+        if ([int64]$asset[0].size -ne $size) { return "$name has a different size" }
+        $digest = [string]$asset[0].digest
+        if ($digest -match '^sha256:([0-9a-fA-F]{64})$' -and $Matches[1] -ine [string]$artifact.sha256) {
+            return "$name has a different SHA-256"
+        }
+    }
+    return ''
+}
+function Publish-Manifest([object]$record, [bool]$replace = $false) {
     if ($record.local) { Fail 'Local-only builds cannot be published.' }
     if ($record.status -eq 'published') {
         Hint "Already published: $($record.tag)"
@@ -473,20 +576,44 @@ function Publish-Manifest([object]$record) {
     }
     $already = @(All-TestReleases | Where-Object { $_.tagName -ceq $tag })
     if ($already.Count -gt 0) {
-        # The previous create may have succeeded before the network disconnected.
-        # Do not overwrite potentially different remote assets silently.
-        Fail "Tag $tag is already published. Check GitHub Releases before retrying."
+        # An interrupted upload leaves the tag behind (gh creates a draft,
+        # uploads, then publishes). Reconcile instead of refusing forever.
+        $remote = Gh @('release','view',$tag,'--repo',$script:ReleaseRepo,'--json','tagName,isDraft,isPrerelease,assets') | ConvertFrom-Json
+        $problem = Compare-RemoteAssets $remote $record
+        if (-not $problem) {
+            if ($remote.isDraft) {
+                Gh @('release','edit',$tag,'--repo',$script:ReleaseRepo,'--draft=false','--prerelease') | Out-Null
+            }
+            Hint 'GitHub already has this release with the same files; marking it as published.'
+        } elseif (-not $replace) {
+            Fail ("Tag $tag already exists on GitHub, but $problem. " +
+                "Run /recover --id $($record.id) --replace --yes to delete that release and upload again.")
+        } else {
+            Hint "Replacing the incomplete release: $problem."
+            Remove-TestRelease $tag
+            $problem = 'replaced'
+        }
+        if (-not $problem) {
+            $record.status = 'published'
+            $script:CurrentManifest = $record
+            Save-BuildState
+            Stage 'publish' 'done' 'Release already on GitHub'
+            Say "  ✓ https://github.com/$script:ReleaseRepo/releases/tag/$tag" Green
+            if ($record.mode -eq 'update') { Trim-ChannelReleases ([string]$record.channel) }
+            return
+        }
     }
     Stage 'publish' 'running' 'Uploading release assets'
     $notes = @(
         'Cavey DevKit', "Source: $script:SourceRepo",
         "Branch: $($record.source)", "Commit: $($record.sha)",
         "Update channel: $($record.channel)", "Version: $($record.version)"
-    ) -join [Environment]::NewLine
+    )
+    if ($record.downloader) { $notes += "Downloader: $($record.downloader.source) · SHA-256 $($record.downloader.sha256)" }
     $publishArgs = @('release','create',$tag) + $files + @(
         '--repo',$script:ReleaseRepo,'--prerelease',
         '--title',"Test: $($record.channel) · $($record.version)",
-        '--notes',$notes
+        '--notes',($notes -join [Environment]::NewLine)
     )
     Gh $publishArgs | Out-Null
     $record.status = 'published'
@@ -494,7 +621,7 @@ function Publish-Manifest([object]$record) {
     Save-BuildState
     Stage 'publish' 'done' 'Release uploaded'
     Say "  ✓ https://github.com/$script:ReleaseRepo/releases/tag/$tag" Green
-    if ($record.mode -eq 'update') { Trim-ChannelReleases ([string]$record.channel) 3 }
+    if ($record.mode -eq 'update') { Trim-ChannelReleases ([string]$record.channel) }
 }
 function Recovery([string[]]$tokens) {
     $records = @(Build-Records)
@@ -504,17 +631,20 @@ function Recovery([string[]]$tokens) {
         foreach ($record in @($records | Select-Object -First 12)) {
             Say "  $($record.id) · $($record.status) · $($record.source) · $($record.channel)"
         }
-        Hint 'Use /resume --id <id> to republish verified artifacts without rebuilding.'
-        Hint 'Interrupted compiling runs require a new build (the source cache is retained).'
+        Hint 'Use /recover --id <id> to publish verified artifacts without rebuilding.'
+        Hint 'Interrupted compiling runs require a new build.'
         return
     }
     $record = @($records | Where-Object { $_.id -ceq $target } | Select-Object -First 1)
     if ($record.Count -eq 0) { Fail "Unknown build run: $target" }
-    if (-not (Ask "Republish saved run $target?" (Flag $tokens '--yes'))) { return }
+    $replace = Flag $tokens '--replace'
+    $question = if ($replace) { "Replace the release on GitHub and republish $target?" } else { "Republish saved run $target?" }
+    if (-not (Ask $question (Flag $tokens '--yes'))) { return }
+    $lock = Enter-ReleaseLock
     $script:CurrentManifest = $record[0]
     $script:CurrentManifest.stages = @{}
     try {
-        Publish-Manifest $record[0]
+        Publish-Manifest $record[0] $replace
     } catch {
         if ($record[0].status -ne 'published') {
             $record[0].status = 'publish_failed'
@@ -523,19 +653,25 @@ function Recovery([string[]]$tokens) {
         throw
     } finally {
         $script:CurrentManifest = $null
+        $lock.Dispose()
     }
 }
 function Release-Manager([string[]]$tokens) {
     $channel = Option $tokens '--channel'
-    $all = @(All-TestReleases | Sort-Object publishedAt -Descending)
+    $all = @(Sort-Newest @(All-TestReleases))
     if ($channel) {
-        $prefix = 'test-' + (Slug $channel) + '-v'
+        $prefix = Channel-Prefix $channel
         $all = @($all | Where-Object { ([string]$_.tagName).StartsWith($prefix,[StringComparison]::Ordinal) })
-        Heading "Channel: $channel · $($all.Count) published release(s)"
+        Heading "Channel: $channel · $($all.Count) release(s)"
         foreach ($release in $all) {
-            Say "  $($release.tagName) · $($release.publishedAt) $(if ($release.isDraft) { '[DRAFT]' } else { '[ACTIVE]' })"
+            $state = if ($release.isDraft) { 'hidden by rollback' } else { 'active' }
+            Say "  $($release.tagName) · $state$(if ($release.publishedAt) { ' · ' + $release.publishedAt })"
         }
-        Hint 'Use /rollback --channel <name> --to <tag> to restore a previous version.'
+        if (Is-DevKitChannel $channel) {
+            Hint "Keeps $($script:KeepPerChannel) active versions. /rollback restores an older one; /rollforward undoes a rollback."
+        } else {
+            Hint 'This channel belongs to GitHub Actions builds of a branch: CI replaces it on every push.'
+        }
         return
     }
     Heading 'Release Manager · test channels'
@@ -545,12 +681,12 @@ function Release-Manager([string[]]$tokens) {
         $id = Slug $name
         if ($seen.ContainsKey($id)) { continue }
         $seen[$id] = $true
-        $count = @($all | Where-Object {
-            ([string]$_.tagName).StartsWith(('test-' + $id + '-v'),[StringComparison]::Ordinal)
-        }).Count
-        Say "  $name · $count version(s) · latest: $($release.tagName)"
+        $members = @($all | Where-Object { ([string]$_.tagName).StartsWith(('test-' + $id + '-v'),[StringComparison]::Ordinal) })
+        $hidden = @($members | Where-Object { $_.isDraft }).Count
+        $owner = if (Is-DevKitChannel $name) { 'DevKit' } else { 'CI' }
+        Say "  $name · $owner · $($members.Count - $hidden) active$(if ($hidden) { ", $hidden hidden" }) · latest: $($release.tagName)"
     }
-    Hint 'Select a channel from /build → Update, or run /manager --channel <name>.'
+    Hint 'Use /releases --channel <name> for details.'
 }
 function Rollback-Release([string[]]$tokens) {
     $channel = Option $tokens '--channel'
@@ -558,14 +694,14 @@ function Rollback-Release([string[]]$tokens) {
     if (-not $channel -or -not $to) {
         Fail 'Usage: /rollback --channel <name> --to <test-release-tag> --yes'
     }
-    $prefix = 'test-' + (Slug $channel) + '-v'
-    $existing = @(Test-Releases | Where-Object {
-        -not $_.isDraft -and
+    $prefix = Channel-Prefix $channel
+    $existing = @(Sort-Newest @(Test-Releases | Where-Object {
         ([string]$_.tagName).StartsWith($prefix,[StringComparison]::Ordinal)
-    } | Sort-Object publishedAt -Descending)
+    }))
     $found = @($existing | Where-Object { $_.tagName -ceq $to })
     if ($found.Count -ne 1) { Fail 'Rollback target must be an active prerelease in the selected channel.' }
-    $newer = @($existing | Where-Object { [string]$_.publishedAt -gt [string]$found[0].publishedAt })
+    $target = Release-Build $found[0]
+    $newer = @($existing | Where-Object { (Release-Build $_) -gt $target })
     if ($newer.Count -eq 0) { Fail 'The selected release is already the newest in its channel.' }
     Heading 'Rollback preview'
     Say "  Channel: $channel"
@@ -577,13 +713,43 @@ function Rollback-Release([string[]]$tokens) {
     # their embedded APP_VERSION would disagree with the release version,
     # causing broken auto-updates. Drafting newer releases restores the
     # old version without deleting assets or falsifying its version number.
-    Stage 'publish' 'running' 'Restoring previous release'
-    foreach ($release in $newer) {
-        Gh @('release','edit',$release.tagName,'--repo',$script:ReleaseRepo,'--draft') | Out-Null
-        Hint "  Hidden as draft: $($release.tagName)"
-    }
-    Stage 'publish' 'done' 'Previous release restored'
+    $lock = Enter-ReleaseLock
+    try {
+        Stage 'publish' 'running' 'Restoring previous release'
+        foreach ($release in $newer) {
+            Gh @('release','edit',$release.tagName,'--repo',$script:ReleaseRepo,'--draft=true') | Out-Null
+            Hint "  Hidden as draft: $($release.tagName)"
+        }
+        Stage 'publish' 'done' 'Previous release restored'
+    } finally { $lock.Dispose() }
     Say "  ✓ Active release restored: https://github.com/$script:ReleaseRepo/releases/tag/$to" Green
+    Hint "Undo with /rollforward --channel $channel"
+}
+function Rollforward-Release([string[]]$tokens) {
+    $channel = Option $tokens '--channel'
+    if (-not $channel) { Fail 'Usage: /rollforward --channel <name> --yes' }
+    $prefix = Channel-Prefix $channel
+    $hidden = @(Sort-Newest @(All-TestReleases | Where-Object {
+        $_.isDraft -and ([string]$_.tagName).StartsWith($prefix,[StringComparison]::Ordinal)
+    }))
+    if ($hidden.Count -eq 0) { Fail "Channel $channel has no releases hidden by a rollback." }
+    Heading 'Undo rollback'
+    Say "  Channel: $channel"
+    Say "  Releases to show again: $($hidden.Count)"
+    foreach ($release in $hidden) { Hint "  $($release.tagName)" }
+    if (-not (Ask 'Publish the hidden releases again?' (Flag $tokens '--yes'))) { return }
+    $lock = Enter-ReleaseLock
+    try {
+        Stage 'publish' 'running' 'Showing hidden releases'
+        # Oldest first, so the newest build ends up with the latest publication time.
+        [array]::Reverse($hidden)
+        foreach ($release in $hidden) {
+            Gh @('release','edit',$release.tagName,'--repo',$script:ReleaseRepo,'--draft=false','--prerelease') | Out-Null
+            Hint "  Active again: $($release.tagName)"
+        }
+        Stage 'publish' 'done' 'Rollback undone'
+    } finally { $lock.Dispose() }
+    Say "  ✓ Newest active release: $($hidden[-1].tagName)" Green
 }
 function DevKit-Update {
     # Only fast-forward the DevKit's OWN checkout. Never update the app source.
@@ -611,45 +777,29 @@ function Build([string[]]$tokens) {
     $mode = Option $tokens '--mode'
     $local = Flag $tokens '--local'
     $fresh = Flag $tokens '--fresh'
-    if (-not $mode) {
-        if ($local -or -not $script:Interactive) { $mode = 'new' }
-        else { $mode = @('new','update')[(Pick 'Publication mode' @('New independent build','Update existing test channel'))] }
-    }
+    if (-not $mode) { $mode = 'new' }
     if (@('new','update') -notcontains $mode) { Fail 'Invalid mode; use new/update.' }
     if ($mode -eq 'update' -and $local) { Fail 'Update mode requires publication. Do not use --local.' }
+    $channel = Option $tokens '--channel'
     if ($mode -eq 'update') {
-        $releases = @(Test-Releases | Sort-Object publishedAt -Descending)
-        if ($releases.Count -eq 0) { Fail 'No test releases available to update.' }
-        $specified = Option $tokens '--channel'
-        if ($specified) {
-            $expected = Slug $specified
-            $pattern = '^test-' + [regex]::Escape($expected) + '-v\d'
-            $matches = @($releases | Where-Object { $_.tagName -match $pattern })
-            if ($matches.Count -eq 0) { Fail "Channel $specified was not found." }
-            $channel = Release-Channel ($matches | Select-Object -First 1)
-        } else {
-            if (-not $script:Interactive) { Fail 'For --mode update, specify --channel.' }
-            $slots = @(); $seen = @{}
-            foreach ($release in $releases) {
-                $name = Release-Channel $release; $id = Slug $name
-                if ($seen.ContainsKey($id)) { continue }
-                $seen[$id] = $true
-                $slots += [pscustomobject]@{channel=$name;tag=$release.tagName}
-            }
-            $labels = @($slots | ForEach-Object { "$($_.channel) · $($_.tag)" })
-            $index = Pick 'Select test channel to update' $labels
-            if ($null -eq $index -or $index -lt 0 -or $index -ge $slots.Count) { Fail 'Invalid channel choice.' }
-            $channel = $slots[$index].channel
+        if (-not $channel) { Fail 'For --mode update, specify --channel.' }
+        if (-not (Is-DevKitChannel $channel)) {
+            Fail ("Channel $channel belongs to GitHub Actions builds of a branch; CI deletes its releases " +
+                "on every push, so updates and rollbacks there would be lost. Create a DevKit channel with --mode new.")
         }
+        $pattern = '^' + [regex]::Escape((Channel-Prefix $channel)) + '\d'
+        $members = @(Sort-Newest @(Test-Releases | Where-Object { $_.tagName -match $pattern }))
+        if ($members.Count -eq 0) { Fail "Channel $channel was not found." }
+        $channel = Release-Channel $members[0]
     } else {
-        $channel = Option $tokens '--channel'
+        if ($channel) { $channel = DevKit-ChannelName $channel }
         if ($local) {
             if (-not $channel) { $channel = New-ReleaseChannel $source @() }
         } else {
             $published = @(All-TestReleases)
             if (-not $channel) { $channel = New-ReleaseChannel $source $published }
             if (Test-ChannelExists $channel $published) {
-                Fail "Channel $channel already exists. Choose Update existing build."
+                Fail "Channel $channel already exists. Use --mode update to publish into it."
             }
         }
     }
@@ -659,6 +809,7 @@ function Build([string[]]$tokens) {
     Say "  Mode: $mode · $(if ($local) { 'local only' } else { 'publish to GitHub Releases' })"
     Say "  Source cache: $(if ($fresh) { 'disabled (--fresh)' } else { 'enabled, keyed by commit and Flutter version' })"
     if (-not (Ask 'Prepare source and build?' (Flag $tokens '--yes'))) { return }
+    $lock = Enter-ReleaseLock
     $base = if ($local) { Source-BaseVersion $source } else { Stable-Base $mode $channel $source }
     $existing = if ($local) { @() } else { @(All-TestReleases) }
     $number = Next-BuildNumber $base $channel $existing
@@ -692,6 +843,8 @@ function Build([string[]]$tokens) {
             '-BuildChannel',$channel,'-Version',$version
         )
         if (Flag $tokens '--skip-checks') { $buildArgs += '-SkipChecks' }
+        # A published build without the downloader cannot download tracks.
+        if (-not $local) { $buildArgs += '-RequireDownloader' }
         Heading "Windows build $version · $($sha.Substring(0,8))"
         $priorProgress = $env:CAVEY_DEVKIT_PROGRESS
         try {
@@ -715,6 +868,14 @@ function Build([string[]]$tokens) {
             $artifacts += @{path=$dest;name=$name;sha256=$hash;size=(Get-Item $dest).Length}
             Hint "$name · SHA-256 $hash"
         }
+        $downloaderInfo = Join-Path (Join-Path $worktree 'dist') 'downloader.json'
+        if (Test-Path -LiteralPath $downloaderInfo -PathType Leaf) {
+            $downloader = Get-Content -LiteralPath $downloaderInfo -Raw -Encoding UTF8 | ConvertFrom-Json
+            $script:CurrentManifest.downloader = $downloader
+            if ($downloader.sha256) { Hint "Cavey-Downloader.exe · $($downloader.source) · SHA-256 $($downloader.sha256)" }
+            else { Say '  ! This build has no Cavey-Downloader.exe; track downloads will not work.' Yellow }
+        }
+        if ($tree.marker) { Set-Content -LiteralPath $tree.marker -Value $sha -Encoding Ascii }
         $status = 'built'
         $script:CurrentManifest.status = $status
         $script:CurrentManifest.artifacts = $artifacts
@@ -762,6 +923,7 @@ function Build([string[]]$tokens) {
             version=$version; status=$status; folder=$folder; id=$id
             seconds=[math]::Round(((Get-Date)-$start).TotalSeconds,1)
         })
+        $lock.Dispose()
     }
     Say "  ✓ $status · $folder" Green
 }
@@ -813,7 +975,9 @@ function Help {
         '/build --branch <name> --fresh --yes   (no source cache)'
         '/releases [--channel <name>]  Test channels and their versions'
         '/rollback --channel <name> --to <tag> --yes'
-        '/clean [--dry-run] [--keep N] [--yes]'
+        '/rollforward --channel <name> --yes   Undo a rollback'
+        '/clean [--dry-run] [--keep N] [--drafts] [--yes]'
+        '/recover --id <id> --replace --yes    Replace an incomplete release'
         '/recover                      Saved builds that can be published'
         '/resume --id <id> --yes       Publish a saved build without rebuilding'
         '/cache [prune --yes]          Source build cache'
@@ -949,6 +1113,53 @@ function Dispatch([string[]]$tokens) {
                 Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
+        'selftest-retention' {
+            if (-not (Is-DevKitChannel 'devkit/dj/20261118-1')) { Fail 'DevKit channel not detected.' }
+            if (Is-DevKitChannel 'claude/dj-v2-review-fixes') { Fail 'CI channel detected as DevKit.' }
+            if ((DevKit-ChannelName 'dj') -cne 'devkit/dj') { Fail 'Custom channel was not namespaced.' }
+            if ((DevKit-ChannelName 'devkit/dj') -cne 'devkit/dj') { Fail 'Namespaced channel was changed.' }
+            # Un-drafting resets publishedAt: order must follow the build number.
+            $releases = @(
+                [pscustomobject]@{ tagName = 'test-devkit-dj-v0.4.0.900'; publishedAt = '2026-11-18T10:00:00Z' },
+                [pscustomobject]@{ tagName = 'test-devkit-dj-v0.4.0.1200'; publishedAt = '2026-11-17T10:00:00Z' },
+                [pscustomobject]@{ tagName = 'test-devkit-dj-v0.4.0.1000'; publishedAt = $null }
+            )
+            $order = @(Sort-Newest $releases | ForEach-Object { $_.tagName })
+            if (($order -join ',') -cne 'test-devkit-dj-v0.4.0.1200,test-devkit-dj-v0.4.0.1000,test-devkit-dj-v0.4.0.900') {
+                Fail "Release order regression: $($order -join ',')"
+            }
+            Say 'PASS DevKit channels, naming and build-number ordering' Green
+            $sha = 'a' * 64
+            $record = [pscustomobject]@{ artifacts = @(
+                [pscustomobject]@{ name = 'CavePlayer-Setup.exe'; size = 10; sha256 = $sha },
+                [pscustomobject]@{ name = 'CavePlayer-portable.zip'; size = 20; sha256 = $sha }) }
+            $complete = [pscustomobject]@{ assets = @(
+                [pscustomobject]@{ name = 'CavePlayer-Setup.exe'; size = 10; state = 'uploaded'; digest = "sha256:$sha" },
+                [pscustomobject]@{ name = 'CavePlayer-portable.zip'; size = 20; state = 'uploaded' }) }
+            if (Compare-RemoteAssets $complete $record) { Fail 'Complete release reported as incomplete.' }
+            $partial = [pscustomobject]@{ assets = @($complete.assets[0]) }
+            if ((Compare-RemoteAssets $partial $record) -notmatch 'portable.zip is missing') { Fail 'Missing asset not detected.' }
+            $resized = [pscustomobject]@{ assets = @($complete.assets[0], [pscustomobject]@{ name = 'CavePlayer-portable.zip'; size = 5; state = 'uploaded' }) }
+            if ((Compare-RemoteAssets $resized $record) -notmatch 'different size') { Fail 'Size mismatch not detected.' }
+            $other = [pscustomobject]@{ assets = @([pscustomobject]@{ name = 'CavePlayer-Setup.exe'; size = 10; state = 'uploaded'; digest = ('sha256:' + 'b' * 64) }, $complete.assets[1]) }
+            if ((Compare-RemoteAssets $other $record) -notmatch 'SHA-256') { Fail 'Digest mismatch not detected.' }
+            Say 'PASS interrupted publication reconciliation' Green
+        }
+        'selftest-lock' {
+            $script:DataHome = Join-Path ([IO.Path]::GetTempPath()) ('cavey-lock-test-' + [guid]::NewGuid().ToString('N'))
+            try {
+                $first = Enter-ReleaseLock
+                $blocked = $false
+                try { $second = Enter-ReleaseLock; $second.Dispose() } catch { $blocked = $_.Exception.Message -match 'Another DevKit window' }
+                $first.Dispose()
+                if (-not $blocked) { Fail 'A second build lock was granted while the first was held.' }
+                $again = Enter-ReleaseLock
+                $again.Dispose()
+                Say 'PASS build lock is exclusive and released' Green
+            } finally {
+                Remove-Item -LiteralPath $script:DataHome -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
         'help' { Help }
         'status' { Status }
         'doctor' { Doctor }
@@ -969,6 +1180,7 @@ function Dispatch([string[]]$tokens) {
         'cache' { Cache-Manager $tokens }
         'manager' { Release-Manager $tokens }
         'rollback' { Rollback-Release $tokens }
+        'rollforward' { Rollforward-Release $tokens }
         'recover' { Recovery $tokens }
         'resume' { Recovery $tokens }
         'retry-publish' { Recovery $tokens }

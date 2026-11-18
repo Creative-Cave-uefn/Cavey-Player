@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { CommandPrompt } from "./CommandPrompt.js";
 import { helpText, resolveCommand } from "./commands.js";
 import { createWorkflowStream, stageOrder, stripWorkflowMarkers, type StageRecord } from "./build-events.js";
-import type { ReleaseRecord } from "./choices.js";
+import { releaseChannels, type ReleaseRecord } from "./choices.js";
 import {
   changeDirectory, commandRequest, engineCommands, gitBranchesRequest, gitStatusRequest, initialDirectory,
   launchTerminal, parseGitStatus, prettyDirectory, projectLabel, releaseListRequest, repositoryRoot,
@@ -20,7 +20,7 @@ import {
   estimateBuildMs, formatDuration, summarizeOutput, type Entry, type NewEntry, type RunStatus,
 } from "./transcript.js";
 import {
-  buildConfirm, channelReleases, dialogFor, parseBranches, pickSummary, runTitle, simpleConfirm,
+  buildConfirm, channelReleases, dialogFor, isDevKitChannel, parseBranches, pickSummary, runTitle, simpleConfirm,
   type Branch, type ConfirmCommand, type SavedRun, type Wizard,
 } from "./wizard.js";
 
@@ -277,7 +277,7 @@ function App() {
     const controller = new AbortController();
     active.current = controller;
     const startedAt = Date.now();
-    const isBuild = /^\/(?:build|rollback|resume|retry-publish)(?:\s|$)/.test(req.label);
+    const isBuild = /^\/(?:build|rollback|rollforward|resume|retry-publish|recover)(?:\s|$)/.test(req.label);
     const id = add({ kind: "run", title: options.title ?? req.label, output: "", status: "running",
       stages: isBuild ? [] : undefined });
     setBusy({ verb: isBuild ? "Starting" : "Running", startedAt, etaMs: options.etaMs ?? null });
@@ -430,7 +430,10 @@ function App() {
           const releases = wizard.releases.length ? wizard.releases
             : await fetching("Loading channels", () => loadReleases(true));
           if (!releases) return;
-          if (!releases.some(r => r.isPrerelease && !r.isDraft)) { fail("No test channels exist yet. Choose New test release."); return; }
+          if (!releaseChannels(releases).some(c => isDevKitChannel(c.value))) {
+            fail("No DevKit channels yet. Choose New test release to create one.");
+            return;
+          }
           push({ kind: "channel", branch: wizard.branch, releases });
           return;
         }
@@ -447,6 +450,10 @@ function App() {
         if (value === "history") {
           closeWizard();
           await runEngine("manager", ["--channel", wizard.channel]);
+          return;
+        }
+        if (value === "rollforward") {
+          push(simpleConfirm("rollforward", ["--channel", wizard.channel]));
           return;
         }
         if (value === "rollback") {
@@ -508,10 +515,10 @@ function App() {
         if (!args.length) { await openReleases("home"); return; }
         await runEngine("manager", args);
         return;
-      case "rollback":
+      case "rollback": case "rollforward":
         echo();
         if (!args.length) { await openReleases("channel"); return; }
-        if (!yes) { confirm("rollback", args); return; }
+        if (!yes) { confirm(spec.name, args); return; }
         break;
       case "recover":
         echo();

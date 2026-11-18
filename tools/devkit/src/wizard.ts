@@ -6,7 +6,7 @@ import { formatDuration, relativeTime } from "./transcript.js";
 
 export type Branch = { name: string; date: string; sha: string; author: string };
 export type SavedRun = { id: string; source: string; channel: string; status: string; updatedUtc?: string; version?: string };
-export type ConfirmCommand = "build" | "clean" | "rollback" | "resume" | "cache";
+export type ConfirmCommand = "build" | "clean" | "rollback" | "rollforward" | "resume" | "cache";
 
 export type Wizard =
   | { kind: "releases-home" }
@@ -51,24 +51,52 @@ export function parseBranches(text: string): Branch[] {
   return result;
 }
 
-export function channelReleases(releases: readonly ReleaseRecord[], channel: string): ReleaseRecord[] {
-  const prefix = "test-" + slug(channel) + "-v";
-  return releases.filter(r => r.isPrerelease && !r.isDraft && r.tagName.startsWith(prefix))
-    .sort((a, b) => (b.publishedAt ?? "").localeCompare(a.publishedAt ?? ""));
+/** DevKit owns channels named devkit/…; test-<branch> channels belong to CI, which replaces them on every push. */
+export function isDevKitChannel(channel: string): boolean {
+  return slug(channel).startsWith("devkit-");
 }
 
-/** Channel that already carries builds of this branch (CI channel or DevKit channel). */
+/** Version from the tag as numbers; drafting resets publishedAt, so order follows the build number. */
+export function buildNumber(tag: string): number[] {
+  const match = /-v(\d+(?:\.\d+)+)$/.exec(tag);
+  return match ? match[1]!.split(".").map(Number) : [];
+}
+
+export function newestFirst(a: ReleaseRecord, b: ReleaseRecord): number {
+  const x = buildNumber(a.tagName), y = buildNumber(b.tagName);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (y[i] ?? 0) - (x[i] ?? 0);
+    if (d) return d;
+  }
+  return (b.publishedAt ?? "").localeCompare(a.publishedAt ?? "");
+}
+
+function inChannel(r: ReleaseRecord, channel: string): boolean {
+  return r.isPrerelease && r.tagName.startsWith("test-" + slug(channel) + "-v");
+}
+
+export function channelReleases(releases: readonly ReleaseRecord[], channel: string): ReleaseRecord[] {
+  return releases.filter(r => inChannel(r, channel) && !r.isDraft).sort(newestFirst);
+}
+
+/** Releases hidden as drafts by a rollback. */
+export function hiddenReleases(releases: readonly ReleaseRecord[], channel: string): ReleaseRecord[] {
+  return releases.filter(r => inChannel(r, channel) && r.isDraft).sort(newestFirst);
+}
+
+/** DevKit channel that already carries builds of this branch. */
 export function channelForBranch(releases: readonly ReleaseRecord[], branch: string): string | undefined {
-  const own = slug(branch);
+  const own = "devkit-" + slug(branch);
   return releaseChannels(releases).find(c => {
     const id = slug(c.value);
-    return id === own || id.startsWith("devkit-" + own + "-");
+    return id === own || id.startsWith(own + "-");
   })?.value;
 }
 
-/** Releases a channel update will prune once the new one is published. */
+/** Releases a channel update will prune once the new one is published (older versions and rollback drafts). */
 export function prunedByUpdate(releases: readonly ReleaseRecord[], channel: string, keep = KEEP_PER_CHANNEL): string[] {
-  return channelReleases(releases, channel).slice(Math.max(0, keep - 1)).map(r => r.tagName);
+  return [...channelReleases(releases, channel).slice(Math.max(0, keep - 1)), ...hiddenReleases(releases, channel)]
+    .map(r => r.tagName);
 }
 
 function sourceLine(b: Branch): string {
@@ -126,18 +154,27 @@ export function simpleConfirm(command: ConfirmCommand, args: string[]): Wizard {
   const flag = (key: string) => { const i = args.indexOf(key); return i >= 0 ? args[i + 1] ?? "" : ""; };
   const plain = args.filter(a => a !== "--yes").join(" ");
   switch (command) {
+    case "rollforward": {
+      return { kind: "confirm", command, args, question: "Undo the rollback of “" + flag("--channel") + "”?",
+        plan: [["Effect", "releases hidden by the rollback become active again"]],
+        options: [{ value: "yes", label: "Yes, show them again" }, { value: "back", label: "No, go back" }] };
+    }
     case "rollback":
       return { kind: "confirm", command, args, question: "Roll back channel “" + flag("--channel") + "”?",
         plan: [["Restore", flag("--to")], ["Newer", "hidden as drafts; tags and files are kept"],
           ["Clients", "already-updated installs are not downgraded"]],
         options: [{ value: "yes", label: "Yes, roll back" }, { value: "back", label: "No, go back" }] };
     case "resume":
-      return { kind: "confirm", command, args, question: "Publish the saved build?",
-        plan: [["Run", flag("--id")], ["Check", "SHA-256 of both files before upload"]],
+      return { kind: "confirm", command, args,
+        question: args.includes("--replace") ? "Replace the incomplete release and publish again?" : "Publish the saved build?",
+        plan: [["Run", flag("--id")], ["Check", "SHA-256 of both files before upload"],
+          ...(args.includes("--replace") ? [["Replace", "deletes the release with the same tag first"] as [string, string]] : [])],
         options: [{ value: "yes", label: "Yes, publish" }, { value: "back", label: "No, go back" }] };
     case "clean":
       return { kind: "confirm", command, args, question: "Delete outdated test releases?",
-        plan: [["Keep", (flag("--keep") || "1") + " per channel"], ["Safe", "stable, beta, Android and iOS are never touched"]],
+        plan: [["Keep", flag("--keep") ? flag("--keep") + " per channel" : KEEP_PER_CHANNEL + " per DevKit channel, 1 per CI channel"],
+          ["Hidden", args.includes("--drafts") ? "releases hidden by rollback are deleted too" : "releases hidden by rollback are kept"],
+          ["Safe", "stable, beta, Android and iOS are never touched"]],
         options: [{ value: "yes", label: "Yes, delete" }, { value: "dry-run", label: "Show the list first" },
           { value: "back", label: "No, go back" }] };
     case "cache":
@@ -178,20 +215,29 @@ export function dialogFor(w: Wizard): Dialog {
     }
     case "channel": {
       const suggested = channelForBranch(w.releases, w.branch.name);
-      const options = releaseChannels(w.releases).map(c => describeChannel(w.releases, c.value));
+      const options = releaseChannels(w.releases).filter(c => isDevKitChannel(c.value))
+        .map(c => describeChannel(w.releases, c.value));
       options.sort((a, b) => Number(b.value === suggested) - Number(a.value === suggested));
       return { id: "channel:" + w.branch.name, question: "Update which channel?", filterable: true, options };
     }
     case "manager-channel":
       return { id: "manager-channel", question: "Which channel?", filterable: true,
         options: releaseChannels(w.releases).map(c => describeChannel(w.releases, c.value)) };
-    case "manager-action":
+    case "manager-action": {
+      if (!isDevKitChannel(w.channel)) {
+        return { id: "manager-action:" + w.channel, question: "Channel “" + w.channel + "”", filterable: false,
+          plan: [["Owner", "GitHub Actions · replaced on every push to the branch"]],
+          options: [{ value: "history", label: "Show versions" }] };
+      }
+      const hidden = hiddenReleases(w.releases, w.channel).length;
       return { id: "manager-action:" + w.channel, question: "Channel “" + w.channel + "”", filterable: false,
         options: [
           { value: "history", label: "Show versions" },
           { value: "update", label: "Update from a branch" },
           { value: "rollback", label: "Roll back to an older version" },
+          ...(hidden ? [{ value: "rollforward", label: "Undo rollback", detail: hidden + " hidden" }] : []),
         ] };
+    }
     case "manager-versions":
       return { id: "manager-versions:" + w.channel, question: "Restore which version?", filterable: true,
         options: w.releases.map(r => ({ value: r.tagName, label: r.tagName, detail: relativeTime(r.publishedAt) })) };
@@ -207,10 +253,12 @@ export function dialogFor(w: Wizard): Dialog {
 
 function describeChannel(releases: readonly ReleaseRecord[], channel: string): Choice {
   const versions = channelReleases(releases, channel);
+  const hidden = hiddenReleases(releases, channel).length;
   const latest = versions[0];
   return { value: channel, label: channel,
-    detail: versions.length + " version" + (versions.length === 1 ? "" : "s") +
-      (latest ? " · " + relativeTime(latest.publishedAt) : "") };
+    detail: [isDevKitChannel(channel) ? "" : "CI",
+      versions.length + " version" + (versions.length === 1 ? "" : "s"),
+      hidden ? hidden + " hidden" : "", latest ? relativeTime(latest.publishedAt) : ""].filter(Boolean).join(" · ") };
 }
 
 /** One-line transcript summary of a pick, so the transcript reads like a log of decisions. */
@@ -237,7 +285,9 @@ export function runTitle(command: string, args: string[]): string {
       return "Build " + branch + " → new test release";
     }
     case "rollback": return "Roll back " + opt("--channel") + " to " + opt("--to");
-    case "resume": case "retry-publish": return "Publish saved build " + opt("--id");
+    case "rollforward": return "Undo rollback of " + opt("--channel");
+    case "resume": case "retry-publish": case "recover":
+      return (args.includes("--replace") ? "Replace and publish " : "Publish saved build ") + opt("--id");
     case "clean": return args.includes("--dry-run") ? "Outdated test releases" : "Clean up test releases";
     case "cache": return args.includes("prune") ? "Clear build cache" : "Build cache";
     case "manager": return opt("--channel") ? "Versions of " + opt("--channel") : "Release channels";

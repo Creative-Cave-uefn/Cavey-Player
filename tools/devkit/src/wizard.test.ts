@@ -3,15 +3,16 @@ import { test } from "node:test";
 import type { ReleaseRecord } from "./choices.js";
 import { parseGitStatus } from "./runner.js";
 import {
-  buildConfirm, channelForBranch, dialogFor, parseBranches, prunedByUpdate, simpleConfirm, type Branch,
+  buildConfirm, channelForBranch, channelReleases, dialogFor, parseBranches, prunedByUpdate, simpleConfirm, type Branch,
 } from "./wizard.js";
 
 const releases: ReleaseRecord[] = [
-  { tagName: "test-dj-v0.4.0.4", name: "Test: dj · 0.4.0.4", isPrerelease: true, publishedAt: "2026-11-18T09:00:00Z" },
-  { tagName: "test-dj-v0.4.0.3", name: "Test: dj · 0.4.0.3", isPrerelease: true, publishedAt: "2026-11-17T09:00:00Z" },
-  { tagName: "test-dj-v0.4.0.2", name: "Test: dj · 0.4.0.2", isPrerelease: true, publishedAt: "2026-11-16T09:00:00Z" },
-  { tagName: "test-dj-v0.4.0.1", name: "Test: dj · 0.4.0.1", isPrerelease: true, isDraft: true, publishedAt: "2026-11-15T09:00:00Z" },
+  { tagName: "test-devkit-dj-v0.4.0.4", name: "Test: devkit/dj · 0.4.0.4", isPrerelease: true, publishedAt: "2026-11-18T09:00:00Z" },
+  { tagName: "test-devkit-dj-v0.4.0.3", name: "Test: devkit/dj · 0.4.0.3", isPrerelease: true, publishedAt: "2026-11-17T09:00:00Z" },
+  { tagName: "test-devkit-dj-v0.4.0.2", name: "Test: devkit/dj · 0.4.0.2", isPrerelease: true, publishedAt: "2026-11-16T09:00:00Z" },
+  { tagName: "test-devkit-dj-v0.4.0.1", name: "Test: devkit/dj · 0.4.0.1", isPrerelease: true, isDraft: true, publishedAt: "2026-11-15T09:00:00Z" },
   { tagName: "test-claude-wave-fix-v0.4.0.9", name: "Test: claude/wave-fix · 0.4.0.9", isPrerelease: true, publishedAt: "2026-11-14T09:00:00Z" },
+  { tagName: "test-devkit-claude-wave-fix-20261118-ab12-v0.4.0.20", name: "Test: devkit/claude/wave-fix/20261118-ab12 · 0.4.0.20", isPrerelease: true, publishedAt: "2026-11-18T07:00:00Z" },
   { tagName: "v0.4.0", isPrerelease: false, publishedAt: "2026-11-13T09:00:00Z" },
 ];
 const branch: Branch = { name: "claude/wave-fix", date: "2026-11-18T08:00:00Z", sha: "a1b2c3d", author: "Keivi" };
@@ -29,19 +30,44 @@ test("branch refs parse with date, sha and author; junk is skipped", () => {
   assert.equal(parsed[1]!.author, "A | B");
 });
 
-test("a branch is linked to the channel that already carries its builds", () => {
-  assert.equal(channelForBranch(releases, "claude/wave-fix"), "claude/wave-fix");
+test("a branch is linked to its DevKit channel, never to the CI one", () => {
+  assert.equal(channelForBranch(releases, "claude/wave-fix"), "devkit/claude/wave-fix/20261118-ab12");
   assert.equal(channelForBranch(releases, "main"), undefined);
 });
 
-test("update preview names the releases that will be pruned (drafts ignored)", () => {
-  assert.deepEqual(prunedByUpdate(releases, "dj"), ["test-dj-v0.4.0.2"]);
-  const w = buildConfirm(branch, "update", releases, 540000, "dj");
+test("only DevKit channels can be updated; CI channels are view-only", () => {
+  const channel = dialogFor({ kind: "channel", branch, releases });
+  assert.deepEqual(channel.options.map(o => o.value), ["devkit/claude/wave-fix/20261118-ab12", "devkit/dj"]);
+  const ci = dialogFor({ kind: "manager-action", channel: "claude/wave-fix", releases });
+  assert.deepEqual(ci.options.map(o => o.value), ["history"]);
+  assert.match(new Map(ci.plan).get("Owner")!, /GitHub Actions/);
+});
+
+test("rollback drafts: ordered by build number, offered for undo and pruned by the next update", () => {
+  const drafted: ReleaseRecord[] = [
+    { tagName: "test-devkit-dj-v0.4.0.104", isPrerelease: true, isDraft: true },
+    { tagName: "test-devkit-dj-v0.4.0.103", isPrerelease: true, isDraft: true },
+    { tagName: "test-devkit-dj-v0.4.0.99", isPrerelease: true, publishedAt: "2026-11-18T12:00:00Z" },
+    { tagName: "test-devkit-dj-v0.4.0.102", isPrerelease: true, publishedAt: "2026-11-10T12:00:00Z" },
+    { tagName: "test-devkit-dj-v0.4.0.101", isPrerelease: true, publishedAt: "2026-11-09T12:00:00Z" },
+  ];
+  assert.deepEqual(channelReleases(drafted, "devkit/dj").map(r => r.tagName),
+    ["test-devkit-dj-v0.4.0.102", "test-devkit-dj-v0.4.0.101", "test-devkit-dj-v0.4.0.99"]);
+  const action = dialogFor({ kind: "manager-action", channel: "devkit/dj", releases: drafted });
+  assert.equal(action.options.at(-1)!.value, "rollforward");
+  assert.equal(action.options.at(-1)!.detail, "2 hidden");
+  assert.deepEqual(prunedByUpdate(drafted, "devkit/dj"),
+    ["test-devkit-dj-v0.4.0.99", "test-devkit-dj-v0.4.0.104", "test-devkit-dj-v0.4.0.103"]);
+});
+
+test("update preview names the releases that will be pruned, rollback drafts included", () => {
+  assert.deepEqual(prunedByUpdate(releases, "devkit/dj"), ["test-devkit-dj-v0.4.0.2", "test-devkit-dj-v0.4.0.1"]);
+  const w = buildConfirm(branch, "update", releases, 540000, "devkit/dj");
   assert.equal(w.kind, "confirm");
   const plan = new Map(w.kind === "confirm" ? w.plan : []);
-  assert.match(plan.get("Keeps")!, /removes test-dj-v0\.4\.0\.2/);
+  assert.match(plan.get("Keeps")!, /removes test-devkit-dj-v0\.4\.0\.2, test-devkit-dj-v0\.4\.0\.1/);
   assert.match(plan.get("Time")!, /~9m 00s/);
-  assert.deepEqual(w.kind === "confirm" && w.args, ["--branch", "claude/wave-fix", "--mode", "update", "--channel", "dj"]);
+  assert.deepEqual(w.kind === "confirm" && w.args, ["--branch", "claude/wave-fix", "--mode", "update", "--channel", "devkit/dj"]);
 });
 
 test("new release confirmation offers a local fallback and a way back", () => {
@@ -56,13 +82,11 @@ test("dialogs ask questions and long lists are filterable", () => {
   const branches = dialogFor({ kind: "branch", branches: [branch], releases });
   assert.equal(branches.question, "Build which branch?");
   assert.equal(branches.filterable, true);
-  assert.match(branches.options[0]!.detail!, /channel claude\/wave-fix/);
+  assert.match(branches.options[0]!.detail!, /channel devkit\/claude\/wave-fix/);
   const target = dialogFor({ kind: "branch", branches: [branch], releases, target: "dj" });
   assert.equal(target.question, "Update “dj” from which branch?");
   const mode = dialogFor({ kind: "mode", branch, releases });
-  assert.match(mode.options[2]!.detail!, /suggested: claude\/wave-fix/);
-  const channel = dialogFor({ kind: "channel", branch, releases });
-  assert.equal(channel.options[0]!.value, "claude/wave-fix");
+  assert.match(mode.options[2]!.detail!, /suggested: devkit\/claude\/wave-fix/);
 });
 
 test("rollback confirmation explains what happens", () => {
