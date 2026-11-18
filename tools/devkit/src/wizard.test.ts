@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { ReleaseRecord } from "./choices.js";
 import { parseGitStatus } from "./runner.js";
 import {
-  buildConfirm, channelForBranch, channelReleases, dialogFor, parseBranches, prunedByUpdate, simpleConfirm, type Branch,
+  buildConfirm, channelForBranch, channelReleases, dialogFor, prunedByUpdate, simpleConfirm, type Branch,
 } from "./wizard.js";
 
 const releases: ReleaseRecord[] = [
@@ -16,19 +16,6 @@ const releases: ReleaseRecord[] = [
   { tagName: "v0.4.0", isPrerelease: false, publishedAt: "2026-11-13T09:00:00Z" },
 ];
 const branch: Branch = { name: "claude/wave-fix", date: "2026-11-18T08:00:00Z", sha: "a1b2c3d", author: "Keivi" };
-
-test("branch refs parse with date, sha and author; junk is skipped", () => {
-  const parsed = parseBranches([
-    "refs/remotes/origin/main|2026-11-18T10:00:00+03:00|abc1234|Keivi",
-    "refs/remotes/origin/HEAD|2026-11-18T10:00:00+03:00|abc1234|x",
-    "refs/remotes/origin/feat/a|2026-11-17T10:00:00+03:00|def5678|A | B",
-    "refs/remotes/upstream/x|2026|abc1234|x",
-    "refs/remotes/origin/bad|2026|not-a-sha|x",
-    "",
-  ].join("\n"));
-  assert.deepEqual(parsed.map(b => b.name), ["main", "feat/a"]);
-  assert.equal(parsed[1]!.author, "A | B");
-});
 
 test("a branch is linked to its DevKit channel, never to the CI one", () => {
   assert.equal(channelForBranch(releases, "claude/wave-fix"), "devkit/claude/wave-fix/20261118-ab12");

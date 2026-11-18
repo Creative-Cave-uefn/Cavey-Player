@@ -3,8 +3,18 @@
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $script:RepoFallback = Split-Path -Parent $PSScriptRoot
-$script:SourceRepo = 'Creative-Cave-uefn/Cavey-Player'
-$script:ReleaseRepo = 'Creative-Cave-uefn/Cavey-Player-Releases'
+# Shared settings for the engine, the terminal UI and local-test-build.ps1.
+$script:Shared = [pscustomobject]@{
+    sourceRepo = 'Creative-Cave-uefn/Cavey-Player'; releaseRepo = 'Creative-Cave-uefn/Cavey-Player-Releases'
+    devkitBranch = 'devkit'; keepPerChannel = 3
+}
+$sharedFile = Join-Path $PSScriptRoot 'devkit.config.json'
+if (Test-Path -LiteralPath $sharedFile) {
+    $loaded = Get-Content -LiteralPath $sharedFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($property in $loaded.PSObject.Properties) { $script:Shared.($property.Name) = $property.Value }
+}
+$script:SourceRepo = [string]$script:Shared.sourceRepo
+$script:ReleaseRepo = [string]$script:Shared.releaseRepo
 $script:DataHome = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'CaveyDevKit' } else { Join-Path $HOME '.cavey-devkit' }
 $script:HistoryFile = Join-Path $script:DataHome 'history.jsonl'
 $script:ConfigFile = Join-Path $script:DataHome 'config.json'
@@ -20,18 +30,17 @@ $script:BuildScript = Join-Path $PSScriptRoot 'local-test-build.ps1'
 if (-not (Test-Path $script:BuildScript)) {
     $script:BuildScript = Join-Path $script:Root 'tools\local-test-build.ps1'
 }
-$script:Interactive = $false
 # One retention rule for DevKit channels everywhere (engine, /clean, player).
 # GitHub Actions owns test-<branch>-v* channels and keeps one build per branch;
 # DevKit channels always start with devkit/ so CI never deletes them.
-$script:KeepPerChannel = 3
+$script:KeepPerChannel = [int]$script:Shared.keepPerChannel
 $script:DevKitSlugPrefix = 'devkit-'
 Set-Location $script:Root
 
 function Say([string]$message, [ConsoleColor]$color = [ConsoleColor]::Gray) { Write-Host $message -ForegroundColor $color }
 function Heading([string]$message) { Write-Host ''; Say "  $message" Cyan }
 function Hint([string]$message) { Say "  $message" DarkGray }
-function Fail([string]$message) { throw $message }
+function Fail([string]$message) { $script:ExpectedFailure = $true; throw $message }
 function Resolve-NativeCommand([string]$name) {
     # PowerShell commands are case-insensitive: the Git/Gh helper functions MUST NOT
     # shadow the native git.exe/gh.exe applications. Resolve applications only.
@@ -71,21 +80,19 @@ function Option([string[]]$arguments, [string]$key) {
 }
 function Flag([string[]]$arguments, [string]$key) { return ($null -ne $arguments -and $arguments -contains $key) }
 function Ask([string]$prompt, [bool]$approved = $false) {
+    # The engine never prompts: the terminal UI confirms first and passes --yes.
     if ($approved) { return $true }
-    if (-not $script:Interactive) { Fail "$prompt : add --yes to confirm." }
-    return ((Read-Host "$prompt [y/N]") -match '^(y|yes|д|да)$')
+    Fail "$prompt : add --yes to confirm."
 }
-function Pick([string]$prompt, [array]$values) {
-    if ($values.Count -eq 0) { Fail 'No options available.' }
-    Heading $prompt
-    for ($i = 0; $i -lt $values.Count; $i++) { Say ("  {0,2}. {1}" -f ($i+1),$values[$i]) }
-    $choice = Read-Host '  Number [1]'
-    if (-not $choice) { return 0 }
-    $index = 0
-    if (-not [int]::TryParse($choice,[ref]$index) -or $index -lt 1 -or $index -gt $values.Count) {
-        Fail 'Invalid option number.'
-    }
-    return ($index - 1)
+function Write-Json([object]$value) {
+    # One JSON document on stdout for the terminal UI; arrays stay arrays.
+    [Console]::Out.WriteLine((ConvertTo-Json -InputObject $value -Depth 6 -Compress))
+}
+function Iso-Time([object]$value) {
+    # Windows PowerShell keeps JSON dates as text; PowerShell 7 parses them.
+    if ($null -eq $value) { return $null }
+    if ($value -is [DateTime]) { return $value.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    return [string]$value
 }
 function Add-History([object]$record) {
     New-Item -ItemType Directory -Force -Path $script:DataHome | Out-Null
@@ -283,8 +290,11 @@ function Project([string[]]$tokens) {
     Say "  Project saved: $script:Root" Green
 }
 function Check-Repo {
+    # CAVEY_DEVKIT_ANY_ORIGIN=1 is used only by the UI screen tests, whose
+    # throwaway repository has a local origin.
+    if ($env:CAVEY_DEVKIT_ANY_ORIGIN -eq '1') { return }
     $origin = Git @('remote','get-url','origin')
-    if ($origin -notmatch '(?i)Creative-Cave-uefn/Cavey-Player(\.git)?$') {
+    if ($origin -notmatch ('(?i)' + [regex]::Escape($script:SourceRepo) + '(\.git)?$')) {
         Fail "Incorrect Git origin: $origin"
     }
 }
@@ -295,11 +305,12 @@ function Check-Clean {
 function Parse-RemoteBranchRefs([string]$text) {
     # The full ref name is unambiguous; short refs can be unexpected or empty.
     # Ignore malformed lines rather than calling Substring on a short value.
+    # Columns: ref | committer date | short sha [| author]
     $prefix = 'refs/remotes/origin/'
     $list = New-Object 'System.Collections.Generic.List[object]'
     foreach ($row in ($text -split "\r?\n")) {
         $columns = $row.Trim().Split('|')
-        if ($columns.Count -ne 3) { continue }
+        if ($columns.Count -lt 3) { continue }
         $fullRef = $columns[0].Trim()
         if (-not $fullRef.StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
         if ($fullRef.Length -le $prefix.Length) { continue }
@@ -308,15 +319,16 @@ function Parse-RemoteBranchRefs([string]$text) {
         $date = $columns[1].Trim()
         $sha = $columns[2].Trim()
         if ($sha -notmatch '^[0-9a-fA-F]{4,64}$') { continue }
-        if ($date -notmatch '^\d{4}-\d{2}-\d{2}$') { $date = 'unknown' }
-        [void]$list.Add([pscustomobject]@{ branch = $branch; date = $date; sha = $sha })
+        if ($date -notmatch '^\d{4}-\d{2}-\d{2}') { $date = 'unknown' }
+        $author = if ($columns.Count -gt 3) { ($columns[3..($columns.Count - 1)] -join '|').Trim() } else { '' }
+        [void]$list.Add([pscustomobject]@{ branch = $branch; date = $date; sha = $sha; author = $author })
     }
     return $list.ToArray()
 }
 function Get-Branches([bool]$refresh = $true) {
     Check-Repo
     if ($refresh) { Git @('fetch','origin','--prune') | Out-Null }
-    $format = '%(refname)|%(committerdate:short)|%(objectname:short)'
+    $format = '%(refname)|%(committerdate:iso-strict)|%(objectname:short)|%(authorname)'
     $refs = Git @('for-each-ref','--sort=-committerdate',"--format=$format",'refs/remotes/origin/')
     return @(Parse-RemoteBranchRefs $refs)
 }
@@ -329,28 +341,22 @@ function Select-Source([string]$requested) {
     if ($requested -and $requested -ne 'latest') {
         # Explicit choices from the React wizard never depend on array indexes.
         $ref = "refs/remotes/origin/$requested"
-        $resolved = Git @('rev-parse','--verify',$ref)
-        if ($resolved -notmatch '^[0-9a-fA-F]{40,64}$') { Fail "Branch $requested was not found." }
+        $resolved = ''
+        try { $resolved = Git @('rev-parse','--verify','--quiet',$ref) } catch {}
+        if ($resolved -notmatch '^[0-9a-fA-F]{40,64}$') { Fail "Branch $requested was not found on origin. Run /branches to see what exists." }
         return $requested
     }
     $branches = @(Get-Branches)
     if ($branches.Count -eq 0) { Fail 'No remote origin branches found. Run git fetch origin.' }
-    if ($requested -eq 'latest' -or (-not $requested -and -not $script:Interactive)) {
-        $latest = @($branches | Where-Object {
-            $null -ne $_ -and $_.branch -and $_.branch -ne 'main' -and
-            $_.branch -ne 'beta' -and $_.branch -notlike 'feat/keivi-devkit-*'
-        })
-        if ($latest.Count -eq 0) { Fail 'No experimental branches found.' }
-        $candidate = $latest | Select-Object -First 1
-        Hint "Latest by commit date: $($candidate.branch), $($candidate.sha)"
-        return [string]$candidate.branch
-    }
-    $choices = @($branches | Where-Object { $null -ne $_ -and $_.branch } | Select-Object -First 50)
-    if ($choices.Count -eq 0) { Fail 'No selectable branches were found.' }
-    $labels = @($choices | ForEach-Object { "$($_.branch) · $($_.sha) · $($_.date)" })
-    $index = Pick 'Select a GitHub branch' $labels
-    if ($null -eq $index -or $index -lt 0 -or $index -ge $choices.Count) { Fail 'Invalid branch choice.' }
-    return [string]$choices[$index].branch
+    # No branch or "latest": the most recently changed experimental branch.
+    $latest = @($branches | Where-Object {
+        $null -ne $_ -and $_.branch -and $_.branch -ne 'main' -and $_.branch -ne 'beta' -and
+        $_.branch -ne [string]$script:Shared.devkitBranch -and $_.branch -notlike 'feat/keivi-devkit-*'
+    })
+    if ($latest.Count -eq 0) { Fail 'No experimental branches found.' }
+    $candidate = $latest | Select-Object -First 1
+    Hint "Latest by commit date: $($candidate.branch), $($candidate.sha)"
+    return [string]$candidate.branch
 }
 function Create-BuildWorktree([string]$source, [string]$folder) {
     $remoteSha = Git @('rev-parse',"refs/remotes/origin/$source")
@@ -1184,229 +1190,31 @@ function Dispatch([string[]]$tokens) {
     if ($tokens.Count -eq 0) { Help; return }
     $command = $tokens[0].TrimStart('/').ToLower()
     switch ($command) {
-        'selftest-version' {
-            $fixtures = @(
-                [pscustomobject]@{ tagName = 'v0.3.1'; isPrerelease = $false; publishedAt = '2026-11-10' },
-                [pscustomobject]@{ tagName = 'v0.4.0'; isPrerelease = $false; publishedAt = '2026-11-13' },
-                [pscustomobject]@{ tagName = 'test-claude-dj-v2-review-fixes-v0.4.0.11451'; isPrerelease = $true; publishedAt = '2026-11-16' },
-                [pscustomobject]@{ tagName = 'test-claude-dj-v2-review-fixes-v0.4.0.11422'; isPrerelease = $true; publishedAt = '2026-11-15' }
-            )
-            if ((Version-BaseFromReleases $fixtures 'new' '') -cne '0.4.0') {
-                Fail 'Stable release version selection regression.'
-            }
-            if ((Version-BaseFromReleases $fixtures 'update' 'claude/dj-v2-review-fixes') -cne '0.4.0') {
-                Fail 'Existing release channel version selection regression.'
-            }
-            $channelOnly = @($fixtures | Where-Object { $_.isPrerelease })
-            if ((Version-BaseFromReleases $channelOnly 'update' 'claude/dj-v2-review-fixes') -cne '0.4.0') {
-                Fail 'Release channel update requires a stable release (regression).'
-            }
-            $missing = @(Version-BaseFromReleases @() 'new' '')
-            if ($missing.Count -ne 0 -and $missing[0]) {
-                Fail 'No releases should produce no base version.'
-            }
-            Say 'PASS stable and test channel version selection' Green
-        }
-        'selftest-new-channel' {
-            $existing = @([pscustomobject]@{
-                tagName = 'test-devkit-dj-engine-20261117-172954-v0.4.0.11800'
-            })
-            $newChannel = New-ReleaseChannel 'dj-engine' $existing
-            if ($newChannel -notmatch '^devkit/dj-engine/\d{8}-\d{6}-\d{3}-[0-9a-f]{10}$') {
-                Fail "Generated new channel has unexpected format: $newChannel"
-            }
-            if (-not (Test-ChannelExists 'devkit/dj-engine/20261117-172954' $existing)) {
-                Fail 'Existing test channel was not detected.'
-            }
-            if (Test-ChannelExists $newChannel $existing) {
-                Fail 'Generated new channel collides with an existing release.'
-            }
-            Say 'PASS new build channel is distinct from existing channels' Green
-        }
-        'selftest-selection' {
-            $empty = @()
-            $demo = @('build','--branch','main','--mode','new','--yes')
-            if ((Option $empty '--branch') -ne '') { Fail 'Empty argument list should return an empty option.' }
-            if (Flag $empty '--yes') { Fail 'Empty argument list must not indicate confirmation.' }
-            if ((Option $demo '--branch') -cne 'main' -or (Option $demo '--mode') -cne 'new' -or
-                -not (Flag $demo '--yes')) { Fail 'Build argument parsing regression.' }
-            $english = [pscustomobject]@{ name = 'Test: dj · 0.4.0'; tagName = 'test-dj-v0.4.0' }
-            $legacy = [pscustomobject]@{ name = 'Тест: wave · 0.4.0'; tagName = 'test-wave-v0.4.0' }
-            if ((Release-Channel $english) -cne 'dj' -or (Release-Channel $legacy) -cne 'wave') {
-                Fail 'Release channel parsing regression.'
-            }
-            Say 'PASS build arguments and release-channel guards' Green
-            # This is a read-only check of the branch validation path used by /build.
-            $remote = @(Get-Branches $false | Select-Object -First 1)
-            if ($remote.Count -gt 0 -and $remote[0].branch) {
-                $validated = Select-Source ([string]$remote[0].branch)
-                if ($validated -cne $remote[0].branch) { Fail 'Explicit branch resolution regression.' }
-            }
-            Say 'PASS explicit branch validation' Green
-        }
-        'selftest-branches' {
-            # Fixture-based, offline regression check for a malformed/non-origin ref.
-            $sample = @(
-                'refs/remotes/origin/main|2026-11-17|abcdef123456',
-                'refs/remotes/origin/feat/deep/path|2026-11-16|123abc456789',
-                'origin|2026-11-17|abcdef123456',
-                'refs/remotes/upstream/other|2026-11-17|abcdef123456',
-                'refs/remotes/origin/HEAD|2026-11-17|abcdef123456',
-                'refs/remotes/origin/|2026-11-17|abcdef123456',
-                'refs/remotes/origin/broken|bad-date|bad-sha',
-                ''
-            ) -join [Environment]::NewLine
-            $parsed = @(Parse-RemoteBranchRefs $sample)
-            if ($parsed.Count -ne 2 -or $parsed[0].branch -cne 'main' -or
-                $parsed[1].branch -cne 'feat/deep/path') {
-                Fail "Branch parser regression: expected 2 valid branches, found $($parsed.Count)."
-            }
-            Say 'PASS malformed branch refs are skipped' Green
-            # Reproduce the real for-each-ref path without network access.
-            $actual = @(Get-Branches $false)
-            Say "PASS local Git refs parsed: $($actual.Count) branch(es)" Green
-        }
-        'selftest-native' {
-            # Offline smoke test: both wrappers must resolve an executable, not recurse.
-            $gitVersion = Git @('--version')
-            if ($gitVersion -notmatch '^git version ') { Fail "Unexpected Git version output: $gitVersion" }
-            Say "PASS native Git executable: $gitVersion" Green
-            if (Has 'gh') {
-                $ghVersion = Gh @('version')
-                if ($ghVersion -notmatch '^gh version ') { Fail "Unexpected GitHub CLI output: $ghVersion" }
-                Say "PASS native GitHub CLI executable" Green
-            } else {
-                Hint 'GitHub CLI is not installed; skipping optional gh check.'
-            }
-        }
-        'selftest-workflow' {
-            $fixtures = @(
-                [pscustomobject]@{tagName='test-dj-v0.4.0.90000';publishedAt='2026-11-15'},
-                [pscustomobject]@{tagName='test-dj-v0.4.0.90001';publishedAt='2026-11-16'}
-            )
-            $next = Next-BuildNumber '0.4.0' 'dj' $fixtures
-            if ($next -le 90001) { Fail 'Build number must exceed an existing channel version.' }
-            $temporary = Join-Path $env:TEMP ("cavey-workflow-test-" + [guid]::NewGuid().ToString('N'))
-            New-Item -ItemType Directory -Force -Path $temporary | Out-Null
-            try {
-                $entries = @()
-                foreach ($name in @('CavePlayer-Setup.exe','CavePlayer-portable.zip')) {
-                    $p = Join-Path $temporary $name
-                    Set-Content -LiteralPath $p -Value $name -Encoding Ascii
-                    $entries += @{path=$p;sha256=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash}
-                }
-                $record = @{artifacts=$entries}
-                $found = @(Verify-Artifacts $record)
-                if ($found.Count -ne 2) { Fail 'Artifact verification count regression.' }
-                Set-Content -LiteralPath $entries[0].path -Value 'tampered' -Encoding Ascii
-                $checksumRejected = $false
-                try { Verify-Artifacts $record | Out-Null } catch { $checksumRejected = $true }
-                if (-not $checksumRejected) { Fail 'Corrupted build artifact passed SHA-256 verification.' }
-                Say 'PASS build numbering, artifact verification and corruption detection' Green
-            } finally {
-                Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
-            }
-        }
-        'selftest-retention' {
-            if (-not (Is-DevKitChannel 'devkit/dj/20261118-1')) { Fail 'DevKit channel not detected.' }
-            if (Is-DevKitChannel 'claude/dj-v2-review-fixes') { Fail 'CI channel detected as DevKit.' }
-            if ((DevKit-ChannelName 'dj') -cne 'devkit/dj') { Fail 'Custom channel was not namespaced.' }
-            if ((DevKit-ChannelName 'devkit/dj') -cne 'devkit/dj') { Fail 'Namespaced channel was changed.' }
-            # Un-drafting resets publishedAt: order must follow the build number.
-            $releases = @(
-                [pscustomobject]@{ tagName = 'test-devkit-dj-v0.4.0.900'; publishedAt = '2026-11-18T10:00:00Z' },
-                [pscustomobject]@{ tagName = 'test-devkit-dj-v0.4.0.1200'; publishedAt = '2026-11-17T10:00:00Z' },
-                [pscustomobject]@{ tagName = 'test-devkit-dj-v0.4.0.1000'; publishedAt = $null }
-            )
-            $order = @(Sort-Newest $releases | ForEach-Object { $_.tagName })
-            if (($order -join ',') -cne 'test-devkit-dj-v0.4.0.1200,test-devkit-dj-v0.4.0.1000,test-devkit-dj-v0.4.0.900') {
-                Fail "Release order regression: $($order -join ',')"
-            }
-            Say 'PASS DevKit channels, naming and build-number ordering' Green
-            $sha = 'a' * 64
-            $record = [pscustomobject]@{ artifacts = @(
-                [pscustomobject]@{ name = 'CavePlayer-Setup.exe'; size = 10; sha256 = $sha },
-                [pscustomobject]@{ name = 'CavePlayer-portable.zip'; size = 20; sha256 = $sha }) }
-            $complete = [pscustomobject]@{ assets = @(
-                [pscustomobject]@{ name = 'CavePlayer-Setup.exe'; size = 10; state = 'uploaded'; digest = "sha256:$sha" },
-                [pscustomobject]@{ name = 'CavePlayer-portable.zip'; size = 20; state = 'uploaded' }) }
-            if (Compare-RemoteAssets $complete $record) { Fail 'Complete release reported as incomplete.' }
-            $partial = [pscustomobject]@{ assets = @($complete.assets[0]) }
-            if ((Compare-RemoteAssets $partial $record) -notmatch 'portable.zip is missing') { Fail 'Missing asset not detected.' }
-            $resized = [pscustomobject]@{ assets = @($complete.assets[0], [pscustomobject]@{ name = 'CavePlayer-portable.zip'; size = 5; state = 'uploaded' }) }
-            if ((Compare-RemoteAssets $resized $record) -notmatch 'different size') { Fail 'Size mismatch not detected.' }
-            $other = [pscustomobject]@{ assets = @([pscustomobject]@{ name = 'CavePlayer-Setup.exe'; size = 10; state = 'uploaded'; digest = ('sha256:' + 'b' * 64) }, $complete.assets[1]) }
-            if ((Compare-RemoteAssets $other $record) -notmatch 'SHA-256') { Fail 'Digest mismatch not detected.' }
-            Say 'PASS interrupted publication reconciliation' Green
-        }
-        'selftest-smoke' {
-            $good = [pscustomobject]@{ version = '0.4.0.12'; channel = 'devkit/dj'; mediaKit = $true; frame = $true }
-            if (Smoke-Problem $good '0.4.0.12' 'devkit/dj') { Fail 'A good smoke report was rejected.' }
-            if ((Smoke-Problem $good '0.4.0.13' 'devkit/dj') -notmatch 'version') { Fail 'Version mismatch not detected.' }
-            if ((Smoke-Problem $good '0.4.0.12' 'devkit/x') -notmatch 'channel') { Fail 'Channel mismatch not detected.' }
-            $noMedia = [pscustomobject]@{ version = '0.4.0.12'; channel = 'devkit/dj'; mediaKit = $false; frame = $false }
-            if ((Smoke-Problem $noMedia '0.4.0.12' 'devkit/dj') -notmatch 'native player') { Fail 'Missing media libraries not detected.' }
-            $crashed = [pscustomobject]@{ error = 'boom' }
-            if ((Smoke-Problem $crashed '0.4.0.12' 'devkit/dj') -notmatch 'boom') { Fail 'App error not reported.' }
-            Say 'PASS smoke test report validation' Green
-        }
-        'selftest-notes' {
-            $record = [pscustomobject]@{
-                message = 'Check the new mixer'; source = 'feature/dj'; sha = 'abcdef1234567890'
-                channel = 'devkit/dj'; version = '0.4.0.12'; downloader = $null
-                changes = [pscustomobject]@{ title = 'Changes since test-devkit-dj-v0.4.0.11'; more = $false
-                    items = @('Fix crossfade (abc1234)', 'Faster waveform (def5678)') }
-            }
-            $notes = Release-Notes $record
-            if (-not $notes.StartsWith('Check the new mixer')) { Fail 'The tester note must come first.' }
-            if ($notes -notmatch '(?m)^- Fix crossfade \(abc1234\)$') { Fail 'Changelog missing from notes.' }
-            if ($notes -notmatch '(?m)^Commit: abcdef1234567890$') { Fail 'Commit line must stay parseable.' }
-            $discord = Discord-Message $record 'https://example.test/r'
-            if ($discord -notmatch '^\*\*Cavey test build\*\* `devkit/dj` · 0\.4\.0\.12' -or $discord -notmatch '• Faster waveform') {
-                Fail "Unexpected Discord message: $discord"
-            }
-            $record.changes.items = @(1..400 | ForEach-Object { 'A very long change description number ' + $_ })
-            if ((Discord-Message $record 'https://example.test/r').Length -gt 2000) { Fail 'Discord message exceeds the limit.' }
-            if (-not (Test-DiscordWebhook 'https://discord.com/api/webhooks/123/abc_DEF-1')) { Fail 'Valid webhook rejected.' }
-            if (Test-DiscordWebhook 'https://evil.example/api/webhooks/123/abc') { Fail 'Foreign URL accepted as webhook.' }
-            Say 'PASS release notes and Discord message' Green
-            $script:DataHome = Join-Path ([IO.Path]::GetTempPath()) ('cavey-config-test-' + [guid]::NewGuid().ToString('N'))
-            $script:ConfigFile = Join-Path $script:DataHome 'config.json'
-            try {
-                Write-Config @{ projectRoot = 'C:\src\cavey' }
-                Write-Config @{ discordWebhook = 'https://discord.com/api/webhooks/1/x' }
-                $config = Read-Config
-                if ($config['projectRoot'] -ne 'C:\src\cavey' -or -not $config['discordWebhook']) { Fail 'Settings were not merged.' }
-                Write-Config @{ discordWebhook = $null }
-                if ((Read-Config).Contains('discordWebhook')) { Fail 'Setting was not removed.' }
-                Say 'PASS settings merge' Green
-            } finally { Remove-Item -LiteralPath $script:DataHome -Recurse -Force -ErrorAction SilentlyContinue }
-        }
-        'selftest-lock' {
-            $script:DataHome = Join-Path ([IO.Path]::GetTempPath()) ('cavey-lock-test-' + [guid]::NewGuid().ToString('N'))
-            try {
-                $first = Enter-ReleaseLock
-                $blocked = $false
-                try { $second = Enter-ReleaseLock; $second.Dispose() } catch { $blocked = $_.Exception.Message -match 'Another DevKit window' }
-                $first.Dispose()
-                if (-not $blocked) { Fail 'A second build lock was granted while the first was held.' }
-                $again = Enter-ReleaseLock
-                $again.Dispose()
-                Say 'PASS build lock is exclusive and released' Green
-            } finally {
-                Remove-Item -LiteralPath $script:DataHome -Recurse -Force -ErrorAction SilentlyContinue
-            }
-        }
         'help' { Help }
         'status' { Status }
         'doctor' { Doctor }
         'project' { Project $tokens }
         'branches' {
-            $branches = @(Get-Branches)
+            $branches = @(Get-Branches (-not (Flag $tokens '--cached')))
+            if (Flag $tokens '--json') {
+                Write-Json @($branches | ForEach-Object { [ordered]@{ name = $_.branch; date = $_.date; sha = $_.sha; author = $_.author } })
+                return
+            }
             Heading "GitHub branches · $($branches.Count)"
             foreach ($b in $branches) { Say ("  {0,-52} {1}  {2}" -f $b.branch,$b.date,$b.sha) }
         }
         'releases' {
+            if (Flag $tokens '--json') {
+                # Every test prerelease, hidden ones included, with the channel
+                # already resolved so the UI never re-derives it.
+                Write-Json @(All-TestReleases | ForEach-Object {
+                    $channel = try { Release-Channel $_ } catch { '' }
+                    [ordered]@{ tagName = [string]$_.tagName; name = [string]$_.name; isPrerelease = [bool]$_.isPrerelease
+                        isDraft = [bool]$_.isDraft; publishedAt = (Iso-Time $_.publishedAt)
+                        channel = $channel; devkit = (Is-DevKitChannel $channel) }
+                })
+                return
+            }
             if (Option $tokens '--channel') { Release-Manager $tokens; return }
             $releases = @(Test-Releases | Sort-Object publishedAt -Descending)
             Heading "Test releases · $($releases.Count)"
@@ -1459,10 +1267,17 @@ function Dispatch([string[]]$tokens) {
         default { Fail "Unknown command: $command. Use /help." }
     }
 }
+# Tests dot-source this file with CAVEY_DEVKIT_LIBRARY=1 to call functions directly.
+if ($env:CAVEY_DEVKIT_LIBRARY -eq '1') { return }
 try {
     Dispatch @($args)
 } catch {
     $errorRecord = $_
+    if ($script:ExpectedFailure) {
+        # A known problem with a clear message: no script location or stack trace.
+        [Console]::Error.WriteLine('✗ ' + $errorRecord.Exception.Message)
+        exit 1
+    }
     $line = if ($errorRecord.InvocationInfo) { $errorRecord.InvocationInfo.ScriptLineNumber } else { 0 }
     $path = if ($errorRecord.InvocationInfo) { $errorRecord.InvocationInfo.ScriptName } else { '' }
     if (-not $path) { $path = $PSCommandPath }

@@ -44,21 +44,6 @@ export function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-/** Parse `git for-each-ref --format=%(refname)|%(committerdate:iso-strict)|%(objectname:short)|%(authorname)`. */
-export function parseBranches(text: string): Branch[] {
-  const prefix = "refs/remotes/origin/";
-  const result: Branch[] = [];
-  for (const row of text.split(/\r?\n/)) {
-    const [ref, date, sha, ...author] = row.trim().split("|");
-    if (!ref || !ref.startsWith(prefix) || ref.length <= prefix.length) continue;
-    const name = ref.slice(prefix.length);
-    if (name === "HEAD" || !sha || !/^[0-9a-f]{4,64}$/i.test(sha)) continue;
-    result.push({ name, date: date ?? "", sha, author: author.join("|") });
-  }
-  return result;
-}
-
-/** DevKit owns channels named devkit/…; test-<branch> channels belong to CI, which replaces them on every push. */
 export function isDevKitChannel(channel: string): boolean {
   return slug(channel).startsWith("devkit-");
 }

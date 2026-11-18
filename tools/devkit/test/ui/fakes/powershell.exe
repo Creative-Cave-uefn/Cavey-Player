@@ -4,6 +4,15 @@
 # a short failing build with DevKit stage markers.
 for arg in "$@"; do last="$arg"; done
 if printf '%s\n' "$@" | grep -qx -- "-Command"; then exec bash -c "$last"; fi
+if printf '%s\n' "$@" | grep -qx -- "--json"; then
+  # Data commands run the real engine under PowerShell 7 (git is real, gh is the fake).
+  args=(); skip=0
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$a" in -NoLogo|-NoProfile|-NonInteractive) ;; -ExecutionPolicy) skip=1 ;; *) args+=("$a") ;; esac
+  done
+  exec pwsh -NoProfile "${args[@]}"
+fi
 if printf '%s\n' "$@" | grep -qx -- "/run"; then echo "  ✓ Cavey 0.4.0.7 started"; exit 0; fi
 if printf '%s\n' "$@" | grep -qx -- "feature/alpha" && printf '%s\n' "$@" | grep -qx -- "--local"; then
   # A successful local build with a result marker for the build card.

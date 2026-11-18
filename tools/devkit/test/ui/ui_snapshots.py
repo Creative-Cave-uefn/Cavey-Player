@@ -9,7 +9,9 @@ local origin, so the tests need no network, Windows or GitHub account.
     pip install pyte
     python3 tools/devkit/test/ui/ui_snapshots.py [--out DIR]
 
-Linux/macOS only (uses pty). Screens are written to --out for review.
+Linux/macOS only (uses pty) and needs PowerShell 7 (`pwsh`) on PATH: data
+commands such as `branches --json` run the real engine. Screens are written
+to --out for review.
 """
 import argparse
 import fcntl
@@ -360,8 +362,8 @@ def main():
             os.makedirs(os.path.join(data, "CaveyDevKit"))
             with open(os.path.join(data, "CaveyDevKit", "config.json"), "w") as handle:
                 json.dump({"projectRoot": project}, handle)
-            env = dict(os.environ, TERM="xterm-256color", LOCALAPPDATA=data,
-                       PATH=FAKES + os.pathsep + os.environ["PATH"])
+            env = dict(os.environ, TERM="xterm-256color", LOCALAPPDATA=data, CAVEY_DEVKIT_ANY_ORIGIN="1",
+                       TEMP=tempfile.gettempdir(), PATH=FAKES + os.pathsep + os.environ["PATH"])
             env.pop("WT_SESSION", None)
             screen = Screen(env, cols, rows)
             scenario(screen)

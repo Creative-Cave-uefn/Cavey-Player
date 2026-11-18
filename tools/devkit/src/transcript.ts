@@ -70,7 +70,7 @@ export function formatDuration(ms: number): string {
   return Math.floor(minutes / 60) + "h " + String(minutes % 60).padStart(2, "0") + "m";
 }
 
-export function relativeTime(iso: string | undefined, now = Date.now()): string {
+export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return "";
   const at = Date.parse(iso);
   if (Number.isNaN(at)) return iso;

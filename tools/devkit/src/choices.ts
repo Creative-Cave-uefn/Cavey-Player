@@ -21,7 +21,9 @@ export function visibleChoices<T>(choices: readonly T[], selected: number, limit
 }
 
 export type ReleaseRecord = {
-  tagName: string; name?: string; isPrerelease: boolean; isDraft?: boolean; publishedAt?: string;
+  tagName: string; name?: string; isPrerelease: boolean; isDraft?: boolean; publishedAt?: string | null;
+  /** Resolved by the engine (`releases --json`); derived from the title or tag when absent. */
+  channel?: string;
 };
 export function releaseChannels(records: readonly ReleaseRecord[]): Choice[] {
   const matching = records.filter(r => r.isPrerelease && !r.isDraft &&
@@ -32,7 +34,7 @@ export function releaseChannels(records: readonly ReleaseRecord[]): Choice[] {
   for (const release of matching) {
     const fromTitle = /^(?:Тест|Test):\s*(.+?)\s*·/.exec(release.name ?? "")?.[1];
     const fromTag = /^test-(.+)-v\d+(\.\d+)+$/.exec(release.tagName)?.[1];
-    const channel = fromTitle || fromTag;
+    const channel = release.channel || fromTitle || fromTag;
     if (!channel) continue;
     const id = channel.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     if (seen.has(id)) continue;

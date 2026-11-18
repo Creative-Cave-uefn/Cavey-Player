@@ -102,26 +102,13 @@ export function parseGitStatus(text: string): GitState {
   return { branch, dirty: lines.slice(1).length > 0, ahead, behind };
 }
 
-export function gitBranchesRequest(cwd: string): RunRequest {
-  return {
-    program: "git",
-    args: ["for-each-ref", "--sort=-committerdate",
-      "--format=%(refname)|%(committerdate:iso-strict)|%(objectname:short)|%(authorname)",
-      "refs/remotes/origin"],
-    cwd, label: "git branches",
-  };
-}
-
-export const releaseRepository = "Creative-Cave-uefn/Cavey-Player-Releases";
-
-export function releaseListRequest(cwd: string): RunRequest {
-  return {
-    program: "gh",
-    args: ["release", "list", "--repo", releaseRepository, "--limit", "500",
-      "--json", "tagName,name,isPrerelease,isDraft,publishedAt"],
-    cwd, label: "gh release list",
-  };
-}
+/** Shared settings (tools/devkit.config.json), also read by the engine and local-test-build.ps1. */
+export const sharedConfig: { sourceRepo: string; releaseRepo: string; devkitBranch: string; keepPerChannel: number } = (() => {
+  const defaults = { sourceRepo: "Creative-Cave-uefn/Cavey-Player", releaseRepo: "Creative-Cave-uefn/Cavey-Player-Releases",
+    devkitBranch: "devkit", keepPerChannel: 3 };
+  try { return { ...defaults, ...JSON.parse(readFileSync(join(repositoryRoot, "tools", "devkit.config.json"), "utf8")) }; }
+  catch { return defaults; }
+})();
 
 export function runCommand(
   request: RunRequest,

@@ -11,8 +11,8 @@ import { helpText, resolveCommand } from "./commands.js";
 import { createWorkflowStream, stageOrder, stripWorkflowMarkers, type BuildResult, type StageRecord } from "./build-events.js";
 import { releaseChannels, type ReleaseRecord } from "./choices.js";
 import {
-  changeDirectory, commandRequest, copyText, engineCommands, openExternal, gitBranchesRequest, gitStatusRequest, initialDirectory,
-  launchTerminal, parseGitStatus, prettyDirectory, projectLabel, releaseListRequest, repositoryRoot,
+  changeDirectory, commandRequest, copyText, engineCommands, openExternal, gitStatusRequest, initialDirectory,
+  launchTerminal, parseGitStatus, prettyDirectory, projectLabel, repositoryRoot,
   runCommand, shellRequest, splitArgs, type GitState, type RunRequest,
 } from "./runner.js";
 import { spinnerFrames, theme, toneColor } from "./theme.js";
@@ -20,7 +20,7 @@ import {
   estimateBuildMs, formatDuration, formatSize, summarizeOutput, type Entry, type NewEntry, type RunStatus,
 } from "./transcript.js";
 import {
-  buildConfirm, channelNameProblem, channelReleases, dialogFor, isDevKitChannel, rebuildConfirm, type LastBuild, parseBranches, pickSummary, runTitle, simpleConfirm,
+  buildConfirm, channelNameProblem, channelReleases, dialogFor, isDevKitChannel, rebuildConfirm, type LastBuild, pickSummary, runTitle, simpleConfirm,
   type Branch, type ConfirmCommand, type SavedRun, type Wizard,
 } from "./wizard.js";
 
@@ -410,27 +410,27 @@ function App() {
     finally { setBusy(null); }
   }, [busy, fail, flash]);
 
+  /** Branches and releases come from the engine as JSON, so parsing lives in one place. */
+  const engineJson = useCallback(async <T,>(command: string, args: string[]): Promise<T> => {
+    const result = await runCommand(commandRequest(command, [...args, "--json"], directory));
+    const text = stripWorkflowMarkers(result.output).trim();
+    const start = text.search(/[[{]/);
+    if (result.code !== 0 || start < 0) throw new Error(text.replace(/^✗\s*/, "") || "/" + command + " failed");
+    return JSON.parse(text.slice(start)) as T;
+  }, [directory]);
+
   const loadBranches = useCallback(async (): Promise<Branch[]> => {
-    const fetched = await runCommand({ program: "git", args: ["fetch", "origin", "--prune"], cwd: directory, label: "git fetch" });
-    if (fetched.code !== 0) add({ kind: "note", text: "Could not refresh from origin; showing cached branches.", tone: "warning" });
-    const refs = await runCommand(gitBranchesRequest(directory));
-    if (refs.code !== 0) throw new Error("git for-each-ref failed: " + refs.output);
-    return parseBranches(refs.output).slice(0, 100);
-  }, [add, directory]);
+    const list = await engineJson<{ name: string; date: string; sha: string; author: string }[]>("branches", []);
+    return list.slice(0, 100);
+  }, [engineJson]);
 
   const loadReleases = useCallback(async (required: boolean): Promise<ReleaseRecord[]> => {
-    let result: Awaited<ReturnType<typeof runCommand>>;
-    try { result = await runCommand(releaseListRequest(directory)); }
+    try { return await engineJson<ReleaseRecord[]>("releases", []); }
     catch (error) {
-      if (required) throw new Error("GitHub CLI (gh) is not available: " + String(error));
+      if (required) throw new Error("Could not load releases. Check gh auth status.\n" + String(error).replace(/^Error: /, ""));
       return [];
     }
-    if (result.code !== 0) {
-      if (required) throw new Error("Could not load releases. Check gh auth status.\n" + result.output);
-      return [];
-    }
-    return JSON.parse(result.output) as ReleaseRecord[];
-  }, [directory]);
+  }, [engineJson]);
 
   const etaMs = useCallback(() => estimateBuildMs(loadBuildHistory()), []);
 

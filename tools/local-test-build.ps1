@@ -36,7 +36,14 @@ try {
     $OutputEncoding = [Text.Encoding]::UTF8
 } catch { }
 $PlayerRepo = 'Creative-Cave-uefn/Cavey-Player'
-$ReleasesRepo = 'Creative-Cave-uefn/cave-player-releases'
+$ReleasesRepo = 'Creative-Cave-uefn/Cavey-Player-Releases'
+# Shared with Cavey DevKit: one place for repository names.
+$sharedConfig = Join-Path $PSScriptRoot 'devkit.config.json'
+if (Test-Path -LiteralPath $sharedConfig) {
+    $shared = Get-Content -LiteralPath $sharedConfig -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($shared.releaseRepo) { $ReleasesRepo = [string]$shared.releaseRepo }
+    if ($shared.sourceRepo) { $PlayerRepo = [string]$shared.sourceRepo }
+}
 
 function Say([string]$text) { Write-Host ""; Write-Host "== $text" -ForegroundColor Cyan }
 function Stage([string]$name, [string]$state, [string]$label) {
@@ -296,7 +303,7 @@ $notesFile = Join-Path $env:TEMP 'cavey-notes.txt'
 $title = "Тест: $branch · $Version"
 & gh release create $tag 'dist\CavePlayer-Setup.exe' 'dist\CavePlayer-portable.zip' --repo $ReleasesRepo --prerelease --title $title --notes-file $notesFile
 if ($LASTEXITCODE -ne 0) {
-    Warn 'Не получилось выложить автоматически. Выложите вручную: https://github.com/Creative-Cave-uefn/cave-player-releases/releases/new'
+    Warn "Не получилось выложить автоматически. Выложите вручную: https://github.com/$ReleasesRepo/releases/new"
     Warn "  Tag: $tag; Title: $title; галочка «Set as a pre-release»; прикрепите оба файла из папки dist."
     exit 1
 }

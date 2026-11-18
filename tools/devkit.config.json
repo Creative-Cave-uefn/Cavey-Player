@@ -1,0 +1,6 @@
+{
+  "sourceRepo": "Creative-Cave-uefn/Cavey-Player",
+  "releaseRepo": "Creative-Cave-uefn/Cavey-Player-Releases",
+  "devkitBranch": "devkit",
+  "keepPerChannel": 3
+}
