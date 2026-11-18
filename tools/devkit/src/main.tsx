@@ -47,6 +47,7 @@ function saveLastBuild(update: (old: LastBuild | null) => LastBuild | null): voi
 }
 
 type CardActions = {
+  logs: () => void;
   run: () => void; install: () => void; open: (folder: string) => void; copy: (text: string) => void; rebuild: () => void;
   toggle: (id: string) => void;
 };
@@ -170,6 +171,14 @@ function RunView({ entry, expanded }: { entry: Extract<Entry, { kind: "run" }>; 
       <Text color={theme.dim}>(click to collapse)</Text>
     </Box>);
   }
+  if (entry.status === "error" && entry.stages?.length && actions) {
+    rows.push(
+      <Box key="retry" flexDirection="row" gap={3} marginTop={1}>
+        <Chip label="Show log" onPress={actions.logs} />
+        <Chip label="Build again" onPress={actions.rebuild} />
+      </Box>,
+    );
+  }
   const result = entry.result;
   if (result && entry.status === "success" && ["built", "published"].includes(result.status)) {
     rows.push(<BuildCard key="card" result={result} actions={actions} />);
@@ -240,12 +249,12 @@ function EntryView({ entry, expanded, directory }: { entry: Entry; expanded: boo
   }
 }
 
-function SpinnerLine({ verb, startedAt, etaMs }: { verb: string; startedAt: number; etaMs: number | null }) {
+function SpinnerLine({ verb, startedAt, etaMs, step }: { verb: string; startedAt: number; etaMs: number | null; step?: string }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const id = setInterval(() => setNow(Date.now()), 120); return () => clearInterval(id); }, []);
   const elapsed = now - startedAt;
   const frame = spinnerFrames[Math.floor(elapsed / 120) % spinnerFrames.length];
-  const parts = [formatDuration(elapsed)];
+  const parts = step ? ["step " + step, formatDuration(elapsed)] : [formatDuration(elapsed)];
   if (etaMs && etaMs > elapsed) parts.push("~" + formatDuration(etaMs - elapsed) + " left");
   parts.push("esc to interrupt");
   return (
@@ -257,7 +266,7 @@ function SpinnerLine({ verb, startedAt, etaMs }: { verb: string; startedAt: numb
 
 // ── App ───────────────────────────────────────────────────────────────
 
-type Busy = { verb: string; startedAt: number; etaMs: number | null };
+type Busy = { verb: string; startedAt: number; etaMs: number | null; step?: string };
 type RunOptions = { title?: string; echo?: string; etaMs?: number | null };
 
 function App() {
@@ -374,7 +383,7 @@ function App() {
           durationMs: ["done", "failed", "skipped"].includes(event.state) ? now - begun : undefined,
         }] };
       });
-      if (event.state === "running") setBusy(b => b && { ...b, verb: stageVerbs[event.stage] ?? "Running" });
+      if (event.state === "running") setBusy(b => b && { ...b, verb: stageVerbs[event.stage] ?? "Running", step: (stageOrder.indexOf(event.stage as never) + 1) + "/" + stageOrder.length });
     });
     let raw = "";
     let pending: ReturnType<typeof setTimeout> | null = null;
@@ -745,6 +754,7 @@ function App() {
   }, [entries]);
 
   const cardActions = useMemo<CardActions>(() => ({
+    logs: () => { void handleSubmit("/logs"); },
     run: () => { void handleSubmit("/run"); },
     install: () => { void handleSubmit("/install-apk"); },
     toggle: id => setEntries(old => old.map(e => e.id === id && e.kind === "run" ? { ...e, expanded: !e.expanded } : e)),
@@ -799,7 +809,7 @@ function App() {
             )}
           />
         </Box>
-        {busy && <SpinnerLine verb={busy.verb} startedAt={busy.startedAt} etaMs={busy.etaMs} />}
+        {busy && <SpinnerLine verb={busy.verb} startedAt={busy.startedAt} etaMs={busy.etaMs} step={busy.step} />}
         {queue.map((item, i) => (
           <Box key={i} paddingX={4} flexShrink={0}>
             <Text color={theme.dim} wrap="truncate-end">{"⎿  queued: " + item}</Text>

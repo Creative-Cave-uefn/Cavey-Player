@@ -150,10 +150,22 @@ After packaging, DevKit unpacks the portable ZIP and runs `cave_player.exe --smo
   stops before publishing. Its source and SHA-256 are written to `run.json` and
   to the release notes.
 - `/update` fetches the `devkit` branch (`devkitBranch` in `tools/devkit.config.json`)
-  and fast-forwards DevKit's own checkout if it is clean — on `devkit`, a local
-  `devkit-live` worktree, or the old `feat/keivi-devkit-*` branch. Divergence and
-  uncommitted changes block it. It lists what's new, then the launcher reinstalls
-  changed dependencies, rebuilds the UI bundle and restarts (exit code 42).
+  and fast-forwards DevKit's own checkout — on `devkit`, a local `devkit-live`
+  worktree, or the old `feat/keivi-devkit-*` branch. Divergence blocks it. Local
+  changes to tracked files are set aside (`git stash`) during the update and put
+  back afterwards; if they conflict with the update, the checkout stays clean and
+  they remain in `git stash list`. Untracked files never block it. It lists
+  what's new, then the launcher reinstalls changed dependencies, rebuilds the UI
+  bundle and restarts (exit code 42).
+- `/doctor --fix` repairs what it safely can: a signing certificate or Discord
+  webhook that no longer works is switched off, unfinished build-cache folders
+  are removed, and a Flutter folder found in a usual place is saved as
+  `flutterBin` and added to PATH for DevKit's processes.
+- `/actions` shows the journal `%LOCALAPPDATA%\CaveyDevKit\actions.jsonl`: every
+  publication, deletion, hide/show (rollback, rollforward) and DevKit update with
+  time and user — the answer to "where did my build go?".
+- While a build runs the spinner line shows the stage number (`step 4/7`); a
+  failed build offers "Show log" and "Build again" under its output.
 - The launcher runs the UI from an esbuild bundle (`tools/devkit/dist/devkit.mjs`,
   about twice as fast to start as `tsx`), rebuilt automatically when sources or the
   lockfile change; it falls back to `tsx` if the build fails. `npm run dev` runs

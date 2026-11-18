@@ -326,6 +326,51 @@ Run-Test 'release-age' {
     if ((Release-Age $draft) -ne 0) { Fail 'Drafts must not count as stale.' }
 }
 
+Run-Test 'actions-log' {
+    $script:DataHome = Join-Path ([IO.Path]::GetTempPath()) ('devkit-actions-' + [guid]::NewGuid().ToString('N'))
+    if ((Read-Actions).Count -ne 0) { Fail 'A missing journal must read as empty.' }
+    Log-Action 'publish' 'test-demo-v1.0.0.1 · demo'
+    Log-Action 'delete' 'test-demo-v1.0.0.0'
+    $entries = @(Read-Actions)
+    if ($entries.Count -ne 2) { Fail "Expected 2 journal entries, got $($entries.Count)." }
+    if ($entries[0].action -cne 'publish' -or $entries[1].detail -cne 'test-demo-v1.0.0.0') { Fail 'Journal entries came back in the wrong order.' }
+    if ((Read-Actions 1)[0].action -cne 'delete') { Fail 'The limit must keep the newest entries.' }
+}
+
+Run-Test 'self-update-keeps-local-changes' {
+    $base = Join-Path ([IO.Path]::GetTempPath()) ('devkit-update-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $base | Out-Null
+    $script:DataHome = Join-Path $base 'data'
+    $who = @('-c','user.name=t','-c','user.email=t@example.com')
+    function G([string]$dir, [string[]]$arguments) { Native 'git' (@('-C',$dir) + $who + $arguments) | Out-Null }
+    $origin = Join-Path $base 'origin.git'
+    Native 'git' @('init','--bare','--initial-branch=devkit',$origin) | Out-Null
+    $mine = Join-Path $base 'mine'
+    $other = Join-Path $base 'other'
+    Native 'git' @('clone','-q',$origin,$mine) | Out-Null
+    Set-Content -LiteralPath (Join-Path $mine 'a.txt') -Value 'a1'
+    Set-Content -LiteralPath (Join-Path $mine 'b.txt') -Value 'b1'
+    G $mine @('add','-A'); G $mine @('commit','-q','-m','first'); G $mine @('push','-q','origin','devkit')
+    Native 'git' @('clone','-q',$origin,$other) | Out-Null
+    Set-Content -LiteralPath (Join-Path $other 'a.txt') -Value 'a2'
+    G $other @('commit','-q','-am','change a'); G $other @('push','-q','origin','devkit')
+    $script:RepoFallback = $mine
+    $script:Shared | Add-Member -NotePropertyName devkitBranch -NotePropertyValue 'devkit' -Force
+    # A local edit in another file survives the update.
+    Set-Content -LiteralPath (Join-Path $mine 'b.txt') -Value 'b-local'
+    DevKit-Update | Out-Null
+    if ((Get-Content -LiteralPath (Join-Path $mine 'a.txt')).Trim() -cne 'a2') { Fail 'The update was not applied.' }
+    if ((Get-Content -LiteralPath (Join-Path $mine 'b.txt')).Trim() -cne 'b-local') { Fail 'The local edit was lost.' }
+    # A local edit that conflicts leaves a clean checkout and the edit in the stash.
+    Set-Content -LiteralPath (Join-Path $other 'a.txt') -Value 'a3'
+    G $other @('commit','-q','-am','change a again'); G $other @('push','-q','origin','devkit')
+    Set-Content -LiteralPath (Join-Path $mine 'a.txt') -Value 'a-local'
+    DevKit-Update | Out-Null
+    if ((Get-Content -LiteralPath (Join-Path $mine 'a.txt')).Trim() -cne 'a3') { Fail 'A conflicting update must leave the new version in place.' }
+    if (Native 'git' @('-C',$mine,'status','--porcelain','--untracked-files=no')) { Fail 'The checkout must be clean after a conflict.' }
+    if (-not (Native 'git' @('-C',$mine,'stash','list'))) { Fail 'The conflicting edit must stay in the stash.' }
+}
+
 Write-Host ''
 if ($script:Failures) {
     Write-Host "$($script:Failures) engine test(s) failed, $($script:Passed) passed." -ForegroundColor Red

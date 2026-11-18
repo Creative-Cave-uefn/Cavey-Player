@@ -267,6 +267,41 @@ function Write-Config([hashtable]$changes) {
     New-Item -ItemType Directory -Force -Path $script:DataHome | Out-Null
     $config | ConvertTo-Json | Set-Content -LiteralPath $script:ConfigFile -Encoding UTF8
 }
+function Log-Action([string]$kind, [string]$detail) {
+    # Append-only journal of what DevKit changed on GitHub, so "where did my build go?" has an answer.
+    try {
+        New-Item -ItemType Directory -Force -Path $script:DataHome | Out-Null
+        $entry = [ordered]@{ time = [DateTime]::UtcNow.ToString('o'); user = [string]$env:USERNAME; action = $kind; detail = $detail }
+        ($entry | ConvertTo-Json -Compress) | Add-Content -LiteralPath (Join-Path $script:DataHome 'actions.jsonl') -Encoding UTF8
+    } catch {}
+}
+function Read-Actions([int]$limit = 30) {
+    $file = Join-Path $script:DataHome 'actions.jsonl'
+    if (-not (Test-Path -LiteralPath $file)) { return @() }
+    $entries = @()
+    foreach ($line in @(Get-Content -LiteralPath $file -Encoding UTF8 -Tail 2000)) {
+        if (-not $line.Trim()) { continue }
+        try { $entries += ($line | ConvertFrom-Json) } catch {}
+    }
+    return @($entries | Select-Object -Last $limit)
+}
+function Actions-Log([string[]]$tokens) {
+    $limit = 30
+    $given = Option $tokens '--limit'
+    if ($given -match '^\d+$') { $limit = [int]$given }
+    $entries = @(Read-Actions $limit)
+    if (Flag $tokens '--json') {
+        Write-Json @($entries | ForEach-Object { [ordered]@{ time = [string]$_.time; user = [string]$_.user; action = [string]$_.action; detail = [string]$_.detail } })
+        return
+    }
+    Heading "DevKit actions · last $($entries.Count)"
+    if ($entries.Count -eq 0) { Hint 'Nothing recorded yet. Publications, deletions, rollbacks and updates appear here.' }
+    foreach ($entry in $entries) {
+        $when = try { ([DateTime]$entry.time).ToLocalTime().ToString('yyyy-MM-dd HH:mm') } catch { [string]$entry.time }
+        Say ("  {0}  {1,-9} {2}  {3}" -f $when, $entry.action, $entry.detail, $entry.user)
+    }
+    Hint "File: $(Join-Path $script:DataHome 'actions.jsonl')"
+}
 function Project([string[]]$tokens) {
     if ($tokens.Count -lt 2) {
         Heading 'Current project'
@@ -484,6 +519,7 @@ function Remove-TestRelease([string]$tag) {
     $check = Gh @('release','view',$tag,'--repo',$script:ReleaseRepo,'--json','tagName,isPrerelease') | ConvertFrom-Json
     if ($check.tagName -cne $tag -or -not $check.isPrerelease) { Fail "Invalid release: $tag" }
     Gh @('release','delete',$tag,'--repo',$script:ReleaseRepo,'--cleanup-tag','--yes') | Out-Null
+    Log-Action 'delete' $tag
 }
 function Release-Age([object]$release) {
     # Days since publication; drafts and unknown dates count as new.
@@ -769,6 +805,7 @@ function Publish-Manifest([object]$record, [bool]$replace = $false) {
         '--notes',$notesText
     )
     Gh $publishArgs | Out-Null
+    Log-Action 'publish' "$tag · $($record.channel)"
     $record.status = 'published'
     $script:CurrentManifest = $record
     Save-BuildState
@@ -874,6 +911,7 @@ function Rollback-Release([string[]]$tokens) {
         Stage 'publish' 'running' 'Restoring previous release'
         foreach ($release in $newer) {
             Gh @('release','edit',$release.tagName,'--repo',$script:ReleaseRepo,'--draft=true') | Out-Null
+            Log-Action 'hide' ([string]$release.tagName)
             Hint "  Hidden as draft: $($release.tagName)"
         }
         Stage 'publish' 'done' 'Previous release restored'
@@ -901,6 +939,7 @@ function Rollforward-Release([string[]]$tokens) {
         [array]::Reverse($hidden)
         foreach ($release in $hidden) {
             Gh @('release','edit',$release.tagName,'--repo',$script:ReleaseRepo,'--draft=false','--prerelease') | Out-Null
+            Log-Action 'show' ([string]$release.tagName)
             Hint "  Active again: $($release.tagName)"
         }
         Stage 'publish' 'done' 'Rollback undone'
@@ -918,15 +957,9 @@ function DevKit-Update {
     }
     # Only tracked files matter: a fast-forward never touches untracked ones unless the update adds the same path,
     # and git refuses that on its own.
+    # Tracked changes are set aside during the update and put back afterwards. Untracked files never block it:
+    # git refuses on its own if the update would overwrite one.
     $dirty = @((Native 'git' @('-C',$ownRepo,'status','--porcelain','--untracked-files=no')) -split "\r?\n" | Where-Object { $_.Trim() })
-    if ($dirty.Count) {
-        Say '  Changed files in the DevKit checkout:' Yellow
-        $dirty | Select-Object -First 8 | ForEach-Object { Hint "    $_" }
-        if ($dirty.Count -gt 8) { Hint "    … and $($dirty.Count - 8) more" }
-        Hint "  Commit them, or discard with: git -C `"$ownRepo`" checkout -- ."
-        Hint '  If every file differs only by line endings: git config core.autocrlf false, then discard.'
-        Fail 'DevKit has uncommitted changes. Self-update will not overwrite them.'
-    }
     $before = Native 'git' @('-C',$ownRepo,'rev-parse','HEAD')
     Heading "Checking for DevKit updates on $updateBranch"
     Native 'git' @('-C',$ownRepo,'fetch','origin',$updateBranch) | Out-Null
@@ -936,11 +969,36 @@ function DevKit-Update {
     if ($base -ne $before) { Fail 'DevKit branch has diverged. Update cancelled; local commits are preserved.' }
     $news = @((Native 'git' @('-C',$ownRepo,'log','--no-merges','--max-count=15','--format=%s',"$before..$upstream")) -split "\r?\n" |
         Where-Object { $_.Trim() })
-    Native 'git' @('-C',$ownRepo,'merge','--ff-only',$upstream) | Out-Null
+    $who = @('-c','user.name=Cavey DevKit','-c','user.email=devkit@localhost')
+    $stashed = $false
+    if ($dirty.Count) {
+        Say "  Setting aside $($dirty.Count) local change(s) while updating:" Yellow
+        $dirty | Select-Object -First 6 | ForEach-Object { Hint "    $_" }
+        if ($dirty.Count -gt 6) { Hint "    … and $($dirty.Count - 6) more" }
+        Native 'git' (@('-C',$ownRepo) + $who + @('stash','push','--message','cavey-devkit-auto-update')) | Out-Null
+        $stashed = $true
+    }
+    try { Native 'git' @('-C',$ownRepo,'merge','--ff-only',$upstream) | Out-Null }
+    catch {
+        if ($stashed) { try { Native 'git' (@('-C',$ownRepo) + $who + @('stash','pop')) | Out-Null } catch {} }
+        throw
+    }
+    Log-Action 'update' "$($before.Substring(0,8)) → $($upstream.Substring(0,8))"
     Say "  Updated DevKit: $($before.Substring(0,8)) → $($upstream.Substring(0,8))" Green
     if ($news.Count) {
         Heading "What's new"
         $news | ForEach-Object { Say "  · $_" }
+    }
+    if ($stashed) {
+        try {
+            Native 'git' (@('-C',$ownRepo) + $who + @('stash','pop')) | Out-Null
+            Say "  ✓ Your $($dirty.Count) local change(s) are back on top of the update." Green
+        } catch {
+            # Conflict: leave the checkout clean and the changes safe in the stash.
+            try { Native 'git' @('-C',$ownRepo,'reset','--hard','HEAD') | Out-Null } catch {}
+            Say '  ! Your local changes conflict with the update, so they were not re-applied.' Yellow
+            Hint "  They are saved: git -C `"$ownRepo`" stash list   (restore with: git stash pop)"
+        }
     }
     Write-Host '@@CAVEY_RESTART|updated'
 }
@@ -1545,10 +1603,36 @@ function Status {
         catch { Say '  GitHub: run gh auth login' Yellow }
     }
 }
-function Doctor {
-    Heading 'Environment check'
+function Find-FlutterBin {
+    foreach ($root in @($env:FLUTTER_ROOT, 'C:\src\flutter', 'C:\flutter', (Join-Path $HOME 'flutter'),
+            (Join-Path $HOME 'dev\flutter'), (Join-Path $env:LOCALAPPDATA 'flutter'))) {
+        if (-not $root) { continue }
+        $bin = Join-Path $root 'bin'
+        if (Test-Path -LiteralPath (Join-Path $bin 'flutter.bat') -PathType Leaf) { return $bin }
+    }
+    return ''
+}
+function Use-ConfiguredTools {
+    # A Flutter folder found by `/doctor --fix` is added to PATH for this process and its children.
+    if (Has 'flutter') { return }
+    $bin = [string](Read-Config)['flutterBin']
+    if ($bin -and (Test-Path -LiteralPath $bin -PathType Container)) { $env:PATH = $bin + [IO.Path]::PathSeparator + $env:PATH }
+}
+function Doctor([string[]]$tokens = @()) {
+    $fix = Flag $tokens '--fix'
+    $fixable = 0
+    Heading $(if ($fix) { 'Environment check and repair' } else { 'Environment check' })
     foreach ($name in @('git','gh','flutter','powershell')) {
-        if (Has $name) { Say "  ✓ $name" Green } else { Say "  ✗ $name" Red }
+        if (Has $name) { Say "  ✓ $name" Green; continue }
+        Say "  ✗ $name" Red
+        if ($name -eq 'flutter') {
+            $bin = Find-FlutterBin
+            if ($bin) {
+                $fixable++
+                if ($fix) { Write-Config @{ flutterBin = $bin }; Use-ConfiguredTools; Say "    Fixed: DevKit will use Flutter from $bin" Green }
+                else { Hint "    Found Flutter at $bin; /doctor --fix lets DevKit use it." }
+            }
+        }
     }
     $tools = Tool-Versions
     if ($tools.innoSetup) { Say "  ✓ Inno Setup $($tools.innoSetup)" Green } else { Say '  ✗ Inno Setup 6' Red }
@@ -1563,9 +1647,23 @@ function Doctor {
     }
     $config = Read-Config
     if ($config['signThumbprint']) {
+        $certificate = Get-ChildItem -Path Cert:\CurrentUser\My, Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+            Where-Object { $_.Thumbprint -eq [string]$config['signThumbprint'] -and $_.HasPrivateKey } | Select-Object -First 1
+        if (-not $certificate -and $IsLinux -ne $true -and $IsMacOS -ne $true) {
+            Say "  ✗ The signing certificate $($config['signThumbprint']) is not in the certificate store" Red
+            $fixable++
+            if ($fix) { Write-Config @{ signThumbprint = $null }; $config = Read-Config; Say '    Fixed: code signing turned off (turn on again with /sign <thumbprint>).' Green }
+        }
+    }
+    if ($config['signThumbprint']) {
         if (Find-SignTool) { Say "  ✓ Code signing · certificate $($config['signThumbprint'])" Green }
         else { Say '  ✗ Code signing is on, but signtool.exe was not found (Windows SDK)' Red }
     } else { Hint 'Code signing is off (/sign <thumbprint>); SmartScreen warns about unsigned builds.' }
+    if ($config['discordWebhook'] -and -not (Test-DiscordWebhook ([string]$config['discordWebhook']))) {
+        Say '  ✗ The saved Discord webhook is not a valid URL' Red
+        $fixable++
+        if ($fix) { Write-Config @{ discordWebhook = $null }; $config = Read-Config; Say '    Fixed: Discord announcements turned off (/notify <webhook-url>).' Green }
+    }
     if ($config['discordWebhook']) { Say '  ✓ Discord announcements' Green } else { Hint 'Discord announcements are off (/notify <webhook-url>).' }
     $cacheRoot = Join-Path $script:DataHome 'source-cache'
     $buildsRoot = Join-Path $script:DataHome 'builds'
@@ -1575,7 +1673,22 @@ function Doctor {
             Hint ("{0}: {1:N1} GB · {2}" -f $place.name, ($bytes / 1GB), $place.path)
         }
     }
+    $cache = Join-Path $script:DataHome 'source-cache'
+    $half = @(if (Test-Path -LiteralPath $cache) {
+        Get-ChildItem -LiteralPath $cache -Directory -ErrorAction SilentlyContinue |
+            Where-Object { -not (Test-Path -LiteralPath "$($_.FullName).ok" -PathType Leaf) }
+    })
+    if ($half.Count) {
+        Say "  ✗ $($half.Count) unfinished build cache folder(s)" Red
+        $fixable++
+        if ($fix) {
+            $lock = Enter-ReleaseLock
+            try { foreach ($item in $half) { Remove-CachedWorktree $item.FullName } } finally { $lock.Dispose() }
+            Say '    Fixed: unfinished cache folders removed.' Green
+        }
+    }
     Hint "Windows builds need Flutter $($script:Shared.flutterVersion) and Visual Studio 2022 C++ Build Tools."
+    if ($fixable -gt 0 -and -not $fix) { Hint "$fixable problem(s) can be repaired automatically: /doctor --fix" }
 }
 function Help {
     Heading 'Cavey DevKit · Commands'
@@ -1587,6 +1700,8 @@ function Help {
         '/build --branch <name> --fresh --yes   (no source cache)'
         '/build ... --skip-smoke       Do not launch the build before publishing'
         '/build ... --message "<text>" Note for testers, shown first in the release notes'
+        '/doctor [--fix]               Check the environment; --fix repairs what it safely can'
+        '/actions [--limit N]          What DevKit published, hid or deleted on GitHub'
         '/notify [<webhook-url>|test|off]   Announce published builds in Discord'
         '/build --working-tree --local --yes   Build uncommitted changes of the project folder'
         '/sign [<thumbprint>|off]      Sign builds with a code-signing certificate'
@@ -1614,7 +1729,7 @@ function Dispatch([string[]]$tokens) {
     switch ($command) {
         'help' { Help }
         'status' { Status }
-        'doctor' { Doctor }
+        'doctor' { Doctor $tokens }
         'project' { Project $tokens }
         'branches' {
             $branches = @(Get-Branches (-not (Flag $tokens '--cached')))
@@ -1657,6 +1772,7 @@ function Dispatch([string[]]$tokens) {
         'resume' { Recovery $tokens }
         'retry-publish' { Recovery $tokens }
         'update' { DevKit-Update }
+        'actions' { Actions-Log $tokens }
         'history' {
             Heading 'Local builds'
             foreach ($record in @(History | Select-Object -Last 20)) {
@@ -1696,6 +1812,7 @@ function Dispatch([string[]]$tokens) {
 # Tests dot-source this file with CAVEY_DEVKIT_LIBRARY=1 to call functions directly.
 if ($env:CAVEY_DEVKIT_LIBRARY -eq '1') { return }
 try {
+    Use-ConfiguredTools
     Dispatch @($args)
 } catch {
     $errorRecord = $_

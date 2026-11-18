@@ -262,6 +262,7 @@ def failing_build_output(s):
     assert "ERROR: lib/main.dart:12:3: Undefined name 'foo'" in text, "errors stay visible when collapsed"
     assert "lines (click or ctrl+o to expand)" in text
     assert "@@CAVEY_STAGE" not in text
+    assert "Show log" in text and "Build again" in text, "a failed build offers next steps"
     check_layout(s)
     s.click("lines (click or ctrl+o to expand)")
     s.wait_for("(click to collapse)")
