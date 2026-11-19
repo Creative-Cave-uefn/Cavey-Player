@@ -132,12 +132,45 @@ class MixAnalyzer {
 
   bool _needsBeat(String id) {
     final b = beat;
-    return b != null && !b.failed && beatEnabled() && !b.has(id);
+    return b != null && !b.failed && beatEnabled() && !b.isFresh(id);
   }
 
   final Map<String, MixProfile> _mem = {};
   final Set<String> _queue = {};
   bool _running = false;
+
+  /// Разбор «про запас» (DJ-режим): уже скачанные треки, начиная с ближайших в очереди. Идёт, только когда
+  /// основная очередь пуста, по одному треку с паузой — чтобы к переходу трек был разобран, а не ждал анализа
+  final Set<String> _idle = {};
+
+  /// Уже проверенные для разбора про запас (чтобы не читать их профили на каждом вызове)
+  final Set<String> _idleSeen = {};
+
+  /// Поставить в разбор про запас; [ids] — по важности (первые — раньше), проверяется не больше [limit] новых.
+  /// Уже стоящие поднимаются вперёд
+  void prepareIdle(Iterable<String> ids, {int limit = 40}) {
+    final b = beat;
+    if (b == null || b.failed || !beatEnabled()) return;
+    final front = <String>[];
+    var checked = 0;
+    for (final id in ids) {
+      if (_idle.contains(id)) {
+        front.add(id);
+        continue;
+      }
+      if (_idleSeen.contains(id) || !cache.has(id) || _queue.contains(id)) continue;
+      if (++checked > limit) break;
+      _idleSeen.add(id);
+      if (_needsBeat(id) || (!_noTool && profile(id) == null)) front.add(id);
+    }
+    if (front.isEmpty) return;
+    final rest = _idle.where((id) => !front.contains(id)).toList();
+    _idle
+      ..clear()
+      ..addAll(front)
+      ..addAll(rest);
+    unawaited(_pump());
+  }
   bool _noTool = false;
 
   File _file(String id) => File('${dir.path}${Platform.pathSeparator}mix_$id.json');
@@ -168,18 +201,29 @@ class MixAnalyzer {
     if (_running) return;
     _running = true;
     try {
-      while (_queue.isNotEmpty) {
-        final id = _queue.first;
-        final src = cache.fileFor(id);
-        // Звука ещё нет — ждём, пока кэш его докачает (плеер качает следующий трек заранее)
-        var waited = 0;
-        while (!(cache.has(id) && src.existsSync()) && waited < 120) {
-          await Future<void>.delayed(const Duration(seconds: 2));
-          waited += 2;
+      for (;;) {
+        if (_queue.isNotEmpty) {
+          final id = _queue.first;
+          final src = cache.fileFor(id);
+          // Звука ещё нет — ждём, пока кэш его докачает (плеер качает следующий трек заранее)
+          var waited = 0;
+          while (!(cache.has(id) && src.existsSync()) && waited < 120) {
+            await Future<void>.delayed(const Duration(seconds: 2));
+            waited += 2;
+          }
+          _queue.remove(id);
+          if (!(cache.has(id) && src.existsSync())) continue;
+          await _analyze(id, src);
+          continue;
         }
-        _queue.remove(id);
-        if (!(cache.has(id) && src.existsSync())) continue;
+        // основная очередь пуста — про запас, по одному треку, пока не появится срочное
+        if (_idle.isEmpty) break;
+        final id = _idle.first;
+        _idle.remove(id);
+        final src = cache.fileFor(id);
+        if (!cache.has(id) || !src.existsSync() || !(_needsBeat(id) || profile(id) == null)) continue;
         await _analyze(id, src);
+        await Future<void>.delayed(const Duration(seconds: 1));
       }
     } finally {
       _running = false;

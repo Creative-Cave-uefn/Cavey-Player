@@ -59,7 +59,7 @@ struct Block {
 
 enum CmdType : int32_t {
   C_SET, C_RAMP, C_CLEAR_AUTO, C_PLAY_AT, C_PAUSE, C_STOP_AT, C_SEEK, C_LOAD, C_UNLOAD, C_MASTER_VOL, C_PAUSED,
-  C_CANCEL_SCHEDULE, C_LOOP, C_BRAKE
+  C_CANCEL_SCHEDULE, C_LOOP, C_BRAKE, C_SYNC
 };
 
 struct Cmd {
@@ -124,6 +124,17 @@ struct Lane {
       return curveShape(s.curve, double(clock - s.a) / double(s.b - s.a), s.from, s.to);
     }
     return base;
+  }
+  // значение в момент clock без выбрасывания прошедших отрезков (можно спрашивать и о будущем)
+  double peek(int64_t clock) const {
+    double v = base;
+    for (int i = 0; i < count; ++i) {
+      const Seg &s = segs[i];
+      if (s.b <= clock) { v = s.to; continue; }
+      if (s.a <= clock) return curveShape(s.curve, double(clock - s.a) / double(s.b - s.a), s.from, s.to);
+      break;
+    }
+    return v;
   }
   // есть ли отрезок, который идёт сейчас или начнётся в пределах horizon кадров
   bool activeWithin(int64_t clock, int64_t horizon) const {
@@ -416,6 +427,7 @@ class Deck {
     lane_[CM_ECHO_FEEDBACK].base = 0.5;
     for (int p = 0; p < CM_PARAM_COUNT; ++p) sm_[p].jump(lane_[p].base);
     tape_.setup(sr_);
+    tap_.assign(4096, 0.0f);
     source.start(sr_);
   }
 
@@ -551,6 +563,8 @@ class Deck {
   // Вывести n кадров деки (уже после EQ/фильтра/громкости) с добавлением в mix; посыл в эхо — в send.
   void render(float *mix, float *send, float *rsend, int n, int64_t clock, int64_t &underruns) {
     pullBlocks();
+    tapBase_ = clock;
+    std::fill(tap_.begin(), tap_.begin() + std::min<size_t>((size_t)n, tap_.size()), 0.0f);
 
     // старт и остановка по часам
     if (startClock_ == -2 && loaded_ && ringEnd_ > playhead()) { beginPlay(); startClock_ = -1; }
@@ -576,6 +590,11 @@ class Deck {
       if (!playing_) break;
     }
   }
+
+  const float *tap() const { return tap_.data(); }
+  bool isPlaying() const { return playing_; }
+  void addShift(double frames, double rate) { shiftLeft_ = frames; shiftRate_ = rate; }
+  void clearShift() { shiftLeft_ = 0; }
 
   void publish(cm_deck_state &s) const {
     s.load_id = loadId_;
@@ -714,7 +733,7 @@ class Deck {
   inline void advanceParams(int64_t clock, bool) {
     for (int p = 0; p < CM_PARAM_COUNT; ++p) {
       const double v = lane_[p].at(clock);
-      if (p == CM_TEMPO) { sm_[p].jump(v); continue; }
+      if (p == CM_TEMPO || p == CM_PITCH) { sm_[p].jump(v); continue; }
       if (v != sm_[p].target) sm_[p].set(v, p == CM_FILTER || p == CM_FILTER_RES ? 64 : 48);
       sm_[p].next();
     }
@@ -724,12 +743,14 @@ class Deck {
   bool wantStretch(int64_t clock) const {
     if (std::abs(sm_[CM_TEMPO].cur - 1.0) > 1e-9) return true;
     if (std::abs(lane_[CM_TEMPO].base - 1.0) > 1e-9) return true;
-    return lane_[CM_TEMPO].activeWithin(clock, sr_ / 2);
+    if (std::abs(sm_[CM_PITCH].cur) > 1e-6 || std::abs(lane_[CM_PITCH].base) > 1e-6) return true;
+    return lane_[CM_TEMPO].activeWithin(clock, sr_ / 2) || lane_[CM_PITCH].activeWithin(clock, sr_ / 2);
   }
 
   void engageStretch(double tempo) {
     rb_->reset();
     rb_->setTimeRatio(1.0 / tempo);
+    rb_->setPitchScale(std::pow(2.0, sm_[CM_PITCH].cur / 12.0));
     const int64_t P = (int64_t)std::llround(ph_);
     // «предзаполнение»: реальный звук перед текущей позицией, а не нули
     const int pad = (int)rb_->getPreferredStartPad();
@@ -749,6 +770,7 @@ class Deck {
     }
     feedPos_ = P;
     discard_ = (int)rb_->getStartDelay();
+    rbDelay_ = discard_;
     ph_ = (double)P;
     mode_ = M_TO_STRETCH;
     xf_ = 0;
@@ -795,7 +817,17 @@ class Deck {
   void renderSub(float *mix, float *send, float *rsend, int n, int64_t clock, int64_t &underruns) {
     // темп на этот кусок
     advanceTempoOnly(clock);
-    const double tempo = sm_[CM_TEMPO].cur;
+    // подстройка фазы: заказанный сдвиг выбирается чуть изменённой скоростью (в тайм-стретче — темпом,
+    // без него — как пластинка, с едва заметной высотой)
+    double bend = 1.0;
+    if (shiftLeft_ != 0) {
+      const double step = std::min(std::abs(shiftLeft_), shiftRate_ * n);
+      const double sg = shiftLeft_ > 0 ? 1.0 : -1.0;
+      bend = 1.0 + sg * step / n;
+      shiftLeft_ -= sg * step;
+      if (std::abs(shiftLeft_) < 1e-6) shiftLeft_ = 0;
+    }
+    const double tempo = sm_[CM_TEMPO].cur * bend;
 
     // После перемотки (и после опустевшего кольца) звук не идёт, пока декодер не накопит запас: иначе он
     // начинается и обрывается кусками по блоку — на быстрых перемотках это и слышно как «скретч»
@@ -808,18 +840,45 @@ class Deck {
     if (!waiting) {
       if (mode_ == M_DIRECT && wantStretch(clock)) engageStretch(tempo);
       if (mode_ == M_STRETCH && !wantStretch(clock)) { mode_ = M_TO_DIRECT; xf_ = 0; directFrom_ = (int64_t)std::llround(ph_); }
-      if (mode_ != M_DIRECT) rb_->setTimeRatio(1.0 / tempo);
+      // Тайм-стретч отдаёт звук с задержкой rbDelay_ кадров выхода: темп, который ему задан сейчас, слышен через
+      // rbDelay_. Поэтому ему задаётся темп автоматизации на rbDelay_ вперёд — тогда слышимая позиция идёт ровно
+      // по автоматизации (иначе после смены темпа на 5 % звук сдвигается на ~2,5 мс относительно расчёта)
+      if (mode_ != M_DIRECT) {
+        rb_->setTimeRatio(1.0 / (lane_[CM_TEMPO].peek(clock + rbDelay_) * bend));
+        rb_->setPitchScale(std::pow(2.0, sm_[CM_PITCH].cur / 12.0));
+      }
     }
 
     float bufL[kSub], bufR[kSub];
     bool ok = true, rearmFadeIn = false;
+    // для подстройки по ударам под тайм-стретчем берём сам трек в тех местах, что сейчас звучат: низ после
+    // тайм-стретча «размазан» по времени на десятки мс, а где удар должен прозвучать — известно точно
+    float srcTap[kSub];
+    bool tapFromSrc = false;
 
     if (waiting) {
       ok = false;
     } else if (mode_ == M_DIRECT) {
       const int64_t P = (int64_t)ph_;
-      for (int i = 0; i < n; ++i) srcFrame(P + i, bufL[i], bufR[i]);
-      if (!looping(P, n) && !ended(P) && P + n + kStarve > ringEnd_ && eofFrame_ < 0) {
+      if (bend == 1.0) {
+        for (int i = 0; i < n; ++i) srcFrame(P + i, bufL[i], bufR[i]);
+      } else {
+        // кубическая интерполяция (Катмулл — Ром) между кадрами
+        const double f0 = ph_ - (double)P;
+        for (int i = 0; i < n; ++i) {
+          const double x = f0 + i * bend;
+          const int64_t k = (int64_t)std::floor(x);
+          const float t = (float)(x - (double)k);
+          float l[4], r[4];
+          for (int j = 0; j < 4; ++j) srcFrame(P + k - 1 + j, l[j], r[j]);
+          auto cr = [t](const float *v) {
+            return v[1] + 0.5f * t * (v[2] - v[0] + t * (2 * v[0] - 5 * v[1] + 4 * v[2] - v[3] + t * (3 * (v[1] - v[2]) + v[3] - v[0])));
+          };
+          bufL[i] = cr(l); bufR[i] = cr(r);
+        }
+      }
+      const int adv = (int)std::ceil(n * bend) + 2;
+      if (!looping(P, adv) && !ended(P) && P + adv + kStarve > ringEnd_ && eofFrame_ < 0) {
         // декодер не успевает: запас почти кончился — доигрываем, что есть, с затуханием (не обрываем: затухание
         // начинается, пока в кольце ещё есть kStarve кадров, поэтому оно не короче куска), дальше тишина и новый запас
         const int avail = (int)std::clamp<int64_t>(ringEnd_ - P, 0, n);
@@ -831,12 +890,24 @@ class Deck {
         if (ringEnd_ > ringStart_) ++underruns;
         prebuf_ = true;
         rearmFadeIn = true;
-      } else {
+      } else if (bend == 1.0) {
         ph_ = (double)wrap(P + n);
+      } else {
+        const double np = ph_ + n * bend;
+        const int64_t ip = (int64_t)std::floor(np);
+        ph_ = (double)wrap(ip) + (np - (double)ip);
       }
     } else {
       float wl[kSub], wr[kSub];
       ok = pullStretched(n, wl, wr);
+      if (ok && mode_ != M_TO_DIRECT) {
+        for (int i = 0; i < n; ++i) {
+          float l, r;
+          srcFrame(wrap((int64_t)std::llround(ph_ + i * tempo)), l, r);
+          srcTap[i] = 0.5f * (l + r);
+        }
+        tapFromSrc = true;
+      }
       if (ok) {
         for (int i = 0; i < n; ++i) {
           float dl = 0, dr = 0;
@@ -885,6 +956,12 @@ class Deck {
         const float f = (float)(1.0 - fadeIn_ / (double)kDeclick);
         bufL[i] *= f; bufR[i] *= f;
       }
+    // звук деки до EQ и громкости — для подстройки фазы по ударам
+    {
+      const int64_t off = clock - tapBase_;
+      if (off >= 0 && off + n <= (int64_t)tap_.size())
+        for (int i = 0; i < n; ++i) tap_[(size_t)(off + i)] = tapFromSrc ? srcTap[i] : 0.5f * (bufL[i] + bufR[i]);
+    }
 
     // цепочка деки
     double peak = peak_;
@@ -949,7 +1026,10 @@ class Deck {
     return false;
   }
 
-  void advanceTempoOnly(int64_t clock) { sm_[CM_TEMPO].jump(lane_[CM_TEMPO].at(clock)); }
+  void advanceTempoOnly(int64_t clock) {
+    sm_[CM_TEMPO].jump(lane_[CM_TEMPO].at(clock));
+    sm_[CM_PITCH].jump(std::clamp(lane_[CM_PITCH].at(clock), -3.0, 3.0));
+  }
 
   void finishFadeOut() {
     if (fadeOutAction_ == FO_PAUSE) {
@@ -993,10 +1073,14 @@ class Deck {
   std::unique_ptr<RubberBand::RubberBandStretcher> rb_;
   int64_t feedPos_ = 0;
   int discard_ = 0;
+  int rbDelay_ = 0;  // задержка тайм-стретча, кадры выхода
   std::vector<float> inL_, inR_, outL_, outR_;
   TapeStop tape_;
   int64_t brakeClock_ = -1;
   double brakeDur_ = 1.0;
+  std::vector<float> tap_;
+  int64_t tapBase_ = 0;
+  double shiftLeft_ = 0, shiftRate_ = 0;
 };
 
 // ---------------------------------------------------------------- Движок
@@ -1032,6 +1116,7 @@ class Engine {
       sr_ = sampleRate > 0 ? sampleRate : 48000;
     }
     for (auto &d : decks_) d.setup(sr_);
+    sync_.setup(sr_);
     for (auto &x : echo_) x.setup(sr_);
     for (auto &x : reverb_) x.setup(sr_);
     for (auto &b : sendBuf_) b.assign(4096 * 2, 0.0f);
@@ -1101,6 +1186,8 @@ class Engine {
     publish(frames);
   }
 
+  void syncInfo(cm_sync_info *o) const { getSync(o); }
+
   void getState(cm_state *s) {
     uint32_t a, b;
     do {
@@ -1143,6 +1230,22 @@ class Engine {
     if (c.type == C_MASTER_VOL) { masterVol_.set(std::pow(std::clamp(c.x, 0.0, 1.0), 3.0), sr_ / 50); return; }
     if (c.type == C_PAUSED) { paused_ = c.a != 0; pauseGain_.set(paused_ ? 0.0 : 1.0, kDeclick * 2); return; }
     if (c.deck < 0 || c.deck >= CM_DECKS) return;
+    if (c.type == C_SYNC) {
+      if (c.param < 0 || c.param >= CM_DECKS || c.param == c.deck) return;
+      syncFol_ = c.deck; syncRef_ = c.param;
+      decks_[syncFol_].clearShift();
+      sync_.start(c.a, c.b, c.x * sr_);
+      syncToClock_ = c.b;
+      syncStats();
+      return;
+    }
+    // перемотка, новый трек или отмена расписания на любой из двух дек — подстройка больше не к месту
+    if (sync_.active() && (c.deck == syncFol_ || c.deck == syncRef_) &&
+        (c.type == C_SEEK || c.type == C_LOAD || c.type == C_UNLOAD || c.type == C_CANCEL_SCHEDULE)) {
+      sync_.stop();
+      decks_[syncFol_].clearShift();
+      syncStats();
+    }
     Deck &d = decks_[c.deck];
     switch (c.type) {
       case C_SET: d.cmdSet(c.param, c.x); break;
@@ -1176,6 +1279,16 @@ class Engine {
       echo_[k].process(send, mix, n, decks_[k].param(CM_ECHO_TIME), decks_[k].param(CM_ECHO_FEEDBACK));
       reverb_[k].process(rsend, mix, n);
     }
+    if (sync_.active()) {
+      if (sync_.covers(clock_, n) && decks_[syncRef_].isPlaying() && decks_[syncFol_].isPlaying()) {
+        const BeatSync::Shift sh = sync_.feed(decks_[syncRef_].tap(), decks_[syncFol_].tap(), n, clock_);
+        if (sh.rate > 0) decks_[syncFol_].addShift(sh.frames, sh.rate);
+        syncStats();
+      } else if (clock_ >= syncTo()) {
+        sync_.stop();
+        syncStats();
+      }
+    }
     double mp = masterPeak_;
     for (int i = 0; i < n; ++i) {
       const double g = masterVol_.next() * pauseGain_.next();
@@ -1187,6 +1300,27 @@ class Engine {
     }
     masterPeak_ = mp;
     clock_ += n;
+  }
+
+  int64_t syncTo() const { return syncToClock_; }
+  void syncStats() {
+    syncActive_.store(sync_.active() ? 1 : 0);
+    syncMeasured_.store(sync_.measured);
+    syncCorr_.store(sync_.corrections);
+    syncFirst_.store(sync_.firstMs);
+    syncLast_.store(sync_.lastMs);
+    syncShift_.store(sync_.shiftMs);
+    syncConf_.store(sync_.conf);
+  }
+  void getSync(cm_sync_info *o) const {
+    o->active = syncActive_.load();
+    o->measured = syncMeasured_.load();
+    o->corrections = syncCorr_.load();
+    o->reserved = 0;
+    o->first_offset_ms = syncFirst_.load();
+    o->last_offset_ms = syncLast_.load();
+    o->total_shift_ms = syncShift_.load();
+    o->confidence = syncConf_.load();
   }
 
   void publish(int frames) {
@@ -1212,6 +1346,11 @@ class Engine {
   Reverb reverb_[CM_DECKS];
   std::vector<float> sendBuf_[CM_DECKS], revBuf_[CM_DECKS];
   Limiter limiter_;
+  BeatSync sync_;
+  int syncRef_ = 0, syncFol_ = 1;
+  int64_t syncToClock_ = 0;
+  std::atomic<int32_t> syncActive_{0}, syncMeasured_{0}, syncCorr_{0};
+  std::atomic<double> syncFirst_{0}, syncLast_{0}, syncShift_{0}, syncConf_{0};
   Smoothed masterVol_, pauseGain_;
   bool paused_ = false;
   std::vector<float> mixBuf_;
@@ -1350,6 +1489,18 @@ CM_API void cm_brake_at(cm_engine *e, int32_t deck, int64_t at_clock, double dur
   cm::Cmd c{cm::C_BRAKE};
   c.deck = deck; c.a = at_clock; c.x = duration_sec;
   e->engine.push(c);
+}
+
+CM_API void cm_sync(cm_engine *e, int32_t follow, int32_t ref, int64_t from_clock, int64_t to_clock, double beat_sec) {
+  if (!e || !validDeck(follow) || !validDeck(ref) || follow == ref || beat_sec <= 0.1 || beat_sec > 3) return;
+  cm::Cmd c{cm::C_SYNC};
+  c.deck = follow; c.param = ref; c.a = from_clock; c.b = to_clock; c.x = beat_sec;
+  e->engine.push(c);
+}
+
+CM_API void cm_get_sync(cm_engine *e, cm_sync_info *out) {
+  if (!e || !out) return;
+  e->engine.syncInfo(out);
 }
 
 CM_API void cm_get_state(cm_engine *e, cm_state *out) {

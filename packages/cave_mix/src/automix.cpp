@@ -310,6 +310,7 @@ struct Options {
   bool matchTempo = true;
   double maxTempoPct = 8;
   bool keyAware = true;
+  bool keyShift = true;     // тональности спорят — сдвинуть B на полутон, если так они сходятся
   bool allowEcho = true, allowCut = true;
   uint64_t seed = 1;
   int prev = 0;             // прошлая техника (для разнообразия)
@@ -329,6 +330,7 @@ static Options parseOptions(const char *json) {
   o.matchTempo = j.flag("matchTempo", true);
   o.maxTempoPct = std::clamp(j.num("maxTempoPct", 8), 0.0, 16.0);
   o.keyAware = j.flag("keyAware", true);
+  o.keyShift = j.flag("keyShift", true);
   o.allowEcho = j.flag("allowEcho", true);
   o.allowCut = j.flag("allowCut", true);
   o.seed = (uint64_t)j.num("seed", 1);
@@ -368,6 +370,7 @@ struct Plan {
   int64_t c0 = 0, cEnd = 0;   // часы движка: начало и конец
   double loopA = 0, loopB = 0;  // T5: участок A, который крутится петлёй (секунды трека)
   double brakeSec = 0;          // T7: длина торможения
+  int pitch = 0;                // сдвиг B в полутонах на время перехода (затем плавно к родной тональности)
   std::string reason;
 };
 
@@ -396,9 +399,29 @@ class Automix {
         if (std::abs(std::log(r)) < best) { best = std::abs(std::log(r)); ratio = r; }
       }
       canMatch = std::abs(ratio - 1) * 100 <= o.maxTempoPct;
+      // Разница больше допуска, но не больше двух допусков: темпы сходятся навстречу. За 8 тактов до перехода
+      // A плавно меняет темп на полпути, B входит с другой половиной подгонки, после перехода B возвращается к
+      // своему темпу. Каждый трек меняется не больше чем на допуск.
+      if (!canMatch && std::abs(std::log(ratio)) <= std::log(1 + 2 * o.maxTempoPct / 100.0)) {
+        const double half = std::sqrt(ratio);
+        tempoT_ = tempoA_ / half;
+        ratio = half;
+        canMatch = true;
+        split_ = true;
+      }
       if (!canMatch) ratio = 1;
     }
-    const int key = o.keyAware ? keyRelation(a, b) : 0;
+    int key = o.keyAware ? keyRelation(a, b) : 0;
+    // Тональности спорят: если B на полутон выше или ниже сходится с A (по кругу Camelot это ±7 шагов) — на время
+    // наложения B сдвигается на этот полутон, после перехода за 32 такта плавно возвращается к своей
+    int shift = 0;
+    if (key < 0 && o.keyShift) {
+      for (int sg : {1, -1}) {
+        Profile bs = b;
+        bs.camelotNum = ((b.camelotNum - 1 + 7 * sg) % 12 + 12) % 12 + 1;
+        if (keyRelation(a, bs) > 0) { shift = sg; key = 1; break; }
+      }
+    }
 
     // кандидаты техник с весами (ТЗ, раздел 6.2) и стилем
     std::vector<std::pair<int, double>> cand;
@@ -447,12 +470,24 @@ class Automix {
       // плавный переход тоже подгоняет темп, если может: иначе в наложении доли разъезжаются («галоп»)
       p.matched = canMatch && a.grid && b.grid && (t == T1 || t == T2 || t == T4 || t == T5 || t == T7 || t == T11);
       p.ratio = p.matched ? ratio : 1.0;
+      // встречная подгонка темпа: A меняет темп заранее (только когда B подгоняется — иначе A не трогаем)
+      rampOn_ = split_ && p.matched;
+      // сдвиг тональности — только когда треки звучат вместе (в обрывах и склейке гармонии не накладываются)
+      p.pitch = (t == T1 || t == T2 || t == T5 || (t == T11 && p.matched)) ? shift : 0;
+      tempoX_ = rampOn_ ? tempoT_ : tempoA_;
+      rampS_ = rampOn_ ? 8 * a.barLen : 0;
       if ((t == T1 || t == T2 || t == T4 || t == T5) && !canMatch && !o.force) continue;
       if (t != T11 && (!a.grid || !b.grid)) continue;
       if (!fit(a, b, o, p)) continue;
-      char why[320];
-      std::snprintf(why, sizeof(why), "темп %.2f→%.2f BPM (×%.3f), тональности %s, техника из %zu кандидатов%s",
-                    a.bpm * tempoA_, b.bpm, p.ratio, key > 0 ? "совместимы" : key < 0 ? "не совместимы" : "неизвестны",
+      char why[768];
+      char meet[160] = "";
+      if (rampOn_) std::snprintf(meet, sizeof(meet), ", навстречу: A ×%.3f за 8 тактов до перехода", tempoX_ / tempoA_);
+      char keyTxt[96];
+      std::snprintf(keyTxt, sizeof(keyTxt), "%s", key > 0 ? "совместимы" : key < 0 ? "не совместимы" : "неизвестны");
+      if (p.pitch) std::snprintf(keyTxt, sizeof(keyTxt), "сведены сдвигом B на %+d полутон", p.pitch);
+      else if (shift) std::snprintf(keyTxt, sizeof(keyTxt), "не совместимы (без наложения — не сдвигаем)");
+      std::snprintf(why, sizeof(why), "темп %.2f→%.2f BPM (×%.3f%s), тональности %s, техника из %zu кандидатов%s",
+                    a.bpm * tempoA_, b.bpm, p.ratio, meet, keyTxt,
                     order.size(),
                     a.vocal.empty() || b.vocal.empty() ? ", вокал не размечен"
                     : vocalAvoided_ > 0 ? ", голоса не накладываются (варианты с наложением отброшены)"
@@ -468,7 +503,14 @@ class Automix {
 
  private:
   // Часы движка, когда A дойдёт до позиции трека t (A играет с темпом tempoA_)
-  int64_t clockAtA(double t) const { return now_ + (int64_t)std::llround((t - posA_) / tempoA_ * sr_); }
+  // Со встречной подгонкой t — начало перехода: до t − rampS_ A идёт в своём темпе, затем за rampS_ секунд
+  // трека плавно (кривая симметрична — в среднем полусумма темпов) приходит к темпу перехода tempoX_.
+  int64_t clockAtA(double t) const {
+    if (!rampOn_) return now_ + (int64_t)std::llround((t - posA_) / tempoA_ * sr_);
+    return now_ + (int64_t)std::llround(((t - rampS_ - posA_) / tempoA_ + rampOut()) * sr_);
+  }
+  // длительность встречной подгонки темпа A в секундах выхода
+  double rampOut() const { return rampS_ * 2 / (tempoA_ + tempoX_); }
 
   // Подобрать точки и длину для техники; false — не помещается
   // Насколько голоса наложатся: по тактам перехода — меньшая из долей голоса A и B, в среднем. A с петлёй крутит
@@ -487,7 +529,7 @@ class Automix {
   int vocalAvoided_ = 0;  // сколько вариантов отброшено из-за наложения голосов
 
   bool fit(const Profile &a, const Profile &b, const Options &o, Plan &p) {
-    const double lead = posA_ + o.minLead * tempoA_;
+    const double lead = posA_ + o.minLead * tempoA_ + rampS_;  // со встречной подгонкой — ещё и место под неё
     const double end = std::min(a.endSec, a.duration) + 0.05;
     if (p.tech == T11) {
       const bool beats = a.grid && b.grid;
@@ -525,7 +567,7 @@ class Automix {
       }
       p.bars = p.matched ? (int)std::lround(std::min(F, end - start) / a.barLen) : 0;
       p.c0 = clockAtA(start);
-      p.cEnd = p.c0 + (int64_t)std::llround(std::min(F, end - start) / tempoA_ * sr_);
+      p.cEnd = p.c0 + (int64_t)std::llround(std::min(F, end - start) / tempoX_ * sr_);
       return true;
     }
 
@@ -560,8 +602,8 @@ class Automix {
         if (p.tech == T3 || p.tech == T8) bar += 8;  // эхо- и реверб-аут — в конце фразы аутро: A доигрывает её
         const double t = a.barStart(bar);
         // торможение занимает две доли перед сильной долей, на которой входит B
-        const double brake = std::clamp(2 * a.barLen / a.bpb / tempoA_, 0.6, 1.6);
-        if (t - (p.tech == T7 ? brake * tempoA_ : 0) < lead || t + L * a.barLen > end) continue;
+        const double brake = std::clamp(2 * a.barLen / a.bpb / tempoX_, 0.6, 1.6);
+        if (t - (p.tech == T7 ? brake * tempoX_ : 0) < lead || t + L * a.barLen > end) continue;
         // у трека с плавающим темпом сетка верна только на ровном участке: сведение — внутри него
         if (t < a.gridFrom || b.barStart(inBar + std::max(L, 1)) > b.gridTo) continue;
         if ((p.tech == T3 || p.tech == T8) && t > end) continue;
@@ -576,7 +618,7 @@ class Automix {
         p.aOut = t;
         p.bars = L;
         p.c0 = clockAtA(t);
-        const double barOut = a.barLen / tempoA_;
+        const double barOut = a.barLen / tempoX_;
         const double len = p.tech == T3 ? 2 * barOut : p.tech == T8 ? 4 * barOut : (p.tech == T4 || p.tech == T7) ? 0.05 : L * barOut;
         p.cEnd = p.c0 + (int64_t)std::llround(len * sr_);
         return true;
@@ -609,7 +651,7 @@ class Automix {
       p.bIn = std::max(0.0, b.barStart(p.inBar));
       p.bars = L;
       p.c0 = clockAtA(t0);
-      p.cEnd = p.c0 + (int64_t)std::llround(L * a.barLen / tempoA_ * sr_);
+      p.cEnd = p.c0 + (int64_t)std::llround(L * a.barLen / tempoX_ * sr_);
       return true;
     }
     return false;
@@ -623,7 +665,7 @@ class Automix {
   }
 
   void schedule(const Profile &a, const Profile &b, const Options &o, Plan &p) {
-    const double bar = a.barLen / tempoA_;  // такт A в секундах выхода
+    const double bar = a.barLen / tempoX_;  // такт A в секундах выхода (в темпе перехода)
     const double beat = bar / a.bpb;
     const double gA = o.gainA, gB = o.gainB;
 
@@ -632,6 +674,12 @@ class Automix {
     for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_FILTER_RES, CM_ECHO_SEND, CM_REVERB_SEND}) cm_set(e_, B_, prm, 0.0);
     cm_seek(e_, B_, p.bIn);
     cm_set(e_, B_, CM_TEMPO, p.ratio);
+    cm_set(e_, B_, CM_PITCH, (double)p.pitch);
+    // встречная подгонка: A плавно приходит к темпу перехода и дальше идёт в нём
+    if (rampOn_) {
+      cm_clear_automation(e_, A_);
+      ramp(A_, CM_TEMPO, p, -rampOut(), 0, tempoA_, tempoX_, CM_SMOOTH);
+    }
     // A: на всякий случай нейтральные EQ и фильтр (громкость не трогаем — она «как сейчас»)
     for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_ECHO_SEND, CM_REVERB_SEND}) cm_set(e_, A_, prm, 0.0);
 
@@ -719,6 +767,11 @@ class Automix {
     }
     // старт B и остановка A — точно по часам
     cm_play_at(e_, B_, p.c0);
+    // пока оба играют с подогнанным темпом — B подстраивается к ударам A по живому звуку
+    const bool overlap = p.tech == T1 || p.tech == T2 || p.tech == T5 || p.tech == T11;
+    // (пустое окно — подстройки нет, итоги прошлого перехода сбрасываются)
+    const bool sync = p.matched && overlap && p.cEnd > p.c0;
+    cm_sync(e_, B_, A_, p.c0, sync ? p.cEnd : p.c0, std::clamp(beat, 0.2, 2.0));
     // A: после обрыва (эхо-аут, склейка) — сразу, иначе — в конце перехода
     const bool cut = p.tech == T3 || p.tech == T4 || p.tech == T7 || p.tech == T8;
     cm_stop_at(e_, A_, (cut ? p.c0 : p.cEnd) + (int64_t)(0.03 * sr_));
@@ -727,6 +780,11 @@ class Automix {
       const double from = (double)(p.cEnd - p.c0) / sr_;
       ramp(B_, CM_TEMPO, p, from, from + 8 * bar, p.ratio, 1.0, CM_SMOOTH);
     }
+    // сдвиг тональности уходит медленно (полутон за 32 такта — на слух почти незаметно), A уже не звучит
+    if (p.pitch != 0) {
+      const double from = (double)(p.cEnd - p.c0) / sr_;
+      ramp(B_, CM_PITCH, p, from, from + 32 * bar, (double)p.pitch, 0.0, CM_SMOOTH);
+    }
   }
 
   cm_engine *e_;
@@ -734,6 +792,10 @@ class Automix {
   int sr_ = 48000;
   int64_t now_ = 0;
   double posA_ = 0, tempoA_ = 1;
+  // встречная подгонка темпа: возможна для этой пары (split_), включена для техники (rampOn_), темп A в переходе
+  // (tempoT_ — для подгонки навстречу, tempoX_ — для текущей техники) и длина подгонки в секундах трека A
+  bool split_ = false, rampOn_ = false;
+  double tempoT_ = 1, tempoX_ = 1, rampS_ = 0;
 };
 
 }  // namespace mix
@@ -765,15 +827,15 @@ CM_API char *cm_automix(cm_engine *e, int32_t from, int32_t to, const char *prof
     if (error_out) *error_out = dupStr(err);
     return nullptr;
   }
-  char buf[1024];
+  char buf[2048];
   std::string reason;
   for (char c : p.reason) { if (c == '"' || c == '\\') reason += '\\'; reason += c; }
   std::snprintf(buf, sizeof(buf),
                 "{\"technique\":\"T%d\",\"name\":\"%s\",\"bars\":%d,\"outBar\":%d,\"inBar\":%d,\"aOutSec\":%.3f,\"bInSec\":%.3f,"
                 "\"tempoRatio\":%.5f,\"startClock\":%lld,\"endClock\":%lld,\"loopSec\":[%.3f,%.3f],\"brakeSec\":%.3f,"
-                "\"reason\":\"%s\"}",
+                "\"pitchShift\":%d,\"reason\":\"%s\"}",
                 p.tech, techName(p.tech), p.bars, p.outBar, p.inBar, p.aOut, p.bIn, p.ratio, (long long)p.c0,
-                (long long)p.cEnd, p.loopA, p.loopB, p.brakeSec, reason.c_str());
+                (long long)p.cEnd, p.loopA, p.loopB, p.brakeSec, p.pitch, reason.c_str());
   return dupStr(buf);
 }
 
@@ -783,7 +845,8 @@ CM_API void cm_automix_cancel(cm_engine *e, int32_t from, int32_t to, double gai
     if (d < 0 || d >= CM_DECKS) continue;
     cm_clear_automation(e, d);
     cm_cancel_schedule(e, d);
-    for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_FILTER_RES, CM_ECHO_SEND, CM_REVERB_SEND}) cm_set(e, d, prm, 0.0);
+    for (int prm : {CM_EQ_LOW, CM_EQ_MID, CM_EQ_HIGH, CM_FILTER, CM_FILTER_RES, CM_ECHO_SEND, CM_REVERB_SEND, CM_PITCH})
+      cm_set(e, d, prm, 0.0);
     cm_set(e, d, CM_TEMPO, 1.0);
   }
   if (from >= 0 && from < CM_DECKS) cm_set(e, from, CM_GAIN, gain_from);
@@ -818,15 +881,24 @@ static PairScore pairScore(const Profile &a0, const Profile &b0, double maxTempo
     double best = 1e9;
     for (double k : {0.5, 1.0, 2.0}) best = std::min(best, std::abs(std::log(a.bpm / (b.bpm * k))));
     const double pct = (std::exp(best) - 1) * 100;
-    s.tempo = pct <= maxTempoPct ? std::exp(-pct / 4) : 0.1;
+    // до двух допусков сводится встречной подгонкой (оба трека меняют темп) — хуже, но не «не сводится»
+    s.tempo = pct <= maxTempoPct ? std::exp(-pct / 4) : pct <= 2 * maxTempoPct ? 0.5 * std::exp(-pct / 4) + 0.1 : 0.1;
     char buf[64]; std::snprintf(buf, sizeof buf, "темп %.0f→%.0f (%.1f%%)", a.bpm, b.bpm, pct); why += buf;
   } else {
     s.tempo = 0.4;
     why += "темп не сводится по долям";
   }
   const int kr = keyRelation(a, b);
-  s.key = kr > 0 ? 1.0 : kr == 0 ? 0.5 : 0.15;
-  why += kr > 0 ? ", тональности совместимы" : kr < 0 ? ", тональности спорят" : "";
+  // спорят, но сходятся сдвигом B на полутон (автомикс так и сделает на время наложения)
+  bool shiftable = false;
+  if (kr < 0)
+    for (int sg : {1, -1}) {
+      Profile bs = b;
+      bs.camelotNum = ((b.camelotNum - 1 + 7 * sg) % 12 + 12) % 12 + 1;
+      if (keyRelation(a, bs) > 0) shiftable = true;
+    }
+  s.key = kr > 0 ? 1.0 : kr == 0 ? 0.5 : shiftable ? 0.6 : 0.15;
+  why += kr > 0 ? ", тональности совместимы" : shiftable ? ", тональности сходятся сдвигом на полутон" : kr < 0 ? ", тональности спорят" : "";
   // энергия: конец A против начала B
   const double eA = a.avgEnergy(a.nBars - 16, 16), eB = b.avgEnergy(0, 32);
   s.energy = std::exp(-std::abs(eA - eB) / 3.0);

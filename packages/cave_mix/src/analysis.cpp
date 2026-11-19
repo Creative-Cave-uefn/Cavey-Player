@@ -643,7 +643,9 @@ static Grid fitGrid(const std::vector<double> &b) {
 // Поэтому фаза берётся по самим ударам: у каждой доли сетки — самая резкая атака в окне ±40 мс (подъём огибающей
 // за 2 мс, в децибелах), и сетка сдвигается на медиану этих отклонений. Порога «стоит ли сдвигать» нет: одинаковое
 // правило для всех треков важнее, чем точность любого из них. Мало атак (тихая, без ударных музыка) — сдвиг 0.
-static double refinePhase(const std::vector<float> &x, int fs, const Grid &g, double duration, double *gainOut,
+// Уточнение сетки по атакам звука: g сдвигается (и, если атак много и они ровные, чуть меняется период). Возвращает
+// сдвиг в середине участка, с.
+static double refinePhase(const std::vector<float> &x, int fs, Grid &g, double duration, double *gainOut,
                           double from = 0, double to = 1e18) {
   const size_t n = x.size();
   if (n < (size_t)fs) { *gainOut = 0; return 0; }
@@ -660,7 +662,7 @@ static double refinePhase(const std::vector<float> &x, int fs, const Grid &g, do
   const int h = std::max(1, fs / 1000);
   auto rise = [&](size_t i) { return (double)le[std::min(n - 1, i + (size_t)h)] - le[i >= (size_t)h ? i - (size_t)h : 0]; };
   const int span = (int)(0.040 * fs);
-  std::vector<double> offs;
+  std::vector<double> offs, times;
   int beats = 0;
   for (double t = g.firstBeat; t < std::min(duration, to) - 0.05; t += g.period) {
     if (t < from) continue;
@@ -673,12 +675,44 @@ static double refinePhase(const std::vector<float> &x, int fs, const Grid &g, do
       const double r = rise((size_t)i);
       if (r > best) { best = r; at = i; }
     }
-    if (best >= 0.5 && at >= 0) offs.push_back((double)(at - w / 2) / fs - t);  // 0,5 — подъём в 10 дБ за 2 мс
+    if (best >= 0.5 && at >= 0) {  // 0,5 — подъём в 10 дБ за 2 мс
+      offs.push_back((double)(at - w / 2) / fs - t);
+      times.push_back(t);
+    }
   }
   *gainOut = beats ? (double)offs.size() / beats : 0;
   if (offs.size() < 16 || offs.size() < 0.3 * beats) return 0;
-  std::nth_element(offs.begin(), offs.begin() + (long)offs.size() / 2, offs.end());
-  return std::clamp(offs[offs.size() / 2], -0.040, 0.040);
+  std::vector<double> tmp = offs;
+  std::nth_element(tmp.begin(), tmp.begin() + (long)tmp.size() / 2, tmp.end());
+  double a = std::clamp(tmp[tmp.size() / 2], -0.040, 0.040), b = 0;
+  // Наклон: атаки, отстающие от сетки всё больше к концу трека, — период чуть неточен (на 0,02 % — это уже 20 мс
+  // за 100 с). Прямая по атакам рядом с прямой (±6 мс), несколько проходов.
+  double tc = 0;
+  for (double t : times) tc += t;
+  tc /= (double)times.size();
+  const double spanT = times.back() - times.front();
+  if (offs.size() >= 32 && spanT >= 30) {
+    for (int it = 0; it < 4; ++it) {
+      double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+      for (size_t i = 0; i < offs.size(); ++i) {
+        const double xx = times[i] - tc, yy = offs[i];
+        if (std::abs(yy - (a + b * xx)) > (it == 0 ? 0.015 : 0.006)) continue;
+        n += 1; sx += xx; sy += yy; sxx += xx * xx; sxy += xx * yy;
+      }
+      if (n < 24 || n < 0.4 * (double)offs.size()) { b = 0; break; }
+      const double den = n * sxx - sx * sx;
+      if (den <= 0) { b = 0; break; }
+      b = (n * sxy - sx * sy) / den;
+      a = (sy - b * sx) / n;
+    }
+    if (std::getenv("CM_ANALYSIS_PROFILE")) std::fprintf(stderr, "  refine: %zu attacks, shift %.2f ms, slope %.5f%%\n", offs.size(), a * 1000, b * 100);
+    if (std::abs(b) > 0.002) b = 0;  // больше 0,2 % — это уже не уточнение, сетка не та
+    a = std::clamp(a, -0.040, 0.040);
+  }
+  // новая сетка: в точке t сдвиг a + b·(t − tc)
+  g.firstBeat += a - b * tc + b * g.firstBeat;
+  g.period *= 1 + b;
+  return a;
 }
 
 // ================================================================ громкость EBU R128
@@ -1038,7 +1072,8 @@ class Analyzer {
     double phaseShift = 0, phaseGain = 0;
     if (g.ok && !g.variable) {
       phaseShift = refinePhase(mono, kModelRate, g, duration, &phaseGain);
-      g.firstBeat += phaseShift;
+      while (g.firstBeat < 0) g.firstBeat += g.period;
+      while (g.firstBeat >= g.period) g.firstBeat -= g.period;
       if (g.firstBeat < 0) g.firstBeat += g.period;
       if (g.firstBeat >= g.period) g.firstBeat -= g.period;
     }
@@ -1062,8 +1097,9 @@ class Analyzer {
         }
         if (!E.g.ok || E.g.variable) continue;
         double gain = 0;
-        const double sh = refinePhase(mono, kModelRate, E.g, duration, &gain, E.from, E.to);
-        E.g.firstBeat += sh;
+        refinePhase(mono, kModelRate, E.g, duration, &gain, E.from, E.to);
+        while (E.g.firstBeat < 0) E.g.firstBeat += E.g.period;
+        while (E.g.firstBeat >= E.g.period) E.g.firstBeat -= E.g.period;
         if (E.g.firstBeat < 0) E.g.firstBeat += E.g.period;
         if (E.g.firstBeat >= E.g.period) E.g.firstBeat -= E.g.period;
         E.ok = true;
@@ -1081,16 +1117,68 @@ class Analyzer {
       int bestN = 0;
       for (int d = 2; d <= 8; ++d) if (hist[d] > bestN) { bestN = hist[d]; beatsPerBar = d; }
     }
-    // фаза такта: какой номер доли сетки чаще всего попадает на даунбит
-    int firstDownbeatIndex = 0;
-    double firstDownbeat = downs.empty() ? (g.ok ? g.firstBeat : 0) : downs[0];
-    if (g.ok && !downs.empty()) {
-      std::vector<int> votes((size_t)beatsPerBar, 0);
-      for (double d : downs) {
-        const long k = std::lround((d - g.firstBeat) / g.period);
-        votes[(size_t)(((k % beatsPerBar) + beatsPerBar) % beatsPerBar)]++;
+    // Фаза такта: на какой номер доли сетки приходится сильная доля. Голосуют не только найденные даунбиты,
+    // а вероятность даунбита нейросети на каждой доле сетки (максимум в ±40 мс): так учитываются и слабые
+    // даунбиты ниже порога, а одиночные ложные значат меньше. Уверенность — доля голосов победителя.
+    auto softVotes = [&](const Grid &q, double from, double to) {
+      std::vector<double> v((size_t)beatsPerBar, 0.0);
+      const double fps = 50.0;
+      long k = (long)std::ceil((from - q.firstBeat) / q.period);
+      for (double t = q.firstBeat + k * q.period; t < to; t += q.period, ++k) {
+        const long c = std::lround(t * fps);
+        float mx = -1e9f;
+        for (long f = c - 2; f <= c + 2; ++f)
+          if (f >= 0 && f < (long)dl.size()) mx = std::max(mx, dl[(size_t)f]);
+        if (mx < -1e8f) continue;
+        v[(size_t)(((k % beatsPerBar) + beatsPerBar) % beatsPerBar)] += 1.0 / (1.0 + std::exp(-(double)mx));
       }
+      return v;
+    };
+    int firstDownbeatIndex = 0;
+    double downConf = 0;
+    double firstDownbeat = downs.empty() ? (g.ok ? g.firstBeat : 0) : downs[0];
+    if (g.ok) {
+      const auto votes = softVotes(g, 0, duration);
+      double tot = 0;
+      for (double v : votes) tot += v;
       firstDownbeatIndex = (int)(std::max_element(votes.begin(), votes.end()) - votes.begin());
+      downConf = tot > 0 ? votes[(size_t)firstDownbeatIndex] / tot : 0;
+      // Нейросеть колеблется между «1» и «3» (сильная доля на полтакта раньше или позже) — частая ошибка в
+      // поп- и рок-музыке. Тогда решают аккорды: они чаще сменяются на начале такта. Для каждой доли — насколько
+      // отличается гармония такта до неё и такта после; у какой из двух фаз смены сильнее, та и сильная доля.
+      if (beatsPerBar == 4 && downConf < 0.7) {
+        const int alt = (firstDownbeatIndex + 2) % 4;
+        if (votes[(size_t)alt] > 0.5 * votes[(size_t)firstDownbeatIndex]) {
+          std::vector<std::vector<double>> fc;
+          const int hop = 1024;
+          chroma(mono, kModelRate, &fc, hop);
+          const double fps = (double)kModelRate / hop, barLen = 4 * g.period;
+          auto mean = [&](double a, double b, double *o) {
+            for (int i = 0; i < 12; ++i) o[i] = 0;
+            const long fa = std::max(0L, std::lround(a * fps)), fb = std::min((long)fc.size(), std::lround(b * fps));
+            for (long f = fa; f < fb; ++f)
+              for (int i = 0; i < 12; ++i) o[i] += fc[(size_t)f][(size_t)i];
+          };
+          double nov[4] = {0, 0, 0, 0};
+          long k = (long)std::ceil((barLen - g.firstBeat) / g.period);
+          for (double t = g.firstBeat + k * g.period; t + barLen < duration; t += g.period, ++k) {
+            double x[12], y[12];
+            mean(t - barLen, t, x);
+            mean(t, t + barLen, y);
+            double xy = 0, xx = 0, yy = 0;
+            for (int i = 0; i < 12; ++i) { xy += x[i] * y[i]; xx += x[i] * x[i]; yy += y[i] * y[i]; }
+            if (xx <= 0 || yy <= 0) continue;
+            nov[((k % 4) + 4) % 4] += 1.0 - xy / std::sqrt(xx * yy);
+          }
+          if (prof) std::fprintf(stderr, "  downbeat chords: %.2f %.2f %.2f %.2f (votes for %d)\n", nov[0], nov[1], nov[2], nov[3], firstDownbeatIndex);
+          if (nov[alt] > 1.2 * nov[firstDownbeatIndex]) {
+            if (prof) std::fprintf(stderr, "  downbeat: votes %.2f vs %.2f, chords %.2f vs %.2f -> phase %d\n",
+                                   votes[(size_t)firstDownbeatIndex], votes[(size_t)alt], nov[firstDownbeatIndex], nov[alt], alt);
+            firstDownbeatIndex = alt;
+            downConf = tot > 0 ? votes[(size_t)alt] / tot : 0;
+          }
+        }
+      }
       firstDownbeat = g.firstBeat + firstDownbeatIndex * g.period;
     }
     // сильная доля участка: первая доля сетки участка с тем номером, на который чаще попадают даунбиты участка
@@ -1099,15 +1187,10 @@ class Analyzer {
       const Edge &E = edges[e];
       if (!E.ok) continue;
       const Grid &q = E.g;
-      std::vector<int> votes((size_t)beatsPerBar, 0);
-      int n = 0;
-      for (double d : downs) {
-        if (d < E.from || d >= E.to) continue;
-        const long k = std::lround((d - q.firstBeat) / q.period);
-        votes[(size_t)(((k % beatsPerBar) + beatsPerBar) % beatsPerBar)]++;
-        ++n;
-      }
-      if (n < 4) continue;
+      const auto votes = softVotes(q, E.from, E.to);
+      double tot = 0;
+      for (double v : votes) tot += v;
+      if (tot < 1.0) continue;
       const int idx = (int)(std::max_element(votes.begin(), votes.end()) - votes.begin());
       long k0 = (long)std::ceil((E.from - q.firstBeat) / q.period);
       while (((k0 % beatsPerBar) + beatsPerBar) % beatsPerBar != idx) ++k0;
@@ -1258,22 +1341,23 @@ class Analyzer {
     Json j;
     j.open('{');
     j.key("v"); j.integer(2);
-    j.key("algo"); j.integer(3);  // версия алгоритма сетки: старые профили пересчитываются
+    j.key("algo"); j.integer(4);  // версия алгоритма сетки: старые профили пересчитываются
     j.key("level"); j.str("quick");
     j.key("analyzer"); j.str("cave_mix/beat_this");
     j.key("durationMs"); j.integer(std::llround(duration * 1000));
-    j.key("bpm"); if (g.ok) j.num(60.0 / g.period, 2); else j.raw("null");
+    j.key("bpm"); if (g.ok) j.num(60.0 / g.period, 4); else j.raw("null");  // 4 знака: 0,01 BPM — 7 мс за 100 с
     j.key("bpmSource"); j.str("analysis");
     j.key("variableTempo"); j.boolean(g.ok ? g.variable : true);
     j.key("gridResidualMs"); j.num(g.residualMs, 1);
     j.key("tempoDriftPct"); j.num(g.maxLocalDevPct, 2);
     j.key("phaseShiftMs"); j.num(phaseShift * 1000, 1);
+    j.key("downbeatConfidence"); j.num(downConf, 2);
     // ровные участки в начале и конце трека с плавающим темпом (для перехода хватает их)
     for (int e = 0; e < 2; ++e) {
       j.key(e == 0 ? "inGrid" : "outGrid");
       if (edgeDown[e] < 0) { j.raw("null"); continue; }
       j.open('{');
-      j.key("bpm"); j.num(60.0 / edges[e].g.period, 3);
+      j.key("bpm"); j.num(60.0 / edges[e].g.period, 4);
       j.key("downbeatMs"); j.integer(std::llround(edgeDown[e] * 1000));
       j.key("fromMs"); j.integer(std::llround(edges[e].from * 1000));
       j.key("toMs"); j.integer(std::llround(edges[e].to * 1000));

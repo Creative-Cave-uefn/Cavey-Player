@@ -23,6 +23,7 @@ enum MixParam {
   echoTime, // задержка эха, секунды
   echoFeedback, // обратная связь эха 0…0,95
   reverbSend, // посыл в реверберацию 0…1 (до фейдера, хвост звучит и после остановки деки)
+  pitch, // сдвиг высоты в полутонах (−3…+3), темп не меняется
 }
 
 /// Форма кривой автоматизации
@@ -108,6 +109,36 @@ final class _CmState extends Struct {
   external Array<_CmDeckState> deck;
 }
 
+final class _CmSyncInfo extends Struct {
+  @Int32()
+  external int active;
+  @Int32()
+  external int measured;
+  @Int32()
+  external int corrections;
+  @Int32()
+  external int reserved;
+  @Double()
+  external double firstOffsetMs;
+  @Double()
+  external double lastOffsetMs;
+  @Double()
+  external double totalShiftMs;
+  @Double()
+  external double confidence;
+}
+
+/// Итоги подстройки фазы по ударам за последний переход
+class SyncInfo {
+  const SyncInfo(this.active, this.measured, this.corrections, this.firstOffsetMs, this.lastOffsetMs,
+      this.totalShiftMs, this.confidence);
+  final bool active;
+  final int measured, corrections;
+  final double firstOffsetMs, lastOffsetMs, totalShiftMs, confidence;
+}
+
+typedef _SyncInfoN = Void Function(Pointer<Void>, Pointer<_CmSyncInfo>);
+typedef _SyncInfoD = void Function(Pointer<Void>, Pointer<_CmSyncInfo>);
 typedef _CreateN = Pointer<Void> Function(Int32, Int32);
 typedef _CreateD = Pointer<Void> Function(int, int);
 typedef _VoidPN = Void Function(Pointer<Void>);
@@ -175,6 +206,7 @@ class _Lib {
         free = l.lookupFunction<_FreeN, _FreeD>('cm_free'),
         loop = l.lookupFunction<_LoopN, _LoopD>('cm_loop'),
         brakeAt = l.lookupFunction<_BrakeN, _BrakeD>('cm_brake_at'),
+        syncInfo = l.lookupFunction<_SyncInfoN, _SyncInfoD>('cm_get_sync'),
         rankNext = l.lookupFunction<_RankN, _RankN>('cm_rank_next');
 
   final _CreateD create;
@@ -199,6 +231,7 @@ class _Lib {
   final _FreeD free;
   final _LoopD loop;
   final _BrakeD brakeAt;
+  final _SyncInfoD syncInfo;
   final _RankN rankNext;
 }
 
@@ -323,6 +356,19 @@ class MixEngine {
 
   /// Пауза всего движка: часы стоят
   set paused(bool v) => _l.setPaused(_e, v ? 1 : 0);
+
+  /// Итоги подстройки по ударам (автомикс включает её сам на время наложения двух треков)
+  SyncInfo syncInfo() {
+    final p = calloc<_CmSyncInfo>();
+    try {
+      _l.syncInfo(_e, p);
+      final s = p.ref;
+      return SyncInfo(s.active != 0, s.measured, s.corrections, s.firstOffsetMs, s.lastOffsetMs, s.totalShiftMs,
+          s.confidence);
+    } finally {
+      calloc.free(p);
+    }
+  }
 
   MixState state() {
     _l.getState(_e, _state);

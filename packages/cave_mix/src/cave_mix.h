@@ -42,7 +42,8 @@ enum cm_param {
   CM_ECHO_TIME = 9,     // задержка эха, секунды (0,02…2)
   CM_ECHO_FEEDBACK = 10, // обратная связь эха 0…0,95; хвост звучит и после остановки деки
   CM_REVERB_SEND = 11,  // посыл в реверберацию 0…1 (до фейдера, хвост звучит и после остановки деки)
-  CM_PARAM_COUNT = 12
+  CM_PITCH = 12,        // сдвиг высоты в полутонах (−3…+3), темп не меняется (через тайм-стретч)
+  CM_PARAM_COUNT = 13
 };
 
 // Форма кривой автоматизации
@@ -129,6 +130,23 @@ CM_API void cm_loop(cm_engine *e, int32_t deck, double start_sec, double end_sec
 // Торможение пластинки с кадра часов at_clock: скорость и высота падают до нуля за duration_sec, затем дека встаёт.
 CM_API void cm_brake_at(cm_engine *e, int32_t deck, int64_t at_clock, double duration_sec);
 
+// Подстройка фазы по живому звуку: с кадра from_clock до to_clock дека follow подгоняет свои удары бочки к ударам
+// деки ref (beat_sec — доля в секундах выхода). Раз в 4 доли фазы ударов сравниваются; при расхождении больше 3 мс
+// follow чуть ускоряется или замедляется, пока не догонит (до 3 %, на больших ошибках до 6 %). Снимается
+// перемоткой, загрузкой и отменой расписания любой из двух дек.
+CM_API void cm_sync(cm_engine *e, int32_t follow, int32_t ref, int64_t from_clock, int64_t to_clock, double beat_sec);
+typedef struct cm_sync_info {
+  int32_t active;        // подстройка идёт
+  int32_t measured;      // сколько раз удалось сравнить фазы
+  int32_t corrections;   // сколько раз поправляли
+  int32_t reserved;
+  double first_offset_ms;  // первое измеренное расхождение (+ — follow опаздывал)
+  double last_offset_ms;   // последнее
+  double total_shift_ms;   // сколько всего сдвинули
+  double confidence;       // 0…1, насколько чётко удары ложатся в долю (меньшая из двух дек)
+} cm_sync_info;
+CM_API void cm_get_sync(cm_engine *e, cm_sync_info *out);
+
 CM_API void cm_set_master_volume(cm_engine *e, double volume); // 0…1, кубическая кривая как у mpv
 CM_API void cm_set_paused(cm_engine *e, int32_t paused);      // пауза всего движка (часы стоят)
 
@@ -142,11 +160,15 @@ CM_API int32_t cm_render(cm_engine *e, float *out, int32_t frames);
 // Запланировать DJ-переход с играющей деки `from` на загруженную (CM_READY) деку `to`.
 // profile_from / profile_to — профили треков v2 (JSON из cm_analyze_file).
 // options — JSON: {"style":"smooth|balanced|energetic","maxBars":32,"matchTempo":true,"maxTempoPct":8,
-//   "keyAware":true,"allowEcho":true,"allowCut":true,"seed":N,"prev":<номер прошлой техники>,
+//   "keyAware":true,"keyShift":true,"allowEcho":true,"allowCut":true,"seed":N,"prev":<номер прошлой техники>,
 //   "gainA":<амплитуда уходящей>,"gainB":<амплитуда приходящей>,"minLeadSec":1.5,"fadeSec":8,"force":<номер техники>}.
 // Движок сам выбирает точки на границах фраз, подгоняет темп B к A, выбирает технику (T1 бас-свап, T2 фильтр,
 // T3 эхо-аут, T4 склейка, T11 плавный переход) и раскладывает автоматизации, старт B и остановку A по часам.
-// Возвращает JSON плана {"technique","name","bars","aOutSec","bInSec","tempoRatio","startClock","endClock","reason"}
+// Темпы, разные больше maxTempoPct (но не больше двух), сводятся навстречу: A заранее меняет темп на полпути.
+// Тональности спорят, но сходятся сдвигом B на полутон — B сдвигается на время наложения (keyShift).
+// Пока треки звучат вместе, B подстраивается к ударам A по живому звуку (cm_sync).
+// Возвращает JSON плана {"technique","name","bars","aOutSec","bInSec","tempoRatio","startClock","endClock",
+// "pitchShift","reason"}
 // (освободить cm_free) или NULL с текстом в *error_out.
 CM_API char *cm_automix(cm_engine *e, int32_t from, int32_t to, const char *profile_from, const char *profile_to,
                         const char *options, char **error_out);

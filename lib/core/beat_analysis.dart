@@ -239,8 +239,9 @@ class _Worker {
 /// Профили v2: анализ, хранение, чтение
 class BeatAnalysis {
   // версия разбора, которой помечается сохранённый профиль (своя, не из движка): 3 — разметка вокала,
-  // 4 — ровные участки в начале и конце у треков с плавающим темпом
-  static const _algo = 4;
+  // 4 — ровные участки в начале и конце у треков с плавающим темпом, 5 — период по атакам, сильная доля по
+  // вероятности даунбита
+  static const _algo = 5;
 
   BeatAnalysis(this.mixDir, Directory toolsDir) : assets = BeatAssets(Directory('${toolsDir.path}${Platform.pathSeparator}beat'));
 
@@ -256,7 +257,12 @@ class BeatAnalysis {
   File _file(String id) => File('${mixDir.path}${Platform.pathSeparator}beat_$id.json');
 
   /// Профиль v2, если уже посчитан
-  Map<String, dynamic>? profile(String id) {
+  Map<String, dynamic>? profile(String id) => _load(id, keep: true);
+
+  /// Посчитан ли свежий профиль (не держит его в памяти — для проверки многих треков разом)
+  bool isFresh(String id) => _load(id, keep: false) != null;
+
+  Map<String, dynamic>? _load(String id, {required bool keep}) {
     final m = _mem[id];
     if (m != null) return m;
     final f = _file(id);
@@ -267,7 +273,7 @@ class BeatAnalysis {
       // профиль без вокала, хотя модель вокала уже работает, — тоже пересчитать
       final noVocals = p is Map<String, dynamic> && p['vocals'] == null && (_worker?.vocals ?? false);
       if (p is Map<String, dynamic> && p['v'] == 2 && (p['algo'] is int ? p['algo'] as int : 1) >= _algo && !noVocals) {
-        _mem[id] = p;
+        if (keep) _mem[id] = p;
         return p;
       }
     } catch (_) {}

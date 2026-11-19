@@ -217,18 +217,22 @@ static std::string jsonStr(const std::string &j, const char *key) {
   return j.substr(p + k.size(), j.find('"', p + k.size()) - p - k.size());
 }
 
-static std::string g_profA, g_profB;
+static std::string g_profA, g_profB, g_profC;
 static const TrackSpec kA{124.0, 0.40, {57, 53, 48, 55}, true, 0, 7, 48};   // Am F C G, 124 BPM, левый канал
 static const TrackSpec kB{128.0, 0.25, {48, 53, 55, 48}, false, 1, 99, 56}; // C F G C, 128 BPM, правый канал
+static const TrackSpec kC{140.0, 0.30, {48, 53, 55, 48}, false, 1, 31, 52}; // 140 BPM: от A на 13 %
 
 // ------------------------------------------------------------------ тест одной техники
 
 // mode: 0 — замеры времени на дорожках из щелчков, 1 — уровни на настоящих дорожках, 2 — демо
-static void runTechnique(int tech, int mode) {
+// bn — имя входящего трека ("b" — 128 BPM, "c" — 140 BPM: темпы сводятся только навстречу)
+static void runTechnique(int tech, int mode, const char *bn = "b") {
   Rig r;
   const bool demo = mode == 2;
-  const char *sa[] = {"/a_k.wav", "/a.wav", "/a_c.wav"}, *sb[] = {"/b_k.wav", "/b.wav", "/b_c.wav"};
-  const std::string pa = g_dir + sa[mode], pb = g_dir + sb[mode];
+  const TrackSpec &kB = bn[0] == 'c' ? kC : ::kB;
+  const std::string &g_profB = bn[0] == 'c' ? g_profC : ::g_profB;
+  const char *sa[] = {"/a_k.wav", "/a.wav", "/a_c.wav"}, *sb[] = {"_k.wav", ".wav", "_c.wav"};
+  const std::string pa = g_dir + sa[mode], pb = g_dir + "/" + bn + sb[mode];
   cm_load(r.e, 0, pa.c_str(), 70.0);
   CHECK(r.waitReady(0), "A not ready: %s", cm_last_error(r.e));
   cm_play_at(r.e, 0, -1);
@@ -263,6 +267,10 @@ static void runTechnique(int tech, int mode) {
               jsonNum(plan, "bInSec"), ratio, jsonNum(plan, "startClock") / kSr);
 
   const double cT = (double)(c0 + kLim) / kSr;  // c0 на выходе (с задержкой лимитера)
+  if (const char *dw = std::getenv("CM_DUMPWAV"); dw && mode == 0) {
+    writeWav(std::string(dw) + "_" + bn + std::to_string(tech) + ".wav", r.out.data(), r.out.size() / 2, kSr);
+    std::printf("    dump: c0 %.4f s, cEnd %.4f s\n", cT, (double)(cEnd + kLim) / kSr);
+  }
   if (mode == 0) {
     // 1. B начинается точно на c0
     const auto ob = clickOnsets(r.out, 1, (size_t)(c0 - kSr / 2), (size_t)(c0 + 2 * kSr));
@@ -289,9 +297,11 @@ static void runTechnique(int tech, int mode) {
         if (getenv("CM_DEBUG")) { double sg = 1e9; for (double u : obb) if (std::abs(u - t) < std::abs(sg)) sg = u - t; std::printf("      A %.3f  B-A %+.2f ms\n", t - cT, sg * 1000); }
       }
     }
-    // 3. Первая доля B продолжает сетку A (по ударам A до c0)
+    // 3. Первая доля B продолжает сетку A (по ударам A до c0). Со встречной подгонкой A перед переходом меняет
+    // темп — прямой сетки до c0 нет, проверяются доли в наложении
+    const bool meet = plan.find("навстречу") != std::string::npos;
     double gridErr = 0;
-    {
+    if (!meet) {
       std::vector<double> pre;
       for (double t : oa) {
         if (t >= cT - 0.01) continue;
@@ -327,7 +337,7 @@ static void runTechnique(int tech, int mode) {
     std::printf("    timing: B starts %+.2f ms; %d beat pairs, mean %+.2f ms, worst %.2f ms; B on A's grid %.2f ms\n", startErr * 1000,
                 pairs, mean * 1000, worst * 1000, gridErr * 1000);
     CHECK(std::abs(startErr) < 0.010, "B start off");  // абсолютная точность анализа (сетка по нейросети)
-    CHECK(gridErr < 0.005, "B off A's grid %.2f ms", gridErr * 1000);
+    if (!meet) CHECK(gridErr < 0.005, "B off A's grid %.2f ms", gridErr * 1000);
     if (tech == 1 || tech == 2 || tech == 5 || tech == 11) {
       CHECK(pairs >= std::max(4.0, bars * 4.0) * 0.9, "too few overlapping beats (%d)", pairs);
       CHECK(std::abs(mean) < 0.002, "beats offset %+.2f ms", mean * 1000);
@@ -408,6 +418,95 @@ static void testRank() {
   CHECK(r2.find("\"best\":\"other\"") != std::string::npos, "artist repeat not penalised");
 }
 
+// Сдвиг тональности: B в «чужой» тональности (1B против 8B у A) на время наложения поднимается на полутон
+// (по кругу Camelot +7 → 8B), после перехода плавно возвращается. Высота B в наложении сверяется с тем же
+// переходом без сдвига: спектры в логарифмической шкале частот сдвинуты на полутон.
+static void fftInPlace(std::vector<double> &re, std::vector<double> &im) {
+  const size_t n = re.size();
+  for (size_t i = 1, j = 0; i < n; ++i) {
+    size_t bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { std::swap(re[i], re[j]); std::swap(im[i], im[j]); }
+  }
+  for (size_t len = 2; len <= n; len <<= 1) {
+    const double ang = -2 * M_PI / (double)len;
+    for (size_t i = 0; i < n; i += len)
+      for (size_t k = 0; k < len / 2; ++k) {
+        const double wr = std::cos(ang * (double)k), wi = std::sin(ang * (double)k);
+        const size_t a = i + k, b = a + len / 2;
+        const double xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr;
+        re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+      }
+  }
+}
+// спектр правого канала (B) на [from, from + 2^16) в шкале по 1/8 полутона от 60 Гц до 2 кГц
+static std::vector<double> logSpectrum(const std::vector<float> &st, size_t from) {
+  const size_t N = 1 << 16;
+  std::vector<double> re(N), im(N, 0.0);
+  for (size_t i = 0; i < N; ++i) re[i] = st[(from + i) * 2 + 1] * (0.5 - 0.5 * std::cos(2 * M_PI * (double)i / N));
+  fftInPlace(re, im);
+  std::vector<double> out;
+  for (double m = 0; m < 12 * std::log2(2000.0 / 60.0); m += 0.125) {
+    const double f = 60.0 * std::pow(2.0, m / 12.0), bin = f * N / kSr;
+    const size_t k = (size_t)bin;
+    out.push_back(std::log(1e-9 + std::hypot(re[k], im[k]) + std::hypot(re[k + 1], im[k + 1])));
+  }
+  return out;
+}
+
+static void testKeyShift() {
+  auto run = [&](const std::string &profB, std::string &plan, std::vector<double> &spec, cm_state &after) {
+    Rig r;
+    const std::string pa = g_dir + "/a.wav", pb = g_dir + "/b.wav";
+    cm_load(r.e, 0, pa.c_str(), 70.0);
+    CHECK(r.waitReady(0), "A not ready");
+    cm_play_at(r.e, 0, -1);
+    r.render(kSr / 2);
+    cm_load(r.e, 1, pb.c_str(), 0.0);
+    CHECK(r.waitReady(1), "B not ready");
+    char *err = nullptr;
+    // уверенность в тональности у синтетики невысокая — для проверки считаем тональности известными
+    const std::string profA = withField(g_profA, "keyConfidence", "0.9");
+    char *pc = cm_automix(r.e, 0, 1, profA.c_str(), withField(profB, "keyConfidence", "0.9").c_str(),
+                          "{\"force\":11,\"fadeSec\":16,\"seed\":5}", &err);
+    CHECK(pc, "automix: %s", err ? err : "?");
+    if (!pc) return;
+    plan = pc;
+    cm_free(pc);
+    const int64_t c0 = (int64_t)jsonNum(plan, "startClock"), cEnd = (int64_t)jsonNum(plan, "endClock");
+    const int64_t until = cEnd + (int64_t)(34 * 4 * 60.0 / kA.bpm * kSr);
+    while (r.state().clock < until) r.render(kSr / 4);
+    spec = logSpectrum(r.out, (size_t)(c0 + kSr * 2));
+    after = r.state();
+  };
+  std::string p0, p1;
+  std::vector<double> s0, s1;
+  cm_state a0{}, a1{};
+  run(g_profB, p0, s0, a0);
+  run(withField(g_profB, "key", "\"1B\""), p1, s1, a1);
+  const int pitch = (int)jsonNum(p1, "pitchShift");
+  std::printf("    plan: %s; pitch %+d\n", jsonStr(p1, "reason").c_str(), pitch);
+  CHECK(pitch == 1, "B not shifted up a semitone");
+  CHECK((int)jsonNum(p0, "pitchShift") == 0, "shifted without a key clash");
+  // сдвиг спектров: максимум взаимной корреляции по сдвигам ±2 полутона
+  double best = -1e18; int bestK = 0;
+  for (int k = -16; k <= 16; ++k) {
+    double c = 0, n = 0;
+    double m0 = 0, m1 = 0;
+    for (double v : s0) m0 += v;
+    for (double v : s1) m1 += v;
+    m0 /= (double)s0.size(); m1 /= (double)s1.size();
+    for (size_t i = 16; i + 16 < s0.size(); ++i) { c += (s0[i] - m0) * (s1[(size_t)((long)i + k)] - m1); n += 1; }
+    if (c / n > best) { best = c / n; bestK = k; }
+  }
+  std::printf("    B's spectrum during the overlap is shifted by %+.3f semitones; after: stretching %d, underruns %lld\n",
+              bestK / 8.0, a1.deck[1].stretching, (long long)a1.underruns);
+  CHECK(std::abs(bestK / 8.0 - 1.0) <= 0.125, "B's pitch not shifted by a semitone");
+  CHECK(a1.deck[1].stretching == 0, "B still shifted after 32 bars");
+  CHECK(a1.underruns == 0, "underruns");
+}
+
 // Вокал: голоса A (до 55-го такта) и B (с самого начала) не должны накладываться в сведении
 static std::string vocalsJson(int n, std::initializer_list<std::pair<int, int>> on) {
   std::string v = "[";
@@ -476,15 +575,19 @@ int main(int argc, char **argv) {
     const char *sfx = v == 0 ? "" : (v == 1 ? "_c" : "_k");
     writeWavF(g_dir + "/a" + sfx + ".wav", makeTrack(a, 44100), 44100);
     writeWavF(g_dir + "/b" + sfx + ".wav", makeTrack(b, 44100), 44100);
+    TrackSpec c = kC;
+    if (v == 1) c.pan = 2;
+    if (v == 2) c.clicks = true;
+    writeWavF(g_dir + "/c" + sfx + ".wav", makeTrack(c, 44100), 44100);
   }
   char *err = nullptr;
   cm_analyzer *an = cm_analyzer_create(argv[1], argv[2], argv[3], 0, &err);
   if (!an) { std::printf("analyzer: %s\n", err ? err : "?"); return 1; }
-  for (int k = 0; k < 2; ++k) {
-    char *js = cm_analyze_file(an, (g_dir + (k ? "/b_c.wav" : "/a_c.wav")).c_str(), "", &err);
+  for (int k = 0; k < 3; ++k) {
+    char *js = cm_analyze_file(an, (g_dir + (k == 2 ? "/c_c.wav" : k ? "/b_c.wav" : "/a_c.wav")).c_str(), "", &err);
     if (!js) { std::printf("analyze: %s\n", err ? err : "?"); return 1; }
-    (k ? g_profB : g_profA) = js;
-    std::printf("profile %c: %.2f BPM, %d/4, key %s, first downbeat %.0f ms, mixOut %s\n", k ? 'B' : 'A', jsonNum(js, "bpm"),
+    (k == 2 ? g_profC : k ? g_profB : g_profA) = js;
+    std::printf("profile %c: %.2f BPM, %d/4, key %s, first downbeat %.0f ms, mixOut %s\n", k == 2 ? 'C' : k ? 'B' : 'A', jsonNum(js, "bpm"),
                 (int)jsonNum(js, "beatsPerBar"), jsonStr(js, "key").c_str(), jsonNum(js, "firstDownbeatMs"),
                 std::string(js).substr(std::string(js).find("\"mixOut\"")).c_str());
     cm_free(js);
@@ -494,13 +597,31 @@ int main(int argc, char **argv) {
   struct T { int tech; const char *name; } techs[] = {
       {1, "T1 bass swap"}, {2, "T2 filter sweep"}, {3, "T3 echo out"}, {4, "T4 cut"},
       {5, "T5 loop out"}, {7, "T7 brake"}, {8, "T8 reverb out"}, {11, "T11 smooth fade"}};
+  const char *only = argc > 5 ? argv[5] : nullptr;  // только тесты с этой подстрокой
   for (auto &t : techs) {
+    if (only && !std::strstr(t.name, only)) continue;
     const int before = g_failed;
     std::printf("• %s\n", t.name);
     runTechnique(t.tech, 0);
     if (g_failed == before) runTechnique(t.tech, 1);
     std::printf("  %s\n", g_failed == before ? "ok" : "FAILED");
   }
+  for (int tech : {1, 11}) {
+    const char *nm = tech == 1 ? "T1 bass swap, tempos meet halfway (124 / 140 BPM)" : "T11 smooth fade, tempos meet halfway";
+    if (only && !std::strstr(nm, only)) continue;
+    const int before = g_failed;
+    std::printf("• %s\n", nm);
+    runTechnique(tech, 0, "c");
+    if (g_failed == before) runTechnique(tech, 1, "c");
+    std::printf("  %s\n", g_failed == before ? "ok" : "FAILED");
+  }
+  if (!only || std::strstr("key shift", only)) {
+    const int before = g_failed;
+    std::printf("• key shift a semitone when keys clash\n");
+    testKeyShift();
+    std::printf("  %s\n", g_failed == before ? "ok" : "FAILED");
+  }
+  if (only) { std::printf(g_failed ? "\n%d test(s) failed\n" : "\nall tests passed\n", g_failed); return g_failed ? 1 : 0; }
   {
     const int before = g_failed;
     std::printf("• next-track ranking\n");

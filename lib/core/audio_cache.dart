@@ -43,6 +43,9 @@ class AudioCache extends ChangeNotifier {
   /// Файл трека в кэше: «<id>.mp3», «<id>.flac» и т.д. — как обычный аудиофайл, а не безымянный «.audio»
   File fileFor(String id) => File('${dir.path}${Platform.pathSeparator}$id.${_ext[id] ?? 'audio'}');
   bool has(String id) => _have.contains(id);
+
+  /// Все треки, что уже лежат в кэше
+  Iterable<String> get cachedIds => _have;
   bool isDownloading(String id) => _active.contains(id) || _queue.contains(id);
   int get pending => _queue.length + _active.length;
 

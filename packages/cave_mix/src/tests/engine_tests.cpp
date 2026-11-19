@@ -228,7 +228,12 @@ static void testLimiter() {
 
 // Тайм-стретч: темп 1.0 → 1.05 → 1.0. Клики выходят там, где их ждёт модель позиции,
 // а после возврата к 1.0 звук снова бит-в-бит.
+static void tempoRampCase(int curve, double top);
 static void testTempoRamp() {
+  tempoRampCase(CM_LINEAR, 1.05);
+  tempoRampCase(CM_SMOOTH, 1.07);  // как встречная подгонка в автомиксе
+}
+static void tempoRampCase(int curve, double top) {
   const int sr = 48000;
   auto src = clicks(sr * 30, sr, 0.25, 120.0, 2);
   // под клики подмешиваем тихий шум — чтобы проверить точное совпадение после возврата к 1.0
@@ -242,16 +247,17 @@ static void testTempoRamp() {
   cm_play_at(r.e, 0, S);
   // 2 с на 1.0, 2 с разгон до 1.05, 4 с держим, 2 с назад к 1.0, дальше 1.0
   const int64_t a = S + 2 * sr, b = a + 2 * sr, c = b + 4 * sr, d = c + 2 * sr;
-  cm_ramp(r.e, 0, CM_TEMPO, a, b, 1.0, 1.05, CM_LINEAR);
-  cm_ramp(r.e, 0, CM_TEMPO, c, d, 1.05, 1.0, CM_LINEAR);
+  cm_ramp(r.e, 0, CM_TEMPO, a, b, 1.0, top, curve);
+  cm_ramp(r.e, 0, CM_TEMPO, c, d, top, 1.0, curve);
   r.render(sr * 16);
 
   // модель позиции: интеграл темпа
+  auto shape = [&](double x) { return curve == CM_SMOOTH ? x * x * (3 - 2 * x) : x; };
   auto tempoAt = [&](int64_t t) {
     if (t < a) return 1.0;
-    if (t < b) return 1.0 + 0.05 * double(t - a) / double(b - a);
-    if (t < c) return 1.05;
-    if (t < d) return 1.05 - 0.05 * double(t - c) / double(d - c);
+    if (t < b) return 1.0 + (top - 1) * shape(double(t - a) / double(b - a));
+    if (t < c) return top;
+    if (t < d) return top - (top - 1) * shape(double(t - c) / double(d - c));
     return 1.0;
   };
   // выходной кадр, на котором звучит позиция трека p (секунды)
@@ -270,12 +276,15 @@ static void testTempoRamp() {
     const double expect = outTimeOf(t);
     if (expect > (double)(r.out.size() / 2) / sr - 0.1) break;
     double best = 1e9;
-    for (double g : got) best = std::min(best, std::abs(g - expect));
+    double sg = 1e9;
+    for (double g : got) { best = std::min(best, std::abs(g - expect)); if (std::abs(g - expect) < std::abs(sg)) sg = g - expect; }
+    if (std::getenv("CM_DEBUG")) std::printf("      %.2f s: %+.2f ms\n", t, sg * 1000);
     worst = std::max(worst, best);
     ++matched;
   }
   std::printf("    %d clicks checked, worst timing error %.2f ms\n", matched, worst * 1000);
-  CHECK(worst < 0.005, "clicks drift %.2f ms", worst * 1000);
+  // тайм-стретчу темп задаётся с упреждением на его задержку — слышимая позиция идёт ровно по автоматизации
+  CHECK(worst < 0.0015, "clicks drift %.2f ms", worst * 1000);
 
   // после возврата к 1.0 (через 1 с после d) звук совпадает с исходником
   cm_state s = r.state();
@@ -320,13 +329,17 @@ static void testBeatmatch() {
   auto oa = onsets(r.out, 0, sr), ob = onsets(r.out, 1, sr);
   double worst = 0;
   int n = 0;
+  double sum = 0;
   for (double t : oa) {
     if (t < (SA / (double)sr) + 1.0) continue;
-    double best = 1e9;
-    for (double u : ob) best = std::min(best, std::abs(u - t));
+    double best = 1e9, sg = 1e9;
+    for (double u : ob) { best = std::min(best, std::abs(u - t)); if (std::abs(u - t) < std::abs(sg)) sg = u - t; }
+    if (std::getenv("CM_DEBUG") && n < 6) std::printf("      %.2f s: %+.2f ms\n", t, sg * 1000);
     worst = std::max(worst, best);
+    sum += sg;
     ++n;
   }
+  std::printf("    mean B–A %+.2f ms\n", n ? sum / n * 1000 : 0.0);
   std::printf("    %d beats compared, worst A–B offset %.2f ms, underruns=%lld\n", n, worst * 1000,
               (long long)r.state().underruns);
   CHECK(n > 30, "too few beats");
@@ -659,6 +672,86 @@ static void testScrubNoClicks() {
   }
 }
 
+// Бочка (свип 150→50 Гц, 120 мс) на каждую долю в одном канале; hats — тихие хэты на слабых восьмых
+static std::vector<float> kicks(int frames, int rate, double firstSec, double bpm, int channel, bool kick, bool hats) {
+  std::vector<float> v((size_t)frames * 2, 0.0f);
+  const double period = 60.0 / bpm;
+  unsigned seed = 7;
+  for (double t = firstSec; (t + 0.2) * rate < frames; t += period) {
+    const long s = std::lround(t * rate);
+    if (kick) {
+      double ph = 0;
+      for (int i = 0; i < rate * 120 / 1000; ++i) {
+        const double tt = (double)i / rate, f = 50 + 100 * std::exp(-tt * 40);
+        ph += 2 * M_PI * f / rate;
+        v[(size_t)(s + i) * 2 + channel] += (float)(0.8 * std::sin(ph) * std::exp(-tt * 25));
+      }
+    }
+    if (hats) {
+      const long h = std::lround((t + period / 2) * rate);
+      for (int i = 0; i < rate * 30 / 1000; ++i) {
+        seed = seed * 1103515245u + 12345u;
+        const float nz = ((seed >> 9) & 0xffff) / 32768.0f - 1.0f;
+        v[(size_t)(h + i) * 2 + channel] += (float)(0.1 * nz * std::exp(-i * 150.0 / rate));
+      }
+    }
+  }
+  return v;
+}
+
+// Подстройка фазы по ударам: B стартует с ошибкой offsetMs (как при неточной сетке) — к концу окна
+// подстройки удары B ложатся на удары A
+static void syncCase(double bpmB, double offsetMs, bool kickB, double expectMaxMs) {
+  const int sr = 48000;
+  const double bpmA = 120.0, ratio = bpmA / bpmB;
+  writeWav(path("ka.wav"), kicks(sr * 45, sr, 0.5, bpmA, 0, true, true), sr);
+  writeWav(path("kb.wav"), kicks(sr * 45, sr, 0.3, bpmB, 1, kickB, true), sr);
+  Rig r;
+  cm_load(r.e, 0, path("ka.wav").c_str(), 0.0);
+  cm_load(r.e, 1, path("kb.wav").c_str(), 0.0);
+  if (!(r.waitReady(0) && r.waitReady(1))) { CHECK(false, "decks not ready"); return; }
+  if (ratio != 1.0) cm_set(r.e, 1, CM_TEMPO, ratio);
+  r.render(256);
+  const int64_t SA = r.clock() + 100;
+  const int64_t SB = SA + std::llround((0.5 - 0.3 / ratio + offsetMs / 1000.0) * sr);
+  cm_play_at(r.e, 0, SA);
+  cm_play_at(r.e, 1, SB);
+  cm_sync(r.e, 1, 0, SB, SB + (int64_t)sr * 30, 60.0 / bpmA);
+  r.render(sr * 34);
+  cm_sync_info si;
+  cm_get_sync(r.e, &si);
+  auto oa = onsets(r.out, 0, sr), ob = onsets(r.out, 1, sr);
+  auto offsetAt = [&](double from, double to) {
+    double sum = 0; int n = 0;
+    for (double t : oa) {
+      if (t < from || t > to) continue;
+      double best = 1e9;
+      for (double u : ob) if (std::abs(u - t) < std::abs(best)) best = u - t;
+      if (std::abs(best) < 0.1) { sum += best; ++n; }
+    }
+    return n ? sum / n * 1000 : 1e9;
+  };
+  const double t0 = SB / (double)sr;
+  const double first = offsetAt(t0 + 0.3, t0 + 2), last = offsetAt(t0 + 24, t0 + 30);
+  std::printf("    B %.0f BPM, start error %+.0f ms: measured %d×, corrected %d×, first %+.1f ms → end %+.1f ms "
+              "(engine saw %+.1f → %+.1f, confidence %.2f)\n",
+              bpmB, offsetMs, si.measured, si.corrections, first, last, si.first_offset_ms, si.last_offset_ms,
+              si.confidence);
+  if (kickB) {
+    CHECK(std::abs(last) < expectMaxMs, "beats still %.1f ms apart", last);
+  } else {
+    CHECK(si.corrections == 0, "corrected without kicks in B");
+
+  }
+}
+
+static void testSync() {
+  syncCase(120.0, 25.0, true, 3.5);    // тот же темп (без тайм-стретча, подстройка «как пластинка»)
+  syncCase(120.0, -60.0, true, 3.5);   // большая ошибка
+  syncCase(125.0, -18.0, true, 5.0);   // под тайм-стретчем (удары после него сами «гуляют» на ±3 мс)
+  syncCase(120.0, 25.0, false, 0);     // у B нет бочки — не трогаем
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) g_dir = argv[1];
   struct T { const char *name; void (*fn)(); } tests[] = {
@@ -677,8 +770,11 @@ int main(int argc, char **argv) {
       {"loop under time-stretch", testLoopStretched},
       {"vinyl brake", testBrake},
       {"reverb tail after deck stops", testReverb},
+      {"live beat-phase sync", testSync},
   };
+  const char *only = argc > 2 ? argv[2] : nullptr;  // только тесты с этой подстрокой в названии
   for (auto &t : tests) {
+    if (only && !std::strstr(t.name, only)) continue;
     const int before = g_failed;
     std::printf("• %s\n", t.name);
     const auto t0 = std::chrono::steady_clock::now();

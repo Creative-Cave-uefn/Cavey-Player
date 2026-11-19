@@ -5,6 +5,9 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 
 namespace cm {
 
@@ -368,6 +371,189 @@ class TapeStop {
   bool active_ = false, done_ = false;
   double len_ = 1, t_ = 0, rp_ = 0;
   size_t w_ = 0;
+};
+
+// Удары бочки в звуке деки: полоса 40…160 Гц, огибающая энергии (сглаживание 5 мс — длиннее полупериода баса,
+// иначе огибающая «дрожит» с частотой самого баса), «атака» — подъём огибающей за 10 мс больше чем на 4 дБ;
+// на атаку — одна точка (самый резкий подъём серии), следующая — не раньше чем через 60 мс.
+class KickOnsets {
+ public:
+  void setup(int sr) {
+    hop_ = std::max(16, sr / 1000);
+    a_ = 1.0 - std::exp(-1.0 / (0.005 * sr));
+    lp_.lowpass(sr, 160, std::sqrt(0.5));
+    hp_.highpass(sr, 40, std::sqrt(0.5));
+    reset();
+  }
+  void reset() {
+    lp_.reset(); hp_.reset();
+    env_ = 0; cnt_ = 0;
+    for (double &h : hist_) h = -10;
+    hi_ = 0;
+    best_ = 0;
+    quietUntil_ = INT64_MIN;
+  }
+  // x — моно, кадры [clock, clock+n); onset(кадр, сила) — на каждую атаку
+  template <class F> void feed(const float *x, int n, int64_t clock, F &&onset) {
+    for (int i = 0; i < n; ++i) {
+      const double y = hp_.tick(0, lp_.tick(0, x[i]));
+      env_ += a_ * (y * y - env_);
+      if (++cnt_ < hop_) continue;
+      cnt_ = 0;
+      const double e = std::log10(env_ + 1e-10);
+      const double prev = hist_[(hi_ + kH - 10) % kH];  // 10 окон (мс) назад
+      hist_[hi_] = e;
+      hi_ = (hi_ + 1) % kH;
+      const double rise = e - prev;  // в десятках дБ
+      const int64_t t = clock + i - hop_ * 5;  // середина окна подъёма
+      if (rise > 0.4 && e > -5 && t >= quietUntil_) {
+        if (rise > best_) { best_ = rise; bestAt_ = t; }
+      } else if (best_ > 0) {
+        onset(bestAt_, best_);
+        quietUntil_ = bestAt_ + hop_ * 60;
+        best_ = 0;
+      }
+    }
+  }
+
+ private:
+  static constexpr int kH = 16;
+  Biquad lp_, hp_;
+  int hop_ = 48, cnt_ = 0, hi_ = 0;
+  double a_ = 0.004, env_ = 0, best_ = 0;
+  int64_t bestAt_ = 0, quietUntil_ = 0;
+  double hist_[kH];
+};
+
+// Подстройка фазы ведомой деки к ведущей по ударам. Атаки обеих дек раскладываются по положению внутри доли
+// (гистограмма по 1 мс, период — доля в кадрах выхода); раз в 8 долей (первый раз — через 4) гистограммы
+// сравниваются круговой взаимной корреляцией: её максимум — на сколько удары ведомой отстают. Если у обеих
+// удары собраны в одном месте доли и расхождение больше 3–4 мс — ведомой деке заказывается сдвиг: она чуть
+// ускоряется или замедляется, пока его не выберет; затем окно копится заново.
+class BeatSync {
+ public:
+  struct Shift { double frames = 0; double rate = 0; };  // сдвиг ведомой (кадры выхода, + — раньше) и скорость
+
+  void setup(int sr) {
+    sr_ = sr;
+    ref_.setup(sr); fol_.setup(sr);
+    msF_ = sr / 1000.0;
+    const size_t cap = (size_t)(3.2 * 1000) + 8;  // доля до 3 с
+    hR_.assign(cap, 0.0); hF_.assign(cap, 0.0); sR_.assign(cap, 0.0); sF_.assign(cap, 0.0);
+  }
+  void start(int64_t from, int64_t to, double beatFrames) {
+    from_ = from; to_ = to; beat_ = beatFrames;
+    nb_ = (int)std::min<double>((double)hR_.size(), std::ceil(beatFrames / msF_));
+    active_ = beatFrames > 0 && to > from && nb_ >= 100;
+    ref_.reset(); fol_.reset();
+    clearAcc();
+    nextDecision_ = from + (int64_t)(4 * beatFrames);
+    busyUntil_ = -1;
+    corrections = measured = 0;
+    firstMs = lastMs = shiftMs = conf = 0;
+  }
+  void stop() { active_ = false; }
+  bool active() const { return active_; }
+  bool covers(int64_t clock, int n) const { return active_ && clock + n > from_ && clock < to_; }
+
+  // Куски звука обеих дек (моно, до EQ и громкости) за кадры [clock, clock+n). Возвращает заказанный сдвиг.
+  Shift feed(const float *ref, const float *fol, int n, int64_t clock) {
+    Shift out;
+    if (!active_) return out;
+    if (clock >= to_) { active_ = false; return out; }
+    const bool settle = clock < busyUntil_;
+    ref_.feed(ref, n, clock, [&](int64_t t, double w) { if (!settle) add(hR_, nR_, t, w); });
+    fol_.feed(fol, n, clock, [&](int64_t t, double w) { if (!settle) add(hF_, nF_, t, w); });
+    if (clock + n < nextDecision_) return out;
+    nextDecision_ = clock + n + (int64_t)(8 * beat_);
+    smooth(hR_, sR_);
+    smooth(hF_, sF_);
+    const double cR = focus(sR_), cF = focus(sF_);
+    const bool ok = nR_ >= 3 && nF_ >= 3 && cR > 0.35 && cF > 0.35;
+    double ms = 0;
+    if (ok) {
+      // круговая взаимная корреляция, сдвиги в пределах ±полдоли
+      int best = 0;
+      double bestV = -1, vm = 0, vp = 0;
+      std::vector<double> &cc = hR_;  // гистограмма уже сглажена — её место свободно под корреляцию
+      for (int lag = -nb_ / 2; lag < nb_ / 2; ++lag) {
+        double v = 0;
+        for (int i = 0; i < nb_; ++i) v += sR_[(size_t)i] * sF_[(size_t)(((i + lag) % nb_ + nb_) % nb_)];
+        cc[(size_t)(lag + nb_ / 2)] = v;
+        if (v > bestV) { bestV = v; best = lag; }
+      }
+      const int bi = best + nb_ / 2;
+      if (bi > 0 && bi + 1 < nb_) { vm = cc[(size_t)bi - 1]; vp = cc[(size_t)bi + 1]; }
+      double frac = 0;
+      const double den = vm - 2 * bestV + vp;
+      if (den < 0) frac = std::clamp(0.5 * (vm - vp) / den, -0.5, 0.5);
+      ms = best + frac;  // бины — по 1 мс; + — ведомая опаздывает
+      if (measured == 0) firstMs = ms;
+      lastMs = ms;
+      conf = std::min(cR, cF);
+      ++measured;
+      if (std::abs(ms) > (measured == 1 ? 3.0 : 4.0)) {
+        // не быстрее 3 % (на больших ошибках — до 6 %); уточнения — не целиком, без раскачки
+        const double rate = std::abs(ms) > 30 ? 0.06 : 0.03;
+        const double dFrames = ms * msF_;
+        out.frames = measured == 1 ? dFrames : 0.8 * dFrames;
+        out.rate = rate;
+        ++corrections;
+        shiftMs += out.frames / msF_;
+        const double dur = std::abs(out.frames) / rate;
+        busyUntil_ = clock + n + (int64_t)(dur + beat_);  // пока сдвиг идёт и ещё доля — не копим
+        nextDecision_ = busyUntil_ + (int64_t)(8 * beat_);
+      }
+    }
+    clearAcc();
+    return out;
+  }
+
+  // итоги (для журнала)
+  int corrections = 0, measured = 0;
+  double firstMs = 0, lastMs = 0, shiftMs = 0, conf = 0;
+
+ private:
+  void clearAcc() {
+    std::fill(hR_.begin(), hR_.end(), 0.0);
+    std::fill(hF_.begin(), hF_.end(), 0.0);
+    nR_ = nF_ = 0;
+  }
+  void add(std::vector<double> &h, int &cnt, int64_t t, double weight) {
+    double ph = std::fmod((double)(t - from_), beat_);
+    if (ph < 0) ph += beat_;
+    const int b = std::min(nb_ - 1, (int)(ph / msF_));
+    h[(size_t)b] += weight * weight;  // резкие атаки (бочка) весомее
+    ++cnt;
+  }
+  // круговое сглаживание гауссом σ = 2 мс
+  void smooth(const std::vector<double> &h, std::vector<double> &o) const {
+    static const double k[7] = {0.105, 0.198, 0.288, 0.326, 0.288, 0.198, 0.105};
+    for (int i = 0; i < nb_; ++i) {
+      double v = 0;
+      for (int j = -3; j <= 3; ++j) v += k[j + 3] * h[(size_t)(((i + j * 2 / 2) % nb_ + nb_) % nb_)];
+      o[(size_t)i] = v;
+    }
+  }
+  // доля веса в ±10 мс от пика (насколько удары собраны в одном месте доли)
+  double focus(const std::vector<double> &o) const {
+    int pk = 0;
+    double tot = 0;
+    for (int i = 0; i < nb_; ++i) { tot += o[(size_t)i]; if (o[(size_t)i] > o[(size_t)pk]) pk = i; }
+    if (tot <= 0) return 0;
+    double near = 0;
+    for (int j = -10; j <= 10; ++j) near += o[(size_t)(((pk + j) % nb_ + nb_) % nb_)];
+    return near / tot;
+  }
+
+  int sr_ = 48000;
+  KickOnsets ref_, fol_;
+  bool active_ = false;
+  int64_t from_ = 0, to_ = 0, nextDecision_ = 0, busyUntil_ = -1;
+  double beat_ = 0, msF_ = 48;
+  int nb_ = 0;
+  std::vector<double> hR_, hF_, sR_, sF_;
+  int nR_ = 0, nF_ = 0;
 };
 
 }  // namespace cm

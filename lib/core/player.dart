@@ -682,6 +682,10 @@ class PlayerController extends ChangeNotifier {
         if (cache.has(id)) m.prepare(id);
       }
     }
+    // про запас: следующие в очереди, затем всё, что уже скачано, — чтобы к переходу трек был разобран
+    if (useMixEngine && index >= 0) {
+      m.prepareIdle([...queue.skip(index + 1).take(30), ...cache.cachedIds]);
+    }
   }
 
   /// Пока идёт переход, не null; по нему рисуется конец полосы осветления
@@ -1252,6 +1256,14 @@ class PlayerController extends ChangeNotifier {
   /// Конец перехода: прежняя дека выгружается, громкость — снова обычная
   void _djFinish(_DjMix dj) {
     dj.timer?.cancel();
+    // как сошлись удары: насколько расходились по сетке анализа и сколько поправил движок по живому звуку
+    final si = SharedMix.engine?.syncInfo();
+    if (si != null && si.measured > 0) {
+      String ms(double v) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)} мс';
+      AppLog.info('DJ-переход: подстройка по ударам — сравнений ${si.measured}, поправок ${si.corrections}, '
+          'расхождение ${ms(si.firstOffsetMs)} → ${ms(si.lastOffsetMs)}, сдвинуто ${ms(si.totalShiftMs)}, '
+          'чёткость ${si.confidence.toStringAsFixed(2)}');
+    }
     _dj = null;
     _fading = false;
     final old = _outgoing;
