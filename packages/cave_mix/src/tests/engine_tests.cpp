@@ -609,6 +609,62 @@ static void testBrake() {
   CHECK(r.state().deck[0].status != CM_PLAYING, "deck still playing after brake");
 }
 
+// Спинбэк: тон 1 кГц рвётся назад — звук идёт, без щелчков (скачок между соседними сэмплами в пределах скорости
+// тона), потом тишина и дека стоит
+static void testBackspin() {
+  const int sr = 48000;
+  writeWav(path("tone1k.wav"), sine(sr * 4, sr, 1000.0, 0.5f), sr);
+  Rig r;
+  cm_load(r.e, 0, path("tone1k.wav").c_str(), 0.0);
+  CHECK(r.waitReady(0), "deck not ready");
+  const int64_t S = r.clock() + 100;
+  cm_play_at(r.e, 0, S);
+  const int64_t B = S + (int64_t)(sr * 1.5);
+  cm_backspin_at(r.e, 0, B, 1.0);
+  r.render(sr * 4);
+  double jump = 0, during = 0, after = 0;
+  for (size_t i = (size_t)(B + kLim - sr / 10); i < (size_t)(B + kLim + sr); ++i)
+    jump = std::max(jump, (double)std::abs(r.out[i * 2] - r.out[(i - 1) * 2]));
+  for (size_t i = (size_t)(B + kLim + sr / 10); i < (size_t)(B + kLim + sr / 2); ++i) during = std::max(during, (double)std::abs(r.out[i * 2]));
+  for (size_t i = (size_t)(B + kLim + sr * 1.02); i < (size_t)(B + kLim + sr * 1.5); ++i) after = std::max(after, (double)std::abs(r.out[i * 2]));
+  std::printf("    backspin: peak during %.2f, largest step %.3f, after %.1e\n", during, jump, after);
+  CHECK(during > 0.2, "silent during backspin");
+  CHECK(jump < 0.25, "click in backspin (step %.3f)", jump);  // тон 1 кГц ×2,5 даёт шаг до ~0,17
+  CHECK(after < 1e-4, "sound after backspin");
+  CHECK(r.state().deck[0].status != CM_PLAYING, "deck still playing after backspin");
+}
+
+// Луп-ролл: щелчки на каждой доле (0,5 с); ролл на 4 доли с доли — щелчков больше, чем долей (повторы всё
+// чаще), каждый повтор — на сетке ролла; потом тишина и дека стоит
+static void testRoll() {
+  const int sr = 48000;
+  writeWav(path("clk_roll.wav"), clicks(sr * 6, sr, 0.25, 120.0, 0), sr);
+  Rig r;
+  cm_load(r.e, 0, path("clk_roll.wav").c_str(), 0.0);
+  CHECK(r.waitReady(0), "deck not ready");
+  const int64_t S = r.clock() + 100;
+  cm_play_at(r.e, 0, S);
+  const int64_t B = S + (int64_t)(sr * 2.25);  // на доле
+  cm_roll_at(r.e, 0, B, 0.5, 4.0);
+  r.render(sr * 6);
+  const auto on = onsets(r.out, 0, sr);
+  const double b0 = (double)(B + kLim) / sr;
+  int hits = 0, offGrid = 0;
+  for (double t : on) {
+    if (t < b0 - 0.005 || t > b0 + 2.0 - 0.005) continue;
+    ++hits;
+    const double k = (t - b0) / 0.0625;  // восьмая доли
+    if (std::abs(k - std::round(k)) * 62.5 > 2.0) ++offGrid;
+  }
+  double after = 0;
+  for (size_t i = (size_t)(B + kLim + sr * 2.02); i < (size_t)(B + kLim + sr * 2.5); ++i) after = std::max(after, (double)std::abs(r.out[i * 2]));
+  std::printf("    roll over 4 beats: %d hits, %d off the grid, after %.1e\n", hits, offGrid, after);
+  CHECK(hits >= 8, "roll not repeating (%d hits)", hits);
+  CHECK(offGrid == 0, "roll hits off the grid");
+  CHECK(after < 1e-4, "sound after roll");
+  CHECK(r.state().deck[0].status != CM_PLAYING, "deck still playing after roll");
+}
+
 // Реверберация: хвост звучит после остановки деки и затухает
 static void testReverb() {
   const int sr = 48000;
@@ -771,6 +827,8 @@ int main(int argc, char **argv) {
       {"vinyl brake", testBrake},
       {"reverb tail after deck stops", testReverb},
       {"live beat-phase sync", testSync},
+      {"backspin", testBackspin},
+      {"loop roll", testRoll},
   };
   const char *only = argc > 2 ? argv[2] : nullptr;  // только тесты с этой подстрокой в названии
   for (auto &t : tests) {

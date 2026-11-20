@@ -338,6 +338,15 @@ static void runTechnique(int tech, int mode, const char *bn = "b") {
                 pairs, mean * 1000, worst * 1000, gridErr * 1000);
     CHECK(std::abs(startErr) < 0.010, "B start off");  // абсолютная точность анализа (сетка по нейросети)
     if (!meet) CHECK(gridErr < 0.005, "B off A's grid %.2f ms", gridErr * 1000);
+    if (tech == 9) {
+      // ролл: в последнем такте A удары повторяются всё чаще (доля, полдоли, четверть, восьмая) — их заметно
+      // больше, чем долей
+      const double rollLen = jsonNum(plan, "rollBeats") * beatA;
+      int hits = 0;
+      for (double t : oa) if (t > cT - rollLen - 0.005 && t < cT - 0.005) ++hits;
+      std::printf("    roll: %d hits of A over %.0f beats\n", hits, jsonNum(plan, "rollBeats"));
+      CHECK(hits >= (int)(jsonNum(plan, "rollBeats") * 2), "roll not repeating (%d hits)", hits);
+    }
     if (tech == 1 || tech == 2 || tech == 5 || tech == 11) {
       CHECK(pairs >= std::max(4.0, bars * 4.0) * 0.9, "too few overlapping beats (%d)", pairs);
       CHECK(std::abs(mean) < 0.002, "beats offset %+.2f ms", mean * 1000);
@@ -359,13 +368,17 @@ static void runTechnique(int tech, int mode, const char *bn = "b") {
   std::printf("    levels: %+.1f…%+.1f dB; peak %.3f\n", minRel, maxRel, peak);
   std::printf("    after: A status %d, B tempo %.4f, stretching %d, underruns %lld\n", s.deck[0].status, s.deck[1].tempo,
               s.deck[1].stretching, (long long)s.underruns);
-  const bool cutType = tech == 3 || tech == 7 || tech == 8;
+  const bool cutType = tech == 3 || tech == 6 || tech == 7 || tech == 8 || tech == 9;
   if (!cutType) CHECK(minRel > -6.0, "level dips %.1f dB", minRel);
-  if (tech == 7) {
+  if (tech == 6 || tech == 7 || tech == 9) {
     // после торможения уходящий (левый канал) молчит
     double l = 0;
     for (int64_t i = c0 + kLim + kSr / 20; i < c0 + kSr; ++i) l = std::max(l, (double)std::abs(r.out[(size_t)i * 2]));
-    std::printf("    after brake: A peak %.1e\n", l);
+    // и до точки A звучал (торможение, спинбэк, ролл — не тишина)
+    double pre = 0;
+    for (int64_t i = c0 + kLim - kSr / 2; i < c0 + kLim - kSr / 10; ++i) pre = std::max(pre, (double)std::abs(r.out[(size_t)i * 2]));
+    std::printf("    A peak before %.1e, after %.1e\n", pre, l);
+    CHECK(pre > 0.02, "A silent during the trick");
     if (getenv("CM_DEBUG3")) for (int64_t w = c0 - kSr; w < c0 + kSr / 2; w += kSr / 20) { double m = 0; for (int64_t i = w; i < w + kSr / 20; ++i) m = std::max(m, (double)std::abs(r.out[(size_t)(i + kLim) * 2])); std::printf("      %+.2f s: %.1e\n", (double)(w - c0) / kSr, m); }
     CHECK(l < 1e-2, "A not silent after brake");  // −40 дБ: дальше — лишь просачивание B из стерео-тайм-стретча
   }
@@ -596,7 +609,8 @@ int main(int argc, char **argv) {
 
   struct T { int tech; const char *name; } techs[] = {
       {1, "T1 bass swap"}, {2, "T2 filter sweep"}, {3, "T3 echo out"}, {4, "T4 cut"},
-      {5, "T5 loop out"}, {7, "T7 brake"}, {8, "T8 reverb out"}, {11, "T11 smooth fade"}};
+      {5, "T5 loop out"}, {6, "T6 backspin"}, {7, "T7 brake"}, {8, "T8 reverb out"}, {9, "T9 loop roll"},
+      {11, "T11 smooth fade"}};
   const char *only = argc > 5 ? argv[5] : nullptr;  // только тесты с этой подстрокой
   for (auto &t : techs) {
     if (only && !std::strstr(t.name, only)) continue;

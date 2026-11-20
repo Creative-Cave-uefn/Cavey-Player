@@ -59,7 +59,7 @@ struct Block {
 
 enum CmdType : int32_t {
   C_SET, C_RAMP, C_CLEAR_AUTO, C_PLAY_AT, C_PAUSE, C_STOP_AT, C_SEEK, C_LOAD, C_UNLOAD, C_MASTER_VOL, C_PAUSED,
-  C_CANCEL_SCHEDULE, C_LOOP, C_BRAKE, C_SYNC
+  C_CANCEL_SCHEDULE, C_LOOP, C_BRAKE, C_SYNC, C_SPIN, C_ROLL
 };
 
 struct Cmd {
@@ -427,6 +427,10 @@ class Deck {
     lane_[CM_ECHO_FEEDBACK].base = 0.5;
     for (int p = 0; p < CM_PARAM_COUNT; ++p) sm_[p].jump(lane_[p].base);
     tape_.setup(sr_);
+    spin_.setup(sr_);
+    roll_.setup(sr_);
+    hist_.assign((size_t)kHist * 2, 0.0f);
+    histW_ = histN_ = 0;
     tap_.assign(4096, 0.0f);
     source.start(sr_);
   }
@@ -446,6 +450,7 @@ class Deck {
     loopOff();
     tape_.stop();
     brakeClock_ = -1;
+    stopTricks();
   }
 
   void cmdLoad(uint32_t gen, int32_t loadId, double startSec) {
@@ -514,6 +519,7 @@ class Deck {
     stopClock_ = -1;
     brakeClock_ = -1;
     tape_.stop();
+    stopTricks();
     loopOff();
   }
 
@@ -535,6 +541,20 @@ class Deck {
     }
     loopHave_ = std::max<int64_t>(0, std::min(b, ringEnd_) - a);
     loopArmed_ = true;
+  }
+
+  void cmdSpin(int64_t clock, double durSec) {
+    spinClock_ = clock < 0 ? 0 : clock;
+    spinDur_ = std::clamp(durSec, 0.2, 3.0);
+  }
+  void cmdRoll(int64_t clock, double beatSec, double beats) {
+    rollClock_ = clock < 0 ? 0 : clock;
+    rollBeat_ = std::clamp(beatSec, 0.2, 2.0) * sr_;
+    rollBeats_ = std::clamp(beats, 1.0, 8.0);
+  }
+  void stopTricks() {
+    spin_.stop(); roll_.stop();
+    spinClock_ = rollClock_ = -1;
   }
 
   void cmdBrake(int64_t clock, double durSec) {
@@ -582,9 +602,23 @@ class Deck {
       const int len = std::min(kSub, n - done);
       const int64_t c = clock + done;
       // торможение начинается точно на своём кадре: кусок до него и после — отдельно
+      // (и спинбэк, и луп-ролл)
       int len2 = len;
-      if (brakeClock_ >= 0 && brakeClock_ > c && brakeClock_ < c + len) len2 = (int)(brakeClock_ - c);
+      for (int64_t k : {brakeClock_, spinClock_, rollClock_})
+        if (k >= 0 && k > c && k < c + len2) len2 = (int)(k - c);
       if (brakeClock_ >= 0 && c >= brakeClock_) { tape_.start(brakeDur_); brakeClock_ = -1; }
+      if (spinClock_ >= 0 && c >= spinClock_) {
+        // недавний звук — по порядку, старые кадры раньше
+        const size_t n = histN_;
+        for (size_t i = 0; i < n; ++i) {
+          const size_t k = (histW_ + kHist - n + i) % kHist;
+          histLin_[i * 2] = hist_[k * 2];
+          histLin_[i * 2 + 1] = hist_[k * 2 + 1];
+        }
+        spin_.start(histLin_.data(), n, spinDur_);
+        spinClock_ = -1;
+      }
+      if (rollClock_ >= 0 && c >= rollClock_) { roll_.start(rollBeat_, rollBeats_); rollClock_ = -1; }
       renderSub(mix + (size_t)done * 2, send + (size_t)done * 2, rsend + (size_t)done * 2, len2, c, underruns);
       done += len2;
       if (!playing_) break;
@@ -947,7 +981,17 @@ class Deck {
       // и звук после перемотки начинается щелчком (на быстрых перемотках — «скретч»)
       rearmFadeIn = true;
     }
+    // недавний звук — для спинбэка
+    if (!spin_.active())
+      for (int i = 0; i < n; ++i) {
+        hist_[histW_ * 2] = bufL[i];
+        hist_[histW_ * 2 + 1] = bufR[i];
+        histW_ = (histW_ + 1) % kHist;
+        if (histN_ < kHist) ++histN_;
+      }
     if (tape_.active()) tape_.process(bufL, bufR, n);
+    else if (spin_.active()) spin_.process(bufL, bufR, n);
+    else if (roll_.active()) roll_.process(bufL, bufR, n);
     // плавный вход — на сам звук деки (до фильтров и посылов, чтобы и эхо не щёлкало). Пока звука нет, вход
     // не расходуется: он нужен в момент, когда звук пойдёт
     if (rearmFadeIn) fadeIn_ = kDeclick;
@@ -1002,8 +1046,9 @@ class Deck {
     peak_ = peak;
 
     // торможение кончилось — дека встаёт (звук уже затих, без микрозатухания)
-    if (tape_.done()) {
+    if (tape_.done() || spin_.done() || roll_.done()) {
       tape_.stop();
+      stopTricks();
       playing_ = false;
       if (mode_ != M_DIRECT) { ph_ = std::round(ph_); mode_ = M_DIRECT; }
       return;
@@ -1077,6 +1122,14 @@ class Deck {
   std::vector<float> inL_, inR_, outL_, outR_;
   TapeStop tape_;
   int64_t brakeClock_ = -1;
+  // спинбэк и луп-ролл: когда начать и с чем
+  static constexpr size_t kHist = 1 << 17;  // ~2,7 с недавнего звука
+  Backspin spin_;
+  BeatRoll roll_;
+  std::vector<float> hist_, histLin_ = std::vector<float>(kHist * 2, 0.0f);
+  size_t histW_ = 0, histN_ = 0;
+  int64_t spinClock_ = -1, rollClock_ = -1;
+  double spinDur_ = 1, rollBeat_ = 24000, rollBeats_ = 4;
   double brakeDur_ = 1.0;
   std::vector<float> tap_;
   int64_t tapBase_ = 0;
@@ -1260,6 +1313,8 @@ class Engine {
       case C_UNLOAD: d.cmdUnload(c.gen); break;
       case C_LOOP: d.cmdLoop(c.x, c.y); break;
       case C_BRAKE: d.cmdBrake(c.a, c.x); break;
+      case C_SPIN: d.cmdSpin(c.a, c.x); break;
+      case C_ROLL: d.cmdRoll(c.a, c.x, c.y); break;
       default: break;
     }
   }
@@ -1488,6 +1543,20 @@ CM_API void cm_brake_at(cm_engine *e, int32_t deck, int64_t at_clock, double dur
   if (!e || !validDeck(deck)) return;
   cm::Cmd c{cm::C_BRAKE};
   c.deck = deck; c.a = at_clock; c.x = duration_sec;
+  e->engine.push(c);
+}
+
+CM_API void cm_backspin_at(cm_engine *e, int32_t deck, int64_t at_clock, double duration_sec) {
+  if (!e || !validDeck(deck)) return;
+  cm::Cmd c{cm::C_SPIN};
+  c.deck = deck; c.a = at_clock; c.x = duration_sec;
+  e->engine.push(c);
+}
+
+CM_API void cm_roll_at(cm_engine *e, int32_t deck, int64_t at_clock, double beat_sec, double beats) {
+  if (!e || !validDeck(deck)) return;
+  cm::Cmd c{cm::C_ROLL};
+  c.deck = deck; c.a = at_clock; c.x = beat_sec; c.y = beats;
   e->engine.push(c);
 }
 

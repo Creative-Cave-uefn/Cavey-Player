@@ -129,6 +129,12 @@ CM_API void cm_cancel_schedule(cm_engine *e, int32_t deck);
 CM_API void cm_loop(cm_engine *e, int32_t deck, double start_sec, double end_sec);
 // Торможение пластинки с кадра часов at_clock: скорость и высота падают до нуля за duration_sec, затем дека встаёт.
 CM_API void cm_brake_at(cm_engine *e, int32_t deck, int64_t at_clock, double duration_sec);
+// Спинбэк: с кадра at_clock дека «рвётся назад рукой» — недавний звук задом наперёд, всё медленнее, за duration_sec
+// (0,2…3 с) до остановки; затем дека встаёт.
+CM_API void cm_backspin_at(cm_engine *e, int32_t deck, int64_t at_clock, double duration_sec);
+// Луп-ролл: с кадра at_clock звук деки повторяется всё короче (половину — по доле beat_sec, четверть — по полдоли,
+// восьмую — по четверти, восьмую — по восьмой) в течение beats долей (1…8); затем дека встаёт.
+CM_API void cm_roll_at(cm_engine *e, int32_t deck, int64_t at_clock, double beat_sec, double beats);
 
 // Подстройка фазы по живому звуку: с кадра from_clock до to_clock дека follow подгоняет свои удары бочки к ударам
 // деки ref (beat_sec — доля в секундах выхода). Раз в 4 доли фазы ударов сравниваются; при расхождении больше 3 мс

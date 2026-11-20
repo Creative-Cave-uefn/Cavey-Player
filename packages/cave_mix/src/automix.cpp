@@ -289,7 +289,7 @@ static Profile edgeView(const Profile &p, bool outgoing) {
 
 // ================================================================ планирование
 
-enum Tech { T1 = 1, T2 = 2, T3 = 3, T4 = 4, T5 = 5, T7 = 7, T8 = 8, T11 = 11 };
+enum Tech { T1 = 1, T2 = 2, T3 = 3, T4 = 4, T5 = 5, T6 = 6, T7 = 7, T8 = 8, T9 = 9, T11 = 11 };
 
 static const char *techName(int t) {
   switch (t) {
@@ -298,7 +298,9 @@ static const char *techName(int t) {
     case T3: return "Эхо-аут";
     case T4: return "Склейка";
     case T5: return "Петля";
+    case T6: return "Спинбэк";
     case T7: return "Торможение";
+    case T9: return "Луп-ролл";
     case T8: return "Реверб-аут";
     default: return "Плавный переход";
   }
@@ -369,7 +371,8 @@ struct Plan {
   double ratio = 1;           // темп B на время перехода
   int64_t c0 = 0, cEnd = 0;   // часы движка: начало и конец
   double loopA = 0, loopB = 0;  // T5: участок A, который крутится петлёй (секунды трека)
-  double brakeSec = 0;          // T7: длина торможения
+  double brakeSec = 0;          // T7: длина торможения, T6: длина спинбэка
+  double rollBeats = 0;         // T9: длина луп-ролла в долях
   int pitch = 0;                // сдвиг B в полутонах на время перехода (затем плавно к родной тональности)
   std::string reason;
 };
@@ -430,14 +433,17 @@ class Automix {
     else if (!canMatch)
       // темпы не свести: обрывы с хвостом (эхо, реверберация), торможение или короткий плавный
       cand = {{T3, o.allowEcho ? 0.45 : 0}, {T8, o.allowEcho ? 0.35 : 0}, {T11, 0.3},
-              {T7, o.allowCut && o.style > 0 ? 0.25 : 0}, {T4, o.allowCut && o.style == 2 ? 0.2 : 0}};
+              {T7, o.allowCut && o.style > 0 ? 0.25 : 0}, {T4, o.allowCut && o.style == 2 ? 0.2 : 0},
+              {T6, o.allowCut && o.style > 0 ? 0.25 : 0}, {T9, o.style > 0 ? 0.25 : 0.1}};
     else if (key >= 0)
       cand = {{T1, o.style == 2 ? 0.45 : 0.6}, {T2, 0.25}, {T5, 0.08}, {T4, o.allowCut && o.style > 0 ? 0.15 : 0},
               {T3, o.allowEcho && o.style == 2 ? 0.15 : 0}, {T7, o.allowCut && o.style == 2 ? 0.1 : 0},
-              {T8, o.allowEcho ? (o.style == 0 ? 0.1 : 0.05) : 0}};
+              {T8, o.allowEcho ? (o.style == 0 ? 0.1 : 0.05) : 0},
+              {T9, o.style == 2 ? 0.25 : o.style == 1 ? 0.15 : 0.04}, {T6, o.allowCut && o.style > 0 ? 0.12 : 0}};
     else
       cand = {{T2, 0.5}, {T1, 0.3}, {T3, o.allowEcho ? 0.2 : 0}, {T8, o.allowEcho ? 0.15 : 0},
-              {T7, o.allowCut && o.style > 0 ? 0.1 : 0}};
+              {T7, o.allowCut && o.style > 0 ? 0.1 : 0}, {T9, o.style > 0 ? 0.15 : 0.04},
+              {T6, o.allowCut && o.style > 0 ? 0.1 : 0}};
     if (!o.force) {
       // энергичная концовка и энергичный вход — повод для склейки
       const double eA = a.avgEnergy(a.nBars - 16, 16), eB = b.avgEnergy(0, 32);
@@ -468,7 +474,8 @@ class Automix {
       Plan p;
       p.tech = t;
       // плавный переход тоже подгоняет темп, если может: иначе в наложении доли разъезжаются («галоп»)
-      p.matched = canMatch && a.grid && b.grid && (t == T1 || t == T2 || t == T4 || t == T5 || t == T7 || t == T11);
+      p.matched = canMatch && a.grid && b.grid &&
+                  (t == T1 || t == T2 || t == T4 || t == T5 || t == T6 || t == T7 || t == T9 || t == T11);
       p.ratio = p.matched ? ratio : 1.0;
       // встречная подгонка темпа: A меняет темп заранее (только когда B подгоняется — иначе A не трогаем)
       rampOn_ = split_ && p.matched;
@@ -579,7 +586,8 @@ class Automix {
     for (int bar = a.firstDownbeatBar; bar < a.nBars; bar += 8) outs.push_back({bar, 0.1});
     // точки входа B: лучшая из анализа, остальные из анализа, начало; для склейки и торможения — дроп
     std::vector<int> ins;
-    if (p.tech == T4 || p.tech == T7) {  // склейка и торможение — лучше сразу на дроп или энергичную часть
+    // склейка, торможение, спинбэк и ролл — лучше сразу на дроп или энергичную часть
+    if (p.tech == T4 || p.tech == T6 || p.tech == T7 || p.tech == T9) {
       for (auto &s : b.sections)
         if ((s.type == "drop" || s.type == "section") && s.bar > 0 && s.bar <= 48 && b.avgEnergy(s.bar, 4) >= 6) { ins.push_back(s.bar); break; }
     }
@@ -603,7 +611,11 @@ class Automix {
         const double t = a.barStart(bar);
         // торможение занимает две доли перед сильной долей, на которой входит B
         const double brake = std::clamp(2 * a.barLen / a.bpb / tempoX_, 0.6, 1.6);
-        if (t - (p.tech == T7 ? brake * tempoX_ : 0) < lead || t + L * a.barLen > end) continue;
+        // спинбэк — две доли (но не короче 0,6 с и не длиннее 1,4 с); ролл — такт (в энергичном стиле — два)
+        const double spin = std::clamp(2 * a.barLen / a.bpb / tempoX_, 0.6, 1.4);
+        const double rollBeats = o.style == 2 ? 2.0 * a.bpb : (double)a.bpb;
+        const double pre = p.tech == T7 ? brake : p.tech == T6 ? spin : p.tech == T9 ? rollBeats * a.barLen / a.bpb / tempoX_ : 0;
+        if (t - pre * tempoX_ < lead || t + L * a.barLen > end) continue;
         // у трека с плавающим темпом сетка верна только на ровном участке: сведение — внутри него
         if (t < a.gridFrom || b.barStart(inBar + std::max(L, 1)) > b.gridTo) continue;
         if ((p.tech == T3 || p.tech == T8) && t > end) continue;
@@ -613,13 +625,14 @@ class Automix {
         if ((p.tech == T3 || p.tech == T8) && clash(a, bar - 1, b, inBar, 1) > 0.3) { ++vocalAvoided_; continue; }
         p.inBar = inBar;
         p.bIn = std::max(0.0, b.barStart(inBar));
-        p.brakeSec = p.tech == T7 ? brake : 0;
+        p.brakeSec = p.tech == T7 ? brake : p.tech == T6 ? spin : 0;
+        p.rollBeats = p.tech == T9 ? rollBeats : 0;
         p.outBar = bar;
         p.aOut = t;
         p.bars = L;
         p.c0 = clockAtA(t);
         const double barOut = a.barLen / tempoX_;
-        const double len = p.tech == T3 ? 2 * barOut : p.tech == T8 ? 4 * barOut : (p.tech == T4 || p.tech == T7) ? 0.05 : L * barOut;
+        const double len = p.tech == T3 ? 2 * barOut : p.tech == T8 ? 4 * barOut : (p.tech == T4 || p.tech == T6 || p.tech == T7 || p.tech == T9) ? 0.05 : L * barOut;
         p.cEnd = p.c0 + (int64_t)std::llround(len * sr_);
         return true;
        }
@@ -746,6 +759,21 @@ class Automix {
         cm_set(e_, B_, CM_GAIN, gB);
         break;
       }
+      case T6: {
+        // спинбэк: на последние две доли A рвётся назад рукой и останавливается, B входит точно на сильную долю
+        cm_backspin_at(e_, A_, at(p, -p.brakeSec), p.brakeSec);
+        cm_set(e_, B_, CM_GAIN, gB);
+        break;
+      }
+      case T9: {
+        // луп-ролл: последний такт (или два) A повторяется всё короче — доля, полдоли, четверть, восьмая — и уходит
+        // вверх фильтром; на сильной доле ролл обрывается, B входит
+        const double len = p.rollBeats * beat;
+        cm_roll_at(e_, A_, at(p, -len), beat, p.rollBeats);
+        ramp(A_, CM_FILTER, p, -len, 0, 0, 0.55, CM_SMOOTH);
+        cm_set(e_, B_, CM_GAIN, gB);
+        break;
+      }
       case T8: {
         // реверб-аут: последний такт A уходит в реверберацию (и чуть в фильтр высоких), сухой A обрывается на сильной
         // доле, хвост реверберации тянется поверх входа B; B поднимается за один такт
@@ -773,7 +801,7 @@ class Automix {
     const bool sync = p.matched && overlap && p.cEnd > p.c0;
     cm_sync(e_, B_, A_, p.c0, sync ? p.cEnd : p.c0, std::clamp(beat, 0.2, 2.0));
     // A: после обрыва (эхо-аут, склейка) — сразу, иначе — в конце перехода
-    const bool cut = p.tech == T3 || p.tech == T4 || p.tech == T7 || p.tech == T8;
+    const bool cut = p.tech == T3 || p.tech == T4 || p.tech == T6 || p.tech == T7 || p.tech == T8 || p.tech == T9;
     cm_stop_at(e_, A_, (cut ? p.c0 : p.cEnd) + (int64_t)(0.03 * sr_));
     // после перехода темп B плавно возвращается к родному (за 8 тактов)
     if (std::abs(p.ratio - 1.0) > 1e-6) {
@@ -833,9 +861,9 @@ CM_API char *cm_automix(cm_engine *e, int32_t from, int32_t to, const char *prof
   std::snprintf(buf, sizeof(buf),
                 "{\"technique\":\"T%d\",\"name\":\"%s\",\"bars\":%d,\"outBar\":%d,\"inBar\":%d,\"aOutSec\":%.3f,\"bInSec\":%.3f,"
                 "\"tempoRatio\":%.5f,\"startClock\":%lld,\"endClock\":%lld,\"loopSec\":[%.3f,%.3f],\"brakeSec\":%.3f,"
-                "\"pitchShift\":%d,\"reason\":\"%s\"}",
+                "\"pitchShift\":%d,\"rollBeats\":%.0f,\"reason\":\"%s\"}",
                 p.tech, techName(p.tech), p.bars, p.outBar, p.inBar, p.aOut, p.bIn, p.ratio, (long long)p.c0,
-                (long long)p.cEnd, p.loopA, p.loopB, p.brakeSec, p.pitch, reason.c_str());
+                (long long)p.cEnd, p.loopA, p.loopB, p.brakeSec, p.pitch, p.rollBeats, reason.c_str());
   return dupStr(buf);
 }
 

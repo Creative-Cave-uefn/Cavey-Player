@@ -373,6 +373,103 @@ class TapeStop {
   size_t w_ = 0;
 };
 
+// Спинбэк: диджей рукой рвёт пластинку назад. Скорость за 60 мс уходит с +1 до −2,5 (рывок), затем назад всё
+// медленнее до остановки; звук — то, что только что играло, задом наперёд (высота растёт и падает со скоростью).
+// Громкость гаснет в последних 40 %.
+class Backspin {
+ public:
+  void setup(double fs) { fs_ = fs; buf_.assign((size_t)(fs * 3.5) * 2, 0.0f); active_ = done_ = false; }
+  // hist — недавний звук деки (старые кадры раньше), frames — сколько его
+  void start(const float *hist, size_t frames, double durSec) {
+    const size_t cap = buf_.size() / 2;
+    n_ = std::min(frames, cap);
+    std::copy(hist + (frames - n_) * 2, hist + frames * 2, buf_.begin());
+    rp_ = (double)n_ - 1;
+    len_ = std::max(0.2, durSec) * fs_;
+    t_ = 0;
+    active_ = true; done_ = false;
+  }
+  void stop() { active_ = done_ = false; }
+  bool active() const { return active_; }
+  bool done() const { return done_; }
+  void process(float *L, float *R, int n) {
+    if (!active_) return;
+    const double grab = 0.06 * fs_;
+    for (int i = 0; i < n; ++i) {
+      if (done_) { L[i] = R[i] = 0; continue; }
+      const double x = t_ / len_;
+      if (x >= 1 || rp_ < 2) { done_ = true; L[i] = R[i] = 0; continue; }
+      double speed;
+      if (t_ < grab) {
+        const double y = t_ / grab;
+        speed = 1.0 - 3.5 * y * y * (3 - 2 * y);
+      } else {
+        const double y = (t_ - grab) / std::max(1.0, len_ - grab);
+        speed = -2.5 * std::pow(1 - y, 1.6);
+      }
+      const double amp = x < 0.6 ? 1.0 : std::cos((x - 0.6) / 0.4 * 1.5707963267948966);
+      const size_t i1 = (size_t)rp_;
+      const double fr = rp_ - (double)i1;
+      for (int ch = 0; ch < 2; ++ch) {
+        auto at = [&](size_t k) { return k < n_ ? (double)buf_[k * 2 + ch] : 0.0; };
+        const double y0 = at(i1 > 0 ? i1 - 1 : 0), y1 = at(i1), y2 = at(i1 + 1), y3 = at(i1 + 2);
+        const double v = y1 + 0.5 * fr * (y2 - y0 + fr * (2 * y0 - 5 * y1 + 4 * y2 - y3 + fr * (3 * (y1 - y2) + y3 - y0)));
+        (ch ? R : L)[i] = (float)(v * amp);
+      }
+      rp_ = std::min(rp_ + speed, (double)n_ - 2);
+      t_ += 1;
+    }
+  }
+
+ private:
+  double fs_ = 48000;
+  std::vector<float> buf_;
+  size_t n_ = 0;
+  bool active_ = false, done_ = false;
+  double len_ = 1, t_ = 0, rp_ = 0;
+};
+
+// Луп-ролл: с момента старта звук деки повторяется кусками, которые укорачиваются вдвое: половину ролла — по доле,
+// четверть — по полдоли, восьмую — по четверти, последнюю восьмую — по восьмой. Каждый повтор начинается на сетке
+// (с того же места, где начался ролл); края повторов сглажены (1,3 мс), чтобы не щёлкали.
+class BeatRoll {
+ public:
+  void setup(double fs) { fs_ = fs; buf_.assign((size_t)(fs * 4) * 2, 0.0f); active_ = done_ = false; }
+  void start(double beatFrames, double beats) {
+    beat_ = std::max(1000.0, beatFrames);
+    total_ = std::max(1.0, beats) * beat_;
+    t_ = 0; w_ = 0;
+    active_ = true; done_ = false;
+  }
+  void stop() { active_ = done_ = false; }
+  bool active() const { return active_; }
+  bool done() const { return done_; }
+  void process(float *L, float *R, int n) {
+    if (!active_) return;
+    const size_t cap = buf_.size() / 2;
+    const double edge = 0.0013 * fs_;
+    for (int i = 0; i < n; ++i) {
+      if (w_ < cap) { buf_[w_ * 2] = L[i]; buf_[w_ * 2 + 1] = R[i]; ++w_; }
+      if (done_) { L[i] = R[i] = 0; continue; }
+      if (t_ >= total_) { done_ = true; L[i] = R[i] = 0; continue; }
+      const double x = t_ / total_;
+      const double slice = x < 0.5 ? beat_ : x < 0.75 ? beat_ / 2 : x < 0.875 ? beat_ / 4 : beat_ / 8;
+      const double r = std::fmod(t_, slice);
+      const size_t k = std::min((size_t)r, w_ ? w_ - 1 : 0);
+      const double g = std::min({1.0, (r + 1) / edge, (slice - r) / edge});
+      L[i] = (float)(buf_[k * 2] * g);
+      R[i] = (float)(buf_[k * 2 + 1] * g);
+      t_ += 1;
+    }
+  }
+
+ private:
+  double fs_ = 48000, beat_ = 24000, total_ = 0, t_ = 0;
+  std::vector<float> buf_;
+  size_t w_ = 0;
+  bool active_ = false, done_ = false;
+};
+
 // Удары бочки в звуке деки: полоса 40…160 Гц, огибающая энергии (сглаживание 5 мс — длиннее полупериода баса,
 // иначе огибающая «дрожит» с частотой самого баса), «атака» — подъём огибающей за 10 мс больше чем на 4 дБ;
 // на атаку — одна точка (самый резкий подъём серии), следующая — не раньше чем через 60 мс.
