@@ -197,33 +197,47 @@ class MixAnalyzer {
     unawaited(_pump());
   }
 
+  /// Когда трек встал в очередь: ждём, пока он докачается, не дольше 2 минут — но не задерживая остальных
+  final Map<String, DateTime> _queuedAt = {};
+
   Future<void> _pump() async {
     if (_running) return;
     _running = true;
     try {
       for (;;) {
-        if (_queue.isNotEmpty) {
-          final id = _queue.first;
-          final src = cache.fileFor(id);
-          // Звука ещё нет — ждём, пока кэш его докачает (плеер качает следующий трек заранее)
-          var waited = 0;
-          while (!(cache.has(id) && src.existsSync()) && waited < 120) {
-            await Future<void>.delayed(const Duration(seconds: 2));
-            waited += 2;
+        // Срочные — по порядку, но только те, что уже лежат на компьютере: трек, который ещё качается (например,
+        // играет с Диска), не держит очередь — к нему вернёмся, когда докачается
+        String? ready;
+        final now = DateTime.now();
+        for (final id in _queue.toList()) {
+          final at = _queuedAt.putIfAbsent(id, () => now);
+          if (cache.has(id) && cache.fileFor(id).existsSync()) {
+            ready = id;
+            break;
           }
-          _queue.remove(id);
-          if (!(cache.has(id) && src.existsSync())) continue;
-          await _analyze(id, src);
+          if (now.difference(at) > const Duration(minutes: 2)) {
+            _queue.remove(id);
+            _queuedAt.remove(id);
+          }
+        }
+        if (ready != null) {
+          _queue.remove(ready);
+          _queuedAt.remove(ready);
+          await _analyze(ready, cache.fileFor(ready));
           continue;
         }
-        // основная очередь пуста — про запас, по одному треку, пока не появится срочное
-        if (_idle.isEmpty) break;
-        final id = _idle.first;
-        _idle.remove(id);
-        final src = cache.fileFor(id);
-        if (!cache.has(id) || !src.existsSync() || !(_needsBeat(id) || profile(id) == null)) continue;
-        await _analyze(id, src);
-        await Future<void>.delayed(const Duration(seconds: 1));
+        // срочных готовых нет — про запас по одному, иначе ждём, пока срочные докачаются
+        if (_idle.isNotEmpty) {
+          final id = _idle.first;
+          _idle.remove(id);
+          final src = cache.fileFor(id);
+          if (!cache.has(id) || !src.existsSync() || !(_needsBeat(id) || profile(id) == null)) continue;
+          await _analyze(id, src);
+          await Future<void>.delayed(const Duration(seconds: 1));
+          continue;
+        }
+        if (_queue.isEmpty) break;
+        await Future<void>.delayed(const Duration(seconds: 2));
       }
     } finally {
       _running = false;
