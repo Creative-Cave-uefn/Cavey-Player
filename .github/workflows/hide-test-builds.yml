@@ -1,0 +1,37 @@
+# Разовая уборка: в списке тестовых сборок плеера остаются только сборки ветки dj-engine.
+# Остальные тестовые выпуски (test-*) в cave-player-releases переводятся в черновики — плеер их не видит,
+# но они не удалены. Вернуть: gh release edit <метка> --repo Creative-Cave-uefn/cave-player-releases --draft=false
+# (список скрытых — в итогах запуска). Запускается только при изменении этого файла.
+name: Скрыть тестовые сборки, кроме dj-engine
+
+on:
+  push:
+    branches: [dj-engine]
+    paths: ['.github/workflows/hide-test-builds.yml']
+
+jobs:
+  hide:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Перевести чужие тестовые сборки в черновики
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          REPO: Creative-Cave-uefn/cave-player-releases
+          KEEP: test-dj-engine-v
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::error::Секрет RELEASES_TOKEN не задан"; exit 1; fi
+          tags=$(gh api "repos/$REPO/releases?per_page=100" --paginate \
+            --jq '.[] | select(.draft == false and (.tag_name | startswith("test-"))) | .tag_name')
+          echo "## Тестовые сборки" >> "$GITHUB_STEP_SUMMARY"
+          hidden=0
+          for t in $tags; do
+            case "$t" in
+              "$KEEP"*) echo "- оставлена: \`$t\`" >> "$GITHUB_STEP_SUMMARY" ;;
+              *)
+                gh release edit "$t" --repo "$REPO" --draft=true >/dev/null
+                echo "- скрыта (черновик): \`$t\`" >> "$GITHUB_STEP_SUMMARY"
+                echo "скрыта: $t"
+                hidden=$((hidden + 1)) ;;
+            esac
+          done
+          echo "Скрыто: $hidden"
