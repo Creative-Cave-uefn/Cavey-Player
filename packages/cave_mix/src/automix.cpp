@@ -429,8 +429,8 @@ class Automix {
     // кандидаты техник с весами (ТЗ, раздел 6.2) и стилем
     std::vector<std::pair<int, double>> cand;
     if (o.force) cand.push_back({o.force, 1});
-    else if (!a.grid || b.bpm <= 0) cand = {{T11, 1}};
-    else if (!b.grid || !canMatch)
+    else if (a.bpm <= 0 || b.bpm <= 0) cand = {{T11, 1}};  // хоть у одного нет ритма — только плавный
+    else if (!a.grid || !b.grid || !canMatch)
       // темпы не свести (или у B темп плавает): приёмы, которым подгонка не нужна, — обрывы с хвостом (эхо,
       // реверберация), торможение, спинбэк, ролл; плавный — реже: при разных темпах это две ритмики вразнобой
       cand = {{T3, o.allowEcho ? 0.45 : 0}, {T8, o.allowEcho ? 0.35 : 0}, {T11, 0.12},
@@ -487,7 +487,8 @@ class Automix {
       if ((t == T1 || t == T2 || t == T4 || t == T5) && !canMatch && !o.force) continue;
       // приёмы-обрывы: B вступает после A, ему сетка нужна только для сильной доли входа (есть и у плавающего)
       const bool cutTech = t == T3 || t == T6 || t == T7 || t == T8 || t == T9;
-      if (t != T11 && (!a.grid || (!b.grid && !(cutTech && b.bpm > 0)))) continue;
+      // у трека с плавающим темпом сетка примерная — для обрыва этого хватает (эхо и ролл по примерной доле)
+      if (t != T11 && !(a.grid && b.grid) && !(cutTech && a.bpm > 0 && b.bpm > 0)) continue;
       if (!fit(a, b, o, p)) continue;
       char why[768];
       char meet[160] = "";

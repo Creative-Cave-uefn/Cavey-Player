@@ -813,7 +813,7 @@ class PlayerController extends ChangeNotifier {
     // чуть раньше плана — порядок: какой из следующих треков лучше всего ляжет после этого
     if (useMixEngine && duration - d < const Duration(seconds: _djLeadSec + 30) && _orderedFor != current?.id) _djReorder();
     // после перемотки — пауза: при быстрых перемотках подряд не строим план на каждое место
-    final calm = _djSeekAt == null || DateTime.now().difference(_djSeekAt!) > const Duration(milliseconds: 1200);
+    final calm = _djSeekAt == null || DateTime.now().difference(_djSeekAt!) > const Duration(milliseconds: 500);
     if (calm && duration - d < const Duration(seconds: _djLeadSec) && _djTriedFor != current?.id) {
       final why = _djWhyNot();
       if (why == null) {
@@ -1022,6 +1022,11 @@ class PlayerController extends ChangeNotifier {
   int _djPrevTech = 0;
   final math.Random _djRandom = math.Random();
 
+  /// Задуманный переход для пары треков: после перемотки он перестраивается тем же приёмом и с тем же случаем,
+  /// а не выбирается заново (иначе каждая перемотка меняла приём)
+  String? _djPlanKey;
+  int _djPlanSeed = 0, _djPlanTech = 0;
+
   /// Стиль автомикса: smooth / balanced / energetic
   String get djStyle {
     final v = settings.viewOf('dj.style', 'balanced');
@@ -1167,15 +1172,32 @@ class PlayerController extends ChangeNotifier {
       final pa = _beatProfile(cur.id), pb = _beatProfile(t.id);
       if (pa == null || pb == null) throw StateError('нет профиля трека');
       final gA = _djGain(_normIn), gB = _djGain(_normFactorFor(t.id));
-      final options = jsonEncode({
-        'style': djStyle,
-        'maxBars': 32,
-        'gainA': gA,
-        'gainB': gB,
-        'seed': _djRandom.nextInt(1 << 30),
-        'prev': _djPrevTech,
-      });
-      final plan = jsonDecode(e.automix(_p.engineDeck, q.engineDeck, jsonEncode(pa), jsonEncode(pb), options)) as Map<String, dynamic>;
+      final key = '${cur.id}>${t.id}';
+      final again = key == _djPlanKey;
+      if (!again) {
+        _djPlanKey = key;
+        _djPlanSeed = _djRandom.nextInt(1 << 30);
+        _djPlanTech = 0;
+      }
+      String options(int force) => jsonEncode({
+            'style': djStyle,
+            'maxBars': 32,
+            'gainA': gA,
+            'gainB': gB,
+            'seed': _djPlanSeed,
+            'prev': _djPrevTech,
+            if (force > 0) 'force': force,
+          });
+      Map<String, dynamic> plan;
+      try {
+        plan = jsonDecode(e.automix(_p.engineDeck, q.engineDeck, jsonEncode(pa), jsonEncode(pb), options(_djPlanTech)))
+            as Map<String, dynamic>;
+      } catch (_) {
+        // задуманный приём после перемотки уже не помещается — пусть выберет другой
+        if (_djPlanTech == 0) rethrow;
+        plan = jsonDecode(e.automix(_p.engineDeck, q.engineDeck, jsonEncode(pa), jsonEncode(pb), options(0)))
+            as Map<String, dynamic>;
+      }
       // Громкость: ползунок — на мастер, уходящей деке — её доля (в ту же команду, без скачка)
       e.masterVolume = (volume / 100).clamp(0.0, 1.0).toDouble();
       e.set(_p.engineDeck, MixParam.gain, gA);
@@ -1195,9 +1217,10 @@ class PlayerController extends ChangeNotifier {
       _fading = true;
       _preparedId = null;
       keepPrepared = false;
-      _djPrevTech = int.tryParse(dj.technique.replaceFirst('T', '')) ?? 0;
+      _djPlanTech = int.tryParse(dj.technique.replaceFirst('T', '')) ?? 0;
       final inSec = ((dj.startClock - st.clock) / st.sampleRate).toStringAsFixed(1);
-      AppLog.info('DJ-переход на «${t.title}»: ${plan['name']}, ${plan['bars']} тактов, через $inSec с, '
+      AppLog.info('${again ? 'DJ-переход перестроен после перемотки' : 'DJ-переход'} на «${t.title}»: '
+          '${plan['name']}, ${plan['bars']} тактов, через $inSec с, '
           'темп ×${(plan['tempoRatio'] as num).toStringAsFixed(3)}; ${plan['reason']}');
       dj.timer = Timer.periodic(const Duration(milliseconds: 30), (_) => _djTick());
     } catch (err) {
@@ -1264,6 +1287,8 @@ class PlayerController extends ChangeNotifier {
   /// Конец перехода: прежняя дека выгружается, громкость — снова обычная
   void _djFinish(_DjMix dj) {
     dj.timer?.cancel();
+    // прозвучавший приём — чтобы следующий переход не повторял его
+    _djPrevTech = int.tryParse(dj.technique.replaceFirst('T', '')) ?? 0;
     // как сошлись удары: насколько расходились по сетке анализа и сколько поправил движок по живому звуку
     final si = SharedMix.engine?.syncInfo();
     if (si != null && si.measured > 0) {
@@ -1317,7 +1342,8 @@ class PlayerController extends ChangeNotifier {
     _outGain = 1;
     SharedMix.engine?.masterVolume = 1.0;
     _applyVolume();
-    AppLog.info('DJ-переход отменён');
+    // перемотка: переход тут же перестроится тем же приёмом (в журнал пишет перестройка)
+    if (!retry) AppLog.info('DJ-переход отменён');
   }
 
   Timer? _tailTimer;
