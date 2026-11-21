@@ -667,7 +667,8 @@ class PlayerController extends ChangeNotifier {
   void _prepareMix() {
     final m = mixer;
     final needMix = smartMix && crossfadeSecNow > 0;
-    if (m == null || !(needMix || normalize)) return;
+    // DJ-переходам нужен разбор треков (доли, тональность) — даже если «Умный переход» выключен
+    if (m == null || !(needMix || normalize || useMixEngine)) return;
     final cur = current;
     if (cur != null) {
       // Ровной громкости нужна громкость текущего трека: он должен лежать в кэше, чтобы его можно было разобрать
@@ -1110,6 +1111,10 @@ class PlayerController extends ChangeNotifier {
     final nextId = queue[ni];
     if (!cache.has(nextId) || !cache.fileFor(nextId).existsSync()) return 'следующий трек не сохранён на компьютере';
     final a = _beatProfile(cur.id), b = _beatProfile(nextId);
+    final beat = mixer?.beat;
+    if ((a == null || b == null) && (beat == null || beat.failed)) {
+      return 'анализ треков не работает (не загрузились модели или библиотека анализа — см. предупреждения выше)';
+    }
     if (a == null) return 'текущий трек ещё не разобран';
     if (b == null) return 'следующий трек ещё не разобран';
     // профиль от другого файла (трек заменили) — не доверяем
