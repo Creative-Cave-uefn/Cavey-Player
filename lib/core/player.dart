@@ -1115,6 +1115,9 @@ class PlayerController extends ChangeNotifier {
     if ((a == null || b == null) && (beat == null || beat.failed)) {
       return 'анализ треков не работает (не загрузились модели или библиотека анализа — см. предупреждения выше)';
     }
+    // не разобран — в срочную очередь (следующий мог смениться: порядок перестроен, трек добавлен в очередь)
+    if (a == null) mixer?.prepare(cur.id);
+    if (b == null) mixer?.prepare(nextId);
     if (a == null) return 'текущий трек ещё не разобран';
     if (b == null) return 'следующий трек ещё не разобран';
     // профиль от другого файла (трек заменили) — не доверяем

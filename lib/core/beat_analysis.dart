@@ -240,8 +240,8 @@ class _Worker {
 class BeatAnalysis {
   // версия разбора, которой помечается сохранённый профиль (своя, не из движка): 3 — разметка вокала,
   // 4 — ровные участки в начале и конце у треков с плавающим темпом, 5 — период по атакам, сильная доля по
-  // вероятности даунбита
-  static const _algo = 5;
+  // вероятности даунбита, 6 — уверенность в тональности без оглядки на совместимые тональности
+  static const _algo = 6;
 
   BeatAnalysis(this.mixDir, Directory toolsDir) : assets = BeatAssets(Directory('${toolsDir.path}${Platform.pathSeparator}beat'));
 

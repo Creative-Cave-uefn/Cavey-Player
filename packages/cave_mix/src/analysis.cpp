@@ -925,19 +925,31 @@ static Key detectKey(const std::vector<double> &c) {
     }
     return sxx > 0 && syy > 0 ? sxy / std::sqrt(sxx * syy) : 0.0;
   };
-  double best = -2, second = -2;
+  // Уверенность — насколько лучшая тональность обгоняет лучшую из НЕсовместимых с ней. Параллельный мажор/минор
+  // (тот же номер Camelot) и соседи по кругу для сведения равноценны — их близость сомнений не добавляет (раньше
+  // из-за параллельной тональности почти любой трек выходил «неуверенным»)
+  double r[2][12];
+  double best = -2;
   int bt = 0;
   bool bm = false;
   for (int t = 0; t < 12; ++t)
     for (int m = 0; m < 2; ++m) {
-      const double r = corr(m ? minr : maj, t);
-      if (r > best) { second = best; best = r; bt = t; bm = m; }
-      else if (r > second) second = r;
+      r[m][t] = corr(m ? minr : maj, t);
+      if (r[m][t] > best) { best = r[m][t]; bt = t; bm = m; }
+    }
+  auto num = [&](int t, bool m) { return std::stoi(camelot(t, m)); };
+  const int bn = num(bt, bm);
+  double second = -2;
+  for (int t = 0; t < 12; ++t)
+    for (int m = 0; m < 2; ++m) {
+      const int d = std::abs(num(t, m) - bn) % 12, dist = std::min(d, 12 - d);
+      const bool compatible = dist == 0 || ((bool)m == bm && dist <= 1);
+      if (!compatible) second = std::max(second, r[m][t]);
     }
   Key k;
   k.camelot = camelot(bt, bm);
   k.name = std::string(names[bt]) + (bm ? "m" : "");
-  k.confidence = std::clamp((best - second) * 8.0, 0.0, 1.0) * std::clamp(best, 0.0, 1.0);
+  k.confidence = std::clamp((best - second) * 5.0, 0.0, 1.0) * std::clamp(best * 1.5, 0.0, 1.0);
   return k;
 }
 
@@ -1341,7 +1353,7 @@ class Analyzer {
     Json j;
     j.open('{');
     j.key("v"); j.integer(2);
-    j.key("algo"); j.integer(4);  // версия алгоритма сетки: старые профили пересчитываются
+    j.key("algo"); j.integer(5);  // версия алгоритма сетки: старые профили пересчитываются
     j.key("level"); j.str("quick");
     j.key("analyzer"); j.str("cave_mix/beat_this");
     j.key("durationMs"); j.integer(std::llround(duration * 1000));

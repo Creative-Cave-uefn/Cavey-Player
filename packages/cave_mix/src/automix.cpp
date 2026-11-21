@@ -429,10 +429,11 @@ class Automix {
     // кандидаты техник с весами (ТЗ, раздел 6.2) и стилем
     std::vector<std::pair<int, double>> cand;
     if (o.force) cand.push_back({o.force, 1});
-    else if (!a.grid || !b.grid) cand = {{T11, 0.7}, {T3, o.allowEcho ? 0.3 : 0}};
-    else if (!canMatch)
-      // темпы не свести: обрывы с хвостом (эхо, реверберация), торможение или короткий плавный
-      cand = {{T3, o.allowEcho ? 0.45 : 0}, {T8, o.allowEcho ? 0.35 : 0}, {T11, 0.3},
+    else if (!a.grid || b.bpm <= 0) cand = {{T11, 1}};
+    else if (!b.grid || !canMatch)
+      // темпы не свести (или у B темп плавает): приёмы, которым подгонка не нужна, — обрывы с хвостом (эхо,
+      // реверберация), торможение, спинбэк, ролл; плавный — реже: при разных темпах это две ритмики вразнобой
+      cand = {{T3, o.allowEcho ? 0.45 : 0}, {T8, o.allowEcho ? 0.35 : 0}, {T11, 0.12},
               {T7, o.allowCut && o.style > 0 ? 0.25 : 0}, {T4, o.allowCut && o.style == 2 ? 0.2 : 0},
               {T6, o.allowCut && o.style > 0 ? 0.25 : 0}, {T9, o.style > 0 ? 0.25 : 0.1}};
     else if (key >= 0)
@@ -484,7 +485,9 @@ class Automix {
       tempoX_ = rampOn_ ? tempoT_ : tempoA_;
       rampS_ = rampOn_ ? 8 * a.barLen : 0;
       if ((t == T1 || t == T2 || t == T4 || t == T5) && !canMatch && !o.force) continue;
-      if (t != T11 && (!a.grid || !b.grid)) continue;
+      // приёмы-обрывы: B вступает после A, ему сетка нужна только для сильной доли входа (есть и у плавающего)
+      const bool cutTech = t == T3 || t == T6 || t == T7 || t == T8 || t == T9;
+      if (t != T11 && (!a.grid || (!b.grid && !(cutTech && b.bpm > 0)))) continue;
       if (!fit(a, b, o, p)) continue;
       char why[768];
       char meet[160] = "";
